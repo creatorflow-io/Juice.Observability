@@ -23,7 +23,7 @@ ch() { docker compose exec -T clickhouse clickhouse client --user admin --passwo
 # post <signal> <json> [curl args...] → HTTP status
 post() {
   local signal=$1 body=$2; shift 2
-  curl -s -o /dev/null -w '%{http_code}' --ssl-no-revoke --cacert "$CA" -H 'Content-Type: application/json' "$@" \
+  curl -s -m 30 -o /dev/null -w '%{http_code}' --ssl-no-revoke --cacert "$CA" -H 'Content-Type: application/json' "$@" \
     -d "$body" "$OTLP/v1/$signal"
 }
 
@@ -46,11 +46,11 @@ logs='{"resourceLogs":[{"resource":'$resource',"scopeLogs":[{"scope":{"name":"Ju
   "attributes":['$forged',{"key":"Payload","value":{"stringValue":"{\"card\":\"4111\"}"}},{"key":"api_key","value":{"stringValue":"k"}}]}]}]}]}'
 
 echo "Ingestion security"
-check "plain HTTP is refused" "$(curl -s -d '{}' http://localhost:4318/v1/traces | grep -c 'HTTP request to an HTTPS server')" "1"
+check "plain HTTP is refused" "$(curl -s -m 30 -d '{}' http://localhost:4318/v1/traces | grep -c 'HTTP request to an HTTPS server')" "1"
 check "no token → 401" "$(post traces "$traces")" "401"
 check "wrong token → 401" "$(post traces "$traces" -H 'Authorization: Bearer not-a-token')" "401"
 check "untrusted certificate is refused" \
-  "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" -d '{}' $OTLP/v1/traces)" "000"
+  "$(curl -s -m 30 -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" -d '{}' $OTLP/v1/traces)" "000"
 
 echo "Authenticated ingestion (run $RUN)"
 sent_ms=$(date +%s%3N)
@@ -109,9 +109,9 @@ check "grafana_reader cannot write" \
 check "grafana_reader cannot read system users" \
   "$(docker compose exec -T clickhouse clickhouse client --user grafana_reader --password "$CLICKHOUSE_GRAFANA_PASSWORD" \
       -q "SELECT count() FROM system.users" >/dev/null 2>&1 && echo readable || echo denied)" "denied"
-grafana_health=$(curl -s -u "admin:$GRAFANA_ADMIN_PASSWORD" http://localhost:3000/api/datasources/uid/juice-clickhouse/health)
+grafana_health=$(curl -s -m 30 -u "admin:$GRAFANA_ADMIN_PASSWORD" http://localhost:3000/api/datasources/uid/juice-clickhouse/health)
 check "Grafana ClickHouse data source healthy" "$(echo "$grafana_health" | grep -o '"status":"[A-Z]*"')" '"status":"OK"'
-check "Grafana anonymous access disabled" "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/api/search)" "401"
+check "Grafana anonymous access disabled" "$(curl -s -m 30 -o /dev/null -w '%{http_code}' http://localhost:3000/api/search)" "401"
 
 echo "Grafana sign-in (OIDC, Keycloak realm juice)"
 # oidc_login <user> <password> → prints "<grafana login> <org role>", or "refused"
@@ -119,24 +119,24 @@ oidc_login() {
   local jar form action back
   jar=$(mktemp)
   # Grafana → Keycloak authorization endpoint (with state and PKCE challenge)
-  form=$(curl -s -L -c "$jar" -b "$jar" http://localhost:3000/login/generic_oauth)
+  form=$(curl -s -m 30 -L -c "$jar" -b "$jar" http://localhost:3000/login/generic_oauth)
   action=$(echo "$form" | grep -o 'action="[^"]*login-actions/authenticate[^"]*"' | head -1 | sed 's/^action="//; s/"$//; s/&amp;/\&/g')
   [[ -z "$action" ]] && { echo "no-login-form"; rm -f "$jar"; return; }
   # Submit credentials; Keycloak redirects back to Grafana with the code; Grafana exchanges it and sets its session.
-  back=$(curl -s -o /dev/null -w '%{redirect_url}' -c "$jar" -b "$jar" --data-urlencode "username=$1" \
+  back=$(curl -s -m 30 -o /dev/null -w '%{redirect_url}' -c "$jar" -b "$jar" --data-urlencode "username=$1" \
     --data-urlencode "password=$2" --data-urlencode "credentialId=" "$action")
   # A failed login re-renders the Keycloak form instead of redirecting.
   [[ -z "$back" ]] && { echo "refused"; rm -f "$jar"; return; }
-  curl -s -o /dev/null -c "$jar" -b "$jar" "$back"
+  curl -s -m 30 -o /dev/null -c "$jar" -b "$jar" "$back"
   local user orgs
-  user=$(curl -s -b "$jar" http://localhost:3000/api/user)
+  user=$(curl -s -m 30 -b "$jar" http://localhost:3000/api/user)
   if ! echo "$user" | grep -q '"login"'; then echo "refused"; rm -f "$jar"; return; fi
-  orgs=$(curl -s -b "$jar" http://localhost:3000/api/user/orgs)
+  orgs=$(curl -s -m 30 -b "$jar" http://localhost:3000/api/user/orgs)
   echo "$(echo "$user" | grep -o '"login":"[^"]*"' | cut -d'"' -f4) $(echo "$orgs" | grep -o '"role":"[^"]*"' | head -1 | cut -d'"' -f4)"
   rm -f "$jar"
 }
 check "password sign-in refused (OIDC only)" \
-  "$(curl -s -H 'Content-Type: application/json' -d "{\"user\":\"admin\",\"password\":\"$GRAFANA_ADMIN_PASSWORD\"}" \
+  "$(curl -s -m 30 -H 'Content-Type: application/json' -d "{\"user\":\"admin\",\"password\":\"$GRAFANA_ADMIN_PASSWORD\"}" \
       http://localhost:3000/login | grep -o 'auth.client.notConfigured')" "auth.client.notConfigured"
 check "alice (client role admin) → Admin" "$(oidc_login alice "$KEYCLOAK_DEMO_PASSWORD")" "alice Admin"
 check "erin (editor) → Editor" "$(oidc_login erin "$KEYCLOAK_DEMO_PASSWORD")" "erin Editor"
@@ -144,7 +144,7 @@ check "victor (viewer) → Viewer" "$(oidc_login victor "$KEYCLOAK_DEMO_PASSWORD
 check "nora (no Grafana role) refused" "$(oidc_login nora "$KEYCLOAK_DEMO_PASSWORD")" "refused"
 check "wrong password refused" "$(oidc_login alice not-the-password)" "refused"
 check "OIDC admin is not Grafana server admin" \
-  "$(curl -s -u "admin:$GRAFANA_ADMIN_PASSWORD" 'http://localhost:3000/api/users/lookup?loginOrEmail=alice' | grep -o '"isGrafanaAdmin":[a-z]*')" '"isGrafanaAdmin":false'
+  "$(curl -s -m 30 -u "admin:$GRAFANA_ADMIN_PASSWORD" 'http://localhost:3000/api/users/lookup?loginOrEmail=alice' | grep -o '"isGrafanaAdmin":[a-z]*')" '"isGrafanaAdmin":false'
 
 if [[ "${1:-}" == "--outage" ]]; then
   echo "Backend outage (bounded queue and retry)"
@@ -153,7 +153,7 @@ if [[ "${1:-}" == "--outage" ]]; then
   out_logs=${logs//verify-$RUN/verify-$out_run}
   check "accepted while ClickHouse is down" "$(post logs "$out_logs" -H "Authorization: Bearer $TOKEN")" "200"
   sleep 3
-  queued=$(curl -s http://localhost:8888/metrics | grep -E '^otelcol_exporter_queue_size\{.*clickhouse/logs' | awk '{print $2}')
+  queued=$(curl -s -m 30 http://localhost:8888/metrics | grep -E '^otelcol_exporter_queue_size\{.*clickhouse/logs' | awk '{print $2}')
   check "record waits in the exporter queue" "$([[ "${queued:-0}" != "0" ]] && echo queued || echo empty)" "queued"
   docker compose start clickhouse >/dev/null 2>&1
   docker compose up -d --wait clickhouse >/dev/null 2>&1

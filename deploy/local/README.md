@@ -53,7 +53,8 @@ exporter on logging (G2). The .NET metric exporter sends every 60 s by default; 
 The pipeline order is a security property (requirements §4 step 5); `collector/config.yaml` documents it inline.
 
 1. **Authentication.** Both OTLP protocols require TLS 1.2+ and `bearertokenauth` against the token file
-   (`secrets/otlp-tokens`, one token per line, comments after the token). Plain HTTP, a missing or unknown token, and
+   (`secrets/otlp-tokens`, one token per line, comments after the token). Token changes take effect after
+   `docker compose restart otel-collector`. Plain HTTP, a missing or unknown token, and
    an untrusted certificate are refused. The authenticator provides no `auth.*` claim used here: in single-tenant
    mode the tenant is static (§4 step 4), so no request value reaches the tenant.
 2. **Strip** (`transform/strip_untrusted_tenant`): deletes `juice.platform_tenant_id`, `platform.tenant.id` and
