@@ -17,7 +17,7 @@ exists.
 | D5 | Rule model | Seven typed templates from a JSON config file (`rules.json`); no user SQL | **Approved** 2026-11-01 |
 | D6 | OTLP authentication in production | Static bearer tokens per client over TLS, rotated through the token file | **Approved** 2026-11-01 |
 | D7 | Targets, classification, retention | §9 targets as written; three data classes; 30/30/90 days | **Approved** 2026-11-01 |
-| D8 | Versions and Grafana isolation | As built in `deploy/local` | **Approved** 2026-11-01 |
+| D8 | Console and external visualization integration | Juice Console (Angular, juice-layout) is the primary UI; Grafana is optional ([UI architecture](juice-observability-ui-architecture.md)) | **Approved** 2026-11-01, replaces "Versions and Grafana isolation" |
 | D9 | Ownership | Juice framework work is done; the owner names who releases Juice 10.8.0 and who owns Track B | **Approved** 2026-11-01: the project owner does both |
 
 ## D1 — Identifiers
@@ -137,14 +137,19 @@ Missing data evaluates to "no data", never zero (§8).
 - **Retention.** Traces and logs 30 days, metrics 90 days (the §9 reference profile, already the `deploy/local`
   default). Each deployment validates these against its disk budget.
 
-## D8 — Versions and Grafana isolation
+## D8 — Console and external visualization integration
 
-Record as approved what `deploy/local` pins and tests:
+Replaces "Versions and Grafana isolation" (approved earlier on 2026-11-01). The direction is in
+[the UI architecture](juice-observability-ui-architecture.md).
 
-- **Versions:** Collector contrib 0.163.1, ClickHouse 26.8.36.3, Grafana 13.2.5 with ClickHouse plugin 4.22.1,
-  PostgreSQL 17.10, Keycloak 26.7.5.
-- **Grafana isolation (§5.2):** a dedicated Grafana per deployment and read-only, bounded ClickHouse credentials.
-  Sign-in through OIDC; roles come from the IdP and users without a role are refused.
+- **Juice Console is the primary and default UI**, built with Angular and `juice-layout`, and part of the MVP. It
+  reads everything through the Juice API, including traces, logs and metrics, and never reads ClickHouse directly.
+- **Grafana is optional**, for customers who already run it. A deployment without Grafana is complete. The API carries
+  no Grafana-specific fields; Grafana appears only as an optional integration link.
+- **When Grafana is used:** read-only, bounded ClickHouse credentials, and its own sign-in. Juice authorization never
+  depends on it.
+- **Versions** pinned and tested in `deploy/local`: Collector contrib 0.163.1, ClickHouse 26.8.36.3, PostgreSQL 17.10,
+  Keycloak 26.7.5; optional Grafana 13.2.5 with ClickHouse plugin 4.22.1.
 
 ## D9 — Ownership
 
