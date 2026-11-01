@@ -29,6 +29,21 @@ namespace Juice.Observability.Tests
             };
         }
 
+        /// <summary>Marks a span as failed (status code ERROR).</summary>
+        public static JsonObject Failed(JsonObject span)
+        {
+            span["status"] = new JsonObject { ["code"] = 2 };
+            return span;
+        }
+
+        /// <summary><paramref name="count"/> server spans at <paramref name="at"/>, the first <paramref name="failed"/> of them failed.</summary>
+        public static JsonObject[] Requests(int count, int failed, DateTimeOffset at)
+            => Enumerable.Range(0, count).Select(i =>
+            {
+                var span = Span(TraceId(), SpanId(), null, "GET /orders", Server, at);
+                return i < failed ? Failed(span) : span;
+            }).ToArray();
+
         /// <summary>One resource with its spans.</summary>
         public static JsonObject Traces((string Key, string Value)[] resource, params JsonObject[] spans) => new()
         {

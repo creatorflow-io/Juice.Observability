@@ -17,6 +17,7 @@ namespace Juice.Observability.Discovery
         private readonly Dictionary<(string, string), Service> _services = new();
         private readonly Dictionary<(ResourceType, string), Resource> _resources = new();
         private readonly Dictionary<(Guid, Guid, string), ServiceInstance> _instances = new();
+        private readonly Dictionary<(Guid, Guid), ServiceEnvironment> _serviceEnvironments = new();
         private readonly Dictionary<(Guid, Guid, DependencyRelation, Guid?, Guid?), Dependency> _dependencies = new();
         private int _newServices, _newInstances, _newResources, _newDependencies;
 
@@ -34,6 +35,7 @@ namespace Juice.Observability.Discovery
                 }
                 var service = UpsertService(tenantId, key, o.FirstSeen, o.LastSeen);
                 var environment = UpsertEnvironment(tenantId, o.Environment, o.FirstSeen, o.LastSeen);
+                UpsertServiceEnvironment(tenantId, service, environment, o.FirstSeen, o.LastSeen);
                 if (normalizer.Instance(o) is { } instanceKey)
                 {
                     var instance = UpsertInstance(tenantId, service, environment, instanceKey, o.FirstSeen, o.LastSeen);
@@ -115,6 +117,8 @@ namespace Juice.Observability.Discovery
                 _resources[(r.Type, r.Key)] = r;
 
             var serviceIds = _services.Values.Select(s => s.Id).ToList();
+            foreach (var se in await db.ServiceEnvironments.Where(x => x.TenantId == tenantId && serviceIds.Contains(x.ServiceId)).ToListAsync(cancellationToken))
+                _serviceEnvironments[(se.ServiceId, se.EnvironmentId)] = se;
             foreach (var i in await db.Instances.Where(i => i.TenantId == tenantId && serviceIds.Contains(i.ServiceId)).ToListAsync(cancellationToken))
                 _instances[(i.ServiceId, i.EnvironmentId, i.InstanceKey)] = i;
             foreach (var d in await db.Dependencies.Where(d => d.TenantId == tenantId && serviceIds.Contains(d.SourceServiceId)).ToListAsync(cancellationToken))
@@ -158,6 +162,18 @@ namespace Juice.Observability.Discovery
                 Seen(app, first, last, (a, f) => a.FirstSeen = f, (a, l) => a.LastSeen = l, a => a.FirstSeen, a => a.LastSeen);
             }
             return service;
+        }
+
+        private void UpsertServiceEnvironment(Guid tenantId, Service service, DeploymentEnvironment environment,
+            DateTimeOffset first, DateTimeOffset last)
+        {
+            if (!_serviceEnvironments.TryGetValue((service.Id, environment.Id), out var link))
+            {
+                link = new ServiceEnvironment { TenantId = tenantId, ServiceId = service.Id, EnvironmentId = environment.Id, FirstSeen = first, LastSeen = last };
+                db.ServiceEnvironments.Add(link);
+                _serviceEnvironments[(service.Id, environment.Id)] = link;
+            }
+            Seen(link, first, last, (l, f) => l.FirstSeen = f, (l, v) => l.LastSeen = v, l => l.FirstSeen, l => l.LastSeen);
         }
 
         private Application UpsertApplication(Guid tenantId, string key, DateTimeOffset first, DateTimeOffset last)

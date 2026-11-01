@@ -2,6 +2,7 @@ using Juice.Observability.Api;
 using Juice.Observability.Api.Endpoints;
 using Juice.Observability.Data;
 using Juice.Observability.Discovery;
+using Juice.Observability.Health;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -12,6 +13,8 @@ builder.Services.AddDbContext<PlatformDbContext>(options =>
 // Before the discovery worker: hosted services start in registration order, and discovery needs the tenant.
 builder.Services.AddHostedService<TenantProvisioner>();
 builder.Services.AddPlatformDiscovery(builder.Configuration);
+builder.Services.AddPlatformHealth(builder.Configuration);
+builder.Services.Configure<GrafanaOptions>(builder.Configuration.GetSection(GrafanaOptions.Section));
 builder.Services.AddPlatformAuthentication(builder.Configuration);
 builder.Services.AddPlatformProblemDetails();
 builder.Services.AddHealthChecks().AddCheck<DatabaseHealthCheck>("database", tags: ["ready"]);

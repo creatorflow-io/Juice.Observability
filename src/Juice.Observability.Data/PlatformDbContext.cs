@@ -16,11 +16,14 @@ namespace Juice.Observability.Data
         public DbSet<Application> Applications => Set<Application>();
         public DbSet<DeploymentEnvironment> Environments => Set<DeploymentEnvironment>();
         public DbSet<Service> Services => Set<Service>();
+        public DbSet<ServiceEnvironment> ServiceEnvironments => Set<ServiceEnvironment>();
         public DbSet<ServiceInstance> Instances => Set<ServiceInstance>();
         public DbSet<Resource> Resources => Set<Resource>();
         public DbSet<Dependency> Dependencies => Set<Dependency>();
         public DbSet<AuditRecord> AuditRecords => Set<AuditRecord>();
         public DbSet<ReconciliationCheckpoint> Checkpoints => Set<ReconciliationCheckpoint>();
+        public DbSet<HealthSnapshot> HealthSnapshots => Set<HealthSnapshot>();
+        public DbSet<HealthTransition> HealthTransitions => Set<HealthTransition>();
 
         /// <summary>Applies the snake_case naming used by every table. Call it when configuring the context.</summary>
         public static void Configure(DbContextOptionsBuilder options, string connectionString)
@@ -64,6 +67,15 @@ namespace Juice.Observability.Data
                 e.Property(x => x.Name).HasMaxLength(256);
                 e.HasIndex(x => new { x.TenantId, x.Namespace, x.Name }).IsUnique();
                 e.HasOne<Application>().WithMany().HasForeignKey(x => x.ApplicationId).OnDelete(DeleteBehavior.SetNull);
+            });
+
+            model.Entity<ServiceEnvironment>(e =>
+            {
+                e.ToTable("service_environments");
+                e.HasKey(x => new { x.TenantId, x.ServiceId, x.EnvironmentId });
+                Tenant(e);
+                e.HasOne<Service>().WithMany().HasForeignKey(x => x.ServiceId).OnDelete(DeleteBehavior.Cascade);
+                e.HasOne<DeploymentEnvironment>().WithMany().HasForeignKey(x => x.EnvironmentId).OnDelete(DeleteBehavior.Restrict);
             });
 
             model.Entity<ServiceInstance>(e =>
@@ -128,6 +140,32 @@ namespace Juice.Observability.Data
                 e.HasKey(x => new { x.TenantId, x.Source });
                 e.Property(x => x.Source).HasMaxLength(100);
                 e.HasOne<PlatformTenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            model.Entity<HealthSnapshot>(e =>
+            {
+                e.ToTable("health_snapshots");
+                Tenant(e);
+                e.Property(x => x.SubjectType).HasConversion<string>().HasMaxLength(20);
+                e.Property(x => x.State).HasConversion<string>().HasMaxLength(20);
+                e.Property(x => x.PolicyVersion).HasMaxLength(64);
+                e.HasIndex(x => new { x.TenantId, x.SubjectType, x.SubjectId, x.EnvironmentId }).IsUnique().AreNullsDistinct(false);
+                e.HasIndex(x => new { x.TenantId, x.State });
+                e.HasOne<DeploymentEnvironment>().WithMany().HasForeignKey(x => x.EnvironmentId).OnDelete(DeleteBehavior.Cascade);
+            });
+
+            model.Entity<HealthTransition>(e =>
+            {
+                e.ToTable("health_transitions");
+                Tenant(e);
+                e.Property(x => x.SubjectType).HasConversion<string>().HasMaxLength(20);
+                e.Property(x => x.FromState).HasConversion<string>().HasMaxLength(20);
+                e.Property(x => x.ToState).HasConversion<string>().HasMaxLength(20);
+                e.Property(x => x.PolicyVersion).HasMaxLength(64);
+                e.HasIndex(x => new { x.TenantId, x.SubjectType, x.SubjectId, x.EnvironmentId, x.EvidenceTo, x.PolicyVersion })
+                    .IsUnique().AreNullsDistinct(false);
+                e.HasIndex(x => new { x.TenantId, x.SubjectId, x.EvaluatedAt });
+                e.HasOne<DeploymentEnvironment>().WithMany().HasForeignKey(x => x.EnvironmentId).OnDelete(DeleteBehavior.Cascade);
             });
         }
 

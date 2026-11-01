@@ -63,6 +63,8 @@
 
 ## Phase 2 — Health, freshness, and policy-driven rollups
 
+**Status (2026-11-01):** implemented in `src/Juice.Observability.Health` with the decision D4 defaults (still proposed). States, reason codes, policy version, transitions unique per evidence window and policy, rollups, critical dependencies, health endpoint, health in resource detail and topology, and Grafana links pass the evaluator and end-to-end tests. Measured evidence-to-visible: 10–11 s on a 1 s loop; bound about 42 s at the 30 s interval (target 60 s).
+
 **Goal:** explain the current state of discovered resources using explicit evidence and policy.
 
 **Deliverables**

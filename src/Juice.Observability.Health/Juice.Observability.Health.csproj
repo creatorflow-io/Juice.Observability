@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Health evaluation and rollups (requirements §7, decision D4): evidence from ClickHouse, states and transitions in
+       PostgreSQL. -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Juice.Observability.Discovery\Juice.Observability.Discovery.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Juice.Observability.Tests" />
+  </ItemGroup>
+
+</Project>

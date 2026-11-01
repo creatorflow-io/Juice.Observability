@@ -177,7 +177,8 @@ namespace Juice.Observability.Discovery
             services.Configure<DiscoveryOptions>(configuration.GetSection(DiscoveryOptions.Section));
             services.Configure<ClickHouseOptions>(configuration.GetSection(ClickHouseOptions.Section));
             services.Configure<PlatformOptions>(configuration.GetSection(PlatformOptions.Section));
-            services.AddSingleton<ITelemetrySource, ClickHouseTelemetrySource>();
+            services.AddSingleton<ClickHouseTelemetrySource>();
+            services.AddSingleton<ITelemetrySource>(sp => sp.GetRequiredService<ClickHouseTelemetrySource>());
             services.AddSingleton<DiscoveryRunner>();
             services.AddSingleton(TimeProvider.System);
             if (configuration.GetSection(DiscoveryOptions.Section).GetValue(nameof(DiscoveryOptions.Enabled), true))

@@ -51,6 +51,19 @@ namespace Juice.Observability.Data
         public DateTimeOffset LastSeen { get; set; }
     }
 
+    /// <summary>
+    /// A service seen in an environment, with or without instance identity. Health evaluates a service per environment
+    /// from these, so a service whose telemetry carries no instance id still has an environment and a last-seen time.
+    /// </summary>
+    public sealed class ServiceEnvironment
+    {
+        public Guid TenantId { get; init; }
+        public Guid ServiceId { get; init; }
+        public Guid EnvironmentId { get; init; }
+        public DateTimeOffset FirstSeen { get; set; }
+        public DateTimeOffset LastSeen { get; set; }
+    }
+
     public enum InstanceKeySource
     {
         /// <summary><c>service.instance.id</c> was reported.</summary>
@@ -147,5 +160,59 @@ namespace Juice.Observability.Data
         public required string Source { get; init; }
         public DateTimeOffset Watermark { get; set; }
         public DateTimeOffset UpdatedAt { get; set; }
+    }
+}
+
+namespace Juice.Observability.Data
+{
+    // Health (requirements §7, decision D4).
+
+    /// <summary>The six health states. Severity order for rollups: Critical > Unhealthy > Degraded > Healthy.</summary>
+    public enum HealthState { Healthy, Degraded, Unhealthy, Critical, Offline, Unknown }
+
+    public enum HealthSubject { Instance, Service, Application, Host }
+
+    /// <summary>
+    /// The current health of one subject: an instance, a service or application in one environment, or a host. One row
+    /// per subject, replaced at every evaluation.
+    /// </summary>
+    public sealed class HealthSnapshot
+    {
+        public Guid Id { get; init; } = Guid.CreateVersion7();
+        public Guid TenantId { get; init; }
+        public HealthSubject SubjectType { get; init; }
+        public Guid SubjectId { get; init; }
+        /// <summary>Null for hosts, which are not per environment.</summary>
+        public Guid? EnvironmentId { get; init; }
+        public HealthState State { get; set; }
+        public string[] ReasonCodes { get; set; } = [];
+        public required string PolicyVersion { get; set; }
+        public DateTimeOffset EvaluatedAt { get; set; }
+        public DateTimeOffset EvidenceFrom { get; set; }
+        public DateTimeOffset EvidenceTo { get; set; }
+        /// <summary>The newest telemetry behind the state; null when there is none.</summary>
+        public DateTimeOffset? LastEvidenceAt { get; set; }
+        /// <summary>When the subject entered its current state.</summary>
+        public DateTimeOffset Since { get; set; }
+    }
+
+    /// <summary>
+    /// A change of state, written only when the state changes. Unique per subject, evidence window and policy version,
+    /// so evaluating the same evidence with the same policy twice records one transition (requirements §7).
+    /// </summary>
+    public sealed class HealthTransition
+    {
+        public Guid Id { get; init; } = Guid.CreateVersion7();
+        public Guid TenantId { get; init; }
+        public HealthSubject SubjectType { get; init; }
+        public Guid SubjectId { get; init; }
+        public Guid? EnvironmentId { get; init; }
+        public HealthState? FromState { get; init; }
+        public HealthState ToState { get; init; }
+        public string[] ReasonCodes { get; init; } = [];
+        public required string PolicyVersion { get; init; }
+        public DateTimeOffset EvaluatedAt { get; init; }
+        public DateTimeOffset EvidenceFrom { get; init; }
+        public DateTimeOffset EvidenceTo { get; init; }
     }
 }

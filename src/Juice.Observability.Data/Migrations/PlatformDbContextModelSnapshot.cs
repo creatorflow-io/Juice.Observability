@@ -251,6 +251,163 @@ namespace Juice.Observability.Data.Migrations
                     b.ToTable("environments", (string)null);
                 });
 
+            modelBuilder.Entity("Juice.Observability.Data.HealthSnapshot", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("EnvironmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("environment_id");
+
+                    b.Property<DateTimeOffset>("EvaluatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("evaluated_at");
+
+                    b.Property<DateTimeOffset>("EvidenceFrom")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("evidence_from");
+
+                    b.Property<DateTimeOffset>("EvidenceTo")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("evidence_to");
+
+                    b.Property<DateTimeOffset?>("LastEvidenceAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_evidence_at");
+
+                    b.Property<string>("PolicyVersion")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("policy_version");
+
+                    b.PrimitiveCollection<string[]>("ReasonCodes")
+                        .IsRequired()
+                        .HasColumnType("text[]")
+                        .HasColumnName("reason_codes");
+
+                    b.Property<DateTimeOffset>("Since")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("since");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("state");
+
+                    b.Property<Guid>("SubjectId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("subject_id");
+
+                    b.Property<string>("SubjectType")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("subject_type");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_health_snapshots");
+
+                    b.HasIndex("EnvironmentId")
+                        .HasDatabaseName("ix_health_snapshots_environment_id");
+
+                    b.HasIndex("TenantId", "State")
+                        .HasDatabaseName("ix_health_snapshots_tenant_id_state");
+
+                    b.HasIndex("TenantId", "SubjectType", "SubjectId", "EnvironmentId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_health_snapshots_tenant_id_subject_type_subject_id_environm");
+
+                    NpgsqlIndexBuilderExtensions.AreNullsDistinct(b.HasIndex("TenantId", "SubjectType", "SubjectId", "EnvironmentId"), false);
+
+                    b.ToTable("health_snapshots", (string)null);
+                });
+
+            modelBuilder.Entity("Juice.Observability.Data.HealthTransition", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("EnvironmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("environment_id");
+
+                    b.Property<DateTimeOffset>("EvaluatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("evaluated_at");
+
+                    b.Property<DateTimeOffset>("EvidenceFrom")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("evidence_from");
+
+                    b.Property<DateTimeOffset>("EvidenceTo")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("evidence_to");
+
+                    b.Property<string>("FromState")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("from_state");
+
+                    b.Property<string>("PolicyVersion")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("policy_version");
+
+                    b.PrimitiveCollection<string[]>("ReasonCodes")
+                        .IsRequired()
+                        .HasColumnType("text[]")
+                        .HasColumnName("reason_codes");
+
+                    b.Property<Guid>("SubjectId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("subject_id");
+
+                    b.Property<string>("SubjectType")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("subject_type");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("ToState")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("to_state");
+
+                    b.HasKey("Id")
+                        .HasName("pk_health_transitions");
+
+                    b.HasIndex("EnvironmentId")
+                        .HasDatabaseName("ix_health_transitions_environment_id");
+
+                    b.HasIndex("TenantId", "SubjectId", "EvaluatedAt")
+                        .HasDatabaseName("ix_health_transitions_tenant_id_subject_id_evaluated_at");
+
+                    b.HasIndex("TenantId", "SubjectType", "SubjectId", "EnvironmentId", "EvidenceTo", "PolicyVersion")
+                        .IsUnique()
+                        .HasDatabaseName("ix_health_transitions_tenant_id_subject_type_subject_id_enviro");
+
+                    NpgsqlIndexBuilderExtensions.AreNullsDistinct(b.HasIndex("TenantId", "SubjectType", "SubjectId", "EnvironmentId", "EvidenceTo", "PolicyVersion"), false);
+
+                    b.ToTable("health_transitions", (string)null);
+                });
+
             modelBuilder.Entity("Juice.Observability.Data.PlatformTenant", b =>
                 {
                     b.Property<Guid>("Id")
@@ -415,6 +572,40 @@ namespace Juice.Observability.Data.Migrations
                     b.ToTable("services", (string)null);
                 });
 
+            modelBuilder.Entity("Juice.Observability.Data.ServiceEnvironment", b =>
+                {
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<Guid>("ServiceId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("service_id");
+
+                    b.Property<Guid>("EnvironmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("environment_id");
+
+                    b.Property<DateTimeOffset>("FirstSeen")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("first_seen");
+
+                    b.Property<DateTimeOffset>("LastSeen")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_seen");
+
+                    b.HasKey("TenantId", "ServiceId", "EnvironmentId")
+                        .HasName("pk_service_environments");
+
+                    b.HasIndex("EnvironmentId")
+                        .HasDatabaseName("ix_service_environments_environment_id");
+
+                    b.HasIndex("ServiceId")
+                        .HasDatabaseName("ix_service_environments_service_id");
+
+                    b.ToTable("service_environments", (string)null);
+                });
+
             modelBuilder.Entity("Juice.Observability.Data.ServiceInstance", b =>
                 {
                     b.Property<Guid>("Id")
@@ -557,6 +748,38 @@ namespace Juice.Observability.Data.Migrations
                         .HasConstraintName("fk_environments_platform_tenants_tenant_id");
                 });
 
+            modelBuilder.Entity("Juice.Observability.Data.HealthSnapshot", b =>
+                {
+                    b.HasOne("Juice.Observability.Data.DeploymentEnvironment", null)
+                        .WithMany()
+                        .HasForeignKey("EnvironmentId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .HasConstraintName("fk_health_snapshots_environments_environment_id");
+
+                    b.HasOne("Juice.Observability.Data.PlatformTenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_health_snapshots_platform_tenants_tenant_id");
+                });
+
+            modelBuilder.Entity("Juice.Observability.Data.HealthTransition", b =>
+                {
+                    b.HasOne("Juice.Observability.Data.DeploymentEnvironment", null)
+                        .WithMany()
+                        .HasForeignKey("EnvironmentId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .HasConstraintName("fk_health_transitions_environments_environment_id");
+
+                    b.HasOne("Juice.Observability.Data.PlatformTenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_health_transitions_platform_tenants_tenant_id");
+                });
+
             modelBuilder.Entity("Juice.Observability.Data.ReconciliationCheckpoint", b =>
                 {
                     b.HasOne("Juice.Observability.Data.PlatformTenant", null)
@@ -591,6 +814,30 @@ namespace Juice.Observability.Data.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_services_platform_tenants_tenant_id");
+                });
+
+            modelBuilder.Entity("Juice.Observability.Data.ServiceEnvironment", b =>
+                {
+                    b.HasOne("Juice.Observability.Data.DeploymentEnvironment", null)
+                        .WithMany()
+                        .HasForeignKey("EnvironmentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_service_environments_environments_environment_id");
+
+                    b.HasOne("Juice.Observability.Data.Service", null)
+                        .WithMany()
+                        .HasForeignKey("ServiceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_service_environments_services_service_id");
+
+                    b.HasOne("Juice.Observability.Data.PlatformTenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_service_environments_platform_tenants_tenant_id");
                 });
 
             modelBuilder.Entity("Juice.Observability.Data.ServiceInstance", b =>

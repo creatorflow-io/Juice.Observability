@@ -3,6 +3,7 @@
     <Project Path="src/Juice.Observability.Api/Juice.Observability.Api.csproj" />
     <Project Path="src/Juice.Observability.Data/Juice.Observability.Data.csproj" />
     <Project Path="src/Juice.Observability.Discovery/Juice.Observability.Discovery.csproj" />
+    <Project Path="src/Juice.Observability.Health/Juice.Observability.Health.csproj" />
   </Folder>
   <Folder Name="/test/">
     <Project Path="test/Juice.Observability.Tests/Juice.Observability.Tests.csproj" />

@@ -1,5 +1,6 @@
 using Juice.Observability.Data;
 using Microsoft.EntityFrameworkCore;
+using Juice.Observability.Health;
 using Microsoft.Extensions.Options;
 
 namespace Juice.Observability.Api.Endpoints
@@ -11,13 +12,14 @@ namespace Juice.Observability.Api.Endpoints
     public sealed record ResourceSummaryDto(Guid Id, string Type, string Key, string DisplayName, DateTimeOffset FirstSeen, DateTimeOffset LastSeen);
 
     public sealed record InstanceDto(Guid Id, string Environment, string InstanceKey, string KeySource, string? ServiceVersion,
-        string State, Guid? HostResourceId, DateTimeOffset FirstSeen, DateTimeOffset LastSeen);
+        string State, Guid? HostResourceId, DateTimeOffset FirstSeen, DateTimeOffset LastSeen, string? Health);
 
     public sealed record ResourceDetailDto(Guid Id, string Type, string Key, string DisplayName, DateTimeOffset FirstSeen,
         DateTimeOffset LastSeen, string? Namespace, string? Name, Guid? ApplicationId, IReadOnlyDictionary<string, string> Attributes,
-        IReadOnlyList<InstanceDto> Instances, bool InstancesTruncated);
+        IReadOnlyList<InstanceDto> Instances, bool InstancesTruncated, IReadOnlyList<HealthDto> Health, string? GrafanaUrl);
 
-    public sealed record TopologyNodeDto(Guid Id, string Type, string DisplayName);
+    /// <summary><see cref="Health"/> is the node's state in the requested environment (hosts have one state), or null.</summary>
+    public sealed record TopologyNodeDto(Guid Id, string Type, string DisplayName, string? Health);
 
     public sealed record TopologyEdgeDto(Guid Id, Guid Source, Guid Target, string Relation, string Confidence, string EvidenceSource,
         long SpanCount, DateTimeOffset FirstSeen, DateTimeOffset LastSeen);
@@ -53,6 +55,7 @@ namespace Juice.Observability.Api.Endpoints
             tenant.MapGet("/resources", ListResourcesAsync);
             tenant.MapGet("/resources/{resourceId:guid}", GetResourceAsync);
             tenant.MapGet("/topology", GetTopologyAsync);
+            tenant.MapHealthEndpoints();
             return app;
         }
 
@@ -172,16 +175,21 @@ namespace Juice.Observability.Api.Endpoints
             return Results.Ok(new Page<ResourceSummaryDto>(items, null));
         }
 
-        private static async Task<IResult> GetResourceAsync(Guid tenantId, Guid resourceId, PlatformDbContext db, CancellationToken ct)
+        private static async Task<IResult> GetResourceAsync(Guid tenantId, Guid resourceId, PlatformDbContext db,
+            IOptions<HealthPolicy> policy, IOptions<GrafanaOptions> grafana, TimeProvider clock, CancellationToken ct)
         {
+            async Task<IReadOnlyList<HealthDto>> HealthOf(Guid subject)
+                => await HealthEndpoints.ToDtosAsync(db, tenantId, await db.HealthSnapshots.AsNoTracking()
+                    .Where(h => h.TenantId == tenantId && h.SubjectId == subject).ToListAsync(ct), policy.Value, clock, ct);
+
             var service = await db.Services.AsNoTracking().SingleOrDefaultAsync(s => s.TenantId == tenantId && s.Id == resourceId, ct);
             if (service is not null)
             {
                 var instances = await Instances(db.Instances.Where(i => i.TenantId == tenantId && i.ServiceId == service.Id), db, ct);
-                return Results.Ok(new ResourceDetailDto(service.Id, ServiceType,
-                    service.Namespace.Length == 0 ? service.Name : $"{service.Namespace}/{service.Name}", service.Name,
+                return Results.Ok(new ResourceDetailDto(service.Id, ServiceType, HealthRunner.Name(service), service.Name,
                     service.FirstSeen, service.LastSeen, service.Namespace, service.Name, service.ApplicationId,
-                    new Dictionary<string, string>(), instances.Items, instances.Truncated));
+                    new Dictionary<string, string>(), instances.Items, instances.Truncated, await HealthOf(service.Id),
+                    HealthEndpoints.GrafanaLink(grafana.Value, service.Name, clock.GetUtcNow())));
             }
             var resource = await db.Resources.AsNoTracking().SingleOrDefaultAsync(r => r.TenantId == tenantId && r.Id == resourceId, ct);
             if (resource is null)
@@ -191,7 +199,8 @@ namespace Juice.Observability.Api.Endpoints
             // For a host: the service instances running on it.
             var hosted = await Instances(db.Instances.Where(i => i.TenantId == tenantId && i.HostResourceId == resource.Id), db, ct);
             return Results.Ok(new ResourceDetailDto(resource.Id, TypeNames[resource.Type], resource.Key, resource.DisplayName,
-                resource.FirstSeen, resource.LastSeen, null, null, null, resource.Attributes, hosted.Items, hosted.Truncated));
+                resource.FirstSeen, resource.LastSeen, null, null, null, resource.Attributes, hosted.Items, hosted.Truncated,
+                await HealthOf(resource.Id), null));
         }
 
         /// <summary>Active instances first, then the most recently seen; at most <see cref="MaxInstances"/>.</summary>
@@ -202,7 +211,8 @@ namespace Juice.Observability.Api.Endpoints
                 .OrderBy(i => i.State == InstanceState.Active ? 0 : 1).ThenByDescending(i => i.LastSeen)
                 .Take(MaxInstances + 1)
                 .Join(db.Environments, i => i.EnvironmentId, e => e.Id, (i, e) => new InstanceDto(i.Id, e.Key, i.InstanceKey,
-                    i.KeySource.ToString(), i.ServiceVersion, i.State.ToString(), i.HostResourceId, i.FirstSeen, i.LastSeen))
+                    i.KeySource.ToString(), i.ServiceVersion, i.State.ToString(), i.HostResourceId, i.FirstSeen, i.LastSeen,
+                    db.HealthSnapshots.Where(h => h.SubjectId == i.Id).Select(h => h.State.ToString()).FirstOrDefault()))
                 .ToListAsync(ct);
             return (rows.Take(MaxInstances).ToList(), rows.Count > MaxInstances);
         }
@@ -214,6 +224,7 @@ namespace Juice.Observability.Api.Endpoints
         private static async Task<IResult> GetTopologyAsync(Guid tenantId, string? environment, PlatformDbContext db, CancellationToken ct)
         {
             var edges = db.Dependencies.AsNoTracking().Where(d => d.TenantId == tenantId);
+            Guid? environmentId = null;
             if (environment is not null)
             {
                 var env = await db.Environments.AsNoTracking()
@@ -222,6 +233,7 @@ namespace Juice.Observability.Api.Endpoints
                 {
                     return Results.Ok(new TopologyDto(environment, [], [], false));
                 }
+                environmentId = env.Id;
                 edges = edges.Where(d => d.EnvironmentId == env.Id);
             }
             var rows = await edges.OrderByDescending(d => d.LastSeen).Take(MaxEdges + 1).ToListAsync(ct);
@@ -230,12 +242,18 @@ namespace Juice.Observability.Api.Endpoints
 
             var serviceIds = rows.Select(d => d.SourceServiceId).Concat(rows.Where(d => d.TargetServiceId is not null).Select(d => d.TargetServiceId!.Value)).ToHashSet();
             var resourceIds = rows.Where(d => d.TargetResourceId is not null).Select(d => d.TargetResourceId!.Value).ToHashSet();
+            var nodeIds = serviceIds.Concat(resourceIds).ToList();
+            // Service health is per environment; without one, nodes carry no state rather than an arbitrary environment's.
+            var health = environmentId is null ? [] : await db.HealthSnapshots.AsNoTracking()
+                .Where(h => h.TenantId == tenantId && nodeIds.Contains(h.SubjectId) && (h.EnvironmentId == environmentId || h.EnvironmentId == null))
+                .ToDictionaryAsync(h => h.SubjectId, h => h.State.ToString(), ct);
             var nodes = new List<TopologyNodeDto>();
-            nodes.AddRange(await db.Services.AsNoTracking().Where(s => s.TenantId == tenantId && serviceIds.Contains(s.Id))
-                .Select(s => new TopologyNodeDto(s.Id, ServiceType, s.Name)).ToListAsync(ct));
+            nodes.AddRange((await db.Services.AsNoTracking().Where(s => s.TenantId == tenantId && serviceIds.Contains(s.Id))
+                .Select(s => new { s.Id, s.Name }).ToListAsync(ct))
+                .Select(s => new TopologyNodeDto(s.Id, ServiceType, s.Name, health.GetValueOrDefault(s.Id))));
             var resources = await db.Resources.AsNoTracking().Where(r => r.TenantId == tenantId && resourceIds.Contains(r.Id))
                 .Select(r => new { r.Id, r.Type, r.DisplayName }).ToListAsync(ct);
-            nodes.AddRange(resources.Select(r => new TopologyNodeDto(r.Id, TypeNames[r.Type], r.DisplayName)));
+            nodes.AddRange(resources.Select(r => new TopologyNodeDto(r.Id, TypeNames[r.Type], r.DisplayName, health.GetValueOrDefault(r.Id))));
 
             return Results.Ok(new TopologyDto(environment, nodes, rows.Select(d => new TopologyEdgeDto(d.Id, d.SourceServiceId,
                 d.TargetServiceId ?? d.TargetResourceId!.Value, Name(d.Relation), Name(d.Confidence), d.EvidenceSource, d.SpanCount,

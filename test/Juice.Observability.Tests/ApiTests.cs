@@ -166,6 +166,53 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
+        public async Task Health_is_listed_filtered_and_shown_on_resources_and_topology_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var seed = await SeedAsync(database);
+            var now = DateTimeOffset.UtcNow;
+            await using (var db = database.Context())
+            {
+                var production = (await db.Environments.SingleAsync()).Id;
+                HealthSnapshot Snapshot(HealthSubject type, Guid id, Guid? environment, Data.HealthState state, DateTimeOffset evaluated, params string[] reasons)
+                    => new() { TenantId = seed.Tenant, SubjectType = type, SubjectId = id, EnvironmentId = environment, State = state,
+                        ReasonCodes = reasons, PolicyVersion = "test", EvaluatedAt = evaluated, EvidenceFrom = evaluated.AddMinutes(-5),
+                        EvidenceTo = evaluated, LastEvidenceAt = evaluated, Since = evaluated };
+                db.HealthSnapshots.AddRange(
+                    Snapshot(HealthSubject.Service, seed.Orders, production, Data.HealthState.Degraded, now, "partial_instance_failure"),
+                    Snapshot(HealthSubject.Host, seed.Host, null, Data.HealthState.Healthy, now.AddMinutes(-10), "resources_ok"));
+                await db.SaveChangesAsync();
+            }
+            await using var factory = new ApiFactory(database);
+            using var client = factory.CreateClient();
+            var token = await LocalStack.TokenAsync("victor");
+            var tenant = $"/api/v1/tenants/{seed.Tenant}";
+
+            var degraded = await JsonAsync(await Get(client, $"{tenant}/health?subjectType=service&state=degraded&environment=Production", token));
+            var item = Assert.Single(degraded.GetProperty("items").EnumerateArray());
+            Assert.Equal("shop/orders", item.GetProperty("subjectName").GetString());
+            Assert.Equal("production", item.GetProperty("environment").GetString());
+            Assert.Equal("partial_instance_failure", item.GetProperty("reasons")[0].GetString());
+            Assert.False(item.GetProperty("stale").GetBoolean());
+
+            var host = Assert.Single((await JsonAsync(await Get(client, $"{tenant}/health?subjectType=host", token))).GetProperty("items").EnumerateArray());
+            Assert.True(host.GetProperty("stale").GetBoolean(), "evaluated 10 minutes ago, more than three 30 s intervals");
+            Assert.Equal(HttpStatusCode.BadRequest, (await Get(client, $"{tenant}/health?state=sad", token)).StatusCode);
+
+            var orders = await JsonAsync(await Get(client, $"{tenant}/resources/{seed.Orders}", token));
+            Assert.Equal("Degraded", orders.GetProperty("health")[0].GetProperty("state").GetString());
+            var link = orders.GetProperty("grafanaUrl").GetString()!;
+            Assert.StartsWith("http://grafana.example:3000/d/juice-overview?var-service=orders&from=", link);
+
+            var topology = await JsonAsync(await Get(client, $"{tenant}/topology?environment=production", token));
+            var node = topology.GetProperty("nodes").EnumerateArray().Single(n => n.GetProperty("id").GetGuid() == seed.Orders);
+            Assert.Equal("Degraded", node.GetProperty("health").GetString());
+            var unscoped = await JsonAsync(await Get(client, $"{tenant}/topology", token));
+            Assert.All(unscoped.GetProperty("nodes").EnumerateArray(), n => Assert.Equal(JsonValueKind.Null, n.GetProperty("health").ValueKind));
+        }
+
+        [Fact]
         public async Task Correlation_id_is_echoed_when_safe_Async()
         {
             LocalStack.RequireAvailable();
@@ -272,6 +319,8 @@ namespace Juice.Observability.Tests
                 builder.UseSetting("Auth:RequireHttpsMetadata", "false");
                 builder.UseSetting("Auth:Audience", audience);
                 builder.UseSetting("Discovery:Enabled", "false");
+                builder.UseSetting("Health:Enabled", "false");
+                builder.UseSetting("Grafana:BaseUrl", "http://grafana.example:3000/ignored/path");
                 builder.UseSetting("Database:Migrate", "true");
             }
         }

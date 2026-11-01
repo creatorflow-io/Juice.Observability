@@ -23,10 +23,10 @@ namespace Juice.Observability.Discovery
     /// </summary>
     public sealed class ClickHouseTelemetrySource(IOptions<ClickHouseOptions> options) : ITelemetrySource
     {
-        private const string Tenant = "ResourceAttributes['juice.platform_tenant_id'] = {tenant:String}";
-        private const string From = "{from:DateTime64(9)}";
-        private const string To = "{to:DateTime64(9)}";
-        private const string Limit = "{limit:UInt32}";
+        public const string Tenant = "ResourceAttributes['juice.platform_tenant_id'] = {tenant:String}";
+        public const string From = "{from:DateTime64(9)}";
+        public const string To = "{to:DateTime64(9)}";
+        public const string Limit = "{limit:UInt32}";
 
         private static readonly (string Table, string Time)[] ResourceTables =
         [
@@ -156,7 +156,8 @@ namespace Juice.Observability.Discovery
                 LastSeen = Utc(r.GetValue(11)),
             }, cancellationToken);
 
-        private async Task<IReadOnlyList<T>> QueryAsync<T>(string sql, TelemetryWindow window, Func<DbDataReader, T> map,
+        /// <summary>Runs a platform query template with the window's tenant, time bounds and row limit as parameters.</summary>
+        public async Task<IReadOnlyList<T>> QueryAsync<T>(string sql, TelemetryWindow window, Func<DbDataReader, T> map,
             CancellationToken cancellationToken)
         {
             await using var connection = new ClickHouseConnection(options.Value.ConnectionString);
@@ -176,7 +177,7 @@ namespace Juice.Observability.Discovery
             return rows;
         }
 
-        private static DateTimeOffset Utc(object value) => value switch
+        public static DateTimeOffset Utc(object value) => value switch
         {
             DateTime d => new DateTimeOffset(DateTime.SpecifyKind(d, DateTimeKind.Utc)),
             DateTimeOffset o => o.ToUniversalTime(),
