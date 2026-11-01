@@ -262,7 +262,7 @@ namespace Juice.Observability.Tests
 
         // ─── helpers ──────────────────────────────────────────────────────────
 
-        private static CancellationToken Ct => TestContext.Current.CancellationToken;
+        internal static CancellationToken Ct => TestContext.Current.CancellationToken;
 
         private sealed record Seed(Guid Tenant, Guid Orders, Guid Host);
 
@@ -288,14 +288,14 @@ namespace Juice.Observability.Tests
             return new Seed(tenant.Id, orders.Id, host.Id);
         }
 
-        private static async Task<HttpResponseMessage> Get(HttpClient client, string path, string token)
+        internal static async Task<HttpResponseMessage> Get(HttpClient client, string path, string token)
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, path);
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             return await client.SendAsync(request, Ct);
         }
 
-        private static async Task<JsonElement> JsonAsync(HttpResponseMessage response)
+        internal static async Task<JsonElement> JsonAsync(HttpResponseMessage response)
         {
             using (response)
             {
@@ -305,10 +305,11 @@ namespace Juice.Observability.Tests
             }
         }
 
-        private static async Task<JsonElement> ProblemAsync(HttpResponseMessage response)
+        internal static async Task<JsonElement> ProblemAsync(HttpResponseMessage response)
             => await response.Content.ReadFromJsonAsync<JsonElement>(Ct);
 
-        private sealed class ApiFactory(ScratchDatabase database, string audience = "juice-platform") : WebApplicationFactory<Program>
+        internal sealed class ApiFactory(ScratchDatabase database, string audience = "juice-platform",
+            IReadOnlyDictionary<string, string>? settings = null) : WebApplicationFactory<Program>
         {
             protected override void ConfigureWebHost(IWebHostBuilder builder)
             {
@@ -322,6 +323,11 @@ namespace Juice.Observability.Tests
                 builder.UseSetting("Health:Enabled", "false");
                 builder.UseSetting("Grafana:BaseUrl", "http://grafana.example:3000/ignored/path");
                 builder.UseSetting("Database:Migrate", "true");
+                builder.UseSetting("Rules:Enabled", "false");
+                foreach (var (key, value) in settings ?? new Dictionary<string, string>())
+                {
+                    builder.UseSetting(key, value);
+                }
             }
         }
     }

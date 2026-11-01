@@ -9,6 +9,7 @@
     <ProjectReference Include="..\Juice.Observability.Data\Juice.Observability.Data.csproj" />
     <ProjectReference Include="..\Juice.Observability.Discovery\Juice.Observability.Discovery.csproj" />
     <ProjectReference Include="..\Juice.Observability.Health\Juice.Observability.Health.csproj" />
+    <ProjectReference Include="..\Juice.Observability.Rules\Juice.Observability.Rules.csproj" />
   </ItemGroup>
 
   <ItemGroup>

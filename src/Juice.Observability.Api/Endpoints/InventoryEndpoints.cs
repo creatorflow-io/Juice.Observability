@@ -56,6 +56,7 @@ namespace Juice.Observability.Api.Endpoints
             tenant.MapGet("/resources/{resourceId:guid}", GetResourceAsync);
             tenant.MapGet("/topology", GetTopologyAsync);
             tenant.MapHealthEndpoints();
+            tenant.MapAlertEndpoints();
             return app;
         }
 

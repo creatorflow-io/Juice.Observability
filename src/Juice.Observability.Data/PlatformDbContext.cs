@@ -24,6 +24,10 @@ namespace Juice.Observability.Data
         public DbSet<ReconciliationCheckpoint> Checkpoints => Set<ReconciliationCheckpoint>();
         public DbSet<HealthSnapshot> HealthSnapshots => Set<HealthSnapshot>();
         public DbSet<HealthTransition> HealthTransitions => Set<HealthTransition>();
+        public DbSet<Rule> Rules => Set<Rule>();
+        public DbSet<Alert> Alerts => Set<Alert>();
+        public DbSet<AlertTransition> AlertTransitions => Set<AlertTransition>();
+        public DbSet<IdempotencyRecord> IdempotencyRecords => Set<IdempotencyRecord>();
 
         /// <summary>Applies the snake_case naming used by every table. Call it when configuring the context.</summary>
         public static void Configure(DbContextOptionsBuilder options, string connectionString)
@@ -142,6 +146,8 @@ namespace Juice.Observability.Data
                 e.HasOne<PlatformTenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
             });
 
+            ConfigureAlerts(model);
+
             model.Entity<HealthSnapshot>(e =>
             {
                 e.ToTable("health_snapshots");
@@ -166,6 +172,66 @@ namespace Juice.Observability.Data
                     .IsUnique().AreNullsDistinct(false);
                 e.HasIndex(x => new { x.TenantId, x.SubjectId, x.EvaluatedAt });
                 e.HasOne<DeploymentEnvironment>().WithMany().HasForeignKey(x => x.EnvironmentId).OnDelete(DeleteBehavior.Cascade);
+            });
+        }
+
+        private static void ConfigureAlerts(ModelBuilder model)
+        {
+            model.Entity<Rule>(e =>
+            {
+                e.ToTable("rules");
+                Tenant(e);
+                e.Property(x => x.Key).HasMaxLength(63);
+                e.Property(x => x.Name).HasMaxLength(200);
+                e.Property(x => x.Template).HasConversion<string>().HasMaxLength(40);
+                e.Property(x => x.Severity).HasConversion<string>().HasMaxLength(20);
+                e.Property(x => x.Definition).HasColumnType("jsonb");
+                e.Property(x => x.DefinitionHash).HasMaxLength(64);
+                e.HasIndex(x => new { x.TenantId, x.Key }).IsUnique();
+            });
+
+            model.Entity<Alert>(e =>
+            {
+                e.ToTable("alerts");
+                Tenant(e);
+                e.Property(x => x.DedupKey).HasMaxLength(600);
+                e.Property(x => x.SubjectKey).HasMaxLength(512);
+                e.Property(x => x.SubjectType).HasConversion<string>().HasMaxLength(20);
+                e.Property(x => x.Severity).HasConversion<string>().HasMaxLength(20);
+                e.Property(x => x.State).HasConversion<string>().HasMaxLength(20);
+                e.Property(x => x.AcknowledgedBy).HasMaxLength(256);
+                e.Property(x => x.AcknowledgeComment).HasMaxLength(1000);
+                Json(e.Property(x => x.Evidence));
+                // Deduplication: one open alert per rule and subject.
+                e.HasIndex(x => new { x.TenantId, x.DedupKey }).IsUnique().HasFilter("state <> 'Resolved'")
+                    .HasDatabaseName("ux_alerts_open_dedup_key");
+                e.HasIndex(x => new { x.TenantId, x.State });
+                e.HasIndex(x => new { x.TenantId, x.DedupKey, x.ResolvedAt });
+                e.HasOne<Rule>().WithMany().HasForeignKey(x => x.RuleId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            model.Entity<AlertTransition>(e =>
+            {
+                e.ToTable("alert_transitions");
+                Tenant(e);
+                e.Property(x => x.FromState).HasConversion<string>().HasMaxLength(20);
+                e.Property(x => x.ToState).HasConversion<string>().HasMaxLength(20);
+                e.Property(x => x.Reason).HasMaxLength(200);
+                e.HasIndex(x => new { x.AlertId, x.At });
+                e.HasOne<Alert>().WithMany().HasForeignKey(x => x.AlertId).OnDelete(DeleteBehavior.Cascade);
+            });
+
+            model.Entity<IdempotencyRecord>(e =>
+            {
+                e.ToTable("idempotency_records");
+                e.HasKey(x => new { x.TenantId, x.Key, x.Operation });
+                e.Property(x => x.Key).HasMaxLength(128);
+                e.Property(x => x.Operation).HasMaxLength(200);
+                e.Property(x => x.RequestHash).HasMaxLength(64);
+                // text, not jsonb: a replay returns the first response byte for byte
+                e.Property(x => x.ResponseBody).HasColumnType("text");
+                e.HasIndex(x => x.CreatedAt);
+                e.HasOne<PlatformTenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
             });
         }
 

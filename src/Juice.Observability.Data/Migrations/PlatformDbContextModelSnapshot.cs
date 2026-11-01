@@ -22,6 +22,182 @@ namespace Juice.Observability.Data.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("Juice.Observability.Data.Alert", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("AcknowledgeComment")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("acknowledge_comment");
+
+                    b.Property<DateTimeOffset?>("AcknowledgedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("acknowledged_at");
+
+                    b.Property<string>("AcknowledgedBy")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("acknowledged_by");
+
+                    b.Property<DateTimeOffset>("BreachStartedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("breach_started_at");
+
+                    b.Property<string>("DedupKey")
+                        .IsRequired()
+                        .HasMaxLength(600)
+                        .HasColumnType("character varying(600)")
+                        .HasColumnName("dedup_key");
+
+                    b.Property<Guid?>("EnvironmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("environment_id");
+
+                    b.Property<string>("Evidence")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("evidence");
+
+                    b.Property<DateTimeOffset?>("FiredAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("fired_at");
+
+                    b.Property<DateTimeOffset>("LastEvaluatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_evaluated_at");
+
+                    b.Property<long>("LastSamples")
+                        .HasColumnType("bigint")
+                        .HasColumnName("last_samples");
+
+                    b.Property<double?>("LastValue")
+                        .HasColumnType("double precision")
+                        .HasColumnName("last_value");
+
+                    b.Property<bool>("NoData")
+                        .HasColumnType("boolean")
+                        .HasColumnName("no_data");
+
+                    b.Property<DateTimeOffset?>("RecoveringSince")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("recovering_since");
+
+                    b.Property<DateTimeOffset?>("ResolvedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("resolved_at");
+
+                    b.Property<Guid>("RuleId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("rule_id");
+
+                    b.Property<string>("Severity")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("severity");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("state");
+
+                    b.Property<Guid?>("SubjectId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("subject_id");
+
+                    b.Property<string>("SubjectKey")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)")
+                        .HasColumnName("subject_key");
+
+                    b.Property<string>("SubjectType")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("subject_type");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_alerts");
+
+                    b.HasIndex("RuleId")
+                        .HasDatabaseName("ix_alerts_rule_id");
+
+                    b.HasIndex("TenantId", "DedupKey")
+                        .IsUnique()
+                        .HasDatabaseName("ux_alerts_open_dedup_key")
+                        .HasFilter("state <> 'Resolved'");
+
+                    b.HasIndex("TenantId", "State")
+                        .HasDatabaseName("ix_alerts_tenant_id_state");
+
+                    b.HasIndex("TenantId", "DedupKey", "ResolvedAt")
+                        .HasDatabaseName("ix_alerts_tenant_id_dedup_key_resolved_at");
+
+                    b.ToTable("alerts", (string)null);
+                });
+
+            modelBuilder.Entity("Juice.Observability.Data.AlertTransition", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("AlertId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("alert_id");
+
+                    b.Property<DateTimeOffset>("At")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("at");
+
+                    b.Property<string>("FromState")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("from_state");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("reason");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("ToState")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("to_state");
+
+                    b.Property<double?>("Value")
+                        .HasColumnType("double precision")
+                        .HasColumnName("value");
+
+                    b.HasKey("Id")
+                        .HasName("pk_alert_transitions");
+
+                    b.HasIndex("TenantId")
+                        .HasDatabaseName("ix_alert_transitions_tenant_id");
+
+                    b.HasIndex("AlertId", "At")
+                        .HasDatabaseName("ix_alert_transitions_alert_id_at");
+
+                    b.ToTable("alert_transitions", (string)null);
+                });
+
             modelBuilder.Entity("Juice.Observability.Data.Application", b =>
                 {
                     b.Property<Guid>("Id")
@@ -408,6 +584,50 @@ namespace Juice.Observability.Data.Migrations
                     b.ToTable("health_transitions", (string)null);
                 });
 
+            modelBuilder.Entity("Juice.Observability.Data.IdempotencyRecord", b =>
+                {
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("Key")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("key");
+
+                    b.Property<string>("Operation")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("operation");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("RequestHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("request_hash");
+
+                    b.Property<string>("ResponseBody")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("response_body");
+
+                    b.Property<int>("StatusCode")
+                        .HasColumnType("integer")
+                        .HasColumnName("status_code");
+
+                    b.HasKey("TenantId", "Key", "Operation")
+                        .HasName("pk_idempotency_records");
+
+                    b.HasIndex("CreatedAt")
+                        .HasDatabaseName("ix_idempotency_records_created_at");
+
+                    b.ToTable("idempotency_records", (string)null);
+                });
+
             modelBuilder.Entity("Juice.Observability.Data.PlatformTenant", b =>
                 {
                     b.Property<Guid>("Id")
@@ -522,6 +742,70 @@ namespace Juice.Observability.Data.Migrations
                         .HasDatabaseName("ix_resources_tenant_id_type_key");
 
                     b.ToTable("resources", (string)null);
+                });
+
+            modelBuilder.Entity("Juice.Observability.Data.Rule", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Definition")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("definition");
+
+                    b.Property<string>("DefinitionHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("definition_hash");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("boolean")
+                        .HasColumnName("enabled");
+
+                    b.Property<string>("Key")
+                        .IsRequired()
+                        .HasMaxLength(63)
+                        .HasColumnType("character varying(63)")
+                        .HasColumnName("key");
+
+                    b.Property<DateTimeOffset>("LoadedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("loaded_at");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("name");
+
+                    b.Property<string>("Severity")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("severity");
+
+                    b.Property<string>("Template")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("template");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_rules");
+
+                    b.HasIndex("TenantId", "Key")
+                        .IsUnique()
+                        .HasDatabaseName("ix_rules_tenant_id_key");
+
+                    b.ToTable("rules", (string)null);
                 });
 
             modelBuilder.Entity("Juice.Observability.Data.Service", b =>
@@ -682,6 +966,40 @@ namespace Juice.Observability.Data.Migrations
                     b.ToTable("service_instances", (string)null);
                 });
 
+            modelBuilder.Entity("Juice.Observability.Data.Alert", b =>
+                {
+                    b.HasOne("Juice.Observability.Data.Rule", null)
+                        .WithMany()
+                        .HasForeignKey("RuleId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_alerts_rules_rule_id");
+
+                    b.HasOne("Juice.Observability.Data.PlatformTenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_alerts_platform_tenants_tenant_id");
+                });
+
+            modelBuilder.Entity("Juice.Observability.Data.AlertTransition", b =>
+                {
+                    b.HasOne("Juice.Observability.Data.Alert", null)
+                        .WithMany()
+                        .HasForeignKey("AlertId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_alert_transitions_alerts_alert_id");
+
+                    b.HasOne("Juice.Observability.Data.PlatformTenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_alert_transitions_platform_tenants_tenant_id");
+                });
+
             modelBuilder.Entity("Juice.Observability.Data.Application", b =>
                 {
                     b.HasOne("Juice.Observability.Data.PlatformTenant", null)
@@ -780,6 +1098,16 @@ namespace Juice.Observability.Data.Migrations
                         .HasConstraintName("fk_health_transitions_platform_tenants_tenant_id");
                 });
 
+            modelBuilder.Entity("Juice.Observability.Data.IdempotencyRecord", b =>
+                {
+                    b.HasOne("Juice.Observability.Data.PlatformTenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_idempotency_records_platform_tenants_tenant_id");
+                });
+
             modelBuilder.Entity("Juice.Observability.Data.ReconciliationCheckpoint", b =>
                 {
                     b.HasOne("Juice.Observability.Data.PlatformTenant", null)
@@ -798,6 +1126,16 @@ namespace Juice.Observability.Data.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_resources_platform_tenants_tenant_id");
+                });
+
+            modelBuilder.Entity("Juice.Observability.Data.Rule", b =>
+                {
+                    b.HasOne("Juice.Observability.Data.PlatformTenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_rules_platform_tenants_tenant_id");
                 });
 
             modelBuilder.Entity("Juice.Observability.Data.Service", b =>

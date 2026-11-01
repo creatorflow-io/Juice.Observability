@@ -9,6 +9,7 @@ Turns telemetry from Juice services into a resource model, health, rules, alerts
 | `src/Juice.Observability.Data` | PostgreSQL domain model (EF Core) and migrations |
 | `src/Juice.Observability.Discovery` | Discovery: reads Collector-stamped telemetry from ClickHouse and reconciles services, instances, environments, resources and dependencies |
 | `src/Juice.Observability.Health` | Health evaluation: instances, services and applications per environment, and hosts, from ClickHouse evidence |
+| `src/Juice.Observability.Rules` | Typed scheduled rules over ClickHouse templates and the alert lifecycle |
 | `src/Juice.Observability.Api` | `/api/v1` (OIDC, tenant-scoped) and the background workers, in one host |
 | `test/Juice.Observability.Tests` | Unit tests, and integration tests against the running local stack |
 
@@ -41,6 +42,10 @@ page's `nextCursor`).
 | `GET /api/v1/tenants/{tenantId}/resources/{id}` | a service with its instances, or a resource (a host lists the instances on it) |
 | `GET /api/v1/tenants/{tenantId}/topology?environment=` | services and resources with the dependencies between them, each with its evidence and confidence; with an environment, each node's health |
 | `GET /api/v1/tenants/{tenantId}/health?subjectType=&environment=&state=` | current health with reasons, policy version, evidence window and `stale` |
+| `GET /api/v1/tenants/{tenantId}/rules` | the loaded rules (read-only) |
+| `GET /api/v1/tenants/{tenantId}/alerts?state=&rule=` | alerts, newest first |
+| `GET /api/v1/tenants/{tenantId}/alerts/{alertId}` | an alert with its evidence, state history, the subject's health and a Grafana link |
+| `POST /api/v1/tenants/{tenantId}/alerts/{alertId}/acknowledgement` | acknowledge an open alert: `operator` or `admin`; send `Idempotency-Key` to retry safely |
 
 A resource's detail also carries its health per environment, each instance's state, and for a service a Grafana link to the
 Juice overview dashboard over the last hour.
@@ -122,3 +127,39 @@ It writes one current snapshot per subject, and a transition only when the state
 - **Freshness.** A new failure is visible after about the evidence lag (10 s) plus ingestion; tested at 10–11 s with a
   1 s evaluation loop. With the 30 s interval the bound is about 42 s, against the 60 s target.
   `juice.observability.health.evidence_age` records it in operation.
+
+## Rules and alerts
+
+Rules are deployment configuration. `Rules:File` names a JSON file (`deploy/local/rules.json`) that is validated and
+loaded at startup:
+
+- an invalid rule stops the host;
+- each create, update or disable writes an audit record (actor `deployment-config`);
+- the API only reads rules.
+
+| Template | Value (fires above, except ThroughputAbsent) |
+|---|---|
+| `ErrorRate` | failed / all server and consumer spans |
+| `LatencyP95` | p95 duration of server and consumer spans, ms |
+| `ThroughputAbsent` | requests in the window, for services with traffic in the hour before (fires at or below) |
+| `DeliveryFailureRate` | increase of `delivery_failure_total` / `delivery_attempt_total` |
+| `HostMemory` | used / total memory from host metrics |
+
+Each rule is scoped by `Service` and `Environment` (or `Host`). It also has a schedule (default 1 min), a window,
+a threshold and a recovery threshold (hysteresis), minimum samples, `ForDuration`, `RecoveryDuration` and
+`Cooldown`.
+
+- **Lifecycle.** A breach opens a **Pending** alert. It becomes **Firing** once the breach has held for
+  `ForDuration`, and **Resolved** after `RecoveryDuration` at or below the recovery threshold.
+  - A Pending alert that stops breaching resolves without ever firing, so a transient breach never fires.
+  - Values between the two thresholds keep a Firing alert firing.
+  - After an alert that fired resolves, a new one can't fire until `Cooldown` has passed.
+- **Deduplication.** There is one open alert per rule and subject, enforced by a unique index.
+- **No data.** Too few samples, or no rows, means *no data*. It is recorded on the alert and holds the alert's
+  state; it is never read as zero.
+- **Scheduler.** It runs 4 evaluations at once, each cut off after 20 s. A rule still running when due again is
+  skipped, never stacked.
+  - Metrics: `juice.observability.rules.evaluations`, `.duration`, `.lag`, `.skipped` and
+    `juice.observability.alerts.transitions`.
+- **Breach-to-alert.** Firing comes at most lag (10 s) plus one schedule after `ForDuration`: 70 s for a 1-minute
+  rule, against the 2-minute target. Measured in tests at 22 s with a 5 s schedule and a 10 s `ForDuration`.

@@ -14,5 +14,7 @@ export Platform__TenantKey=$JUICE_PLATFORM_TENANT_ID
 export Auth__Authority=http://localhost:8080/realms/juice
 export Auth__RequireHttpsMetadata=false   # local Keycloak serves plain HTTP
 export Database__Migrate=true
+export Rules__File="$(pwd -W 2>/dev/null || pwd)/rules.json"
+export Grafana__BaseUrl=http://localhost:3000
 
 exec dotnet run --project ../../src/Juice.Observability.Api --no-launch-profile -- "$@"

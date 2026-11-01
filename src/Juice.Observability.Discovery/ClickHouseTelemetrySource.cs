@@ -156,9 +156,12 @@ namespace Juice.Observability.Discovery
                 LastSeen = Utc(r.GetValue(11)),
             }, cancellationToken);
 
-        /// <summary>Runs a platform query template with the window's tenant, time bounds and row limit as parameters.</summary>
+        /// <summary>
+        /// Runs a platform query template with the window's tenant, time bounds and row limit as parameters, plus any
+        /// template-specific ones. Values are only ever passed as parameters, never formatted into the SQL.
+        /// </summary>
         public async Task<IReadOnlyList<T>> QueryAsync<T>(string sql, TelemetryWindow window, Func<DbDataReader, T> map,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken, IReadOnlyDictionary<string, object>? parameters = null)
         {
             await using var connection = new ClickHouseConnection(options.Value.ConnectionString);
             await connection.OpenAsync(cancellationToken);
@@ -168,6 +171,10 @@ namespace Juice.Observability.Discovery
             command.AddParameter("from", window.From.UtcDateTime);
             command.AddParameter("to", window.To.UtcDateTime);
             command.AddParameter("limit", (uint)window.Limit);
+            foreach (var (name, value) in parameters ?? new Dictionary<string, object>())
+            {
+                command.AddParameter(name, value);
+            }
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
             var rows = new List<T>();
             while (await reader.ReadAsync(cancellationToken))

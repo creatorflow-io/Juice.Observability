@@ -1,0 +1,54 @@
+{
+  "Rules": {
+    "Definitions": [
+      {
+        "Key": "service-error-rate",
+        "Name": "Service error rate above 5 %",
+        "Template": "ErrorRate",
+        "Severity": "Critical",
+        "Threshold": 0.05,
+        "RecoveryThreshold": 0.02,
+        "MinimumSamples": 20,
+        "ForDuration": "00:02:00",
+        "RecoveryDuration": "00:03:00"
+      },
+      {
+        "Key": "service-latency-p95",
+        "Name": "Service p95 latency above 1 s",
+        "Template": "LatencyP95",
+        "Severity": "Warning",
+        "Threshold": 1000,
+        "RecoveryThreshold": 800,
+        "MinimumSamples": 20,
+        "ForDuration": "00:05:00"
+      },
+      {
+        "Key": "outbox-delivery-failures",
+        "Name": "Outbox delivery failures above 10 %",
+        "Template": "DeliveryFailureRate",
+        "Severity": "Warning",
+        "Threshold": 0.1,
+        "RecoveryThreshold": 0.05,
+        "MinimumSamples": 10
+      },
+      {
+        "Key": "service-traffic-stopped",
+        "Name": "Service traffic stopped",
+        "Template": "ThroughputAbsent",
+        "Severity": "Warning",
+        "Window": "00:10:00",
+        "Threshold": 0,
+        "ForDuration": "00:05:00"
+      },
+      {
+        "Key": "host-memory",
+        "Name": "Host memory above 95 %",
+        "Template": "HostMemory",
+        "Severity": "Warning",
+        "Threshold": 0.95,
+        "RecoveryThreshold": 0.9,
+        "ForDuration": "00:05:00"
+      }
+    ]
+  }
+}

@@ -84,6 +84,8 @@
 
 ## Phase 3 — Typed scheduled rules and alert lifecycle
 
+**Status (2026-11-01):** implemented in `src/Juice.Observability.Rules` with five of the seven D5 templates (`ErrorRate`, `LatencyP95`, `ThroughputAbsent`, `DeliveryFailureRate`, `HostMemory`; `mediator_errors` and `consumer_failures` are not built yet). Rules load from a validated, audited configuration file. Lifecycle, hysteresis, cooldown, deduplication, no data, tenant scope, timeout, overload and lag are tested. Alerts, detail and an acknowledgement with audit and idempotency keys are in the API. Breach-to-alert bound: 70 s for a 1-minute schedule (measured 22 s on a 5 s schedule).
+
 **Goal:** detect sustained conditions with bounded scheduled evaluation.
 
 **Deliverables**

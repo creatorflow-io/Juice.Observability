@@ -44,6 +44,48 @@ namespace Juice.Observability.Tests
                 return i < failed ? Failed(span) : span;
             }).ToArray();
 
+        /// <summary>A cumulative monotonic sum with one point per (time, value), all sharing one start time.</summary>
+        public static JsonObject Sum((string Key, string Value)[] resource, string name, DateTimeOffset start,
+            (string Key, string Value)[] attributes, params (DateTimeOffset At, long Value)[] points)
+        {
+            static string Nanos(DateTimeOffset t) => (t.ToUnixTimeMilliseconds() * 1_000_000).ToString();
+            return new JsonObject
+            {
+                ["resourceMetrics"] = new JsonArray(new JsonObject
+                {
+                    ["resource"] = new JsonObject { ["attributes"] = Attributes(resource) },
+                    ["scopeMetrics"] = new JsonArray(new JsonObject
+                    {
+                        ["scope"] = new JsonObject { ["name"] = "Juice.Observability.Tests" },
+                        ["metrics"] = new JsonArray(new JsonObject
+                        {
+                            ["name"] = name,
+                            ["sum"] = new JsonObject
+                            {
+                                ["aggregationTemporality"] = 2,
+                                ["isMonotonic"] = true,
+                                ["dataPoints"] = new JsonArray(points.Select(p => (JsonNode)new JsonObject
+                                {
+                                    ["asInt"] = p.Value.ToString(),
+                                    ["startTimeUnixNano"] = Nanos(start),
+                                    ["timeUnixNano"] = Nanos(p.At),
+                                    ["attributes"] = Attributes(attributes),
+                                }).ToArray()),
+                            },
+                        }),
+                    }),
+                }),
+            };
+        }
+
+        /// <summary>A span lasting <paramref name="duration"/>.</summary>
+        public static JsonObject Lasting(JsonObject span, TimeSpan duration)
+        {
+            var start = long.Parse((string)span["startTimeUnixNano"]!);
+            span["endTimeUnixNano"] = (start + (long)(duration.TotalMilliseconds * 1_000_000)).ToString();
+            return span;
+        }
+
         /// <summary>One resource with its spans.</summary>
         public static JsonObject Traces((string Key, string Value)[] resource, params JsonObject[] spans) => new()
         {

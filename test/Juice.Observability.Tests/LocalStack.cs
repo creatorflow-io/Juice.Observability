@@ -162,9 +162,26 @@ namespace Juice.Observability.Tests
         // ─── Keycloak tokens ──────────────────────────────────────────────────
 
         private static readonly HttpClient Keycloak = new();
+        private static readonly Dictionary<string, Task<string>> Tokens = [];
 
-        /// <summary>An access token for a demo user from the <c>juice-platform-cli</c> client.</summary>
-        public static async Task<string> TokenAsync(string user)
+        /// <summary>
+        /// An access token for a demo user from the <c>juice-platform-cli</c> client, requested once per test run (tokens
+        /// live 5 minutes) as a real client would. Many parallel password grants for one user trip Keycloak's
+        /// brute-force detection and lock the user out.
+        /// </summary>
+        public static Task<string> TokenAsync(string user)
+        {
+            lock (Tokens)
+            {
+                if (!Tokens.TryGetValue(user, out var token) || token.IsFaulted)
+                {
+                    Tokens[user] = token = RequestTokenAsync(user);
+                }
+                return token;
+            }
+        }
+
+        private static async Task<string> RequestTokenAsync(string user)
         {
             using var response = await Keycloak.PostAsync($"{Authority}/protocol/openid-connect/token", new FormUrlEncodedContent(new Dictionary<string, string>
             {
