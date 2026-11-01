@@ -41,10 +41,12 @@ namespace Juice.Observability.Health
         /// <summary>
         /// Default service policy: a failed critical dependency → <c>Critical</c>; no fresh instance → <c>Offline</c> once
         /// a previously seen service passes the grace, else <c>Unknown</c>; the unhealthy quorum → <c>Unhealthy</c>; any
-        /// partial failure → <c>Degraded</c>; only fresh healthy evidence → <c>Healthy</c>.
+        /// partial failure → <c>Degraded</c>; only fresh healthy evidence → <c>Healthy</c>. A failing service it was
+        /// observed calling adds <c>dependency_failed:name</c> as a pointer to the cause, without changing the state.
         /// </summary>
         public Assessment Service(DateTimeOffset now, DateTimeOffset? lastSeenBefore, IReadOnlyList<Assessment> instances,
-            Evidence service, IReadOnlyList<(string Name, HealthState State)> criticalDependencies)
+            Evidence service, IReadOnlyList<(string Name, HealthState State)> criticalDependencies,
+            IReadOnlyList<(string Name, HealthState State)>? calledServices = null)
         {
             var last = instances.Select(i => i.LastEvidence).Aggregate(Max(lastSeenBefore, service.LastSeen), Max);
             var fresh = instances.Where(i => i.State is not (HealthState.Offline or HealthState.Unknown)).ToList();
@@ -82,6 +84,12 @@ namespace Juice.Observability.Health
             // Without instance identity the service is judged on its own telemetry: alive, and its error rate.
             var rate = ErrorRate(service.Requests, service.Errors, last, fresh.Count == 0 ? "heartbeat_only" : "low_traffic");
             states.Add((rate.State, rate.Reasons[0]));
+            var critical = criticalDependencies.Select(d => d.Name).ToHashSet(StringComparer.Ordinal);
+            foreach (var (name, state) in calledServices ?? [])
+            {
+                if (!critical.Contains(name) && state is HealthState.Unhealthy or HealthState.Critical or HealthState.Offline)
+                    states.Add((HealthState.Healthy, $"dependency_failed:{name}"));
+            }
             return Worst(states, last);
         }
 

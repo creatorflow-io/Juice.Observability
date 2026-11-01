@@ -85,6 +85,28 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
+        public void Failed_called_service_is_named_without_changing_the_state()
+        {
+            var healthy = _evaluator.Service(Now, null, [Healthy], NoTraffic, [],
+                [("shop/billing", HealthState.Unhealthy), ("shop/catalog", HealthState.Healthy), ("shop/stock", HealthState.Unknown)]);
+            Assert.Equal(HealthState.Healthy, healthy.State);
+            Assert.Equal(["dependency_failed:shop/billing"], healthy.Reasons.Where(r => r.StartsWith("dependency_", StringComparison.Ordinal)));
+
+            var unhealthy = _evaluator.Service(Now, null, [Unhealthy], NoTraffic, [], [("shop/billing", HealthState.Offline)]);
+            Assert.Equal(HealthState.Unhealthy, unhealthy.State);
+            Assert.Equal("instance_quorum_unhealthy", unhealthy.Reasons[0]);
+            Assert.Contains("dependency_failed:shop/billing", unhealthy.Reasons);
+        }
+
+        [Fact]
+        public void Critical_dependency_is_not_named_twice()
+        {
+            var result = _evaluator.Service(Now, null, [Healthy], NoTraffic, [("shop/billing", HealthState.Unhealthy)],
+                [("shop/billing", HealthState.Unhealthy)]);
+            Assert.Equal(["critical_dependency_failed:shop/billing"], result.Reasons.Where(r => r.Contains("dependency", StringComparison.Ordinal)));
+        }
+
+        [Fact]
         public void Service_error_rate_counts_across_instances()
             => Expect(_evaluator.Service(Now, null, [Healthy, Healthy], new Evidence(Now, 200, 4), []), HealthState.Degraded, "error_rate_elevated");
 

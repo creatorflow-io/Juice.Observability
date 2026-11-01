@@ -66,7 +66,9 @@ namespace Juice.Observability.Tests
             var destination = _normalizer.UsedResource(new ResourceUseObservation { MessagingSystem = "RabbitMQ", MessagingDestination = "orders" })!;
             Assert.Equal((ResourceType.MessagingDestination, "rabbitmq:orders"), (destination.Type, destination.Key));
             var database = _normalizer.UsedResource(new ResourceUseObservation { DbSystem = "microsoft.sql_server", ServerAddress = "SQL", DbNamespace = "Billing" })!;
-            Assert.Equal((ResourceType.Database, "microsoft.sql_server:sql:Billing", "Billing"), (database.Type, database.Key, database.DisplayName));
+            Assert.Equal((ResourceType.Database, "microsoft.sql_server:sql:Billing", "sql/Billing"), (database.Type, database.Key, database.DisplayName));
+            Assert.Equal("Billing", _normalizer.UsedResource(new ResourceUseObservation { DbSystem = "postgresql", DbNamespace = "Billing" })!.DisplayName);
+            Assert.Equal("postgresql sql", _normalizer.UsedResource(new ResourceUseObservation { DbSystem = "postgresql", ServerAddress = "SQL" })!.DisplayName);
             Assert.Null(_normalizer.UsedResource(new ResourceUseObservation()));
         }
 

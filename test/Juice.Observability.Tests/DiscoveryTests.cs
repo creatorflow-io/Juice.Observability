@@ -87,7 +87,7 @@ namespace Juice.Observability.Tests
             var ordersId = (await db.Services.SingleAsync(s => s.Name == orders)).Id;
             var billingId = (await db.Services.SingleAsync(s => s.Name == billing)).Id;
             var queue = await db.Resources.SingleAsync(r => r.Type == ResourceType.MessagingDestination && r.Key == $"rabbitmq:{destination}");
-            var sql = await db.Resources.SingleAsync(r => r.Type == ResourceType.Database && r.DisplayName == dbName);
+            var sql = await db.Resources.SingleAsync(r => r.Type == ResourceType.Database && r.DisplayName == $"sql/{dbName}");
             var dependencies = await db.Dependencies.Where(d => d.SourceServiceId == ordersId || d.SourceServiceId == billingId).ToListAsync();
 
             void Has(Guid source, DependencyRelation relation, Guid target, DependencyConfidence confidence)

@@ -78,6 +78,31 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
+        public async Task Failing_called_service_is_named_on_the_caller_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var (orders, billing) = ($"health-{_run}-calls-orders", $"health-{_run}-calls-billing");
+            var at = DateTimeOffset.UtcNow.AddMinutes(-1);
+            var (trace, call) = (Otlp.TraceId(), Otlp.SpanId());
+            await LocalStack.SendAsync("traces", Otlp.Traces([("service.name", orders), ("service.instance.id", "o1")],
+                [.. Otlp.Requests(10, 0, at), Otlp.Span(trace, call, null, "GET /billing", Otlp.Client, at)]));
+            await LocalStack.SendAsync("traces", Otlp.Traces([("service.name", billing), ("service.instance.id", "b1")],
+                [.. Otlp.Requests(10, 10, at), Otlp.Failed(Otlp.Span(trace, Otlp.SpanId(), call, "GET /billing", Otlp.Server, at))]));
+            await LocalStack.WaitForSpansAsync(billing, 11);
+            await LocalStack.WaitForSpansAsync(orders, 11);
+
+            await Discover(database);
+            await Health(database).RunOnceAsync(Ct);
+
+            await using var db = database.Context();
+            var ordersState = await ServiceStateAsync(db, orders);
+            Assert.Equal(HealthState.Healthy, ordersState.State); // only a configured critical dependency changes the state
+            Assert.Contains($"dependency_failed:{billing}", ordersState.ReasonCodes);
+            Assert.Equal(HealthState.Unhealthy, (await ServiceStateAsync(db, billing)).State);
+        }
+
+        [Fact]
         public async Task Silent_subjects_are_offline_and_never_seen_ones_unknown_Async()
         {
             LocalStack.RequireAvailable();

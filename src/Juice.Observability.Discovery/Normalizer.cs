@@ -130,8 +130,14 @@ namespace Juice.Observability.Discovery
             {
                 var server = Value(o.ServerAddress).ToLowerInvariant();
                 var dbNamespace = Value(o.DbNamespace);
-                return new ResourceKey(ResourceType.Database, $"{dbSystem}:{server}:{dbNamespace}",
-                    dbNamespace.Length > 0 ? dbNamespace : $"{dbSystem} {server}".Trim(),
+                // server/database, so a database named like a service ("payments") still reads as a database.
+                var displayName = (server.Length > 0, dbNamespace.Length > 0) switch
+                {
+                    (true, true) => $"{server}/{dbNamespace}",
+                    (false, true) => dbNamespace,
+                    _ => $"{dbSystem} {server}".Trim(),
+                };
+                return new ResourceKey(ResourceType.Database, $"{dbSystem}:{server}:{dbNamespace}", displayName,
                     Bounded(new() { ["db.system.name"] = dbSystem, ["server.address"] = server, ["db.namespace"] = dbNamespace }));
             }
             return null;

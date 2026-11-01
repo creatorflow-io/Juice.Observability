@@ -9,7 +9,9 @@ Commands run from `deploy/local`. API calls need a bearer token (see the root RE
    - **`evidence`:** template, window, value, threshold and samples, enough to repeat the query.
    - **`history`:** Pending, Firing and Resolved, with reasons.
    - **`subjectHealth`:** the service's current state and reason codes, such as `partial_instance_failure` or
-     `critical_dependency_failed:shop/billing`.
+     `critical_dependency_failed:shop/billing`. `dependency_failed:shop/billing` names a failing service this one was
+     seen calling in the last 5 minutes. It points at the likely cause but does not change the state; to make it
+     change the state, list the pair under `Health:CriticalDependencies`.
    - **`grafanaUrl`:** the Juice overview dashboard for that service over the last hour.
 3. `GET /resources/{subjectId}` shows the service's instances, each with its own state. One unhealthy instance among
    healthy ones points at that process or host, not the service.

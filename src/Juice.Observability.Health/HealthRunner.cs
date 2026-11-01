@@ -143,6 +143,12 @@ namespace Juice.Observability.Health
             var hosts = await db.Resources.AsNoTracking().Where(r => r.TenantId == tenant.Id && r.Type == ResourceType.Host).ToListAsync(cancellationToken);
             var seenIn = await db.ServiceEnvironments.AsNoTracking().Where(x => x.TenantId == tenant.Id)
                 .ToDictionaryAsync(x => (Service: x.ServiceId, Environment: x.EnvironmentId), x => x.LastSeen, cancellationToken);
+            // Calls seen within the grace: an older edge may be a call the service no longer makes.
+            var callsSince = now - policy.FreshnessGrace;
+            var calls = (await db.Dependencies.AsNoTracking()
+                    .Where(d => d.TenantId == tenant.Id && d.Relation == DependencyRelation.Calls && d.TargetServiceId != null && d.LastSeen >= callsSince)
+                    .Select(d => new { d.SourceServiceId, d.EnvironmentId, Target = d.TargetServiceId!.Value }).ToListAsync(cancellationToken))
+                .ToLookup(d => (d.SourceServiceId, d.EnvironmentId), d => d.Target);
             await snapshot.CommitAsync(cancellationToken);
             await snapshot.DisposeAsync();
 
@@ -185,8 +191,12 @@ namespace Juice.Observability.Health
                     .Select(d => (d.DependsOn, Target: services.Values.FirstOrDefault(s => Matches(s, d.DependsOn))))
                     .Select(d => (d.DependsOn, d.Target is not null && firstPass.TryGetValue((d.Target.Id, key.Environment), out var t) ? t.State : HealthState.Unknown))
                     .ToList();
-                var assessment = dependencies.Count == 0 ? firstPass[key]
-                    : evaluator.Service(now, SeenBefore(key), instanceStates.GetValueOrDefault(key) ?? [], ServiceEvidence(key), dependencies);
+                var called = calls[key]
+                    .Where(t => t != key.Service && services.ContainsKey(t))
+                    .Select(t => (Name(services[t]), firstPass.TryGetValue((t, key.Environment), out var a) ? a.State : HealthState.Unknown))
+                    .ToList();
+                var assessment = dependencies.Count == 0 && called.Count == 0 ? firstPass[key]
+                    : evaluator.Service(now, SeenBefore(key), instanceStates.GetValueOrDefault(key) ?? [], ServiceEvidence(key), dependencies, called);
                 serviceStates[key] = assessment;
                 results.Add((HealthSubject.Service, key.Service, key.Environment, assessment));
             }
