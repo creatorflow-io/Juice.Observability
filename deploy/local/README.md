@@ -122,6 +122,12 @@ Keycloak admin console and assign a `grafana` client role.
 - **Dev mode.** Keycloak runs `start-dev` with its built-in database, and `keycloak/juice-realm.json` is imported when
   the container is created. Users added in the console are lost when the container is recreated, so put lasting
   changes in the realm file. Placeholders like `${GRAFANA_OIDC_CLIENT_SECRET}` in that file are filled from `.env`.
+  Users in the file have fixed ids. Grafana links each account to the token's `sub`, so a new id on re-import would
+  lock the user out with `user.sync ... user not found`.
+- **Separate clients, separate tokens.** The same realm serves the platform API: client `juice-platform` (the audience,
+  with roles `viewer`, `operator`, `admin`) and `juice-platform-cli` (password grant, local only). Every client
+  carries only its own roles (`fullScopeAllowed: false`). Without that, Keycloak adds the audience of every client
+  whose roles a user holds, and a Grafana token would carry `aud: juice-platform`. `tests/verify.sh` checks this.
 - **Two URLs for one issuer.** The browser reaches Keycloak at `localhost:8080`, and Grafana calls the token and
   userinfo endpoints at `keycloak:8080` on the compose network. `KC_HOSTNAME` keeps the issuer as
   `http://localhost:8080/realms/juice` for both.
@@ -143,7 +149,7 @@ The service variable is presentation only, not a security control (§5.2). To ch
 
 | Script | Checks |
 |---|---|
-| `tests/verify.sh` | Plain HTTP refused; missing and unknown token give 401; untrusted certificate refused. Forged tenant at resource, scope and record level, on traces, metrics and logs, is stored as only the trusted tenant. Redaction. TTL present. `grafana_reader` cannot write or read `system.users`. Grafana data source healthy; anonymous access refused. OIDC sign-in, run headless with curl through Keycloak: alice → Admin, erin → Editor, victor → Viewer, nora and a wrong password refused, no OIDC user is server admin. Prints this run's ingestion freshness. |
+| `tests/verify.sh` | Plain HTTP refused; missing and unknown token give 401; untrusted certificate refused. Forged tenant at resource, scope and record level, on traces, metrics and logs, is stored as only the trusted tenant. Redaction. TTL present. `grafana_reader` cannot write or read `system.users`. Grafana data source healthy; anonymous access refused. OIDC sign-in, run headless with curl through Keycloak: alice → Admin, erin → Editor, victor → Viewer, nora and a wrong password refused, no OIDC user is server admin; a Grafana access token carries no platform audience or roles. Prints this run's ingestion freshness. |
 | `tests/verify.sh --outage` | Also: ClickHouse stopped, a record accepted and held in the exporter queue, then stored after ClickHouse returns. |
 | `tests/load.sh [duration]` | telemetrygen v0.163.0 at the §9 reference rates (1,000 spans/s, 10,000 metric points/s, 1,000 logs/s) over authenticated TLS, with a freshness probe every 10 s. Reports p50/p95 freshness, stored counts, and Collector refused/dropped counts. Fails if p95 > 30 s. |
 

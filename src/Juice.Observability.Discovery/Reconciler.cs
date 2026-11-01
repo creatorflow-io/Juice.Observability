@@ -1,0 +1,251 @@
+using Juice.Observability.Data;
+using Microsoft.EntityFrameworkCore;
+
+namespace Juice.Observability.Discovery
+{
+    public sealed record ReconcileResult(int Services, int Instances, int Resources, int Dependencies, int Deactivated, int Pruned);
+
+    /// <summary>
+    /// Upserts observations into the domain model by natural key, within one tenant. Applying the same observations
+    /// again changes nothing: first-seen only moves earlier and last-seen only later. Never deletes services or
+    /// resources; instances go inactive and are pruned after the retention (D3). The caller owns the transaction.
+    /// </summary>
+    public sealed class Reconciler(PlatformDbContext db, Normalizer normalizer, DiscoveryOptions options, TimeProvider clock)
+    {
+        private readonly Dictionary<string, DeploymentEnvironment> _environments = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, Application> _applications = new(StringComparer.Ordinal);
+        private readonly Dictionary<(string, string), Service> _services = new();
+        private readonly Dictionary<(ResourceType, string), Resource> _resources = new();
+        private readonly Dictionary<(Guid, Guid, string), ServiceInstance> _instances = new();
+        private readonly Dictionary<(Guid, Guid, DependencyRelation, Guid?, Guid?), Dependency> _dependencies = new();
+        private int _newServices, _newInstances, _newResources, _newDependencies;
+
+        public async Task<ReconcileResult> ApplyAsync(Guid tenantId, IReadOnlyList<ResourceObservation> resources,
+            IReadOnlyList<ServiceLinkObservation> links, IReadOnlyList<ResourceUseObservation> uses, CancellationToken cancellationToken)
+        {
+            await LoadAsync(tenantId, resources, links, uses, cancellationToken);
+
+            foreach (var o in resources)
+            {
+                var hosts = normalizer.Resources(o).Select(r => UpsertResource(tenantId, r, o.FirstSeen, o.LastSeen)).ToList();
+                if (normalizer.Service(o.ServiceNamespace, o.ServiceName) is not { } key)
+                {
+                    continue; // host-only telemetry
+                }
+                var service = UpsertService(tenantId, key, o.FirstSeen, o.LastSeen);
+                var environment = UpsertEnvironment(tenantId, o.Environment, o.FirstSeen, o.LastSeen);
+                if (normalizer.Instance(o) is { } instanceKey)
+                {
+                    var instance = UpsertInstance(tenantId, service, environment, instanceKey, o.FirstSeen, o.LastSeen);
+                    if (o.LastSeen >= instance.LastSeen)
+                    {
+                        var version = normalizer.Value(o.ServiceVersion);
+                        if (version.Length > 0) instance.ServiceVersion = version;
+                        if (hosts.FirstOrDefault(r => r.Type == ResourceType.Host) is { } host) instance.HostResourceId = host.Id;
+                    }
+                }
+            }
+
+            foreach (var o in links)
+            {
+                if (normalizer.Service(o.SourceNamespace, o.SourceName) is not { } source
+                    || normalizer.Service(o.TargetNamespace, o.TargetName) is not { } target)
+                {
+                    continue;
+                }
+                var relation = o.SourceKind == "Producer" ? DependencyRelation.PublishesTo : DependencyRelation.Calls;
+                var environment = UpsertEnvironment(tenantId, o.Environment, o.FirstSeen, o.LastSeen);
+                var from = UpsertService(tenantId, source, o.FirstSeen, o.LastSeen);
+                var to = UpsertService(tenantId, target, o.FirstSeen, o.LastSeen);
+                UpsertDependency(tenantId, environment, from, relation, to.Id, null, DependencyConfidence.Observed, o.Spans, o.FirstSeen, o.LastSeen);
+            }
+
+            foreach (var o in uses)
+            {
+                if (normalizer.Service(o.ServiceNamespace, o.ServiceName) is not { } source
+                    || normalizer.UsedResource(o) is not { } used)
+                {
+                    continue;
+                }
+                var relation = used.Type == ResourceType.Database ? DependencyRelation.UsesDatabase
+                    : o.SpanKind == "Consumer" ? DependencyRelation.ConsumesFrom : DependencyRelation.PublishesTo;
+                var environment = UpsertEnvironment(tenantId, o.Environment, o.FirstSeen, o.LastSeen);
+                var from = UpsertService(tenantId, source, o.FirstSeen, o.LastSeen);
+                var resource = UpsertResource(tenantId, used, o.FirstSeen, o.LastSeen);
+                // Only the service reports the interaction; the destination or database never does (D3).
+                UpsertDependency(tenantId, environment, from, relation, null, resource.Id, DependencyConfidence.Inferred, o.Spans, o.FirstSeen, o.LastSeen);
+            }
+
+            await db.SaveChangesAsync(cancellationToken);
+
+            var now = clock.GetUtcNow();
+            var inactiveBefore = now - options.InstanceInactiveAfter;
+            var deactivated = await db.Instances
+                .Where(i => i.TenantId == tenantId && i.State == InstanceState.Active && i.LastSeen < inactiveBefore)
+                .ExecuteUpdateAsync(s => s.SetProperty(i => i.State, InstanceState.Inactive), cancellationToken);
+            var pruneBefore = now - options.InstanceRetention;
+            var pruned = await db.Instances
+                .Where(i => i.TenantId == tenantId && i.State == InstanceState.Inactive && i.LastSeen < pruneBefore)
+                .ExecuteDeleteAsync(cancellationToken);
+
+            return new ReconcileResult(_newServices, _newInstances, _newResources, _newDependencies, deactivated, pruned);
+        }
+
+        // Loads the existing records the observations can match, bounded by the names they carry.
+        private async Task LoadAsync(Guid tenantId, IReadOnlyList<ResourceObservation> resources,
+            IReadOnlyList<ServiceLinkObservation> links, IReadOnlyList<ResourceUseObservation> uses, CancellationToken cancellationToken)
+        {
+            foreach (var e in await db.Environments.Where(e => e.TenantId == tenantId).ToListAsync(cancellationToken))
+                _environments[e.Key] = e;
+            foreach (var a in await db.Applications.Where(a => a.TenantId == tenantId).ToListAsync(cancellationToken))
+                _applications[a.Key] = a;
+
+            var names = resources.Select(o => normalizer.Service(o.ServiceNamespace, o.ServiceName))
+                .Concat(links.Select(o => normalizer.Service(o.SourceNamespace, o.SourceName)))
+                .Concat(links.Select(o => normalizer.Service(o.TargetNamespace, o.TargetName)))
+                .Concat(uses.Select(o => normalizer.Service(o.ServiceNamespace, o.ServiceName)))
+                .Where(k => k is not null).Select(k => k!.Value.Name).Distinct().ToList();
+            foreach (var s in await db.Services.Where(s => s.TenantId == tenantId && names.Contains(s.Name)).ToListAsync(cancellationToken))
+                _services[(s.Namespace, s.Name)] = s;
+
+            var resourceKeys = resources.SelectMany(normalizer.Resources)
+                .Concat(uses.Select(normalizer.UsedResource).Where(r => r is not null).Select(r => r!))
+                .Select(r => r.Key).Distinct().ToList();
+            foreach (var r in await db.Resources.Where(r => r.TenantId == tenantId && resourceKeys.Contains(r.Key)).ToListAsync(cancellationToken))
+                _resources[(r.Type, r.Key)] = r;
+
+            var serviceIds = _services.Values.Select(s => s.Id).ToList();
+            foreach (var i in await db.Instances.Where(i => i.TenantId == tenantId && serviceIds.Contains(i.ServiceId)).ToListAsync(cancellationToken))
+                _instances[(i.ServiceId, i.EnvironmentId, i.InstanceKey)] = i;
+            foreach (var d in await db.Dependencies.Where(d => d.TenantId == tenantId && serviceIds.Contains(d.SourceServiceId)).ToListAsync(cancellationToken))
+                _dependencies[(d.EnvironmentId, d.SourceServiceId, d.Relation, d.TargetServiceId, d.TargetResourceId)] = d;
+        }
+
+        private DeploymentEnvironment UpsertEnvironment(Guid tenantId, string raw, DateTimeOffset first, DateTimeOffset last)
+        {
+            var key = normalizer.EnvironmentKey(raw);
+            if (!_environments.TryGetValue(key, out var environment))
+            {
+                environment = new DeploymentEnvironment
+                {
+                    TenantId = tenantId, Key = key, Type = Normalizer.EnvironmentTypeOf(key), FirstSeen = first, LastSeen = last
+                };
+                db.Environments.Add(environment);
+                _environments[key] = environment;
+            }
+            Seen(environment, first, last, (e, f) => e.FirstSeen = f, (e, l) => e.LastSeen = l, e => e.FirstSeen, e => e.LastSeen);
+            return environment;
+        }
+
+        private Service UpsertService(Guid tenantId, (string Namespace, string Name) key, DateTimeOffset first, DateTimeOffset last)
+        {
+            if (!_services.TryGetValue(key, out var service))
+            {
+                var application = UpsertApplication(tenantId, Normalizer.ApplicationKey(key.Namespace), first, last);
+                service = new Service
+                {
+                    TenantId = tenantId, Namespace = key.Namespace, Name = key.Name, ApplicationId = application.Id,
+                    FirstSeen = first, LastSeen = last
+                };
+                db.Services.Add(service);
+                _services[key] = service;
+                _newServices++;
+            }
+            Seen(service, first, last, (s, f) => s.FirstSeen = f, (s, l) => s.LastSeen = l, s => s.FirstSeen, s => s.LastSeen);
+            if (service.ApplicationId is { } applicationId
+                && _applications.Values.FirstOrDefault(a => a.Id == applicationId) is { } app)
+            {
+                Seen(app, first, last, (a, f) => a.FirstSeen = f, (a, l) => a.LastSeen = l, a => a.FirstSeen, a => a.LastSeen);
+            }
+            return service;
+        }
+
+        private Application UpsertApplication(Guid tenantId, string key, DateTimeOffset first, DateTimeOffset last)
+        {
+            if (!_applications.TryGetValue(key, out var application))
+            {
+                application = new Application { TenantId = tenantId, Key = key, DisplayName = key, FirstSeen = first, LastSeen = last };
+                db.Applications.Add(application);
+                _applications[key] = application;
+            }
+            return application;
+        }
+
+        private ServiceInstance UpsertInstance(Guid tenantId, Service service, DeploymentEnvironment environment,
+            (string Key, InstanceKeySource Source) key, DateTimeOffset first, DateTimeOffset last)
+        {
+            if (!_instances.TryGetValue((service.Id, environment.Id, key.Key), out var instance))
+            {
+                instance = new ServiceInstance
+                {
+                    TenantId = tenantId, ServiceId = service.Id, EnvironmentId = environment.Id, InstanceKey = key.Key,
+                    KeySource = key.Source, FirstSeen = first, LastSeen = last
+                };
+                db.Instances.Add(instance);
+                _instances[(service.Id, environment.Id, key.Key)] = instance;
+                _newInstances++;
+            }
+            Seen(instance, first, last, (i, f) => i.FirstSeen = f, (i, l) => i.LastSeen = l, i => i.FirstSeen, i => i.LastSeen);
+            if (instance.LastSeen >= clock.GetUtcNow() - options.InstanceInactiveAfter)
+            {
+                instance.State = InstanceState.Active;
+            }
+            return instance;
+        }
+
+        private Resource UpsertResource(Guid tenantId, ResourceKey key, DateTimeOffset first, DateTimeOffset last)
+        {
+            if (!_resources.TryGetValue((key.Type, key.Key), out var resource))
+            {
+                resource = new Resource
+                {
+                    TenantId = tenantId, Type = key.Type, Key = key.Key, DisplayName = key.DisplayName,
+                    Attributes = key.Attributes, FirstSeen = first, LastSeen = last
+                };
+                db.Resources.Add(resource);
+                _resources[(key.Type, key.Key)] = resource;
+                _newResources++;
+            }
+            else if (last > resource.LastSeen)
+            {
+                resource.DisplayName = key.DisplayName;
+                resource.Attributes = Normalizer.Bounded(new Dictionary<string, string>(resource.Attributes.Concat(key.Attributes)
+                    .GroupBy(kv => kv.Key).ToDictionary(g => g.Key, g => g.Last().Value)));
+            }
+            Seen(resource, first, last, (r, f) => r.FirstSeen = f, (r, l) => r.LastSeen = l, r => r.FirstSeen, r => r.LastSeen);
+            return resource;
+        }
+
+        private void UpsertDependency(Guid tenantId, DeploymentEnvironment environment, Service source, DependencyRelation relation,
+            Guid? targetService, Guid? targetResource, DependencyConfidence confidence, long spans, DateTimeOffset first, DateTimeOffset last)
+        {
+            var key = (environment.Id, source.Id, relation, targetService, targetResource);
+            if (!_dependencies.TryGetValue(key, out var dependency))
+            {
+                dependency = new Dependency
+                {
+                    TenantId = tenantId, EnvironmentId = environment.Id, SourceServiceId = source.Id, Relation = relation,
+                    TargetServiceId = targetService, TargetResourceId = targetResource, Confidence = confidence,
+                    FirstSeen = first, LastSeen = last
+                };
+                db.Dependencies.Add(dependency);
+                _dependencies[key] = dependency;
+                _newDependencies++;
+            }
+            else if (confidence == DependencyConfidence.Observed)
+            {
+                dependency.Confidence = DependencyConfidence.Observed;
+            }
+            // Span counts accumulate per window; the checkpoint keeps a window from being read twice.
+            dependency.SpanCount += spans;
+            Seen(dependency, first, last, (d, f) => d.FirstSeen = f, (d, l) => d.LastSeen = l, d => d.FirstSeen, d => d.LastSeen);
+        }
+
+        private static void Seen<T>(T item, DateTimeOffset first, DateTimeOffset last, Action<T, DateTimeOffset> setFirst,
+            Action<T, DateTimeOffset> setLast, Func<T, DateTimeOffset> getFirst, Func<T, DateTimeOffset> getLast)
+        {
+            if (first < getFirst(item)) setFirst(item, first);
+            if (last > getLast(item)) setLast(item, last);
+        }
+    }
+}

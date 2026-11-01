@@ -56,7 +56,76 @@
             "userinfo.token.claim": "true"
           }
         }
-      ]
+      ],
+      "fullScopeAllowed": false
+    },
+    {
+      "clientId": "juice-platform",
+      "name": "Juice Observability Platform API",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": false,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false
+    },
+    {
+      "clientId": "juice-platform-cli",
+      "name": "Platform API tokens for local development and tests",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "defaultClientScopes": [
+        "profile",
+        "email",
+        "basic"
+      ],
+      "protocolMappers": [
+        {
+          "name": "platform audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "juice-platform",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        },
+        {
+          "name": "platform roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-client-role-mapper",
+          "config": {
+            "usermodel.clientRoleMapping.clientId": "juice-platform",
+            "claim.name": "roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
+        },
+        {
+          "name": "platform tenant",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "config": {
+            "claim.name": "platform_tenant",
+            "claim.value": "${JUICE_PLATFORM_TENANT_ID}",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
+        }
+      ],
+      "fullScopeAllowed": false
     }
   ],
   "roles": {
@@ -74,11 +143,26 @@
           "name": "viewer",
           "description": "Grafana Viewer"
         }
+      ],
+      "juice-platform": [
+        {
+          "name": "admin",
+          "description": "Platform administrator"
+        },
+        {
+          "name": "operator",
+          "description": "Acknowledges alerts"
+        },
+        {
+          "name": "viewer",
+          "description": "Reads inventory, health and alerts"
+        }
       ]
     }
   },
   "users": [
     {
+      "id": "5f1c2a10-0000-4000-8000-00000000a11c",
       "username": "alice",
       "enabled": true,
       "emailVerified": true,
@@ -95,10 +179,14 @@
       "clientRoles": {
         "grafana": [
           "admin"
+        ],
+        "juice-platform": [
+          "admin"
         ]
       }
     },
     {
+      "id": "5f1c2a10-0000-4000-8000-0000000e5140",
       "username": "erin",
       "enabled": true,
       "emailVerified": true,
@@ -115,10 +203,14 @@
       "clientRoles": {
         "grafana": [
           "editor"
+        ],
+        "juice-platform": [
+          "operator"
         ]
       }
     },
     {
+      "id": "5f1c2a10-0000-4000-8000-0000000f1c70",
       "username": "victor",
       "enabled": true,
       "emailVerified": true,
@@ -135,10 +227,14 @@
       "clientRoles": {
         "grafana": [
           "viewer"
+        ],
+        "juice-platform": [
+          "viewer"
         ]
       }
     },
     {
+      "id": "5f1c2a10-0000-4000-8000-000000000a0a",
       "username": "nora",
       "enabled": true,
       "emailVerified": true,
@@ -153,5 +249,27 @@
         }
       ]
     }
-  ]
+  ],
+  "clientScopeMappings": {
+    "grafana": [
+      {
+        "client": "grafana",
+        "roles": [
+          "admin",
+          "editor",
+          "viewer"
+        ]
+      }
+    ],
+    "juice-platform": [
+      {
+        "client": "juice-platform-cli",
+        "roles": [
+          "admin",
+          "operator",
+          "viewer"
+        ]
+      }
+    ]
+  }
 }

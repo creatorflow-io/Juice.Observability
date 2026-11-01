@@ -117,6 +117,7 @@ services:
       # Values for the ${...} placeholders in the realm file
       GRAFANA_OIDC_CLIENT_SECRET: ${GRAFANA_OIDC_CLIENT_SECRET}
       KEYCLOAK_DEMO_PASSWORD: ${KEYCLOAK_DEMO_PASSWORD}
+      JUICE_PLATFORM_TENANT_ID: ${JUICE_PLATFORM_TENANT_ID}
     volumes:
       - ./keycloak/juice-realm.json:/opt/keycloak/data/import/juice-realm.json:ro
     ports:

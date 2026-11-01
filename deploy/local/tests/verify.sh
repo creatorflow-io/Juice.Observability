@@ -147,6 +147,26 @@ check "wrong password refused" "$(oidc_login alice not-the-password)" "refused"
 check "OIDC admin is not Grafana server admin" \
   "$(curl -s -m 30 -u "admin:$GRAFANA_ADMIN_PASSWORD" 'http://localhost:3000/api/users/lookup?loginOrEmail=alice' | grep -o '"isGrafanaAdmin":[a-z]*')" '"isGrafanaAdmin":false'
 
+# A Grafana token must never be a platform API token: the realm limits each client's tokens to its own roles, so the
+# audience-resolve mapper does not add juice-platform (fullScopeAllowed=false and clientScopeMappings).
+grafana_token_claims() {
+  local jar verifier challenge form action back code
+  jar=$(mktemp)
+  verifier=$(openssl rand -hex 32)
+  challenge=$(printf %s "$verifier" | openssl dgst -sha256 -binary | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+  form=$(curl -s -m 30 -c "$jar" -b "$jar" "http://localhost:8080/realms/juice/protocol/openid-connect/auth?client_id=grafana&response_type=code&scope=openid%20email%20profile&redirect_uri=http%3A%2F%2Flocalhost%3A3000%2Flogin%2Fgeneric_oauth&state=verify&code_challenge=$challenge&code_challenge_method=S256")
+  action=$(echo "$form" | grep -o 'action="[^"]*login-actions/authenticate[^"]*"' | head -1 | sed 's/^action="//; s/"$//; s/&amp;/\&/g')
+  back=$(curl -s -m 30 -o /dev/null -w '%{redirect_url}' -c "$jar" -b "$jar" --data-urlencode "username=$1" \
+    --data-urlencode "password=$KEYCLOAK_DEMO_PASSWORD" --data-urlencode "credentialId=" "$action")
+  code=$(echo "$back" | grep -o 'code=[^&]*' | cut -d= -f2)
+  rm -f "$jar"
+  curl -s -m 30 -d grant_type=authorization_code -d client_id=grafana -d "client_secret=$GRAFANA_OIDC_CLIENT_SECRET" \
+    -d "code=$code" -d "redirect_uri=http://localhost:3000/login/generic_oauth" -d "code_verifier=$verifier" \
+    http://localhost:8080/realms/juice/protocol/openid-connect/token \
+    | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const p=JSON.parse(Buffer.from(JSON.parse(s).access_token.split('.')[1],'base64url'));console.log(JSON.stringify({aud:p.aud??null,clients:Object.keys(p.resource_access??{})}))})"
+}
+check "Grafana token has no platform audience or roles (alice holds both)" "$(grafana_token_claims alice)" '{"aud":null,"clients":["grafana"]}'
+
 if [[ "${1:-}" == "--outage" ]]; then
   echo "Backend outage (bounded queue and retry)"
   docker compose stop clickhouse >/dev/null 2>&1

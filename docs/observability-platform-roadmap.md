@@ -47,6 +47,8 @@
 
 **Track B — Resource model, API, and security**
 
+**Status (2026-11-01):** implemented in `src/` on the [Phase 0 decision](phase-0-decisions.md) recommendations (still proposed). Migrations, discovery, `/api/v1` contracts and the Phase 1 endpoints pass `test/Juice.Observability.Tests` (35 tests, integration against `deploy/local`). Idempotency keys and mutation audit come with the first mutation (Phase 3 acknowledgement); the audit table exists and tenant provisioning writes to it.
+
 - Create PostgreSQL migrations for tenant, application, environment, logical resource, service, ephemeral instance, dependency evidence, audit, and reconciliation checkpoints.
 - Implement the discovery worker: query ClickHouse for Collector-stamped OTLP resource attributes and hostmetrics resources since the last checkpoint; normalize, validate, alias, and reconcile to stable platform identity (Requirements §6).
 - Implement the cross-cutting API contracts in Requirements §6.1 (versioning, OIDC authentication, tenant-scoped role checks, tenant middleware, cursor pagination, problem details, idempotency, and mutation audit records) and the Phase 1 endpoints listed there (applications, resources, topology).
