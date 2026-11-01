@@ -1,0 +1,31 @@
+# Provisioned from configuration (requirements §5.2): dedicated read-only ClickHouse credentials for this deployment.
+apiVersion: 1
+datasources:
+  - name: ClickHouse
+    uid: juice-clickhouse
+    type: grafana-clickhouse-datasource
+    isDefault: true
+    editable: false
+    jsonData:
+      host: clickhouse
+      port: 9000
+      protocol: native
+      secure: false
+      username: grafana_reader
+      defaultDatabase: otel
+      # Must stay at or below the bounded_reader profile cap (max_execution_time 60 MAX 60).
+      queryTimeout: "50"
+      dialTimeout: "10"
+      logs:
+        defaultDatabase: otel
+        defaultTable: otel_logs
+        otelEnabled: true
+        otelVersion: latest
+      traces:
+        defaultDatabase: otel
+        defaultTable: otel_traces
+        otelEnabled: true
+        otelVersion: latest
+        durationUnit: nanoseconds
+    secureJsonData:
+      password: $CLICKHOUSE_GRAFANA_PASSWORD

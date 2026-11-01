@@ -1,0 +1,416 @@
+{
+  "uid": "juice-overview",
+  "title": "Juice overview",
+  "description": "Starter dashboard: traffic and failures from traces, Juice mediator/messaging/delivery metrics, warning logs, host metrics.",
+  "tags": [
+    "juice"
+  ],
+  "editable": false,
+  "schemaVersion": 41,
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "label": "Service",
+        "type": "query",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "juice-clickhouse"
+        },
+        "query": "SELECT DISTINCT ServiceName FROM otel.otel_traces WHERE Timestamp > now() - INTERVAL 1 DAY ORDER BY 1",
+        "definition": "SELECT DISTINCT ServiceName FROM otel.otel_traces WHERE Timestamp > now() - INTERVAL 1 DAY ORDER BY 1",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Traffic (from traces)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Requests and messages handled",
+      "description": "Server spans (HTTP requests) and consumer spans (messages processed) per interval.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "juice-clickhouse"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "juice-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT $__timeInterval(Timestamp) AS t, concat(ServiceName, ' · ', SpanKind) AS series, count() AS value\nFROM otel.otel_traces\nWHERE $__timeFilter(Timestamp) AND SpanKind IN ('Server', 'Consumer') AND ServiceName IN (${service:singlequote})\nGROUP BY t, series ORDER BY t"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Failed requests and messages",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "juice-clickhouse"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "juice-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT $__timeInterval(Timestamp) AS t, concat(ServiceName, ' · ', SpanName) AS series, count() AS value\nFROM otel.otel_traces\nWHERE $__timeFilter(Timestamp) AND SpanKind IN ('Server', 'Consumer') AND StatusCode = 'Error' AND ServiceName IN (${service:singlequote})\nGROUP BY t, series ORDER BY t"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Slowest operations (p95)",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "juice-clickhouse"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 9
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "juice-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT ServiceName AS service, SpanName AS operation, SpanKind AS kind, count() AS calls,\n       countIf(StatusCode = 'Error') AS errors,\n       round(quantile(0.5)(Duration) / 1e6, 2) AS p50_ms, round(quantile(0.95)(Duration) / 1e6, 2) AS p95_ms\nFROM otel.otel_traces\nWHERE $__timeFilter(Timestamp) AND ServiceName IN (${service:singlequote})\nGROUP BY service, operation, kind ORDER BY p95_ms DESC LIMIT 50"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Juice metrics",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 17
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Mediator requests by operation",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "juice-clickhouse"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 18
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "juice-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT t, label, sum(delta) AS value FROM (\n  SELECT t, label, v - lagInFrame(v, 1, if(StartTimeUnix >= $__fromTime, 0, v)) OVER (PARTITION BY ServiceName, Attributes, StartTimeUnix ORDER BY t) AS delta\n  FROM (\n    SELECT $__timeInterval(TimeUnix) AS t, ServiceName, Attributes, StartTimeUnix, Attributes['juice.operation'] AS label, max(Value) AS v\n    FROM otel.otel_metrics_sum\n    WHERE $__timeFilter(TimeUnix) AND MetricName = 'juice.mediator.requests' AND ServiceName IN (${service:singlequote}) AND 1\n    GROUP BY t, ServiceName, Attributes, StartTimeUnix, label\n  )\n)\nGROUP BY t, label ORDER BY t"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Mediator errors by type",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "juice-clickhouse"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 18
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "juice-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT t, label, sum(delta) AS value FROM (\n  SELECT t, label, v - lagInFrame(v, 1, if(StartTimeUnix >= $__fromTime, 0, v)) OVER (PARTITION BY ServiceName, Attributes, StartTimeUnix ORDER BY t) AS delta\n  FROM (\n    SELECT $__timeInterval(TimeUnix) AS t, ServiceName, Attributes, StartTimeUnix, concat(Attributes['juice.operation'], ' · ', Attributes['error.type']) AS label, max(Value) AS v\n    FROM otel.otel_metrics_sum\n    WHERE $__timeFilter(TimeUnix) AND MetricName = 'juice.mediator.errors' AND ServiceName IN (${service:singlequote}) AND 1\n    GROUP BY t, ServiceName, Attributes, StartTimeUnix, label\n  )\n)\nGROUP BY t, label ORDER BY t"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Messages consumed by result",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "juice-clickhouse"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 26
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "juice-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT t, label, sum(delta) AS value FROM (\n  SELECT t, label, v - lagInFrame(v, 1, if(StartTimeUnix >= $__fromTime, 0, v)) OVER (PARTITION BY ServiceName, Attributes, StartTimeUnix ORDER BY t) AS delta\n  FROM (\n    SELECT $__timeInterval(TimeUnix) AS t, ServiceName, Attributes, StartTimeUnix, concat(Attributes['juice.message_type'], ' · ', Attributes['juice.dispatch.result']) AS label, max(Value) AS v\n    FROM otel.otel_metrics_sum\n    WHERE $__timeFilter(TimeUnix) AND MetricName = 'juice.messaging.consumed' AND ServiceName IN (${service:singlequote}) AND 1\n    GROUP BY t, ServiceName, Attributes, StartTimeUnix, label\n  )\n)\nGROUP BY t, label ORDER BY t"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Outbox delivery outcomes",
+      "description": "From AddJuiceDeliveryMetrics(): delivery attempts that succeeded or failed, per publisher.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "juice-clickhouse"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 26
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "juice-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT t, label, sum(delta) AS value FROM (\n  SELECT t, label, v - lagInFrame(v, 1, if(StartTimeUnix >= $__fromTime, 0, v)) OVER (PARTITION BY ServiceName, MetricName, Attributes, StartTimeUnix ORDER BY t) AS delta\n  FROM (\n    SELECT $__timeInterval(TimeUnix) AS t, ServiceName, MetricName, Attributes, StartTimeUnix,\n           concat(Attributes['publisher'], ' · ', replaceRegexpOne(MetricName, '^delivery_(.*)_total$', '\\\\1')) AS label, max(Value) AS v\n    FROM otel.otel_metrics_sum\n    WHERE $__timeFilter(TimeUnix) AND MetricName IN ('delivery_success_total', 'delivery_failure_total') AND ServiceName IN (${service:singlequote})\n    GROUP BY t, ServiceName, MetricName, Attributes, StartTimeUnix, label\n  )\n)\nGROUP BY t, label ORDER BY t"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Logs",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 34
+      },
+      "panels": []
+    },
+    {
+      "type": "logs",
+      "title": "Warnings and errors",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "juice-clickhouse"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 35
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "enableLogDetails": true,
+        "sortOrder": "Descending"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "juice-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 2,
+          "queryType": "logs",
+          "rawSql": "SELECT Timestamp AS timestamp, SeverityText AS level, Body AS body, ServiceName AS service, ScopeName AS category,\n       LogAttributes['juice.correlation_id'] AS correlation_id, TraceId AS traceID\nFROM otel.otel_logs\nWHERE $__timeFilter(Timestamp) AND SeverityNumber >= 13 AND ServiceName IN (${service:singlequote})\nORDER BY Timestamp DESC LIMIT 500"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Host (Collector host_metrics)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 45
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Memory used",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "juice-clickhouse"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 46
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "juice-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT $__timeInterval(TimeUnix) AS t, ResourceAttributes['host.name'] AS host, avg(Value) AS value\nFROM otel.otel_metrics_sum\nWHERE $__timeFilter(TimeUnix) AND MetricName = 'system.memory.usage' AND Attributes['state'] = 'used'\nGROUP BY t, host ORDER BY t"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Load average (1m)",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "juice-clickhouse"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 46
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "juice-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT $__timeInterval(TimeUnix) AS t, ResourceAttributes['host.name'] AS host, avg(Value) AS value\nFROM otel.otel_metrics_gauge\nWHERE $__timeFilter(TimeUnix) AND MetricName = 'system.cpu.load_average.1m'\nGROUP BY t, host ORDER BY t"
+        }
+      ]
+    }
+  ]
+}

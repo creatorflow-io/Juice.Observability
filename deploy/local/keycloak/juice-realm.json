@@ -1,0 +1,157 @@
+{
+  "realm": "juice",
+  "displayName": "Juice Observability (local)",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "rememberMe": false,
+  "bruteForceProtected": true,
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "clients": [
+    {
+      "clientId": "grafana",
+      "name": "Grafana",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${GRAFANA_OIDC_CLIENT_SECRET}",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "rootUrl": "http://localhost:3000",
+      "baseUrl": "/",
+      "redirectUris": [
+        "http://localhost:3000/login/generic_oauth"
+      ],
+      "webOrigins": [
+        "http://localhost:3000"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:3000/login"
+      },
+      "defaultClientScopes": [
+        "profile",
+        "email",
+        "roles",
+        "basic"
+      ],
+      "protocolMappers": [
+        {
+          "name": "grafana roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-client-role-mapper",
+          "config": {
+            "usermodel.clientRoleMapping.clientId": "grafana",
+            "claim.name": "roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "roles": {
+    "client": {
+      "grafana": [
+        {
+          "name": "admin",
+          "description": "Grafana Admin of the Juice organization"
+        },
+        {
+          "name": "editor",
+          "description": "Grafana Editor"
+        },
+        {
+          "name": "viewer",
+          "description": "Grafana Viewer"
+        }
+      ]
+    }
+  },
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "alice@juice.local",
+      "firstName": "Alice",
+      "lastName": "Demo",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${KEYCLOAK_DEMO_PASSWORD}",
+          "temporary": false
+        }
+      ],
+      "clientRoles": {
+        "grafana": [
+          "admin"
+        ]
+      }
+    },
+    {
+      "username": "erin",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "erin@juice.local",
+      "firstName": "Erin",
+      "lastName": "Demo",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${KEYCLOAK_DEMO_PASSWORD}",
+          "temporary": false
+        }
+      ],
+      "clientRoles": {
+        "grafana": [
+          "editor"
+        ]
+      }
+    },
+    {
+      "username": "victor",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "victor@juice.local",
+      "firstName": "Victor",
+      "lastName": "Demo",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${KEYCLOAK_DEMO_PASSWORD}",
+          "temporary": false
+        }
+      ],
+      "clientRoles": {
+        "grafana": [
+          "viewer"
+        ]
+      }
+    },
+    {
+      "username": "nora",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "nora@juice.local",
+      "firstName": "Nora",
+      "lastName": "Demo",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${KEYCLOAK_DEMO_PASSWORD}",
+          "temporary": false
+        }
+      ]
+    }
+  ]
+}

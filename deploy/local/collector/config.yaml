@@ -1,0 +1,190 @@
+# Juice Observability — OpenTelemetry Collector, local single-tenant stack.
+# Pinned: otel/opentelemetry-collector-contrib:0.163.1 (component names below are the 0.163 spellings:
+# host_metrics, resource_detection, health_check). Requirements §4 is the contract this file implements.
+#
+# Security order in every OTLP pipeline (a security property, do not reorder):
+#   memory_limiter → transform/strip_untrusted_tenant → resource/stamp_tenant → transform/redact → exporter
+# Batching happens inside the ClickHouse exporter's sending_queue (the exporter's recommended setup), so it always
+# runs after the strip and stamp steps. There is no batch processor.
+
+extensions:
+  # Static tokens, one per line, in a mounted file (scripts/init.sh writes it). Clients send `Authorization: Bearer <token>`.
+  # auth.* keys this authenticator provides: none beyond the authenticated request; the tenant is a static value (§4 step 4).
+  bearertokenauth/otlp:
+    scheme: Bearer
+    filename: /etc/otelcol/secrets/otlp-tokens
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+        tls: &tls
+          cert_file: /etc/otelcol/tls/server.crt
+          key_file: /etc/otelcol/tls/server.key
+          min_version: "1.2"
+        auth:
+          authenticator: bearertokenauth/otlp
+      http:
+        endpoint: 0.0.0.0:4318
+        tls: *tls
+        auth:
+          authenticator: bearertokenauth/otlp
+
+  # Host metrics of the machine the Collector container runs on (with Docker Desktop: the Linux VM).
+  host_metrics:
+    root_path: /hostfs
+    collection_interval: 30s
+    scrapers:
+      cpu:
+      memory:
+      load:
+      disk:
+      filesystem:
+        exclude_mount_points:
+          mount_points: ["/dev/*", "/proc/*", "/sys/*", "/run/*", "/var/lib/docker/*", "/etc/*"]
+          match_type: regexp
+      network:
+      processes:
+      process:
+        mute_process_name_error: true
+        mute_process_exe_error: true
+        mute_process_io_error: true
+        mute_process_user_error: true
+        mute_process_cgroup_error: true
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 20
+
+  # §4 step 3: remove any client-supplied tenant at resource, scope and record level, on every signal.
+  transform/strip_untrusted_tenant:
+    error_mode: ignore
+    trace_statements:
+      - context: resource
+        statements: &strip
+          - delete_key(attributes, "juice.platform_tenant_id")
+          - delete_key(attributes, "platform.tenant.id")
+          - delete_key(attributes, "tenant.id")
+      - context: scope
+        statements: *strip
+      - context: span
+        statements: *strip
+      - context: spanevent
+        statements: *strip
+    metric_statements:
+      - context: resource
+        statements: *strip
+      - context: scope
+        statements: *strip
+      - context: datapoint
+        statements: *strip
+    log_statements:
+      - context: resource
+        statements: *strip
+      - context: scope
+        statements: *strip
+      - context: log
+        statements: *strip
+
+  # §4 step 4: stamp the trusted tenant from deployment configuration, after the strip.
+  resource/stamp_tenant:
+    attributes:
+      - key: juice.platform_tenant_id
+        value: ${env:JUICE_PLATFORM_TENANT_ID}
+        action: upsert
+
+  # Redaction (requirements §10). Drops credential-like attributes on every record, and the message payload of Juice
+  # log categories as a second line behind the Juice log processor (which already drops it unless IncludePayloads).
+  transform/redact:
+    error_mode: ignore
+    trace_statements:
+      - context: resource
+        statements: &secrets
+          - delete_matching_keys(attributes, "(?i).*(password|passwd|secret|api[_.-]?key|authorization|cookie|bearer|access[_.-]?token|refresh[_.-]?token|connection[_.-]?string).*")
+      - context: span
+        statements: *secrets
+      - context: spanevent
+        statements: *secrets
+    metric_statements:
+      - context: datapoint
+        statements: *secrets
+    log_statements:
+      - context: resource
+        statements: *secrets
+      - context: log
+        statements:
+          - delete_matching_keys(attributes, "(?i).*(password|passwd|secret|api[_.-]?key|authorization|cookie|bearer|access[_.-]?token|refresh[_.-]?token|connection[_.-]?string).*")
+          - delete_key(attributes, "Payload") where IsMatch(instrumentation_scope.name, "^Juice\\.")
+
+  # Host metrics only: name the host. Kept out of the OTLP pipelines so app telemetry never gets the Collector's host.
+  resource_detection/host:
+    detectors: [env, system]
+    system:
+      hostname_sources: [os]
+
+exporters:
+  # One exporter per signal so each signal has its own retention (requirements §5.1). Default exporter tables; the
+  # tenant lives in ResourceAttributes['juice.platform_tenant_id'] (the approach recorded in README.md).
+  clickhouse/traces: &clickhouse
+    endpoint: tcp://clickhouse:9000
+    database: otel
+    username: otel_writer
+    password: ${env:CLICKHOUSE_OTEL_PASSWORD}
+    create_schema: true
+    ttl: ${env:JUICE_TRACES_TTL}
+    timeout: 10s
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      sizer: items
+      queue_size: 200000        # bounded: data is dropped (and counted in otelcol_exporter_enqueue_failed_*) beyond this
+      block_on_overflow: false
+      batch:
+        flush_timeout: 1s
+        min_size: 5000
+        max_size: 20000
+    retry_on_failure:
+      enabled: true
+      initial_interval: 2s
+      max_interval: 30s
+      max_elapsed_time: 300s
+  clickhouse/metrics:
+    <<: *clickhouse
+    ttl: ${env:JUICE_METRICS_TTL}
+  clickhouse/logs:
+    <<: *clickhouse
+    ttl: ${env:JUICE_LOGS_TTL}
+
+service:
+  extensions: [bearertokenauth/otlp, health_check]
+  telemetry:
+    metrics:
+      level: normal
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, transform/strip_untrusted_tenant, resource/stamp_tenant, transform/redact]
+      exporters: [clickhouse/traces]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, transform/strip_untrusted_tenant, resource/stamp_tenant, transform/redact]
+      exporters: [clickhouse/metrics]
+    metrics/host:
+      receivers: [host_metrics]
+      processors: [memory_limiter, resource_detection/host, resource/stamp_tenant]
+      exporters: [clickhouse/metrics]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, transform/strip_untrusted_tenant, resource/stamp_tenant, transform/redact]
+      exporters: [clickhouse/logs]

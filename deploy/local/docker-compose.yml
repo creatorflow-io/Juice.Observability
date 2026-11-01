@@ -1,0 +1,150 @@
+# Juice Observability — local single-tenant stack (roadmap Phase 1, Track A). Run scripts/init.sh once first.
+#
+#   OTLP (TLS + bearer token)  localhost:4317 gRPC, localhost:4318 HTTP
+#   Grafana                    http://localhost:3000  (sign in with Keycloak; demo users in README.md)
+#   Keycloak                   http://localhost:8080  (realm juice; admin console: admin / KEYCLOAK_ADMIN_PASSWORD)
+#   ClickHouse HTTP            http://localhost:8123  (bound to 127.0.0.1)
+#   PostgreSQL                 localhost:5433         (platform domain database, used by Track B)
+#
+# Images are pinned; change versions here and in README.md together.
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.8.36.3-alpine
+    environment:
+      CLICKHOUSE_USER: admin
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_ADMIN_PASSWORD:?run scripts/init.sh}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+      CLICKHOUSE_OTEL_PASSWORD: ${CLICKHOUSE_OTEL_PASSWORD}
+      CLICKHOUSE_GRAFANA_PASSWORD: ${CLICKHOUSE_GRAFANA_PASSWORD}
+      CLICKHOUSE_PLATFORM_PASSWORD: ${CLICKHOUSE_PLATFORM_PASSWORD}
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./clickhouse/init-users.sh:/docker-entrypoint-initdb.d/init-users.sh:ro
+    ports:
+      - "127.0.0.1:8123:8123"
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8123/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.163.1
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    environment:
+      JUICE_PLATFORM_TENANT_ID: ${JUICE_PLATFORM_TENANT_ID:?run scripts/init.sh}
+      CLICKHOUSE_OTEL_PASSWORD: ${CLICKHOUSE_OTEL_PASSWORD}
+      JUICE_TRACES_TTL: ${JUICE_TRACES_TTL}
+      JUICE_METRICS_TTL: ${JUICE_METRICS_TTL}
+      JUICE_LOGS_TTL: ${JUICE_LOGS_TTL}
+      # host.name for host_metrics (read by the env detector); otherwise it would be the container id.
+      OTEL_RESOURCE_ATTRIBUTES: host.name=${JUICE_HOST_NAME:-local-docker-host}
+    volumes:
+      - ./collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
+      - ./secrets/tls/server.crt:/etc/otelcol/tls/server.crt:ro
+      - ./secrets/tls/server.key:/etc/otelcol/tls/server.key:ro
+      - ./secrets/otlp-tokens:/etc/otelcol/secrets/otlp-tokens:ro
+      - /:/hostfs:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "127.0.0.1:8888:8888"     # Collector's own metrics (queue size, refused, dropped)
+      - "127.0.0.1:13133:13133"   # health check
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+
+  grafana:
+    image: grafana/grafana:13.2.5
+    environment:
+      GF_SERVER_ROOT_URL: http://localhost:3000
+      # Local admin account: API and break-glass use only (basic auth). People sign in through Keycloak.
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?run scripts/init.sh}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      # OIDC login (Keycloak realm juice, client grafana). The browser uses localhost:8080; Grafana's own calls use
+      # the keycloak service name. Roles come from the grafana client roles in the "roles" claim; a user with none of
+      # them is refused (strict), and no OIDC user becomes Grafana server admin.
+      GF_AUTH_GENERIC_OAUTH_ENABLED: "true"
+      GF_AUTH_GENERIC_OAUTH_NAME: Keycloak
+      GF_AUTH_GENERIC_OAUTH_ALLOW_SIGN_UP: "true"
+      GF_AUTH_GENERIC_OAUTH_CLIENT_ID: grafana
+      GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET: ${GRAFANA_OIDC_CLIENT_SECRET:?run scripts/init.sh}
+      GF_AUTH_GENERIC_OAUTH_SCOPES: openid email profile
+      GF_AUTH_GENERIC_OAUTH_USE_PKCE: "true"
+      GF_AUTH_GENERIC_OAUTH_USE_REFRESH_TOKEN: "true"
+      GF_AUTH_GENERIC_OAUTH_AUTH_URL: http://localhost:8080/realms/juice/protocol/openid-connect/auth
+      GF_AUTH_GENERIC_OAUTH_TOKEN_URL: http://keycloak:8080/realms/juice/protocol/openid-connect/token
+      GF_AUTH_GENERIC_OAUTH_API_URL: http://keycloak:8080/realms/juice/protocol/openid-connect/userinfo
+      GF_AUTH_GENERIC_OAUTH_LOGIN_ATTRIBUTE_PATH: preferred_username
+      GF_AUTH_GENERIC_OAUTH_EMAIL_ATTRIBUTE_PATH: email
+      GF_AUTH_GENERIC_OAUTH_NAME_ATTRIBUTE_PATH: name
+      GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH: "contains(roles[*], 'admin') && 'Admin' || contains(roles[*], 'editor') && 'Editor' || contains(roles[*], 'viewer') && 'Viewer'"
+      GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_STRICT: "true"
+      GF_AUTH_GENERIC_OAUTH_ALLOW_ASSIGN_GRAFANA_ADMIN: "false"
+      GF_AUTH_SIGNOUT_REDIRECT_URL: http://localhost:8080/realms/juice/protocol/openid-connect/logout?client_id=grafana&post_logout_redirect_uri=http%3A%2F%2Flocalhost%3A3000%2Flogin
+      GF_PLUGINS_PREINSTALL_SYNC: grafana-clickhouse-datasource@4.22.1
+      CLICKHOUSE_GRAFANA_PASSWORD: ${CLICKHOUSE_GRAFANA_PASSWORD}
+      JUICE_PLATFORM_TENANT_ID: ${JUICE_PLATFORM_TENANT_ID}
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+
+  # Local identity provider for Grafana login. Dev mode (in-container H2 database): the realm is imported from
+  # keycloak/juice-realm.json when the container is created, so changes made in the admin console are lost on recreate.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.5
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?run scripts/init.sh}
+      KC_HOSTNAME: http://localhost:8080
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HEALTH_ENABLED: "true"
+      # Values for the ${...} placeholders in the realm file
+      GRAFANA_OIDC_CLIENT_SECRET: ${GRAFANA_OIDC_CLIENT_SECRET}
+      KEYCLOAK_DEMO_PASSWORD: ${KEYCLOAK_DEMO_PASSWORD}
+    volumes:
+      - ./keycloak/juice-realm.json:/opt/keycloak/data/import/juice-realm.json:ro
+    ports:
+      - "8080:8080"
+    healthcheck:
+      # The image has no curl or wget; ask the management port for readiness over bash's /dev/tcp.
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+
+  postgres:
+    image: postgres:17.10-alpine
+    environment:
+      POSTGRES_DB: juice_observability
+      POSTGRES_USER: juice
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run scripts/init.sh}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U juice -d juice_observability"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  clickhouse-data:
+  grafana-data:
+  postgres-data:
