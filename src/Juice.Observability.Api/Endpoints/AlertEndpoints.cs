@@ -19,7 +19,7 @@ namespace Juice.Observability.Api.Endpoints
     public sealed record AlertTransitionDto(string? From, string To, DateTimeOffset At, double? Value, string Reason);
 
     public sealed record AlertDetailDto(AlertDto Alert, IReadOnlyDictionary<string, string> Evidence, string? AcknowledgeComment,
-        IReadOnlyList<AlertTransitionDto> History, IReadOnlyList<HealthDto> SubjectHealth, string? GrafanaUrl);
+        IReadOnlyList<AlertTransitionDto> History, IReadOnlyList<HealthDto> SubjectHealth, IReadOnlyList<IntegrationLinkDto> Links);
 
     public sealed record AcknowledgeRequest(string? Comment);
 
@@ -80,9 +80,9 @@ namespace Juice.Observability.Api.Endpoints
             return Results.Ok(new Page<AlertDto>(items, rows.Count > take ? new Cursor("al", page[^1].Id).Encode() : null));
         }
 
-        /// <summary>An alert with its evidence, history, the subject's current health and a Grafana link (requirements §11 item 9).</summary>
+        /// <summary>An alert with its evidence, history, the subject's current health and any integration links (requirements §11 item 9).</summary>
         private static async Task<IResult> GetAlertAsync(Guid tenantId, Guid alertId, PlatformDbContext db, IOptions<HealthPolicy> policy,
-            IOptions<GrafanaOptions> grafana, TimeProvider clock, CancellationToken ct)
+            IOptions<IntegrationOptions> integrations, TimeProvider clock, CancellationToken ct)
         {
             var alert = await db.Alerts.AsNoTracking().SingleOrDefaultAsync(a => a.TenantId == tenantId && a.Id == alertId, ct);
             if (alert is null)
@@ -98,14 +98,14 @@ namespace Juice.Observability.Api.Endpoints
                     .Where(h => h.TenantId == tenantId && h.SubjectId == subject && (h.EnvironmentId == alert.EnvironmentId || h.EnvironmentId == null))
                     .ToListAsync(ct), policy.Value, clock, ct)
                 : [];
-            string? link = null;
+            IReadOnlyList<IntegrationLinkDto> links = [];
             if (alert.SubjectType == HealthSubject.Service && alert.SubjectId is { } serviceId
                 && await db.Services.AsNoTracking().SingleOrDefaultAsync(s => s.Id == serviceId, ct) is { } service)
             {
-                link = HealthEndpoints.GrafanaLink(grafana.Value, service.Name, alert.ResolvedAt ?? clock.GetUtcNow());
+                links = IntegrationLinks.ForService(integrations.Value, service.Name, alert.ResolvedAt ?? clock.GetUtcNow());
             }
             var dto = (await ToDtosAsync(db, tenantId, [alert], ct))[0];
-            return Results.Ok(new AlertDetailDto(dto, alert.Evidence, alert.AcknowledgeComment, history, health, link));
+            return Results.Ok(new AlertDetailDto(dto, alert.Evidence, alert.AcknowledgeComment, history, health, links));
         }
 
         /// <summary>

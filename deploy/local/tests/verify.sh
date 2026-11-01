@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Integration checks for the local stack (roadmap Phase 1 Track A gate, requirements §4 step 7).
-#   tests/verify.sh            ingestion security, tenant stamping, redaction, Grafana data source
+#   tests/verify.sh            ingestion security, tenant stamping, redaction, Grafana (when running)
 #   tests/verify.sh --outage   also stops ClickHouse, sends while it is down, and checks the queued data lands after restart
 # Needs: a running stack (docker compose up -d --wait), curl, openssl.
 set -uo pipefail
@@ -110,42 +110,47 @@ check "grafana_reader cannot write" \
 check "grafana_reader cannot read system users" \
   "$(docker compose exec -T clickhouse clickhouse client --user grafana_reader --password "$CLICKHOUSE_GRAFANA_PASSWORD" \
       -q "SELECT count() FROM system.users" </dev/null >/dev/null 2>&1 && echo readable || echo denied)" "denied"
-grafana_health=$(curl -s -m 30 -u "admin:$GRAFANA_ADMIN_PASSWORD" http://localhost:3000/api/datasources/uid/juice-clickhouse/health)
-check "Grafana ClickHouse data source healthy" "$(echo "$grafana_health" | grep -o '"status":"[A-Z]*"')" '"status":"OK"'
-check "Grafana anonymous access disabled" "$(curl -s -m 30 -o /dev/null -w '%{http_code}' http://localhost:3000/api/search)" "401"
+# Grafana is optional (compose profile "grafana"): its checks run only when it is up.
+if docker compose ps --status running --services 2>/dev/null | grep -qx grafana; then
+  grafana_health=$(curl -s -m 30 -u "admin:$GRAFANA_ADMIN_PASSWORD" http://localhost:3000/api/datasources/uid/juice-clickhouse/health)
+  check "Grafana ClickHouse data source healthy" "$(echo "$grafana_health" | grep -o '"status":"[A-Z]*"')" '"status":"OK"'
+  check "Grafana anonymous access disabled" "$(curl -s -m 30 -o /dev/null -w '%{http_code}' http://localhost:3000/api/search)" "401"
 
-echo "Grafana sign-in (OIDC, Keycloak realm juice)"
-# oidc_login <user> <password> → prints "<grafana login> <org role>", or "refused"
-oidc_login() {
-  local jar form action back
-  jar=$(mktemp)
-  # Grafana → Keycloak authorization endpoint (with state and PKCE challenge)
-  form=$(curl -s -m 30 -L -c "$jar" -b "$jar" http://localhost:3000/login/generic_oauth)
-  action=$(echo "$form" | grep -o 'action="[^"]*login-actions/authenticate[^"]*"' | head -1 | sed 's/^action="//; s/"$//; s/&amp;/\&/g')
-  [[ -z "$action" ]] && { echo "no-login-form"; rm -f "$jar"; return; }
-  # Submit credentials; Keycloak redirects back to Grafana with the code; Grafana exchanges it and sets its session.
-  back=$(curl -s -m 30 -o /dev/null -w '%{redirect_url}' -c "$jar" -b "$jar" --data-urlencode "username=$1" \
-    --data-urlencode "password=$2" --data-urlencode "credentialId=" "$action")
-  # A failed login re-renders the Keycloak form instead of redirecting.
-  [[ -z "$back" ]] && { echo "refused"; rm -f "$jar"; return; }
-  curl -s -m 30 -o /dev/null -c "$jar" -b "$jar" "$back"
-  local user orgs
-  user=$(curl -s -m 30 -b "$jar" http://localhost:3000/api/user)
-  if ! echo "$user" | grep -q '"login"'; then echo "refused"; rm -f "$jar"; return; fi
-  orgs=$(curl -s -m 30 -b "$jar" http://localhost:3000/api/user/orgs)
-  echo "$(echo "$user" | grep -o '"login":"[^"]*"' | cut -d'"' -f4) $(echo "$orgs" | grep -o '"role":"[^"]*"' | head -1 | cut -d'"' -f4)"
-  rm -f "$jar"
-}
-check "password sign-in refused (OIDC only)" \
-  "$(curl -s -m 30 -H 'Content-Type: application/json' -d "{\"user\":\"admin\",\"password\":\"$GRAFANA_ADMIN_PASSWORD\"}" \
-      http://localhost:3000/login | grep -o 'auth.client.notConfigured')" "auth.client.notConfigured"
-check "alice (client role admin) → Admin" "$(oidc_login alice "$KEYCLOAK_DEMO_PASSWORD")" "alice Admin"
-check "erin (editor) → Editor" "$(oidc_login erin "$KEYCLOAK_DEMO_PASSWORD")" "erin Editor"
-check "victor (viewer) → Viewer" "$(oidc_login victor "$KEYCLOAK_DEMO_PASSWORD")" "victor Viewer"
-check "nora (no Grafana role) refused" "$(oidc_login nora "$KEYCLOAK_DEMO_PASSWORD")" "refused"
-check "wrong password refused" "$(oidc_login alice not-the-password)" "refused"
-check "OIDC admin is not Grafana server admin" \
-  "$(curl -s -m 30 -u "admin:$GRAFANA_ADMIN_PASSWORD" 'http://localhost:3000/api/users/lookup?loginOrEmail=alice' | grep -o '"isGrafanaAdmin":[a-z]*')" '"isGrafanaAdmin":false'
+  echo "Grafana sign-in (OIDC, Keycloak realm juice)"
+  # oidc_login <user> <password> → prints "<grafana login> <org role>", or "refused"
+  oidc_login() {
+    local jar form action back
+    jar=$(mktemp)
+    # Grafana → Keycloak authorization endpoint (with state and PKCE challenge)
+    form=$(curl -s -m 30 -L -c "$jar" -b "$jar" http://localhost:3000/login/generic_oauth)
+    action=$(echo "$form" | grep -o 'action="[^"]*login-actions/authenticate[^"]*"' | head -1 | sed 's/^action="//; s/"$//; s/&amp;/\&/g')
+    [[ -z "$action" ]] && { echo "no-login-form"; rm -f "$jar"; return; }
+    # Submit credentials; Keycloak redirects back to Grafana with the code; Grafana exchanges it and sets its session.
+    back=$(curl -s -m 30 -o /dev/null -w '%{redirect_url}' -c "$jar" -b "$jar" --data-urlencode "username=$1" \
+      --data-urlencode "password=$2" --data-urlencode "credentialId=" "$action")
+    # A failed login re-renders the Keycloak form instead of redirecting.
+    [[ -z "$back" ]] && { echo "refused"; rm -f "$jar"; return; }
+    curl -s -m 30 -o /dev/null -c "$jar" -b "$jar" "$back"
+    local user orgs
+    user=$(curl -s -m 30 -b "$jar" http://localhost:3000/api/user)
+    if ! echo "$user" | grep -q '"login"'; then echo "refused"; rm -f "$jar"; return; fi
+    orgs=$(curl -s -m 30 -b "$jar" http://localhost:3000/api/user/orgs)
+    echo "$(echo "$user" | grep -o '"login":"[^"]*"' | cut -d'"' -f4) $(echo "$orgs" | grep -o '"role":"[^"]*"' | head -1 | cut -d'"' -f4)"
+    rm -f "$jar"
+  }
+  check "password sign-in refused (OIDC only)" \
+    "$(curl -s -m 30 -H 'Content-Type: application/json' -d "{\"user\":\"admin\",\"password\":\"$GRAFANA_ADMIN_PASSWORD\"}" \
+        http://localhost:3000/login | grep -o 'auth.client.notConfigured')" "auth.client.notConfigured"
+  check "alice (client role admin) → Admin" "$(oidc_login alice "$KEYCLOAK_DEMO_PASSWORD")" "alice Admin"
+  check "erin (editor) → Editor" "$(oidc_login erin "$KEYCLOAK_DEMO_PASSWORD")" "erin Editor"
+  check "victor (viewer) → Viewer" "$(oidc_login victor "$KEYCLOAK_DEMO_PASSWORD")" "victor Viewer"
+  check "nora (no Grafana role) refused" "$(oidc_login nora "$KEYCLOAK_DEMO_PASSWORD")" "refused"
+  check "wrong password refused" "$(oidc_login alice not-the-password)" "refused"
+  check "OIDC admin is not Grafana server admin" \
+    "$(curl -s -m 30 -u "admin:$GRAFANA_ADMIN_PASSWORD" 'http://localhost:3000/api/users/lookup?loginOrEmail=alice' | grep -o '"isGrafanaAdmin":[a-z]*')" '"isGrafanaAdmin":false'
+else
+  echo "Grafana not running (optional, profile grafana): Grafana checks skipped"
+fi
 
 # A Grafana token must never be a platform API token: the realm limits each client's tokens to its own roles, so the
 # audience-resolve mapper does not add juice-platform (fullScopeAllowed=false and clientScopeMappings).

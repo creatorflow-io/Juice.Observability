@@ -16,7 +16,7 @@ namespace Juice.Observability.Api.Endpoints
 
     public sealed record ResourceDetailDto(Guid Id, string Type, string Key, string DisplayName, DateTimeOffset FirstSeen,
         DateTimeOffset LastSeen, string? Namespace, string? Name, Guid? ApplicationId, IReadOnlyDictionary<string, string> Attributes,
-        IReadOnlyList<InstanceDto> Instances, bool InstancesTruncated, IReadOnlyList<HealthDto> Health, string? GrafanaUrl);
+        IReadOnlyList<InstanceDto> Instances, bool InstancesTruncated, IReadOnlyList<HealthDto> Health, IReadOnlyList<IntegrationLinkDto> Links);
 
     /// <summary><see cref="Health"/> is the node's state in the requested environment (hosts have one state), or null.</summary>
     public sealed record TopologyNodeDto(Guid Id, string Type, string DisplayName, string? Health);
@@ -58,6 +58,7 @@ namespace Juice.Observability.Api.Endpoints
             tenant.MapHealthEndpoints();
             tenant.MapAlertEndpoints();
             tenant.MapWebhookEndpoints();
+            tenant.MapTelemetryEndpoints();
             return app;
         }
 
@@ -88,6 +89,7 @@ namespace Juice.Observability.Api.Endpoints
                 return Results.Problem(statusCode: StatusCodes.Status403Forbidden, title: "Tenant not authorized",
                     detail: "The caller is not authorized for this tenant.");
             }
+            http.Items[TelemetryEndpoints.TenantKeyItem] = tenant.Key;
             return await next(context);
         }
 
@@ -178,7 +180,7 @@ namespace Juice.Observability.Api.Endpoints
         }
 
         private static async Task<IResult> GetResourceAsync(Guid tenantId, Guid resourceId, PlatformDbContext db,
-            IOptions<HealthPolicy> policy, IOptions<GrafanaOptions> grafana, TimeProvider clock, CancellationToken ct)
+            IOptions<HealthPolicy> policy, IOptions<IntegrationOptions> integrations, TimeProvider clock, CancellationToken ct)
         {
             async Task<IReadOnlyList<HealthDto>> HealthOf(Guid subject)
                 => await HealthEndpoints.ToDtosAsync(db, tenantId, await db.HealthSnapshots.AsNoTracking()
@@ -191,7 +193,7 @@ namespace Juice.Observability.Api.Endpoints
                 return Results.Ok(new ResourceDetailDto(service.Id, ServiceType, HealthRunner.Name(service), service.Name,
                     service.FirstSeen, service.LastSeen, service.Namespace, service.Name, service.ApplicationId,
                     new Dictionary<string, string>(), instances.Items, instances.Truncated, await HealthOf(service.Id),
-                    HealthEndpoints.GrafanaLink(grafana.Value, service.Name, clock.GetUtcNow())));
+                    IntegrationLinks.ForService(integrations.Value, service.Name, clock.GetUtcNow())));
             }
             var resource = await db.Resources.AsNoTracking().SingleOrDefaultAsync(r => r.TenantId == tenantId && r.Id == resourceId, ct);
             if (resource is null)
@@ -202,7 +204,7 @@ namespace Juice.Observability.Api.Endpoints
             var hosted = await Instances(db.Instances.Where(i => i.TenantId == tenantId && i.HostResourceId == resource.Id), db, ct);
             return Results.Ok(new ResourceDetailDto(resource.Id, TypeNames[resource.Type], resource.Key, resource.DisplayName,
                 resource.FirstSeen, resource.LastSeen, null, null, null, resource.Attributes, hosted.Items, hosted.Truncated,
-                await HealthOf(resource.Id), null));
+                await HealthOf(resource.Id), []));
         }
 
         /// <summary>Active instances first, then the most recently seen; at most <see cref="MaxInstances"/>.</summary>

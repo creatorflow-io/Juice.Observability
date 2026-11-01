@@ -1,0 +1,647 @@
+using System.Text.RegularExpressions;
+using Juice.Observability.Data;
+using Juice.Observability.Discovery;
+using Microsoft.EntityFrameworkCore;
+using static Juice.Observability.Discovery.ClickHouseTelemetrySource;
+
+namespace Juice.Observability.Api.Endpoints
+{
+    public sealed record TraceSummaryDto(string TraceId, DateTimeOffset StartedAt, double DurationMs, string RootService,
+        string RootOperation, string? Environment, string? RootInstance, string? RootHost, long SpanCount, long ErrorCount,
+        IReadOnlyList<string> Services);
+
+    public sealed record SpanEventDto(string Name, DateTimeOffset At, IReadOnlyDictionary<string, string> Attributes);
+
+    public sealed record SpanLinkDto(string TraceId, string SpanId);
+
+    public sealed record SpanDto(string SpanId, string? ParentSpanId, string Service, string? Environment, string? Instance,
+        string? Host, string Name, string Kind, DateTimeOffset StartedAt, double DurationMs, string Status, string? StatusMessage,
+        string? Scope, string? ScopeVersion, IReadOnlyDictionary<string, string> Attributes, IReadOnlyList<SpanEventDto> Events,
+        IReadOnlyList<SpanLinkDto> Links);
+
+    public sealed record TraceDto(string TraceId, IReadOnlyList<SpanDto> Spans, bool Truncated);
+
+    public sealed record LogDto(DateTimeOffset Timestamp, string Severity, int SeverityNumber, string Service, string? Environment,
+        string? Instance, string Body, bool BodyTruncated, string? TraceId, string? SpanId, IReadOnlyDictionary<string, string> Attributes);
+
+    public sealed record OperationDto(string Name, string Kind, long Count, double RequestsPerSecond, double ErrorRate,
+        double P50Ms, double P95Ms, double P99Ms, DateTimeOffset LastSeen);
+
+    public sealed record MetricInfoDto(string Name, string Type, string Unit, string Description);
+
+    public sealed record PointDto(DateTimeOffset At, double? Value);
+
+    public sealed record SeriesDto(string Name, string Type, string Unit, string Aggregation, int StepSeconds, IReadOnlyList<PointDto> Points);
+
+    public sealed record ServiceStatsPointDto(DateTimeOffset At, double RequestsPerSecond, double ErrorRate, double? P95Ms);
+
+    public sealed record ServiceStatsDto(int StepSeconds, IReadOnlyList<ServiceStatsPointDto> Points);
+
+    public sealed record DependencyEvidenceDto(Guid DependencyId, string Relation, string Confidence, long Count, double ErrorRate,
+        double? P95Ms, DateTimeOffset? LastSeen, IReadOnlyList<string> SlowestTraces, IReadOnlyList<string> ErrorTraces);
+
+    public sealed record SearchHitDto(string Kind, string Id, string Title, string? TraceId);
+
+    public sealed record TelemetryPage<T>(IReadOnlyList<T> Items, bool Truncated);
+
+    /// <summary>
+    /// Telemetry exploration for Juice Console (UI architecture §3.3, Console requirements §5–§13): traces, logs, metrics,
+    /// operations and dependency evidence through the Juice API, never ClickHouse directly. Platform-owned query templates
+    /// only: every query filters on the Collector-stamped tenant, is bounded in time and rows, takes values only as
+    /// parameters, and runs as <c>platform_reader</c> with its caps. Services, instances, resources and dependencies are
+    /// named by their platform ids; the API maps them to telemetry attributes.
+    /// </summary>
+    public static class TelemetryEndpoints
+    {
+        public const string TenantKeyItem = "juice.tenant_key";
+        public static readonly TimeSpan DefaultRange = TimeSpan.FromHours(1);
+        public static readonly TimeSpan MaxSearchRange = TimeSpan.FromHours(24);
+        public static readonly TimeSpan MaxSeriesRange = TimeSpan.FromDays(7);
+        public const int MaxSpans = 1000;
+        public const int MaxPoints = 500;
+        public const int MaxBody = 4096;
+        public const int MaxAttributes = 64;
+        public const int MaxText = 256;
+        public const int MaxAttributeFilters = 5;
+
+        private static readonly Regex TraceIdPattern = new("^[0-9a-f]{32}$", RegexOptions.Compiled);
+        private static readonly Regex SpanIdPattern = new("^[0-9a-f]{16}$", RegexOptions.Compiled);
+        private static readonly Regex AttributeKeyPattern = new(@"^[A-Za-z0-9_.\-]{1,128}$", RegexOptions.Compiled);
+        private static readonly Regex MetricNamePattern = new(@"^[A-Za-z_:][A-Za-z0-9_.:/\-]{0,254}$", RegexOptions.Compiled);
+
+        private const string Environment = "ResourceAttributes['deployment.environment.name']";
+        private const string Instance = "ResourceAttributes['service.instance.id']";
+        private const string Host = "ResourceAttributes['host.name']";
+        private const string DbSystem = "lowerUTF8(if(SpanAttributes['db.system.name'] != '', SpanAttributes['db.system.name'], SpanAttributes['db.system']))";
+
+        public static RouteGroupBuilder MapTelemetryEndpoints(this RouteGroupBuilder tenant)
+        {
+            var telemetry = tenant.MapGroup("/telemetry");
+            telemetry.MapGet("/traces", SearchTracesAsync);
+            telemetry.MapGet("/traces/{traceId}", GetTraceAsync);
+            telemetry.MapGet("/logs", SearchLogsAsync);
+            telemetry.MapGet("/operations", ListOperationsAsync);
+            telemetry.MapGet("/metrics", ListMetricsAsync);
+            telemetry.MapGet("/metrics/series", GetSeriesAsync);
+            telemetry.MapGet("/service-stats", GetServiceStatsAsync);
+            telemetry.MapGet("/dependencies/{dependencyId:guid}", GetDependencyEvidenceAsync);
+            tenant.MapGet("/search", SearchAsync);
+            return tenant;
+        }
+
+        // ─── filters ───
+
+        /// <summary>Filters shared by the telemetry queries. Platform ids are resolved here; telemetry names never come from input.</summary>
+        public sealed record Filter
+        {
+            public Guid? ServiceId { get; init; }
+            public string? Environment { get; init; }
+            public Guid? InstanceId { get; init; }
+            public Guid? ResourceId { get; init; }
+            public Guid? DependencyId { get; init; }
+            public string? Operation { get; init; }
+            public string? TraceId { get; init; }
+            public string? SpanId { get; init; }
+            public string[]? Attribute { get; init; }
+            public DateTimeOffset? From { get; init; }
+            public DateTimeOffset? To { get; init; }
+        }
+
+        /// <summary>A validated query scope: the window and the span-level and resource-level conditions.</summary>
+        private sealed class Scope(TelemetryWindow window)
+        {
+            public TelemetryWindow Window { get; } = window;
+            public Dictionary<string, object> Parameters { get; } = [];
+            /// <summary>Conditions with <c>{time}</c> for the table's time column.</summary>
+            public List<string> Conditions { get; } = [$"{Tenant}", $"{{time}} >= {From}", $"{{time}} < {To}"];
+            /// <summary>Conditions only spans can meet (span attributes, names, ids); empty for logs and metrics.</summary>
+            public List<string> SpanConditions { get; } = [];
+
+            public string Where(string time, bool spans = false)
+                => string.Join(" AND ", (spans ? Conditions.Concat(SpanConditions) : Conditions).Select(c => c.Replace("{time}", time)));
+
+            public string Add(string name, object value)
+            {
+                var key = $"p{Parameters.Count}";
+                Parameters[key] = value;
+                return $"{{{key}:{name}}}";
+            }
+        }
+
+        private sealed class FilterException(IResult problem) : Exception
+        {
+            public IResult Problem { get; } = problem;
+        }
+
+        private static IResult Bad(string title, string detail)
+            => Results.Problem(statusCode: StatusCodes.Status400BadRequest, title: title, detail: detail);
+
+        private static FilterException Invalid(string title, string detail) => new(Bad(title, detail));
+
+        private static FilterException Missing(string what) => new(Results.Problem(statusCode: StatusCodes.Status404NotFound, title: $"{what} not found"));
+
+        private static async Task<Scope> ScopeAsync(HttpContext http, PlatformDbContext db, TimeProvider clock, Filter filter, int limit,
+            TimeSpan maxRange, CancellationToken ct)
+        {
+            var end = filter.To ?? clock.GetUtcNow();
+            var start = filter.From ?? end - DefaultRange;
+            if (start >= end || end - start > maxRange)
+            {
+                throw Invalid("Invalid time range", $"from must be before to, at most {maxRange.TotalHours:0} hours apart.");
+            }
+            var tenantKey = (string)http.Items[TenantKeyItem]!;
+            var tenantId = await db.Tenants.AsNoTracking().Where(t => t.Key == tenantKey).Select(t => t.Id).SingleAsync(ct);
+            var scope = new Scope(new TelemetryWindow(tenantKey, start, end, limit));
+
+            if (filter.ServiceId is { } serviceId)
+            {
+                var service = await db.Services.AsNoTracking().SingleOrDefaultAsync(s => s.TenantId == tenantId && s.Id == serviceId, ct)
+                    ?? throw Missing("Service");
+                scope.Conditions.Add(ServiceCondition(scope, service));
+            }
+            if (filter.Environment is { Length: > 0 } environment)
+            {
+                var key = environment.Trim().ToLowerInvariant();
+                if (key.Length > 128) throw Invalid("Invalid environment", "environment is at most 128 characters.");
+                scope.Conditions.Add($"lowerUTF8(trimBoth({Environment})) = {scope.Add("String", key == Normalizer.UnspecifiedEnvironment ? "" : key)}");
+            }
+            if (filter.InstanceId is { } instanceId)
+            {
+                var instance = await db.Instances.AsNoTracking().SingleOrDefaultAsync(i => i.TenantId == tenantId && i.Id == instanceId, ct)
+                    ?? throw Missing("Instance");
+                scope.Conditions.Add(InstanceCondition(scope, instance));
+            }
+            if (filter.ResourceId is { } resourceId)
+            {
+                var resource = await db.Resources.AsNoTracking().SingleOrDefaultAsync(r => r.TenantId == tenantId && r.Id == resourceId, ct)
+                    ?? throw Missing("Resource");
+                var (condition, spanOnly) = ResourceCondition(scope, resource);
+                (spanOnly ? scope.SpanConditions : scope.Conditions).Add(condition);
+            }
+            if (filter.DependencyId is { } dependencyId)
+            {
+                var dependency = await db.Dependencies.AsNoTracking().SingleOrDefaultAsync(d => d.TenantId == tenantId && d.Id == dependencyId, ct)
+                    ?? throw Missing("Dependency");
+                scope.SpanConditions.Add(await DependencyConditionAsync(scope, db, dependency, ct));
+            }
+            if (filter.Operation is { Length: > 0 } operation)
+            {
+                if (operation.Length > MaxText) throw Invalid("Invalid operation", $"operation is at most {MaxText} characters.");
+                scope.SpanConditions.Add($"SpanName = {scope.Add("String", operation)}");
+            }
+            if (filter.TraceId is { Length: > 0 } traceId)
+            {
+                scope.Conditions.Add($"TraceId = {scope.Add("String", TraceIdOf(traceId))}");
+            }
+            if (filter.SpanId is { Length: > 0 } spanId)
+            {
+                if (!SpanIdPattern.IsMatch(spanId.ToLowerInvariant())) throw Invalid("Invalid span id", "A span id is 16 hexadecimal characters.");
+                scope.SpanConditions.Add($"SpanId = {scope.Add("String", spanId.ToLowerInvariant())}");
+            }
+            foreach (var attribute in (filter.Attribute ?? []).Select((a, i) => (Text: a, Index: i)))
+            {
+                var separator = attribute.Text.IndexOf('=');
+                if (attribute.Index >= MaxAttributeFilters || separator < 1
+                    || !AttributeKeyPattern.IsMatch(attribute.Text[..separator]) || attribute.Text.Length - separator - 1 > MaxText)
+                {
+                    throw Invalid("Invalid attribute", $"attribute is key=value, at most {MaxAttributeFilters} of them.");
+                }
+                scope.SpanConditions.Add($"SpanAttributes[{scope.Add("String", attribute.Text[..separator])}] = {scope.Add("String", attribute.Text[(separator + 1)..])}");
+            }
+            return scope;
+        }
+
+        private static string TraceIdOf(string traceId)
+            => TraceIdPattern.IsMatch(traceId.ToLowerInvariant())
+                ? traceId.ToLowerInvariant()
+                : throw Invalid("Invalid trace id", "A trace id is 32 hexadecimal characters.");
+
+        private static string ServiceCondition(Scope scope, Service service)
+            => $"ServiceName = {scope.Add("String", service.Name)} AND ResourceAttributes['service.namespace'] = {scope.Add("String", service.Namespace)}";
+
+        /// <summary>The attributes discovery derived the instance key from (D1): the instance id, or host and process id.</summary>
+        private static string InstanceCondition(Scope scope, ServiceInstance instance)
+        {
+            if (instance.KeySource == InstanceKeySource.Observed)
+            {
+                return $"{Instance} = {scope.Add("String", instance.InstanceKey)}";
+            }
+            var separator = instance.InstanceKey.LastIndexOf(':');
+            return separator > 0
+                ? $"{Instance} = '' AND lowerUTF8({Host}) = {scope.Add("String", instance.InstanceKey[..separator])} AND ResourceAttributes['process.pid'] = {scope.Add("String", instance.InstanceKey[(separator + 1)..])}"
+                : $"{Instance} = '' AND lowerUTF8({Host}) = {scope.Add("String", instance.InstanceKey)}";
+        }
+
+        /// <summary>Hosts, containers and pods match resource attributes; databases and destinations match span attributes.</summary>
+        private static (string Condition, bool SpanOnly) ResourceCondition(Scope scope, Resource resource)
+        {
+            string Attr(string key) => resource.Attributes.GetValueOrDefault(key, "");
+            return resource.Type switch
+            {
+                ResourceType.Database => ($"{DbSystem} = {scope.Add("String", Attr("db.system.name"))} AND lowerUTF8(SpanAttributes['server.address']) = {scope.Add("String", Attr("server.address"))} AND SpanAttributes['db.namespace'] = {scope.Add("String", Attr("db.namespace"))}", true),
+                ResourceType.MessagingDestination => ($"lowerUTF8(SpanAttributes['messaging.system']) = {scope.Add("String", Attr("messaging.system"))} AND SpanAttributes['messaging.destination.name'] = {scope.Add("String", Attr("messaging.destination.name"))}", true),
+                ResourceType.Host => ($"(lowerUTF8(ResourceAttributes['host.id']) = {scope.Add("String", resource.Key)} OR (ResourceAttributes['host.id'] = '' AND lowerUTF8({Host}) = {scope.Add("String", resource.Key)}))", false),
+                ResourceType.Container => ($"lowerUTF8(ResourceAttributes['container.id']) = {scope.Add("String", resource.Key)}", false),
+                _ => (string.Join(" AND ", resource.Attributes.Where(kv => kv.Key.StartsWith("k8s.", StringComparison.Ordinal))
+                    .Select(kv => $"ResourceAttributes[{scope.Add("String", kv.Key)}] = {scope.Add("String", kv.Value)}").DefaultIfEmpty("false")), false),
+            };
+        }
+
+        /// <summary>
+        /// The calling side of a dependency: the source service's client or producer spans toward the target. For a service
+        /// target, spans whose child runs in the target service (how discovery observed it).
+        /// </summary>
+        private static async Task<string> DependencyConditionAsync(Scope scope, PlatformDbContext db, Dependency dependency, CancellationToken ct)
+        {
+            var source = await db.Services.AsNoTracking().SingleAsync(s => s.Id == dependency.SourceServiceId, ct);
+            var condition = ServiceCondition(scope, source);
+            if (dependency.TargetServiceId is { } targetId)
+            {
+                var target = await db.Services.AsNoTracking().SingleAsync(s => s.Id == targetId, ct);
+                return $"""
+                    {condition} AND SpanKind IN ('Client', 'Producer') AND (TraceId, SpanId) IN (
+                        SELECT TraceId, ParentSpanId FROM otel.otel_traces
+                        WHERE {Tenant} AND Timestamp >= {From} AND Timestamp < {To} + INTERVAL 5 MINUTE
+                          AND {ServiceCondition(scope, target)} AND SpanKind IN ('Server', 'Consumer'))
+                    """;
+            }
+            var resource = await db.Resources.AsNoTracking().SingleAsync(r => r.Id == dependency.TargetResourceId, ct);
+            return $"{condition} AND SpanKind IN ('Client', 'Producer', 'Consumer') AND {ResourceCondition(scope, resource).Condition}";
+        }
+
+        private static IResult? Limit(int? limit, out int take)
+        {
+            take = limit ?? Cursor.DefaultLimit;
+            return take is < 1 or > Cursor.MaxLimit ? Bad("Invalid limit", $"limit must be between 1 and {Cursor.MaxLimit}.") : null;
+        }
+
+        private static async Task<IResult> Run(Func<Task<IResult>> query)
+        {
+            try
+            {
+                return await query();
+            }
+            catch (FilterException e)
+            {
+                return e.Problem;
+            }
+        }
+
+        private static Dictionary<string, string> Bounded(object value)
+            => ((IDictionary<string, string>)value).OrderBy(kv => kv.Key, StringComparer.Ordinal).Take(MaxAttributes)
+                .ToDictionary(kv => kv.Key, kv => kv.Value.Length > 1024 ? kv.Value[..1024] : kv.Value);
+
+        private static string? NonEmpty(string value) => value.Length == 0 ? null : value;
+
+        private static double Ms(object nanos) => Convert.ToDouble(nanos) / 1_000_000d;
+
+        // ─── traces ───
+
+        /// <summary>
+        /// Traces with at least one span meeting every filter in the window, newest first. <c>status=error</c> keeps traces
+        /// with a failed span, <c>status=ok</c> traces without one; the duration bounds apply to the matching span. To page
+        /// back, pass the oldest <c>startedAt</c> as <c>to</c>.
+        /// </summary>
+        private static Task<IResult> SearchTracesAsync(HttpContext http, PlatformDbContext db, ClickHouseTelemetrySource clickHouse,
+            TimeProvider clock, [AsParameters] Filter filter, string? status, double? minDurationMs, double? maxDurationMs, int? limit,
+            CancellationToken ct) => Run(async () =>
+        {
+            if (Limit(limit, out var take) is { } invalid) return invalid;
+            if (status is not (null or "error" or "ok")) return Bad("Invalid status", "status is error or ok.");
+            if (minDurationMs is < 0 || maxDurationMs is < 0) return Bad("Invalid duration", "Durations are zero or more.");
+            var scope = await ScopeAsync(http, db, clock, filter, take + 1, MaxSearchRange, ct);
+            if (status == "error") scope.SpanConditions.Add("StatusCode = 'Error'");
+            if (minDurationMs is { } min) scope.SpanConditions.Add($"Duration >= {scope.Add("UInt64", (ulong)(min * 1_000_000))}");
+            if (maxDurationMs is { } max) scope.SpanConditions.Add($"Duration <= {scope.Add("UInt64", (ulong)(max * 1_000_000))}");
+            // The matching traces, then every span of those traces near the window (a trace may start before it).
+            const string Root = "ParentSpanId = ''";
+            var sql = $"""
+                WITH matched AS (
+                    SELECT TraceId FROM otel.otel_traces WHERE {scope.Where("Timestamp", spans: true)}
+                    GROUP BY TraceId ORDER BY max(Timestamp) DESC LIMIT {ClickHouseTelemetrySource.Limit}
+                )
+                SELECT TraceId, min(Timestamp) AS started,
+                       max(toUnixTimestamp64Nano(Timestamp) + Duration) - min(toUnixTimestamp64Nano(Timestamp)) AS duration,
+                       if(countIf({Root}) > 0, argMinIf(ServiceName, Timestamp, {Root}), argMin(ServiceName, Timestamp)),
+                       if(countIf({Root}) > 0, argMinIf(SpanName, Timestamp, {Root}), argMin(SpanName, Timestamp)),
+                       if(countIf({Root}) > 0, argMinIf({Environment}, Timestamp, {Root}), argMin({Environment}, Timestamp)),
+                       if(countIf({Root}) > 0, argMinIf({Instance}, Timestamp, {Root}), argMin({Instance}, Timestamp)),
+                       if(countIf({Root}) > 0, argMinIf({Host}, Timestamp, {Root}), argMin({Host}, Timestamp)),
+                       count() AS spans, countIf(StatusCode = 'Error') AS errors, groupUniqArray(20)(toString(ServiceName))
+                FROM otel.otel_traces
+                WHERE {Tenant} AND Timestamp >= {From} - INTERVAL 1 HOUR AND Timestamp < {To} + INTERVAL 1 HOUR
+                  AND TraceId IN (SELECT TraceId FROM matched)
+                GROUP BY TraceId
+                {(status == "ok" ? "HAVING errors = 0" : "")}
+                ORDER BY started DESC
+                """;
+            var rows = await clickHouse.QueryAsync(sql, scope.Window, r => new TraceSummaryDto(r.GetString(0), Utc(r.GetValue(1)),
+                Ms(r.GetValue(2)), r.GetString(3), r.GetString(4), NonEmpty(r.GetString(5)), NonEmpty(r.GetString(6)), NonEmpty(r.GetString(7)),
+                Convert.ToInt64(r.GetValue(8)), Convert.ToInt64(r.GetValue(9)), ((string[])r.GetValue(10)).Order(StringComparer.Ordinal).ToList()),
+                ct, scope.Parameters);
+            return Results.Ok(new TelemetryPage<TraceSummaryDto>(rows.Take(take).ToList(), rows.Count > take));
+        });
+
+        /// <summary>Every span of one trace (at most <see cref="MaxSpans"/>), in start order.</summary>
+        private static Task<IResult> GetTraceAsync(HttpContext http, ClickHouseTelemetrySource clickHouse, string traceId, CancellationToken ct)
+            => Run(async () =>
+        {
+            traceId = TraceIdOf(traceId);
+            var tenantKey = (string)http.Items[TenantKeyItem]!;
+            var parameters = new Dictionary<string, object> { ["trace"] = traceId };
+            // The exporter's per-trace time index bounds the span query; it carries no tenant, so it only narrows time.
+            var bounds = await clickHouse.QueryAsync(
+                "SELECT min(Start), max(End) FROM otel.otel_traces_trace_id_ts WHERE TraceId = {trace:String} HAVING count() > 0",
+                new TelemetryWindow(tenantKey, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, 1),
+                r => (Start: Utc(r.GetValue(0)), End: Utc(r.GetValue(1))), ct, parameters);
+            if (bounds.Count == 0) throw Missing("Trace");
+            var window = new TelemetryWindow(tenantKey, bounds[0].Start.AddMinutes(-1), bounds[0].End.AddMinutes(1), MaxSpans + 1);
+            var spans = await clickHouse.QueryAsync($"""
+                SELECT SpanId, ParentSpanId, ServiceName, {Environment}, {Instance}, {Host}, SpanName, SpanKind, Timestamp, Duration,
+                       StatusCode, StatusMessage, ScopeName, ScopeVersion, SpanAttributes, Events.Name, Events.Timestamp,
+                       Events.Attributes, Links.TraceId, Links.SpanId
+                FROM otel.otel_traces
+                WHERE {Tenant} AND Timestamp >= {From} AND Timestamp < {To} AND TraceId = {"{trace:String}"}
+                ORDER BY Timestamp
+                LIMIT {ClickHouseTelemetrySource.Limit}
+                """, window, r => new SpanDto(r.GetString(0), NonEmpty(r.GetString(1)), r.GetString(2), NonEmpty(r.GetString(3)),
+                    NonEmpty(r.GetString(4)), NonEmpty(r.GetString(5)), r.GetString(6), r.GetString(7), Utc(r.GetValue(8)), Ms(r.GetValue(9)),
+                    r.GetString(10), NonEmpty(r.GetString(11)), NonEmpty(r.GetString(12)), NonEmpty(r.GetString(13)), Bounded(r.GetValue(14)),
+                    ((string[])r.GetValue(15)).Select((name, i) => new SpanEventDto(name, Utc(((Array)r.GetValue(16)).GetValue(i)!),
+                        Bounded(((Array)r.GetValue(17)).GetValue(i)!))).Take(MaxAttributes).ToList(),
+                    ((string[])r.GetValue(18)).Zip((string[])r.GetValue(19)).Take(MaxAttributes).Select(l => new SpanLinkDto(l.First, l.Second)).ToList()),
+                ct, parameters);
+            // Another tenant's trace and an unknown one look the same.
+            if (spans.Count == 0) throw Missing("Trace");
+            return Results.Ok(new TraceDto(traceId, spans.Take(MaxSpans).ToList(), spans.Count > MaxSpans));
+        });
+
+        // ─── logs ───
+
+        /// <summary>
+        /// Log records newest first. <c>minSeverity</c> is an OpenTelemetry severity number (9 info, 13 warn, 17 error); <c>q</c>
+        /// is a case-insensitive substring of the body. <c>traceId</c> and <c>spanId</c> give a trace's or a span's logs.
+        /// </summary>
+        private static Task<IResult> SearchLogsAsync(HttpContext http, PlatformDbContext db, ClickHouseTelemetrySource clickHouse,
+            TimeProvider clock, Guid? serviceId, string? environment, Guid? instanceId, Guid? resourceId, string? traceId, string? spanId,
+            DateTimeOffset? from, DateTimeOffset? to, int? minSeverity, string? q, int? limit, CancellationToken ct) => Run(async () =>
+        {
+            if (Limit(limit, out var take) is { } invalid) return invalid;
+            if (minSeverity is < 0 or > 24) return Bad("Invalid minSeverity", "minSeverity is a severity number from 0 to 24.");
+            if (q is { Length: > MaxText }) return Bad("Invalid q", $"q is at most {MaxText} characters.");
+            var resource = resourceId is { } r ? await db.Resources.AsNoTracking().SingleOrDefaultAsync(x => x.Id == r, ct) : null;
+            if (resource is { Type: ResourceType.Database or ResourceType.MessagingDestination })
+            {
+                return Bad("Invalid resourceId", "Logs are filtered by host, container or pod; a database or destination has no logs.");
+            }
+            var scope = await ScopeAsync(http, db, clock, new Filter
+            {
+                ServiceId = serviceId, Environment = environment, InstanceId = instanceId, ResourceId = resourceId, TraceId = traceId, From = from, To = to,
+            }, take + 1, MaxSearchRange, ct);
+            if (spanId is { Length: > 0 })
+            {
+                if (!SpanIdPattern.IsMatch(spanId.ToLowerInvariant())) return Bad("Invalid span id", "A span id is 16 hexadecimal characters.");
+                scope.Conditions.Add($"SpanId = {scope.Add("String", spanId.ToLowerInvariant())}");
+            }
+            if (minSeverity is { } severity) scope.Conditions.Add($"SeverityNumber >= {scope.Add("UInt8", (byte)severity)}");
+            if (q is { Length: > 0 }) scope.Conditions.Add($"positionCaseInsensitiveUTF8(Body, {scope.Add("String", q)}) > 0");
+            var rows = await clickHouse.QueryAsync($"""
+                SELECT Timestamp, SeverityText, SeverityNumber, ServiceName, {Environment}, {Instance},
+                       substringUTF8(Body, 1, {MaxBody}), lengthUTF8(Body) > {MaxBody}, TraceId, SpanId, LogAttributes
+                FROM otel.otel_logs
+                WHERE {scope.Where("Timestamp")}
+                ORDER BY Timestamp DESC
+                LIMIT {ClickHouseTelemetrySource.Limit}
+                """, scope.Window, x => new LogDto(Utc(x.GetValue(0)), x.GetString(1), Convert.ToInt32(x.GetValue(2)), x.GetString(3),
+                    NonEmpty(x.GetString(4)), NonEmpty(x.GetString(5)), x.GetString(6), Convert.ToBoolean(x.GetValue(7)),
+                    NonEmpty(x.GetString(8)), NonEmpty(x.GetString(9)), Bounded(x.GetValue(10))),
+                ct, scope.Parameters);
+            return Results.Ok(new TelemetryPage<LogDto>(rows.Take(take).ToList(), rows.Count > take));
+        });
+
+        // ─── operations ───
+
+        /// <summary>
+        /// A service's operations: its entry spans (server, consumer, or a trace root) by name and kind, busiest first, with
+        /// throughput, error rate and latency percentiles over the window.
+        /// </summary>
+        private static Task<IResult> ListOperationsAsync(HttpContext http, PlatformDbContext db, ClickHouseTelemetrySource clickHouse,
+            TimeProvider clock, Guid? serviceId, string? environment, Guid? instanceId, DateTimeOffset? from, DateTimeOffset? to, int? limit,
+            CancellationToken ct) => Run(async () =>
+        {
+            if (serviceId is null) return Bad("Invalid serviceId", "serviceId is required.");
+            if (Limit(limit, out var take) is { } invalid) return invalid;
+            var scope = await ScopeAsync(http, db, clock, new Filter
+            {
+                ServiceId = serviceId, Environment = environment, InstanceId = instanceId, From = from, To = to,
+            }, take + 1, MaxSeriesRange, ct);
+            var seconds = Math.Max(1, (scope.Window.To - scope.Window.From).TotalSeconds);
+            var rows = await clickHouse.QueryAsync($"""
+                SELECT SpanName, toString(SpanKind), count() AS n, countIf(StatusCode = 'Error') / n,
+                       quantiles(0.5, 0.95, 0.99)(Duration), max(Timestamp)
+                FROM otel.otel_traces
+                WHERE {scope.Where("Timestamp")} AND (SpanKind IN ('Server', 'Consumer') OR ParentSpanId = '')
+                GROUP BY SpanName, SpanKind
+                ORDER BY n DESC
+                LIMIT {ClickHouseTelemetrySource.Limit}
+                """, scope.Window, r =>
+                {
+                    var q = ((Array)r.GetValue(4)).Cast<object>().Select(Ms).ToArray();
+                    var count = Convert.ToInt64(r.GetValue(2));
+                    return new OperationDto(r.GetString(0), r.GetString(1), count, count / seconds, Convert.ToDouble(r.GetValue(3)),
+                        q[0], q[1], q[2], Utc(r.GetValue(5)));
+                }, ct, scope.Parameters);
+            return Results.Ok(new TelemetryPage<OperationDto>(rows.Take(take).ToList(), rows.Count > take));
+        });
+
+        // ─── dependencies ───
+
+        /// <summary>
+        /// Evidence for one dependency edge from the caller's spans: call count, error rate, p95, last seen, and the slowest
+        /// and most recent failed traces as representatives.
+        /// </summary>
+        private static Task<IResult> GetDependencyEvidenceAsync(HttpContext http, PlatformDbContext db, ClickHouseTelemetrySource clickHouse,
+            TimeProvider clock, Guid dependencyId, string? environment, DateTimeOffset? from, DateTimeOffset? to, CancellationToken ct) => Run(async () =>
+        {
+            var scope = await ScopeAsync(http, db, clock, new Filter { DependencyId = dependencyId, Environment = environment, From = from, To = to },
+                5, MaxSeriesRange, ct);
+            var dependency = await db.Dependencies.AsNoTracking().SingleAsync(d => d.Id == dependencyId, ct);
+            var rows = await clickHouse.QueryAsync($"""
+                SELECT count() AS n, if(n > 0, countIf(StatusCode = 'Error') / n, 0), if(n > 0, quantile(0.95)(Duration), NULL),
+                       if(n > 0, max(Timestamp), NULL),
+                       arrayMap(x -> x.2, arraySlice(arrayReverseSort(x -> x.1, groupArray((Duration, TraceId))), 1, {ClickHouseTelemetrySource.Limit})),
+                       arrayMap(x -> x.2, arraySlice(arrayReverseSort(x -> x.1, groupArrayIf((Timestamp, TraceId), StatusCode = 'Error')), 1, {ClickHouseTelemetrySource.Limit}))
+                FROM otel.otel_traces
+                WHERE {scope.Where("Timestamp", spans: true)}
+                """, scope.Window, r => new DependencyEvidenceDto(dependencyId, dependency.Relation.ToString(), dependency.Confidence.ToString(),
+                    Convert.ToInt64(r.GetValue(0)), Convert.ToDouble(r.GetValue(1)), r.IsDBNull(2) ? null : Ms(r.GetValue(2)),
+                    r.IsDBNull(3) ? null : Utc(r.GetValue(3)), ((string[])r.GetValue(4)).Distinct().ToList(), ((string[])r.GetValue(5)).Distinct().ToList()),
+                ct, scope.Parameters);
+            return Results.Ok(rows[0]);
+        });
+
+        // ─── metrics ───
+
+        private static readonly (string Type, string Table)[] MetricTables =
+            [("gauge", "otel_metrics_gauge"), ("sum", "otel_metrics_sum"), ("histogram", "otel_metrics_histogram")];
+
+        /// <summary>The metrics reported in the window, by name.</summary>
+        private static Task<IResult> ListMetricsAsync(HttpContext http, PlatformDbContext db, ClickHouseTelemetrySource clickHouse,
+            TimeProvider clock, Guid? serviceId, string? environment, Guid? instanceId, Guid? resourceId, DateTimeOffset? from,
+            DateTimeOffset? to, CancellationToken ct) => Run(async () =>
+        {
+            var scope = await MetricScopeAsync(http, db, clock, serviceId, environment, instanceId, resourceId, from, to, Cursor.MaxLimit + 1, ct);
+            var where = scope.Where("TimeUnix");
+            var rows = await clickHouse.QueryAsync($"""
+                SELECT MetricName, any(type), any(MetricUnit), any(MetricDescription) FROM (
+                {string.Join("\nUNION ALL\n", MetricTables.Select(t =>
+                    $"SELECT MetricName, '{t.Type}' AS type, MetricUnit, MetricDescription FROM otel.{t.Table} WHERE {where} LIMIT 1 BY MetricName"))}
+                )
+                GROUP BY MetricName ORDER BY MetricName
+                LIMIT {ClickHouseTelemetrySource.Limit}
+                """, scope.Window, r => new MetricInfoDto(r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3)), ct, scope.Parameters);
+            return Results.Ok(new TelemetryPage<MetricInfoDto>(rows.Take(Cursor.MaxLimit).ToList(), rows.Count > Cursor.MaxLimit));
+        });
+
+        private static async Task<Scope> MetricScopeAsync(HttpContext http, PlatformDbContext db, TimeProvider clock, Guid? serviceId,
+            string? environment, Guid? instanceId, Guid? resourceId, DateTimeOffset? from, DateTimeOffset? to, int limit, CancellationToken ct)
+        {
+            var scope = await ScopeAsync(http, db, clock, new Filter
+            {
+                ServiceId = serviceId, Environment = environment, InstanceId = instanceId, ResourceId = resourceId, From = from, To = to,
+            }, limit, MaxSeriesRange, ct);
+            return scope.SpanConditions.Count > 0
+                ? throw Invalid("Invalid resourceId", "Metrics are filtered by host, container or pod; a database or destination has no metrics of its own.")
+                : scope;
+        }
+
+        /// <summary>
+        /// One metric as a series over the window, summed across its series: a gauge as the average of each bucket; a
+        /// monotonic sum as a rate per second (a counter reset counts from zero); another sum as its average; a histogram
+        /// as the average observed value (delta of Sum over delta of Count). A bucket without data has no point: no data
+        /// is not zero.
+        /// </summary>
+        private static Task<IResult> GetSeriesAsync(HttpContext http, PlatformDbContext db, ClickHouseTelemetrySource clickHouse,
+            TimeProvider clock, string? name, Guid? serviceId, string? environment, Guid? instanceId, Guid? resourceId,
+            DateTimeOffset? from, DateTimeOffset? to, int? stepSeconds, CancellationToken ct) => Run(async () =>
+        {
+            if (name is null || !MetricNamePattern.IsMatch(name)) return Bad("Invalid name", "name is a metric name.");
+            var scope = await MetricScopeAsync(http, db, clock, serviceId, environment, instanceId, resourceId, from, to, MaxPoints, ct);
+            var step = Step(scope.Window, stepSeconds);
+            var stepParameter = scope.Add("UInt32", (uint)step);
+            var where = $"{scope.Where("TimeUnix")} AND MetricName = {scope.Add("String", name)}";
+
+            var info = await clickHouse.QueryAsync($"""
+                SELECT type, unit, monotonic FROM (
+                    SELECT 'gauge' AS type, any(MetricUnit) AS unit, false AS monotonic, count() AS n FROM otel.otel_metrics_gauge WHERE {where}
+                    UNION ALL SELECT 'sum', any(MetricUnit), toBool(max(IsMonotonic)), count() FROM otel.otel_metrics_sum WHERE {where}
+                    UNION ALL SELECT 'histogram', any(MetricUnit), false, count() FROM otel.otel_metrics_histogram WHERE {where}
+                ) WHERE n > 0 ORDER BY n DESC LIMIT 1
+                """, scope.Window, r => (Type: r.GetString(0), Unit: r.GetString(1), Monotonic: Convert.ToBoolean(r.GetValue(2))), ct, scope.Parameters);
+            if (info.Count == 0) return Results.Ok(new SeriesDto(name, "unknown", "", "none", step, []));
+            var (type, unit, monotonic) = info[0];
+
+            var bucket = $"toStartOfInterval(TimeUnix, toIntervalSecond({stepParameter}))";
+            const string Series = "cityHash64(ResourceAttributes, Attributes)";
+            const string Window = "OVER (PARTITION BY series ORDER BY b ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)";
+            var limitRows = ClickHouseTelemetrySource.Limit;
+            var (aggregation, sql) = type switch
+            {
+                "gauge" => ("avg", $"SELECT {bucket} AS b, avg(Value) FROM otel.otel_metrics_gauge WHERE {where} GROUP BY b ORDER BY b LIMIT {limitRows}"),
+                "sum" when !monotonic => ("avg", $"SELECT {bucket} AS b, avg(Value) FROM otel.otel_metrics_sum WHERE {where} GROUP BY b ORDER BY b LIMIT {limitRows}"),
+                // The first bucket of each series has no previous value (lagInFrame defaults to the value itself, delta 0).
+                "sum" => ("rate", $"""
+                    SELECT b, sum(d) / {stepParameter} FROM (
+                        SELECT b, if(v >= prev, v - prev, v) AS d FROM (
+                            SELECT series, b, v, lagInFrame(v, 1, v) {Window} AS prev FROM (
+                                SELECT {Series} AS series, {bucket} AS b, max(Value) AS v FROM otel.otel_metrics_sum WHERE {where} GROUP BY series, b)))
+                    GROUP BY b ORDER BY b LIMIT {limitRows}
+                    """),
+                _ => ("avg", $"""
+                    SELECT b, if(sum(dc) > 0, sum(ds) / sum(dc), NULL) FROM (
+                        SELECT b, if(c >= pc, c - pc, c) AS dc, if(c >= pc, s - ps, s) AS ds FROM (
+                            SELECT series, b, c, s, lagInFrame(c, 1, c) {Window} AS pc, lagInFrame(s, 1, s) {Window} AS ps FROM (
+                                SELECT {Series} AS series, {bucket} AS b, max(Count) AS c, max(Sum) AS s FROM otel.otel_metrics_histogram WHERE {where} GROUP BY series, b)))
+                    GROUP BY b ORDER BY b LIMIT {limitRows}
+                    """),
+            };
+            var points = await clickHouse.QueryAsync(sql, scope.Window,
+                r => new PointDto(Utc(r.GetValue(0)), r.IsDBNull(1) ? null : Convert.ToDouble(r.GetValue(1))), ct, scope.Parameters);
+            return Results.Ok(new SeriesDto(name, type, unit, aggregation, step, points));
+        });
+
+        /// <summary>Requests per second, error rate and p95 latency of a service's entry spans, per bucket; empty buckets have no point.</summary>
+        private static Task<IResult> GetServiceStatsAsync(HttpContext http, PlatformDbContext db, ClickHouseTelemetrySource clickHouse,
+            TimeProvider clock, Guid? serviceId, string? environment, Guid? instanceId, string? operation, DateTimeOffset? from,
+            DateTimeOffset? to, int? stepSeconds, CancellationToken ct) => Run(async () =>
+        {
+            if (serviceId is null) return Bad("Invalid serviceId", "serviceId is required.");
+            var scope = await ScopeAsync(http, db, clock, new Filter
+            {
+                ServiceId = serviceId, Environment = environment, InstanceId = instanceId, Operation = operation, From = from, To = to,
+            }, MaxPoints, MaxSeriesRange, ct);
+            var step = scope.Add("UInt32", (uint)Step(scope.Window, stepSeconds));
+            var points = await clickHouse.QueryAsync($"""
+                SELECT toStartOfInterval(Timestamp, toIntervalSecond({step})) AS b, count() / {step},
+                       countIf(StatusCode = 'Error') / count(), quantile(0.95)(Duration) / 1e6
+                FROM otel.otel_traces
+                WHERE {scope.Where("Timestamp", spans: true)} AND (SpanKind IN ('Server', 'Consumer') OR ParentSpanId = '')
+                GROUP BY b ORDER BY b
+                LIMIT {ClickHouseTelemetrySource.Limit}
+                """, scope.Window, r => new ServiceStatsPointDto(Utc(r.GetValue(0)), Convert.ToDouble(r.GetValue(1)),
+                    Convert.ToDouble(r.GetValue(2)), r.IsDBNull(3) ? null : Convert.ToDouble(r.GetValue(3))), ct, scope.Parameters);
+            return Results.Ok(new ServiceStatsDto(Step(scope.Window, stepSeconds), points));
+        });
+
+        /// <summary>The bucket size: given, or the window over about 60 points; never more than <see cref="MaxPoints"/> points.</summary>
+        private static int Step(TelemetryWindow window, int? stepSeconds)
+        {
+            var range = (window.To - window.From).TotalSeconds;
+            var step = stepSeconds ?? Math.Max(10, (int)Math.Ceiling(range / 60 / 10) * 10);
+            return step < 10 || range / step > MaxPoints
+                ? throw Invalid("Invalid stepSeconds", $"stepSeconds is at least 10 and gives at most {MaxPoints} points.")
+                : step;
+        }
+
+        // ─── search ───
+
+        /// <summary>
+        /// Direct lookup (Console requirements §13): a trace id, a span id (last 24 hours), or services by name. Ids that are
+        /// not found return no hit rather than an error.
+        /// </summary>
+        private static Task<IResult> SearchAsync(HttpContext http, PlatformDbContext db, ClickHouseTelemetrySource clickHouse,
+            TimeProvider clock, string? q, CancellationToken ct) => Run(async () =>
+        {
+            q = q?.Trim();
+            if (string.IsNullOrEmpty(q) || q.Length > MaxText) return Bad("Invalid q", $"q is 1 to {MaxText} characters.");
+            var hits = new List<SearchHitDto>();
+            var tenantKey = (string)http.Items[TenantKeyItem]!;
+            var lower = q.ToLowerInvariant();
+            if (TraceIdPattern.IsMatch(lower))
+            {
+                var found = await clickHouse.QueryAsync("SELECT count() FROM otel.otel_traces_trace_id_ts WHERE TraceId = {trace:String}",
+                    new TelemetryWindow(tenantKey, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, 1), r => Convert.ToInt64(r.GetValue(0)), ct,
+                    new Dictionary<string, object> { ["trace"] = lower });
+                if (found[0] > 0) hits.Add(new SearchHitDto("trace", lower, $"Trace {lower}", lower));
+            }
+            else if (SpanIdPattern.IsMatch(lower))
+            {
+                var now = clock.GetUtcNow();
+                var spans = await clickHouse.QueryAsync($"""
+                    SELECT TraceId, ServiceName, SpanName FROM otel.otel_traces
+                    WHERE {Tenant} AND Timestamp >= {From} AND Timestamp < {To} AND SpanId = {"{span:String}"}
+                    LIMIT {ClickHouseTelemetrySource.Limit}
+                    """, new TelemetryWindow(tenantKey, now - MaxSearchRange, now, 1), r => (r.GetString(0), r.GetString(1), r.GetString(2)), ct,
+                    new Dictionary<string, object> { ["span"] = lower });
+                hits.AddRange(spans.Select(s => new SearchHitDto("span", lower, $"{s.Item2}: {s.Item3}", s.Item1)));
+            }
+            var tenantId = await db.Tenants.AsNoTracking().Where(t => t.Key == tenantKey).Select(t => t.Id).SingleAsync(ct);
+            var pattern = $"%{q.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_")}%";
+            var services = await db.Services.AsNoTracking()
+                .Where(s => s.TenantId == tenantId && (EF.Functions.ILike(s.Name, pattern, "\\") || EF.Functions.ILike(s.Namespace, pattern, "\\")))
+                .OrderBy(s => s.Name).Take(20).ToListAsync(ct);
+            hits.AddRange(services.Select(s => new SearchHitDto("service", s.Id.ToString(), Health.HealthRunner.Name(s), null)));
+            return Results.Ok(new TelemetryPage<SearchHitDto>(hits, false));
+        });
+    }
+}

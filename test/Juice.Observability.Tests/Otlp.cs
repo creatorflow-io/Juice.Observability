@@ -100,6 +100,28 @@ namespace Juice.Observability.Tests
             }),
         };
 
+        /// <summary>One resource with its log records: (time, severity number, body, trace id, span id).</summary>
+        public static JsonObject Logs((string Key, string Value)[] resource,
+            params (DateTimeOffset At, int Severity, string Body, string? TraceId, string? SpanId)[] records) => new()
+        {
+            ["resourceLogs"] = new JsonArray(new JsonObject
+            {
+                ["resource"] = new JsonObject { ["attributes"] = Attributes(resource) },
+                ["scopeLogs"] = new JsonArray(new JsonObject
+                {
+                    ["scope"] = new JsonObject { ["name"] = "Juice.Observability.Tests" },
+                    ["logRecords"] = new JsonArray(records.Select(r => (JsonNode)new JsonObject
+                    {
+                        ["timeUnixNano"] = (r.At.ToUnixTimeMilliseconds() * 1_000_000).ToString(),
+                        ["severityNumber"] = r.Severity,
+                        ["body"] = new JsonObject { ["stringValue"] = r.Body },
+                        ["traceId"] = r.TraceId ?? "",
+                        ["spanId"] = r.SpanId ?? "",
+                    }).ToArray()),
+                }),
+            }),
+        };
+
         private static JsonArray Attributes((string Key, string Value)[] attributes)
             => new(attributes.Select(a => (JsonNode)new JsonObject
             {

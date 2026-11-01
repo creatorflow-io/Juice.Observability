@@ -202,7 +202,7 @@ namespace Juice.Observability.Tests
 
             var orders = await JsonAsync(await Get(client, $"{tenant}/resources/{seed.Orders}", token));
             Assert.Equal("Degraded", orders.GetProperty("health")[0].GetProperty("state").GetString());
-            var link = orders.GetProperty("grafanaUrl").GetString()!;
+            var link = orders.GetProperty("links")[0].GetProperty("url").GetString()!;
             Assert.StartsWith("http://grafana.example:3000/d/juice-overview?var-service=orders&from=", link);
 
             var topology = await JsonAsync(await Get(client, $"{tenant}/topology?environment=production", token));
@@ -321,7 +321,7 @@ namespace Juice.Observability.Tests
                 builder.UseSetting("Auth:Audience", audience);
                 builder.UseSetting("Discovery:Enabled", "false");
                 builder.UseSetting("Health:Enabled", "false");
-                builder.UseSetting("Grafana:BaseUrl", "http://grafana.example:3000/ignored/path");
+                builder.UseSetting("Integrations:Grafana:BaseUrl", "http://grafana.example:3000/ignored/path");
                 builder.UseSetting("Database:Migrate", "true");
                 builder.UseSetting("Rules:Enabled", "false");
                 builder.UseSetting("Webhooks:Enabled", "false");

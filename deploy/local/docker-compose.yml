@@ -1,7 +1,7 @@
 # Juice Observability — local single-tenant stack (roadmap Phase 1, Track A). Run scripts/init.sh once first.
 #
 #   OTLP (TLS + bearer token)  localhost:4317 gRPC, localhost:4318 HTTP
-#   Grafana                    http://localhost:3000  (sign in with Keycloak; demo users in README.md)
+#   Grafana (optional)         http://localhost:3000  (--profile grafana; sign in with Keycloak; demo users in README.md)
 #   Keycloak                   http://localhost:8080  (realm juice; admin console: admin / KEYCLOAK_ADMIN_PASSWORD)
 #   ClickHouse HTTP            http://localhost:8123  (bound to 127.0.0.1)
 #   PostgreSQL                 localhost:5433         (platform domain database, used by Track B)
@@ -57,8 +57,10 @@ services:
       clickhouse:
         condition: service_healthy
 
+  # Optional (UI architecture §5): only with --profile grafana. Juice Console is the product UI.
   grafana:
     image: grafana/grafana:13.2.5
+    profiles: [grafana]
     environment:
       GF_SERVER_ROOT_URL: http://localhost:3000
       # Local admin account: API and break-glass use only (basic auth). People sign in through Keycloak.
@@ -161,7 +163,7 @@ services:
       Database__Migrate: "true"
       Rules__File: /config/rules.json
       Webhooks__File: /config/webhooks.json
-      Grafana__BaseUrl: http://localhost:3000
+      Integrations__Grafana__BaseUrl: http://localhost:3000
     volumes:
       - ./rules.json:/config/rules.json:ro
       - ./webhooks.json:/config/webhooks.json:ro

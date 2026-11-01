@@ -27,7 +27,7 @@ builder.Services.AddPlatformDiscovery(builder.Configuration);
 builder.Services.AddPlatformHealth(builder.Configuration);
 builder.Services.AddPlatformRules(builder.Configuration);
 builder.Services.AddPlatformWebhooks(builder.Configuration);
-builder.Services.Configure<GrafanaOptions>(builder.Configuration.GetSection(GrafanaOptions.Section));
+builder.Services.Configure<IntegrationOptions>(builder.Configuration.GetSection(IntegrationOptions.Section));
 builder.Services.AddPlatformAuthentication(builder.Configuration);
 builder.Services.AddPlatformProblemDetails();
 builder.Services.AddHealthChecks().AddCheck<DatabaseHealthCheck>("database", tags: ["ready"]);

@@ -83,7 +83,7 @@ namespace Juice.Observability.Tests
             LocalStack.RequireAvailable();
             await using var database = await LocalStack.CreateDatabaseAsync();
             var (tenant, firing, resolved) = await SeedAsync(database);
-            await using var factory = new ApiFactory(database, settings: new Dictionary<string, string> { ["Grafana:BaseUrl"] = "http://grafana.example:3000" });
+            await using var factory = new ApiFactory(database, settings: new Dictionary<string, string> { ["Integrations:Grafana:BaseUrl"] = "http://grafana.example:3000" });
             using var client = factory.CreateClient();
             var (viewer, operatorToken) = (await LocalStack.TokenAsync("victor"), await LocalStack.TokenAsync("erin"));
             var alerts = $"/api/v1/tenants/{tenant}/alerts";
@@ -95,7 +95,9 @@ namespace Juice.Observability.Tests
             Assert.Equal(["Pending", "Firing"], detail.GetProperty("history").EnumerateArray().Select(h => h.GetProperty("to").GetString()));
             Assert.Equal("0.25", detail.GetProperty("evidence").GetProperty("value").GetString());
             Assert.Equal("Unhealthy", detail.GetProperty("subjectHealth")[0].GetProperty("state").GetString());
-            Assert.StartsWith("http://grafana.example:3000/d/juice-overview?var-service=orders&", detail.GetProperty("grafanaUrl").GetString());
+            var links = detail.GetProperty("links");
+            Assert.Equal("grafana", links[0].GetProperty("integration").GetString());
+            Assert.StartsWith("http://grafana.example:3000/d/juice-overview?var-service=orders&", links[0].GetProperty("url").GetString());
 
             // A viewer may read but not acknowledge; the attempt is audited.
             using (var denied = await Ack(client, $"{alerts}/{firing}/acknowledgement", viewer, "looking", key: null))

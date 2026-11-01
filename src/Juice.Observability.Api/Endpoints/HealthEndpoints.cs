@@ -13,15 +13,6 @@ namespace Juice.Observability.Api.Endpoints
         IReadOnlyList<string> Reasons, string PolicyVersion, DateTimeOffset EvaluatedAt, DateTimeOffset EvidenceFrom,
         DateTimeOffset EvidenceTo, DateTimeOffset? LastEvidenceAt, DateTimeOffset Since, bool Stale);
 
-    /// <summary>Configuration section <c>Grafana</c>: where investigation links point.</summary>
-    public sealed class GrafanaOptions
-    {
-        public const string Section = "Grafana";
-
-        /// <summary>For example <c>http://localhost:3000</c>. Empty: no links.</summary>
-        public string BaseUrl { get; set; } = "";
-    }
-
     public static class HealthEndpoints
     {
         public static RouteGroupBuilder MapHealthEndpoints(this RouteGroupBuilder tenant)
@@ -91,21 +82,6 @@ namespace Juice.Observability.Api.Endpoints
                 names.GetValueOrDefault(r.SubjectId, ""), r.EnvironmentId is { } e ? environments.GetValueOrDefault(e) : null,
                 r.State.ToString(), r.ReasonCodes, r.PolicyVersion, r.EvaluatedAt, r.EvidenceFrom, r.EvidenceTo, r.LastEvidenceAt,
                 r.Since, r.EvaluatedAt < staleBefore)).ToList();
-        }
-
-        /// <summary>
-        /// A link to the Juice overview dashboard for one service over the last hour (requirements §5.2): the name comes
-        /// from the platform's own record and is URL-encoded, and the time range is computed here, never taken from input.
-        /// </summary>
-        internal static string? GrafanaLink(GrafanaOptions grafana, string serviceName, DateTimeOffset now)
-        {
-            if (!Uri.TryCreate(grafana.BaseUrl, UriKind.Absolute, out var baseUri) || baseUri.Scheme is not ("http" or "https"))
-            {
-                return null;
-            }
-            var to = now.ToUnixTimeMilliseconds();
-            var from = now.AddHours(-1).ToUnixTimeMilliseconds();
-            return $"{baseUri.GetLeftPart(UriPartial.Authority)}/d/juice-overview?var-service={Uri.EscapeDataString(serviceName)}&from={from}&to={to}";
         }
     }
 }

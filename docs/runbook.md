@@ -12,7 +12,8 @@ Commands run from `deploy/local`. API calls need a bearer token (see the root RE
      `critical_dependency_failed:shop/billing`. `dependency_failed:shop/billing` names a failing service this one was
      seen calling in the last 5 minutes. It points at the likely cause but does not change the state; to make it
      change the state, list the pair under `Health:CriticalDependencies`.
-   - **`grafanaUrl`:** the Juice overview dashboard for that service over the last hour.
+   - **`links`:** optional integration links. With `Integrations:Grafana:BaseUrl` set, one opens the Grafana Juice
+     overview for that service over the last hour; without Grafana the list is empty.
 3. `GET /resources/{subjectId}` shows the service's instances, each with its own state. One unhealthy instance among
    healthy ones points at that process or host, not the service.
 4. `GET /topology?environment=production` shows what the service calls and uses, and each node's health. A failing
