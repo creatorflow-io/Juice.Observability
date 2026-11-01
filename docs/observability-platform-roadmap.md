@@ -47,7 +47,7 @@
 
 **Track B — Resource model, API, and security**
 
-**Status (2026-11-01):** implemented in `src/` on the [Phase 0 decision](phase-0-decisions.md) recommendations (still proposed). Migrations, discovery, `/api/v1` contracts and the Phase 1 endpoints pass `test/Juice.Observability.Tests` (35 tests, integration against `deploy/local`). Idempotency keys and mutation audit come with the first mutation (Phase 3 acknowledgement); the audit table exists and tenant provisioning writes to it.
+**Status (2026-11-01):** implemented in `src/` on the [Phase 0 decision](phase-0-decisions.md) recommendations (approved 2026-11-01). Migrations, discovery, `/api/v1` contracts and the Phase 1 endpoints pass `test/Juice.Observability.Tests` (35 tests, integration against `deploy/local`). Idempotency keys and mutation audit come with the first mutation (Phase 3 acknowledgement); the audit table exists and tenant provisioning writes to it.
 
 - Create PostgreSQL migrations for tenant, application, environment, logical resource, service, ephemeral instance, dependency evidence, audit, and reconciliation checkpoints.
 - Implement the discovery worker: query ClickHouse for Collector-stamped OTLP resource attributes and hostmetrics resources since the last checkpoint; normalize, validate, alias, and reconcile to stable platform identity (Requirements §6).
@@ -63,7 +63,7 @@
 
 ## Phase 2 — Health, freshness, and policy-driven rollups
 
-**Status (2026-11-01):** implemented in `src/Juice.Observability.Health` with the decision D4 defaults (still proposed). States, reason codes, policy version, transitions unique per evidence window and policy, rollups, critical dependencies, health endpoint, health in resource detail and topology, and Grafana links pass the evaluator and end-to-end tests. Measured evidence-to-visible: 10–11 s on a 1 s loop; bound about 42 s at the 30 s interval (target 60 s).
+**Status (2026-11-01):** implemented in `src/Juice.Observability.Health` with the decision D4 defaults (approved 2026-11-01). States, reason codes, policy version, transitions unique per evidence window and policy, rollups, critical dependencies, health endpoint, health in resource detail and topology, and Grafana links pass the evaluator and end-to-end tests. Measured evidence-to-visible: 10–11 s on a 1 s loop; bound about 42 s at the 30 s interval (target 60 s).
 
 **Goal:** explain the current state of discovered resources using explicit evidence and policy.
 

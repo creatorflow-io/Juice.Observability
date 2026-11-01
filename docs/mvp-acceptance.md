@@ -1,7 +1,7 @@
 # MVP acceptance record (requirements §11)
 
 **Run:** 2026-11-01, local reference environment (`deploy/local`). Windows 11 workstation, Docker Desktop 29.9.1.
-**Decisions:** the [Phase 0 recommendations](phase-0-decisions.md), still marked proposed.
+**Decisions:** the [Phase 0 recommendations](phase-0-decisions.md), approved 2026-11-01.
 **Repeat:**
 
 ```bash
@@ -42,7 +42,6 @@ deploy/local/tests/restore-drill.sh
 
 ## Not covered or open
 
-- **Phase 0 decisions** are still proposed; the build follows their recommendations.
 - **Two D5 templates** (`mediator_errors`, `consumer_failures`) are not built.
 - **ClickHouse telemetry** has no backup in this profile; the gap is documented in the runbook.
 - **The production differences** in `deployment.md`: PKI, TLS in front of Grafana, Keycloak and the API, the

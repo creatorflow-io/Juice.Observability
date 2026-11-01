@@ -1,6 +1,6 @@
 # Phase 0 — Decisions to approve
 
-**Status:** proposed, awaiting owner approval (2026-11-01)  
+**Status:** approved 2026-11-01 (D1–D9)  
 **Gate:** [Roadmap Phase 0](observability-platform-roadmap.md#phase-0--baseline-and-contracts). Track B (migrations,
 discovery worker, API) starts from D1 and D3.
 
@@ -10,15 +10,15 @@ exists.
 
 | # | Decision | Recommendation (short) | Decision |
 |---|---|---|---|
-| D1 | Identifiers | Platform UUIDv7 for every ID; natural keys from OTel attributes; services are environment-independent | proposed |
-| D2 | Application tenant attribute | `juice.application_tenant_id`, descriptive only, never stripped or used for access | proposed |
-| D3 | Resource identity and reconciliation | Key per type, separate instances from services, aliases by config, never auto-delete | proposed |
-| D4 | Health defaults | §7 as written, with the numbers below | proposed |
-| D5 | Rule model | Seven typed templates from YAML config; no user SQL | proposed |
-| D6 | OTLP authentication in production | Static bearer tokens per client over TLS, rotated through the token file | proposed |
-| D7 | Targets, classification, retention | §9 targets as written; three data classes; 30/30/90 days | proposed |
-| D8 | Versions and Grafana isolation | As built in `deploy/local` | proposed |
-| D9 | Ownership | Juice framework work is done; the owner names who releases Juice 10.8.0 and who owns Track B | open |
+| D1 | Identifiers | Platform UUIDv7 for every ID; natural keys from OTel attributes; services are environment-independent | **Approved** 2026-11-01 |
+| D2 | Application tenant attribute | `juice.application_tenant_id`, descriptive only, never stripped or used for access | **Approved** 2026-11-01 |
+| D3 | Resource identity and reconciliation | Key per type, separate instances from services, aliases by config, never auto-delete | **Approved** 2026-11-01 |
+| D4 | Health defaults | §7 as written, with the numbers below | **Approved** 2026-11-01 |
+| D5 | Rule model | Seven typed templates from a JSON config file (`rules.json`); no user SQL | **Approved** 2026-11-01 |
+| D6 | OTLP authentication in production | Static bearer tokens per client over TLS, rotated through the token file | **Approved** 2026-11-01 |
+| D7 | Targets, classification, retention | §9 targets as written; three data classes; 30/30/90 days | **Approved** 2026-11-01 |
+| D8 | Versions and Grafana isolation | As built in `deploy/local` | **Approved** 2026-11-01 |
+| D9 | Ownership | Juice framework work is done; the owner names who releases Juice 10.8.0 and who owns Track B | **Approved** 2026-11-01: the project owner does both |
 
 ## D1 — Identifiers
 
@@ -90,7 +90,7 @@ Approve §7 as written, with these starting numbers (per resource type, configur
 
 ## D5 — Rule model
 
-MVP rules are typed templates over ClickHouse (§8), loaded from YAML in deployment config. Each rule has: scope
+MVP rules are typed templates over ClickHouse (§8), loaded from `rules.json` in deployment config. Each rule has: scope
 (service, environment, resource), schedule (1 min), threshold, `forDuration`, recovery threshold and duration,
 cooldown and severity.
 
@@ -152,3 +152,5 @@ The G1–G3 framework gaps are closed in Juice 10.8.0 (unreleased). The owner na
 
 - who releases Juice 10.8.0, needed before a pilot host can run it (the §9 log-load note);
 - who owns Track B (platform solution, migrations, discovery worker, API).
+
+**Decision (2026-11-01):** the project owner releases Juice 10.8.0 and owns Track B.
