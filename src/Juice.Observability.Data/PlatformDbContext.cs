@@ -28,6 +28,10 @@ namespace Juice.Observability.Data
         public DbSet<Alert> Alerts => Set<Alert>();
         public DbSet<AlertTransition> AlertTransitions => Set<AlertTransition>();
         public DbSet<IdempotencyRecord> IdempotencyRecords => Set<IdempotencyRecord>();
+        public DbSet<WebhookEndpoint> WebhookEndpoints => Set<WebhookEndpoint>();
+        public DbSet<WebhookAllowlistEntry> WebhookAllowlist => Set<WebhookAllowlistEntry>();
+        public DbSet<WebhookDelivery> WebhookDeliveries => Set<WebhookDelivery>();
+        public DbSet<WebhookAttempt> WebhookAttempts => Set<WebhookAttempt>();
 
         /// <summary>Applies the snake_case naming used by every table. Call it when configuring the context.</summary>
         public static void Configure(DbContextOptionsBuilder options, string connectionString)
@@ -147,6 +151,7 @@ namespace Juice.Observability.Data
             });
 
             ConfigureAlerts(model);
+            ConfigureWebhooks(model);
 
             model.Entity<HealthSnapshot>(e =>
             {
@@ -232,6 +237,54 @@ namespace Juice.Observability.Data
                 e.Property(x => x.ResponseBody).HasColumnType("text");
                 e.HasIndex(x => x.CreatedAt);
                 e.HasOne<PlatformTenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+        }
+
+        private static void ConfigureWebhooks(ModelBuilder model)
+        {
+            model.Entity<WebhookEndpoint>(e =>
+            {
+                e.ToTable("webhook_endpoints");
+                Tenant(e);
+                e.Property(x => x.Key).HasMaxLength(63);
+                e.Property(x => x.Url).HasMaxLength(2048);
+                e.Property(x => x.SecretRef).HasMaxLength(512);
+                e.Property(x => x.MinimumSeverity).HasConversion<string>().HasMaxLength(20);
+                e.Property(x => x.DefinitionHash).HasMaxLength(64);
+                e.HasIndex(x => new { x.TenantId, x.Key }).IsUnique();
+            });
+
+            model.Entity<WebhookAllowlistEntry>(e =>
+            {
+                e.ToTable("webhook_allowlist");
+                e.HasKey(x => new { x.TenantId, x.Destination });
+                e.Property(x => x.Destination).HasMaxLength(256);
+                e.HasOne<PlatformTenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            model.Entity<WebhookDelivery>(e =>
+            {
+                e.ToTable("webhook_deliveries");
+                Tenant(e);
+                e.Property(x => x.Event).HasMaxLength(40);
+                e.Property(x => x.Payload).HasColumnType("text");
+                e.Property(x => x.Status).HasConversion<string>().HasMaxLength(20);
+                e.Property(x => x.LastError).HasMaxLength(500);
+                e.HasIndex(x => new { x.Status, x.NextAttemptAt });
+                e.HasIndex(x => new { x.TenantId, x.EndpointId, x.CreatedAt });
+                // One delivery per transition and endpoint, so a replayed evaluation cannot notify twice.
+                e.HasIndex(x => new { x.TransitionId, x.EndpointId }).IsUnique();
+                e.HasOne<WebhookEndpoint>().WithMany().HasForeignKey(x => x.EndpointId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<Alert>().WithMany().HasForeignKey(x => x.AlertId).OnDelete(DeleteBehavior.Cascade);
+            });
+
+            model.Entity<WebhookAttempt>(e =>
+            {
+                e.ToTable("webhook_attempts");
+                Tenant(e);
+                e.Property(x => x.Error).HasMaxLength(500);
+                e.HasIndex(x => new { x.DeliveryId, x.Number }).IsUnique();
+                e.HasOne<WebhookDelivery>().WithMany().HasForeignKey(x => x.DeliveryId).OnDelete(DeleteBehavior.Cascade);
             });
         }
 

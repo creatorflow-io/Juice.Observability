@@ -966,6 +966,241 @@ namespace Juice.Observability.Data.Migrations
                     b.ToTable("service_instances", (string)null);
                 });
 
+            modelBuilder.Entity("Juice.Observability.Data.WebhookAllowlistEntry", b =>
+                {
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("Destination")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("destination");
+
+                    b.Property<DateTimeOffset>("LoadedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("loaded_at");
+
+                    b.PrimitiveCollection<int[]>("Ports")
+                        .IsRequired()
+                        .HasColumnType("integer[]")
+                        .HasColumnName("ports");
+
+                    b.HasKey("TenantId", "Destination")
+                        .HasName("pk_webhook_allowlist");
+
+                    b.ToTable("webhook_allowlist", (string)null);
+                });
+
+            modelBuilder.Entity("Juice.Observability.Data.WebhookAttempt", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("At")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("at");
+
+                    b.Property<Guid>("DeliveryId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("delivery_id");
+
+                    b.Property<int>("DurationMs")
+                        .HasColumnType("integer")
+                        .HasColumnName("duration_ms");
+
+                    b.Property<string>("Error")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("error");
+
+                    b.Property<int>("Number")
+                        .HasColumnType("integer")
+                        .HasColumnName("number");
+
+                    b.Property<int?>("StatusCode")
+                        .HasColumnType("integer")
+                        .HasColumnName("status_code");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_webhook_attempts");
+
+                    b.HasIndex("TenantId")
+                        .HasDatabaseName("ix_webhook_attempts_tenant_id");
+
+                    b.HasIndex("DeliveryId", "Number")
+                        .IsUnique()
+                        .HasDatabaseName("ix_webhook_attempts_delivery_id_number");
+
+                    b.ToTable("webhook_attempts", (string)null);
+                });
+
+            modelBuilder.Entity("Juice.Observability.Data.WebhookDelivery", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("AlertId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("alert_id");
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("integer")
+                        .HasColumnName("attempts");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTimeOffset?>("DeliveredAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("delivered_at");
+
+                    b.Property<Guid>("EndpointId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("endpoint_id");
+
+                    b.Property<string>("Event")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("event");
+
+                    b.Property<DateTimeOffset?>("FirstAttemptAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("first_attempt_at");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("last_error");
+
+                    b.Property<int?>("LastStatusCode")
+                        .HasColumnType("integer")
+                        .HasColumnName("last_status_code");
+
+                    b.Property<DateTimeOffset>("NextAttemptAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("next_attempt_at");
+
+                    b.Property<string>("Payload")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("payload");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<Guid>("TransitionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("transition_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_webhook_deliveries");
+
+                    b.HasIndex("AlertId")
+                        .HasDatabaseName("ix_webhook_deliveries_alert_id");
+
+                    b.HasIndex("EndpointId")
+                        .HasDatabaseName("ix_webhook_deliveries_endpoint_id");
+
+                    b.HasIndex("Status", "NextAttemptAt")
+                        .HasDatabaseName("ix_webhook_deliveries_status_next_attempt_at");
+
+                    b.HasIndex("TransitionId", "EndpointId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_webhook_deliveries_transition_id_endpoint_id");
+
+                    b.HasIndex("TenantId", "EndpointId", "CreatedAt")
+                        .HasDatabaseName("ix_webhook_deliveries_tenant_id_endpoint_id_created_at");
+
+                    b.ToTable("webhook_deliveries", (string)null);
+                });
+
+            modelBuilder.Entity("Juice.Observability.Data.WebhookEndpoint", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("DefinitionHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("definition_hash");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("boolean")
+                        .HasColumnName("enabled");
+
+                    b.PrimitiveCollection<string[]>("Events")
+                        .IsRequired()
+                        .HasColumnType("text[]")
+                        .HasColumnName("events");
+
+                    b.Property<string>("Key")
+                        .IsRequired()
+                        .HasMaxLength(63)
+                        .HasColumnType("character varying(63)")
+                        .HasColumnName("key");
+
+                    b.Property<DateTimeOffset>("LoadedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("loaded_at");
+
+                    b.Property<string>("MinimumSeverity")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("minimum_severity");
+
+                    b.PrimitiveCollection<string[]>("RuleKeys")
+                        .IsRequired()
+                        .HasColumnType("text[]")
+                        .HasColumnName("rule_keys");
+
+                    b.Property<string>("SecretRef")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)")
+                        .HasColumnName("secret_ref");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("Url")
+                        .IsRequired()
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)")
+                        .HasColumnName("url");
+
+                    b.HasKey("Id")
+                        .HasName("pk_webhook_endpoints");
+
+                    b.HasIndex("TenantId", "Key")
+                        .IsUnique()
+                        .HasDatabaseName("ix_webhook_endpoints_tenant_id_key");
+
+                    b.ToTable("webhook_endpoints", (string)null);
+                });
+
             modelBuilder.Entity("Juice.Observability.Data.Alert", b =>
                 {
                     b.HasOne("Juice.Observability.Data.Rule", null)
@@ -1206,6 +1441,67 @@ namespace Juice.Observability.Data.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_service_instances_platform_tenants_tenant_id");
+                });
+
+            modelBuilder.Entity("Juice.Observability.Data.WebhookAllowlistEntry", b =>
+                {
+                    b.HasOne("Juice.Observability.Data.PlatformTenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_webhook_allowlist_platform_tenants_tenant_id");
+                });
+
+            modelBuilder.Entity("Juice.Observability.Data.WebhookAttempt", b =>
+                {
+                    b.HasOne("Juice.Observability.Data.WebhookDelivery", null)
+                        .WithMany()
+                        .HasForeignKey("DeliveryId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_webhook_attempts_webhook_deliveries_delivery_id");
+
+                    b.HasOne("Juice.Observability.Data.PlatformTenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_webhook_attempts_platform_tenants_tenant_id");
+                });
+
+            modelBuilder.Entity("Juice.Observability.Data.WebhookDelivery", b =>
+                {
+                    b.HasOne("Juice.Observability.Data.Alert", null)
+                        .WithMany()
+                        .HasForeignKey("AlertId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_webhook_deliveries_alerts_alert_id");
+
+                    b.HasOne("Juice.Observability.Data.WebhookEndpoint", null)
+                        .WithMany()
+                        .HasForeignKey("EndpointId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_webhook_deliveries_webhook_endpoints_endpoint_id");
+
+                    b.HasOne("Juice.Observability.Data.PlatformTenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_webhook_deliveries_platform_tenants_tenant_id");
+                });
+
+            modelBuilder.Entity("Juice.Observability.Data.WebhookEndpoint", b =>
+                {
+                    b.HasOne("Juice.Observability.Data.PlatformTenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_webhook_endpoints_platform_tenants_tenant_id");
                 });
 #pragma warning restore 612, 618
         }

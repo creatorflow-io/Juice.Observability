@@ -9,6 +9,16 @@ using Microsoft.Extensions.Options;
 
 namespace Juice.Observability.Rules
 {
+    /// <summary>
+    /// Told about every transition that notifies: Firing, and Resolved after firing. Called inside the evaluation's
+    /// transaction with its context, so whatever it adds (a webhook outbox row) commits with the alert change, and
+    /// nothing it does over the network can roll the alert back.
+    /// </summary>
+    public interface IAlertNotifier
+    {
+        void OnTransition(PlatformDbContext db, Rule rule, Alert alert, AlertTransition transition);
+    }
+
     public sealed record RuleEvaluation(string RuleKey, DateTimeOffset At, int Subjects, int Opened, int Fired, int Resolved);
 
     /// <summary>
@@ -17,7 +27,7 @@ namespace Juice.Observability.Rules
     /// returned nothing is evaluated as no data), and writes alerts and their transitions in one transaction.
     /// </summary>
     public sealed class RuleEvaluator(IServiceScopeFactory scopes, RuleTemplates templates, IOptions<RulesOptions> options,
-        IOptions<PlatformOptions> platform, TimeProvider clock, ILogger<RuleEvaluator> logger)
+        IOptions<PlatformOptions> platform, TimeProvider clock, ILogger<RuleEvaluator> logger, IEnumerable<IAlertNotifier> notifiers)
     {
         internal static readonly Meter Meter = new("Juice.Observability");
         private static readonly Counter<long> Transitions = Meter.CreateCounter<long>("juice.observability.alerts.transitions", "{transition}",
@@ -77,10 +87,15 @@ namespace Juice.Observability.Rules
                 }
                 if (decision.To is { } to && to != alert.State)
                 {
-                    Transition(db, alert, alert.State, to, at, observation?.Value, decision.Reason, rule.Template);
+                    var transition = Transition(db, alert, alert.State, to, at, observation?.Value, decision.Reason, rule.Template);
                     alert.State = to;
                     if (to == AlertState.Firing) { alert.FiredAt = at; fired++; }
                     if (to == AlertState.Resolved) { alert.ResolvedAt = at; resolved++; }
+                    if (to == AlertState.Firing || (to == AlertState.Resolved && alert.FiredAt is not null))
+                    {
+                        alert.LastValue = observation?.Value;
+                        foreach (var notifier in notifiers) notifier.OnTransition(db, rule, alert, transition);
+                    }
                 }
                 alert.RecoveringSince = decision.RecoveringSince;
                 alert.LastEvaluatedAt = now;
@@ -100,15 +115,17 @@ namespace Juice.Observability.Rules
 
         public static string DedupKey(string ruleKey, string subjectKey) => $"{ruleKey}|{subjectKey}";
 
-        private static void Transition(PlatformDbContext db, Alert alert, AlertState? from, AlertState to, DateTimeOffset at, double? value,
-            string reason, RuleTemplate template)
+        private static AlertTransition Transition(PlatformDbContext db, Alert alert, AlertState? from, AlertState to, DateTimeOffset at,
+            double? value, string reason, RuleTemplate template)
         {
-            db.AlertTransitions.Add(new AlertTransition
+            var transition = new AlertTransition
             {
                 TenantId = alert.TenantId, AlertId = alert.Id, FromState = from, ToState = to, At = at, Value = value, Reason = reason,
-            });
+            };
+            db.AlertTransitions.Add(transition);
             Transitions.Add(1, new KeyValuePair<string, object?>("template", template.ToString()),
                 new KeyValuePair<string, object?>("state", to.ToString()));
+            return transition;
         }
 
         /// <summary>The evidence reference (requirements §8): enough to repeat the query and see the same numbers.</summary>

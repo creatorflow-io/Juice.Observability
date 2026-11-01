@@ -5,6 +5,7 @@
     <Project Path="src/Juice.Observability.Discovery/Juice.Observability.Discovery.csproj" />
     <Project Path="src/Juice.Observability.Health/Juice.Observability.Health.csproj" />
     <Project Path="src/Juice.Observability.Rules/Juice.Observability.Rules.csproj" />
+    <Project Path="src/Juice.Observability.Webhooks/Juice.Observability.Webhooks.csproj" />
   </Folder>
   <Folder Name="/test/">
     <Project Path="test/Juice.Observability.Tests/Juice.Observability.Tests.csproj" />

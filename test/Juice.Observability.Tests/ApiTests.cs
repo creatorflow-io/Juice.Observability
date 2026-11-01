@@ -324,6 +324,7 @@ namespace Juice.Observability.Tests
                 builder.UseSetting("Grafana:BaseUrl", "http://grafana.example:3000/ignored/path");
                 builder.UseSetting("Database:Migrate", "true");
                 builder.UseSetting("Rules:Enabled", "false");
+                builder.UseSetting("Webhooks:Enabled", "false");
                 foreach (var (key, value) in settings ?? new Dictionary<string, string>())
                 {
                     builder.UseSetting(key, value);

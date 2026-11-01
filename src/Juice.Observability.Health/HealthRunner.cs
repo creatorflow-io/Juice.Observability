@@ -133,11 +133,18 @@ namespace Juice.Observability.Health
                     ? g.Where(m => m.State == "used").Sum(m => m.Bytes) / total : (double?)null);
 
             // ─── subjects ───
+            // One repeatable-read snapshot for every subject read: discovery commits a new service and its instances
+            // while this runs, and separate reads could see the instance without its service.
+            var snapshot = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead, cancellationToken);
             var environments = await db.Environments.AsNoTracking().Where(e => e.TenantId == tenant.Id).ToDictionaryAsync(e => e.Id, cancellationToken);
             var services = await db.Services.AsNoTracking().Where(s => s.TenantId == tenant.Id).ToDictionaryAsync(s => s.Id, cancellationToken);
             var instances = await db.Instances.AsNoTracking()
                 .Where(i => i.TenantId == tenant.Id && i.State == InstanceState.Active).ToListAsync(cancellationToken);
             var hosts = await db.Resources.AsNoTracking().Where(r => r.TenantId == tenant.Id && r.Type == ResourceType.Host).ToListAsync(cancellationToken);
+            var seenIn = await db.ServiceEnvironments.AsNoTracking().Where(x => x.TenantId == tenant.Id)
+                .ToDictionaryAsync(x => (Service: x.ServiceId, Environment: x.EnvironmentId), x => x.LastSeen, cancellationToken);
+            await snapshot.CommitAsync(cancellationToken);
+            await snapshot.DisposeAsync();
 
             var results = new List<(HealthSubject Type, Guid Id, Guid? Environment, Assessment Assessment)>();
 
@@ -155,8 +162,6 @@ namespace Juice.Observability.Health
 
             // Services per environment they were seen in (discovery's service_environments), plus any with evidence in
             // this window that discovery has not recorded yet.
-            var seenIn = await db.ServiceEnvironments.AsNoTracking().Where(x => x.TenantId == tenant.Id)
-                .ToDictionaryAsync(x => (Service: x.ServiceId, Environment: x.EnvironmentId), x => x.LastSeen, cancellationToken);
             var serviceKeys = seenIn.Keys.Concat(instanceStates.Keys).ToHashSet();
             var envByKey = environments.Values.ToDictionary(e => e.Key);
             var serviceByName = services.Values.ToDictionary(s => (s.Namespace, s.Name));

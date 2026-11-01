@@ -4,13 +4,18 @@ using Juice.Observability.Data;
 using Juice.Observability.Discovery;
 using Juice.Observability.Health;
 using Juice.Observability.Rules;
+using Juice.Observability.Webhooks;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
-// Rules are deployment configuration: a version-controlled JSON file, loaded once at startup (requirements §6.1).
-if (builder.Configuration["Rules:File"] is { Length: > 0 } rulesFile)
+// Rules and webhooks are deployment configuration: version-controlled JSON files, loaded once at startup
+// (requirements §6.1).
+foreach (var key in new[] { "Rules:File", "Webhooks:File" })
 {
-    builder.Configuration.AddJsonFile(Path.GetFullPath(rulesFile), optional: false, reloadOnChange: false);
+    if (builder.Configuration[key] is { Length: > 0 } file)
+    {
+        builder.Configuration.AddJsonFile(Path.GetFullPath(file), optional: false, reloadOnChange: false);
+    }
 }
 
 builder.Services.AddDbContext<PlatformDbContext>(options =>
@@ -21,6 +26,7 @@ builder.Services.AddHostedService<TenantProvisioner>();
 builder.Services.AddPlatformDiscovery(builder.Configuration);
 builder.Services.AddPlatformHealth(builder.Configuration);
 builder.Services.AddPlatformRules(builder.Configuration);
+builder.Services.AddPlatformWebhooks(builder.Configuration);
 builder.Services.Configure<GrafanaOptions>(builder.Configuration.GetSection(GrafanaOptions.Section));
 builder.Services.AddPlatformAuthentication(builder.Configuration);
 builder.Services.AddPlatformProblemDetails();

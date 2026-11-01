@@ -145,6 +145,36 @@ services:
       timeout: 3s
       retries: 30
 
+  # The platform API and its workers (discovery, health, rules, webhooks), built from this repository.
+  # Started with: docker compose --profile platform up -d --wait   (the default profile is the telemetry stack alone)
+  platform-api:
+    profiles: ["platform"]
+    build:
+      context: ../..
+    environment:
+      ConnectionStrings__Platform: Host=postgres;Port=5432;Database=juice_observability;Username=juice;Password=${POSTGRES_PASSWORD}
+      ClickHouse__ConnectionString: Host=clickhouse;Port=8123;Username=platform_reader;Password=${CLICKHOUSE_PLATFORM_PASSWORD};Database=otel
+      Platform__TenantKey: ${JUICE_PLATFORM_TENANT_ID}
+      # Metadata and keys over the compose network; the issuer stays http://localhost:8080/realms/juice (KC_HOSTNAME).
+      Auth__Authority: http://keycloak:8080/realms/juice
+      Auth__RequireHttpsMetadata: "false"
+      Database__Migrate: "true"
+      Rules__File: /config/rules.json
+      Webhooks__File: /config/webhooks.json
+      Grafana__BaseUrl: http://localhost:3000
+    volumes:
+      - ./rules.json:/config/rules.json:ro
+      - ./webhooks.json:/config/webhooks.json:ro
+    ports:
+      - "5180:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+
 volumes:
   clickhouse-data:
   grafana-data:

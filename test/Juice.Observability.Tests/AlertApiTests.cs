@@ -124,6 +124,48 @@ namespace Juice.Observability.Tests
             Assert.Equal("on it", (await db.Alerts.SingleAsync(a => a.Id == firing)).AcknowledgeComment);
         }
 
+        [Fact]
+        public async Task Webhook_endpoints_and_delivery_history_hide_secrets_and_paths_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var (tenant, firing, _) = await SeedAsync(database);
+            Guid endpointId;
+            await using (var db = database.Context())
+            {
+                var endpoint = new WebhookEndpoint
+                {
+                    TenantId = tenant, Key = "ops", Url = "https://hooks.example.com:8443/T0K3N/path", SecretRef = "env:OPS_SECRET",
+                    Events = ["alert.firing"], DefinitionHash = "x", LoadedAt = DateTimeOffset.UtcNow,
+                };
+                var delivery = new WebhookDelivery
+                {
+                    TenantId = tenant, EndpointId = endpoint.Id, AlertId = firing, TransitionId = Guid.CreateVersion7(), Event = "alert.firing",
+                    Payload = "{}", Status = DeliveryStatus.Retrying, Attempts = 1, NextAttemptAt = DateTimeOffset.UtcNow.AddSeconds(10),
+                    LastStatusCode = 503, LastError = "status_503", CreatedAt = DateTimeOffset.UtcNow,
+                };
+                db.AddRange(endpoint, delivery);
+                db.WebhookAttempts.Add(new WebhookAttempt { TenantId = tenant, DeliveryId = delivery.Id, Number = 1, At = DateTimeOffset.UtcNow, StatusCode = 503, Error = "status_503", DurationMs = 12 });
+                await db.SaveChangesAsync();
+                endpointId = endpoint.Id;
+            }
+            await using var factory = new ApiFactory(database);
+            using var client = factory.CreateClient();
+            var token = await LocalStack.TokenAsync("victor");
+
+            using var endpointsResponse = await Get(client, $"/api/v1/tenants/{tenant}/webhooks", token);
+            var raw = await endpointsResponse.Content.ReadAsStringAsync(Ct);
+            Assert.Contains("\"destination\":\"https://hooks.example.com:8443\"", raw);
+            Assert.DoesNotContain("T0K3N", raw);
+            Assert.DoesNotContain("OPS_SECRET", raw);
+
+            var deliveries = await JsonAsync(await Get(client, $"/api/v1/tenants/{tenant}/webhooks/{endpointId}/deliveries?status=retrying", token));
+            var item = Assert.Single(deliveries.GetProperty("items").EnumerateArray());
+            Assert.Equal("Retrying", item.GetProperty("status").GetString());
+            Assert.Equal(503, item.GetProperty("history")[0].GetProperty("statusCode").GetInt32());
+            Assert.Equal(HttpStatusCode.NotFound, (await Get(client, $"/api/v1/tenants/{tenant}/webhooks/{Guid.CreateVersion7()}/deliveries", token)).StatusCode);
+        }
+
         private static async Task<HttpResponseMessage> Ack(HttpClient client, string path, string token, string? comment, string? key, string? correlation = null)
         {
             using var request = new HttpRequestMessage(HttpMethod.Post, path) { Content = JsonContent.Create(new { comment }) };

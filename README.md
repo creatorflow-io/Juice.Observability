@@ -4,12 +4,13 @@ Turns telemetry from Juice services into a resource model, health, rules, alerts
 
 | Path | Contents |
 |---|---|
-| [`docs/`](docs) | [Requirements and architecture](docs/observability-platform-requirements.md), [phased roadmap](docs/observability-platform-roadmap.md), [Phase 0 decisions](docs/phase-0-decisions.md), [Juice 10.8 telemetry baseline](docs/juice-opentelemetry-10.8-current-state.md) |
+| [`docs/`](docs) | [Requirements and architecture](docs/observability-platform-requirements.md), [phased roadmap](docs/observability-platform-roadmap.md), [Phase 0 decisions](docs/phase-0-decisions.md), [deployment guide](docs/deployment.md), [runbook](docs/runbook.md), [MVP acceptance](docs/mvp-acceptance.md), [Juice 10.8 telemetry baseline](docs/juice-opentelemetry-10.8-current-state.md) |
 | [`deploy/local/`](deploy/local/README.md) | Local single-tenant stack: OpenTelemetry Collector, ClickHouse, Grafana (OIDC sign-in via Keycloak), PostgreSQL, with integration and load tests |
 | `src/Juice.Observability.Data` | PostgreSQL domain model (EF Core) and migrations |
 | `src/Juice.Observability.Discovery` | Discovery: reads Collector-stamped telemetry from ClickHouse and reconciles services, instances, environments, resources and dependencies |
 | `src/Juice.Observability.Health` | Health evaluation: instances, services and applications per environment, and hosts, from ClickHouse evidence |
 | `src/Juice.Observability.Rules` | Typed scheduled rules over ClickHouse templates and the alert lifecycle |
+| `src/Juice.Observability.Webhooks` | Signed webhook notification of alert transitions: outbox, SSRF-safe delivery, retries, history |
 | `src/Juice.Observability.Api` | `/api/v1` (OIDC, tenant-scoped) and the background workers, in one host |
 | `test/Juice.Observability.Tests` | Unit tests, and integration tests against the running local stack |
 
@@ -45,6 +46,8 @@ page's `nextCursor`).
 | `GET /api/v1/tenants/{tenantId}/rules` | the loaded rules (read-only) |
 | `GET /api/v1/tenants/{tenantId}/alerts?state=&rule=` | alerts, newest first |
 | `GET /api/v1/tenants/{tenantId}/alerts/{alertId}` | an alert with its evidence, state history, the subject's health and a Grafana link |
+| `GET /api/v1/tenants/{tenantId}/webhooks` | webhook endpoints (destination host only, never the secret) |
+| `GET /api/v1/tenants/{tenantId}/webhooks/{endpointId}/deliveries?status=` | delivery history, each with every attempt |
 | `POST /api/v1/tenants/{tenantId}/alerts/{alertId}/acknowledgement` | acknowledge an open alert: `operator` or `admin`; send `Idempotency-Key` to retry safely |
 
 A resource's detail also carries its health per environment, each instance's state, and for a service a Grafana link to the
@@ -163,3 +166,19 @@ a threshold and a recovery threshold (hysteresis), minimum samples, `ForDuration
     `juice.observability.alerts.transitions`.
 - **Breach-to-alert.** Firing comes at most lag (10 s) plus one schedule after `ForDuration`: 70 s for a 1-minute
   rule, against the 2-minute target. Measured in tests at 22 s with a 5 s schedule and a 10 s `ForDuration`.
+
+## Webhooks
+
+When an alert fires, or resolves after firing, one delivery per matching endpoint is written in the same transaction
+as the alert change. A webhook can therefore never roll an alert back, and replaying an evaluation never notifies
+twice. The dispatcher sends every 2 s.
+
+- **Signing.** HMAC-SHA256, Standard Webhooks form: `webhook-id`, `webhook-timestamp`,
+  `webhook-signature: v1,<base64>` over `{id}.{timestamp}.{body}`.
+- **Destinations.** HTTPS only, no redirects. DNS is checked on every connection: one internal answer blocks the
+  destination. Private addresses need an allowlist entry. Loopback, link-local and cloud metadata are never
+  reachable.
+- **Retries.** Transient failures retry with exponential backoff and jitter (10 s to 10 min, 8 attempts). Other 4xx
+  fail at once. Every attempt is recorded.
+
+Configuration, secrets and receiver guidance are in [docs/deployment.md](docs/deployment.md).

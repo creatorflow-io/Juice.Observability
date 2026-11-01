@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Signed webhook notification of alert transitions (requirements §8, roadmap Phase 4): outbox, SSRF-safe
+       delivery, bounded retries, delivery history. -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Juice.Observability.Rules\Juice.Observability.Rules.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Juice.Observability.Tests" />
+  </ItemGroup>
+
+</Project>

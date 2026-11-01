@@ -1,0 +1,7 @@
+{
+  "Webhooks": {
+    "AllowHttpToAllowlisted": false,
+    "Endpoints": [],
+    "Allowlist": []
+  }
+}

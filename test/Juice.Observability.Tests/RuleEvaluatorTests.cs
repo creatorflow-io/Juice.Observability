@@ -274,7 +274,7 @@ namespace Juice.Observability.Tests
             => new(Services(database).GetRequiredService<IServiceScopeFactory>(),
                 new RuleTemplates(new ClickHouseTelemetrySource(Options.Create(new ClickHouseOptions { ConnectionString = LocalStack.ClickHouseReader }))),
                 Options.Create(options ?? new RulesOptions()), Options.Create(new PlatformOptions { TenantKey = LocalStack.TenantKey }),
-                clock ?? TimeProvider.System, NullLogger<RuleEvaluator>.Instance);
+                clock ?? TimeProvider.System, NullLogger<RuleEvaluator>.Instance, []);
 
         private static RuleScheduler Scheduler(ScratchDatabase database, Action<RulesOptions>? configure = null)
         {

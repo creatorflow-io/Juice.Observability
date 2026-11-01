@@ -104,6 +104,8 @@
 
 ## Phase 4 — Signed webhook and MVP investigation (MVP complete)
 
+**Status (2026-11-01):** implemented (`src/Juice.Observability.Webhooks`, alert investigation API, `Dockerfile` and the compose `platform` profile, [deployment guide](deployment.md), [runbook](runbook.md), backup and restore scripts). The §9 targets were measured under a 30-minute reference load. The [MVP acceptance record](mvp-acceptance.md) has the evidence per §11 criterion and lists what is open: the Phase 0 approvals, two D5 templates, ClickHouse backup, and the production differences.
+
 **Goal:** finish an end-to-end operator loop with a notification channel and safe telemetry investigation.
 
 **Deliverables**

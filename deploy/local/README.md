@@ -9,7 +9,8 @@ read-only Grafana with a provisioned data source and dashboard.
 | Collector | `otel/opentelemetry-collector-contrib:0.163.1` | OTLP receiver (TLS + bearer token), host metrics, export to ClickHouse |
 | ClickHouse | `clickhouse/clickhouse-server:26.8.36.3-alpine` | traces, metrics, logs (`otel` database) |
 | Grafana | `grafana/grafana:13.2.5` + `grafana-clickhouse-datasource` 4.22.1 | exploration, starter dashboard |
-| PostgreSQL | `postgres:17.10-alpine` | platform domain database (empty until Track B adds migrations) |
+| PostgreSQL | `postgres:17.10-alpine` | platform database (the API migrates it) |
+| Platform API | built from `Dockerfile` (profile `platform`) | `/api/v1` and the platform workers; `docker compose --profile platform up -d --build --wait` |
 | Keycloak | `quay.io/keycloak/keycloak:26.7.5` | OIDC identity provider for Grafana sign-in (realm `juice`) |
 
 ## Start
@@ -145,12 +146,26 @@ The dashboard has these panels:
 The service variable is presentation only, not a security control (§5.2). To change the dashboard, edit
 `grafana/build-dashboard.mjs`, run `node grafana/build-dashboard.mjs`, then `docker compose restart grafana`.
 
+**Explore access (§5.2).** Explore and ad-hoc queries are open to Editor and Admin. Viewers see dashboards only,
+Grafana's default (`viewers_can_edit` off). Every query, from a dashboard, Explore or the API, runs as
+`grafana_reader`:
+
+- it can only read the `otel` database;
+- time, rows and memory are capped by a profile the client cannot raise;
+- it can't write, and it can't read `system.users`.
+
+This instance and its ClickHouse credentials serve one deployment, so the boundary is the deployment itself, not a
+dashboard filter.
+
 ## Tests
 
 | Script | Checks |
 |---|---|
 | `tests/verify.sh` | Plain HTTP refused; missing and unknown token give 401; untrusted certificate refused. Forged tenant at resource, scope and record level, on traces, metrics and logs, is stored as only the trusted tenant. Redaction. TTL present. `grafana_reader` cannot write or read `system.users`. Grafana data source healthy; anonymous access refused. OIDC sign-in, run headless with curl through Keycloak: alice → Admin, erin → Editor, victor → Viewer, nora and a wrong password refused, no OIDC user is server admin; a Grafana access token carries no platform audience or roles. Prints this run's ingestion freshness. |
 | `tests/verify.sh --outage` | Also: ClickHouse stopped, a record accepted and held in the exporter queue, then stored after ClickHouse returns. |
+| `tests/breach-to-alert.sh [runs]` | Through the running platform: sends a failing service and times rule `service-error-rate` firing after its ForDuration (§9: ≤ 2 min). |
+| `node tests/api-latency.mjs [seconds]` | Platform API reads at 20 requests/s, p50/p95 (§9: p95 ≤ 500 ms). |
+| `tests/restore-drill.sh` | Backs up the platform database, restores it into a scratch database, compares tables, reports the time. |
 | `tests/load.sh [duration]` | telemetrygen v0.163.0 at the §9 reference rates (1,000 spans/s, 10,000 metric points/s, 1,000 logs/s) over authenticated TLS, with a freshness probe every 10 s. Reports p50/p95 freshness, stored counts, and Collector refused/dropped counts. Fails if p95 > 30 s. |
 
 ### Measured (2026-10-30)
