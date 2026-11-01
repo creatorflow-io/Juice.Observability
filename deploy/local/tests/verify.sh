@@ -18,7 +18,8 @@ pass() { echo "  ok    $1"; }
 fail() { echo "  FAIL  $1"; failures=$((failures + 1)); }
 check() { if [[ "$2" == "$3" ]]; then pass "$1"; else fail "$1 (expected '$3', got '$2')"; fi; }
 
-ch() { docker compose exec -T clickhouse clickhouse client --user admin --password "$CLICKHOUSE_ADMIN_PASSWORD" -q "$1"; }
+# stdin is /dev/null: for an INSERT, clickhouse client reads more data from a non-terminal stdin and would wait forever.
+ch() { docker compose exec -T clickhouse clickhouse client --user admin --password "$CLICKHOUSE_ADMIN_PASSWORD" -q "$1" </dev/null; }
 
 # post <signal> <json> [curl args...] → HTTP status
 post() {
@@ -105,10 +106,10 @@ echo "Storage and access"
 check "traces TTL set" "$(ch "SELECT count() FROM system.tables WHERE database='otel' AND name='otel_traces' AND create_table_query LIKE '%TTL%'")" "1"
 check "grafana_reader cannot write" \
   "$(docker compose exec -T clickhouse clickhouse client --user grafana_reader --password "$CLICKHOUSE_GRAFANA_PASSWORD" \
-      -q "INSERT INTO otel.otel_logs (Body) VALUES ('x')" >/dev/null 2>&1 && echo written || echo denied)" "denied"
+      -q "INSERT INTO otel.otel_logs (Body) VALUES ('x')" </dev/null >/dev/null 2>&1 && echo written || echo denied)" "denied"
 check "grafana_reader cannot read system users" \
   "$(docker compose exec -T clickhouse clickhouse client --user grafana_reader --password "$CLICKHOUSE_GRAFANA_PASSWORD" \
-      -q "SELECT count() FROM system.users" >/dev/null 2>&1 && echo readable || echo denied)" "denied"
+      -q "SELECT count() FROM system.users" </dev/null >/dev/null 2>&1 && echo readable || echo denied)" "denied"
 grafana_health=$(curl -s -m 30 -u "admin:$GRAFANA_ADMIN_PASSWORD" http://localhost:3000/api/datasources/uid/juice-clickhouse/health)
 check "Grafana ClickHouse data source healthy" "$(echo "$grafana_health" | grep -o '"status":"[A-Z]*"')" '"status":"OK"'
 check "Grafana anonymous access disabled" "$(curl -s -m 30 -o /dev/null -w '%{http_code}' http://localhost:3000/api/search)" "401"

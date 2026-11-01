@@ -16,7 +16,7 @@ RUN=$(openssl rand -hex 4)
 SERVICE=load-$RUN
 NETWORK=${COMPOSE_PROJECT_NAME}_default
 
-ch() { docker compose exec -T clickhouse clickhouse client --user admin --password "$CLICKHOUSE_ADMIN_PASSWORD" -q "$1"; }
+ch() { docker compose exec -T clickhouse clickhouse client --user admin --password "$CLICKHOUSE_ADMIN_PASSWORD" -q "$1" </dev/null; }
 collector_metric() {   # sum of a Collector self-metric across its label sets
   curl -s http://localhost:8888/metrics | awk -v m="$1" 'index($0, m) == 1 { s += $NF } END { printf "%d", s }'
 }
