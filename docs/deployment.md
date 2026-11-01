@@ -10,9 +10,9 @@ reference configuration. A production install uses the same files with real cert
 | OpenTelemetry Collector contrib | 0.163.1 | the only ingestion point: OTLP over TLS with bearer tokens |
 | ClickHouse | 26.8.36.3 | telemetry storage (traces 30 d, logs 30 d, metrics 90 d) |
 | PostgreSQL | 17.10 | platform state: inventory, health, rules, alerts, webhooks, audit |
-| Grafana + ClickHouse plugin | 13.2.5 + 4.22.1 | investigation, sign-in through OIDC |
-| Keycloak | 26.7.5 | OIDC for Grafana and the platform API (replace with the customer's IdP) |
-| Platform API | this repository (`Dockerfile`) | `/api/v1` and the discovery, health, rule and webhook workers |
+| Platform API and Juice Console | this repository (`Dockerfile`) | `/api/v1`, the discovery, health, rule and webhook workers, and the Console (the product UI) on the same origin |
+| Keycloak | 26.7.5 | OIDC for the Console, the API and Grafana (replace with the customer's IdP) |
+| Grafana + ClickHouse plugin (optional) | 13.2.5 + 4.22.1 | only for customers who use Grafana: `docker compose --profile grafana` |
 
 ## Install
 
@@ -35,7 +35,9 @@ The API applies database migrations on start (`Database:Migrate`). It creates th
 | Rules | `rules.json` (`Rules:File`) | validated at start; an invalid rule stops the API; every change audited |
 | Webhook endpoints and allowlist | `webhooks.json` (`Webhooks:File`) | secrets as `env:NAME` or `file:/path`, never in the file |
 | Health policy | `Health` section (environment `Health__…`) | grace, thresholds, critical dependencies, service weights |
-| Users and roles | the IdP | Grafana: client `grafana` roles `admin`, `editor`, `viewer`; API: client `juice-platform` roles `admin`, `operator`, `viewer` and the `platform_tenant` claim |
+| Users and roles | the IdP | Console and API: client `juice-console` (public, PKCE) issuing tokens for `juice-platform` with roles `admin`, `operator`, `viewer` and the `platform_tenant` claim; Grafana (optional): client `grafana` roles `admin`, `editor`, `viewer` |
+| Console sign-in | `wwwroot/config.json` in the API image | `{"apiBase": "", "auth": {"issuer": "<IdP>", "clientId": "juice-console", "scope": "openid profile email"}}`; mount your own file over it |
+| Grafana links | `Integrations:Grafana:BaseUrl` | optional; unset means no links |
 
 Every one of these files lives in version control (requirements §6.1). Changes take effect on the next API start, with
 an audit record for each.
@@ -89,8 +91,8 @@ The local profile cuts these corners on purpose. Each one changes for a producti
 
 | Local | Production |
 |---|---|
-| self-signed CA, certificates from `init.sh` | the customer's PKI for the Collector, Grafana and the API |
-| Grafana, Keycloak and the API over HTTP | TLS in front of all three |
+| self-signed CA, certificates from `init.sh` | the customer's PKI for the Collector, the API and Console, and Grafana if used |
+| Keycloak, the API and Console (and Grafana) over HTTP | TLS in front of each |
 | Keycloak dev mode, demo users, password grant client | the customer's IdP; no `juice-platform-cli` client |
 | secrets in `.env` | the platform's secret store |
 | backups on the host disk | scheduled `scripts/backup.sh` copied off the host |

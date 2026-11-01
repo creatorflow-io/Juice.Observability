@@ -2,6 +2,7 @@ using System.Text.RegularExpressions;
 using Juice.Observability.Data;
 using Juice.Observability.Discovery;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using static Juice.Observability.Discovery.ClickHouseTelemetrySource;
 
 namespace Juice.Observability.Api.Endpoints
@@ -14,10 +15,13 @@ namespace Juice.Observability.Api.Endpoints
 
     public sealed record SpanLinkDto(string TraceId, string SpanId);
 
-    public sealed record SpanDto(string SpanId, string? ParentSpanId, string Service, string? Environment, string? Instance,
+    /// <summary>What a client, producer or consumer span reaches: a service (seen running the child span) or a resource.</summary>
+    public sealed record SpanTargetDto(string Kind, Guid Id, string Name);
+
+    public sealed record SpanDto(string SpanId, string? ParentSpanId, Guid? ServiceId, string Service, string? Environment, string? Instance,
         string? Host, string Name, string Kind, DateTimeOffset StartedAt, double DurationMs, string Status, string? StatusMessage,
         string? Scope, string? ScopeVersion, IReadOnlyDictionary<string, string> Attributes, IReadOnlyList<SpanEventDto> Events,
-        IReadOnlyList<SpanLinkDto> Links);
+        IReadOnlyList<SpanLinkDto> Links, SpanTargetDto? Target);
 
     public sealed record TraceDto(string TraceId, IReadOnlyList<SpanDto> Spans, bool Truncated);
 
@@ -342,8 +346,12 @@ namespace Juice.Observability.Api.Endpoints
             return Results.Ok(new TelemetryPage<TraceSummaryDto>(rows.Take(take).ToList(), rows.Count > take));
         });
 
-        /// <summary>Every span of one trace (at most <see cref="MaxSpans"/>), in start order.</summary>
-        private static Task<IResult> GetTraceAsync(HttpContext http, ClickHouseTelemetrySource clickHouse, string traceId, CancellationToken ct)
+        /// <summary>
+        /// Every span of one trace (at most <see cref="MaxSpans"/>), in start order, with the platform id of its service and,
+        /// for a call, its target: the service running the child span, or the database or destination discovery recorded.
+        /// </summary>
+        private static Task<IResult> GetTraceAsync(HttpContext http, PlatformDbContext db, ClickHouseTelemetrySource clickHouse,
+            IOptions<DiscoveryOptions> discovery, string traceId, CancellationToken ct)
             => Run(async () =>
         {
             traceId = TraceIdOf(traceId);
@@ -359,21 +367,55 @@ namespace Juice.Observability.Api.Endpoints
             var spans = await clickHouse.QueryAsync($"""
                 SELECT SpanId, ParentSpanId, ServiceName, {Environment}, {Instance}, {Host}, SpanName, SpanKind, Timestamp, Duration,
                        StatusCode, StatusMessage, ScopeName, ScopeVersion, SpanAttributes, Events.Name, Events.Timestamp,
-                       Events.Attributes, Links.TraceId, Links.SpanId
+                       Events.Attributes, Links.TraceId, Links.SpanId, ResourceAttributes['service.namespace'],
+                       SpanAttributes['messaging.system'], SpanAttributes['messaging.destination.name'],
+                       if(SpanAttributes['db.system.name'] != '', SpanAttributes['db.system.name'], SpanAttributes['db.system']),
+                       SpanAttributes['db.namespace'], SpanAttributes['server.address']
                 FROM otel.otel_traces
                 WHERE {Tenant} AND Timestamp >= {From} AND Timestamp < {To} AND TraceId = {"{trace:String}"}
                 ORDER BY Timestamp
                 LIMIT {ClickHouseTelemetrySource.Limit}
-                """, window, r => new SpanDto(r.GetString(0), NonEmpty(r.GetString(1)), r.GetString(2), NonEmpty(r.GetString(3)),
+                """, window, r => (Span: new SpanDto(r.GetString(0), NonEmpty(r.GetString(1)), null, r.GetString(2), NonEmpty(r.GetString(3)),
                     NonEmpty(r.GetString(4)), NonEmpty(r.GetString(5)), r.GetString(6), r.GetString(7), Utc(r.GetValue(8)), Ms(r.GetValue(9)),
                     r.GetString(10), NonEmpty(r.GetString(11)), NonEmpty(r.GetString(12)), NonEmpty(r.GetString(13)), Bounded(r.GetValue(14)),
                     ((string[])r.GetValue(15)).Select((name, i) => new SpanEventDto(name, Utc(((Array)r.GetValue(16)).GetValue(i)!),
                         Bounded(((Array)r.GetValue(17)).GetValue(i)!))).Take(MaxAttributes).ToList(),
-                    ((string[])r.GetValue(18)).Zip((string[])r.GetValue(19)).Take(MaxAttributes).Select(l => new SpanLinkDto(l.First, l.Second)).ToList()),
+                    ((string[])r.GetValue(18)).Zip((string[])r.GetValue(19)).Take(MaxAttributes).Select(l => new SpanLinkDto(l.First, l.Second)).ToList(),
+                    null),
+                    Use: new ResourceUseObservation
+                    {
+                        ServiceNamespace = r.GetString(20), ServiceName = r.GetString(2), SpanKind = r.GetString(7),
+                        MessagingSystem = r.GetString(21), MessagingDestination = r.GetString(22), DbSystem = r.GetString(23),
+                        DbNamespace = r.GetString(24), ServerAddress = r.GetString(25),
+                    }),
                 ct, parameters);
             // Another tenant's trace and an unknown one look the same.
             if (spans.Count == 0) throw Missing("Trace");
-            return Results.Ok(new TraceDto(traceId, spans.Take(MaxSpans).ToList(), spans.Count > MaxSpans));
+
+            // Platform ids, by the same normalization discovery uses.
+            var normalizer = new Normalizer(discovery.Value.Aliases);
+            var tenantId = await db.Tenants.AsNoTracking().Where(t => t.Key == tenantKey).Select(t => t.Id).SingleAsync(ct);
+            var services = (await db.Services.AsNoTracking().Where(s => s.TenantId == tenantId).Select(s => new { s.Id, s.Namespace, s.Name }).ToListAsync(ct))
+                .ToDictionary(s => (s.Namespace, s.Name), s => s.Id);
+            Guid? ServiceIdOf(ResourceUseObservation o)
+                => normalizer.Service(o.ServiceNamespace, o.ServiceName) is { } key && services.TryGetValue(key, out var id) ? id : null;
+            var resourceKeys = spans.Select(s => normalizer.UsedResource(s.Use)).OfType<ResourceKey>().Select(k => k.Key).Distinct().ToList();
+            var resources = (await db.Resources.AsNoTracking().Where(r => r.TenantId == tenantId && resourceKeys.Contains(r.Key))
+                .Select(r => new { r.Id, r.Type, r.Key, r.DisplayName }).ToListAsync(ct)).ToDictionary(r => (r.Type, r.Key));
+            var children = spans.Where(s => s.Span.ParentSpanId is not null).ToLookup(s => s.Span.ParentSpanId!, StringComparer.Ordinal);
+
+            SpanTargetDto? TargetOf((SpanDto Span, ResourceUseObservation Use) s)
+            {
+                if (s.Span.Kind is not ("Client" or "Producer" or "Consumer")) return null;
+                var callee = children[s.Span.SpanId].FirstOrDefault(c => c.Span.Service != s.Span.Service && c.Span.Kind is "Server" or "Consumer");
+                if (callee.Span is not null && ServiceIdOf(callee.Use) is { } calleeId)
+                    return new SpanTargetDto("service", calleeId, callee.Span.Service);
+                return normalizer.UsedResource(s.Use) is { } key && resources.TryGetValue((key.Type, key.Key), out var resource)
+                    ? new SpanTargetDto("resource", resource.Id, resource.DisplayName)
+                    : null;
+            }
+            var result = spans.Take(MaxSpans).Select(s => s.Span with { ServiceId = ServiceIdOf(s.Use), Target = TargetOf(s) }).ToList();
+            return Results.Ok(new TraceDto(traceId, result, spans.Count > MaxSpans));
         });
 
         // ─── logs ───
@@ -549,11 +591,11 @@ namespace Juice.Observability.Api.Endpoints
             {
                 "gauge" => ("avg", $"SELECT {bucket} AS b, avg(Value) FROM otel.otel_metrics_gauge WHERE {where} GROUP BY b ORDER BY b LIMIT {limitRows}"),
                 "sum" when !monotonic => ("avg", $"SELECT {bucket} AS b, avg(Value) FROM otel.otel_metrics_sum WHERE {where} GROUP BY b ORDER BY b LIMIT {limitRows}"),
-                // The first bucket of each series has no previous value (lagInFrame defaults to the value itself, delta 0).
+                // A series' first bucket has no previous value: no delta (NULL), never a rate of zero.
                 "sum" => ("rate", $"""
-                    SELECT b, sum(d) / {stepParameter} FROM (
-                        SELECT b, if(v >= prev, v - prev, v) AS d FROM (
-                            SELECT series, b, v, lagInFrame(v, 1, v) {Window} AS prev FROM (
+                    SELECT b, if(count(d) = 0, NULL, sum(d) / {stepParameter}) FROM (
+                        SELECT b, if(n = 1, NULL, if(v >= prev, v - prev, v)) AS d FROM (
+                            SELECT series, b, v, lagInFrame(v, 1, v) {Window} AS prev, row_number() {Window.Replace(" ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING", "")} AS n FROM (
                                 SELECT {Series} AS series, {bucket} AS b, max(Value) AS v FROM otel.otel_metrics_sum WHERE {where} GROUP BY series, b)))
                     GROUP BY b ORDER BY b LIMIT {limitRows}
                     """),

@@ -1,5 +1,13 @@
-# Juice Observability Platform API (and its workers). Build from the repository root:
+# Juice Observability: Platform API (and its workers) serving Juice Console. Build from the repository root:
 #   docker build -t juice-observability-api .
+FROM node:24.22.0-alpine AS console
+WORKDIR /console
+COPY console/package.json console/package-lock.json ./
+COPY console/vendor/ vendor/
+RUN npm ci --no-audit --no-fund
+COPY console/ ./
+RUN npx ng build --configuration production
+
 FROM mcr.microsoft.com/dotnet/sdk:10.0.402 AS build
 WORKDIR /src
 COPY Directory.Build.props Directory.Packages.props ./
@@ -14,6 +22,8 @@ ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=true \
 RUN apk add --no-cache krb5-libs
 WORKDIR /app
 COPY --from=build /app .
+# Juice Console, served by the API on the same origin. A deployment mounts its own wwwroot/config.json.
+COPY --from=console /console/dist/juice-console/browser wwwroot/
 USER $APP_UID
 EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --retries=12 CMD wget -q -O - http://127.0.0.1:8080/health/ready || exit 1

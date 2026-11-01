@@ -7,6 +7,8 @@ namespace Juice.Observability.Api.Endpoints
 {
     public sealed record TenantDto(Guid Id, string Key, string DisplayName);
 
+    public sealed record EnvironmentDto(Guid Id, string Key, string Type, DateTimeOffset FirstSeen, DateTimeOffset LastSeen);
+
     public sealed record ApplicationDto(Guid Id, string Key, string DisplayName, int Services, DateTimeOffset FirstSeen, DateTimeOffset LastSeen);
 
     public sealed record ResourceSummaryDto(Guid Id, string Type, string Key, string DisplayName, DateTimeOffset FirstSeen, DateTimeOffset LastSeen);
@@ -51,6 +53,7 @@ namespace Juice.Observability.Api.Endpoints
             api.MapGet("/tenants", ListTenantsAsync);
 
             var tenant = api.MapGroup("/tenants/{tenantId:guid}").AddEndpointFilter(TenantScopeAsync);
+            tenant.MapGet("/environments", ListEnvironmentsAsync);
             tenant.MapGet("/applications", ListApplicationsAsync);
             tenant.MapGet("/resources", ListResourcesAsync);
             tenant.MapGet("/resources/{resourceId:guid}", GetResourceAsync);
@@ -91,6 +94,15 @@ namespace Juice.Observability.Api.Endpoints
             }
             http.Items[TelemetryEndpoints.TenantKeyItem] = tenant.Key;
             return await next(context);
+        }
+
+        /// <summary>The environments seen in telemetry (at most a few per deployment), most recently seen first.</summary>
+        private static async Task<IResult> ListEnvironmentsAsync(Guid tenantId, PlatformDbContext db, CancellationToken ct)
+        {
+            var rows = await db.Environments.AsNoTracking().Where(e => e.TenantId == tenantId)
+                .OrderByDescending(e => e.LastSeen).Take(Cursor.MaxLimit)
+                .Select(e => new EnvironmentDto(e.Id, e.Key, e.Type.ToString(), e.FirstSeen, e.LastSeen)).ToListAsync(ct);
+            return Results.Ok(new Page<EnvironmentDto>(rows, null));
         }
 
         private static async Task<IResult> ListApplicationsAsync(Guid tenantId, int? limit, string? cursor, PlatformDbContext db, CancellationToken ct)

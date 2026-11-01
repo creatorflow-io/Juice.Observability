@@ -26,7 +26,8 @@ tests/verify.sh                 # ingestion security, tenant stamping, redaction
 | Endpoint | Address |
 |---|---|
 | OTLP gRPC / HTTP | `https://localhost:4317` / `https://localhost:4318` (CA `secrets/tls/ca.crt`, token in `secrets/otlp-tokens`) |
-| Grafana | http://localhost:3000, **Sign in with Keycloak** (demo users below); dashboard **Juice › Juice overview** |
+| Juice Console | http://localhost:5180 with `--profile platform` (or `npm start` in `console/` on :4200); sign in with a demo user below |
+| Grafana (optional, `--profile grafana`) | http://localhost:3000, **Sign in with Keycloak** (demo users below); dashboard **Juice › Juice overview** |
 | Keycloak | http://localhost:8080, admin console user `admin`, `KEYCLOAK_ADMIN_PASSWORD` |
 | ClickHouse HTTP | http://127.0.0.1:8123 (admin user `admin`, `CLICKHOUSE_ADMIN_PASSWORD`) |
 | PostgreSQL | `127.0.0.1:5433`, database `juice_observability`, user `juice`, `POSTGRES_PASSWORD` |

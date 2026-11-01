@@ -37,12 +37,24 @@ var app = builder.Build();
 app.UseCorrelationId();
 app.UseExceptionHandler();
 app.UseStatusCodePages();
+// Juice Console (wwwroot, when the image includes it): static files on the API's own origin, never framed.
+app.Use((context, next) =>
+{
+    context.Response.Headers.XContentTypeOptions = "nosniff";
+    context.Response.Headers.XFrameOptions = "DENY";
+    context.Response.Headers["Referrer-Policy"] = "no-referrer";
+    return next(context);
+});
+app.UseDefaultFiles();
+app.UseStaticFiles();
 app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapHealthChecks("/health/live", new() { Predicate = _ => false }).AllowAnonymous();
 app.MapHealthChecks("/health/ready", new() { Predicate = check => check.Tags.Contains("ready") }).AllowAnonymous();
 app.MapInventoryEndpoints();
+// Any other path outside /api and /health is a Console route. API paths keep routing's own answers (404, 405).
+app.MapFallbackToFile("{*path:nonfile:regex(^(?!(api|health)(/|$)).*$)}", "index.html").AllowAnonymous();
 
 app.Run();
 

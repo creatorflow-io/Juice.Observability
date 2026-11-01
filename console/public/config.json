@@ -1,0 +1,8 @@
+{
+  "apiBase": "",
+  "auth": {
+    "issuer": "http://localhost:8080/realms/juice",
+    "clientId": "juice-console",
+    "scope": "openid profile email"
+  }
+}

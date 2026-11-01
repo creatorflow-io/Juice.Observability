@@ -64,6 +64,9 @@ namespace Juice.Observability.Tests
             }
             var window = $"from={Uri.EscapeDataString(at.AddMinutes(-5).ToString("O"))}&to={Uri.EscapeDataString(DateTimeOffset.UtcNow.ToString("O"))}";
 
+            Assert.Contains((await Api("/environments")).GetProperty("items").EnumerateArray(),
+                e => e.GetProperty("key").GetString() == "production" && e.GetProperty("type").GetString() == "Production");
+
             // 1–3. The service's operations, busiest first: GET /orders healthy, POST /charge failing.
             var operations = (await Api($"/telemetry/operations?serviceId={paymentsId}&{window}")).GetProperty("items").EnumerateArray().ToList();
             Assert.Equal([("GET /orders", 5L, 0.0), ("POST /charge", 1L, 1.0)], operations.Select(o =>
@@ -87,6 +90,13 @@ namespace Juice.Observability.Tests
                 failing.GetProperty("service").GetString(), failing.GetProperty("instance").GetString(), failing.GetProperty("status").GetString(),
                 failing.GetProperty("environment").GetString()));
             Assert.Equal(90, failing.GetProperty("durationMs").GetDouble());
+            Assert.Equal(paymentsId, failing.GetProperty("serviceId").GetGuid());
+            // From the span to the dependency: the call reaches payments, the INSERT the database discovery recorded.
+            var callTarget = spans.Single(s => s.GetProperty("spanId").GetString() == call).GetProperty("target");
+            Assert.Equal(("service", paymentsId), (callTarget.GetProperty("kind").GetString(), callTarget.GetProperty("id").GetGuid()));
+            var dbTarget = spans.Single(s => s.GetProperty("name").GetString() == "INSERT charges").GetProperty("target");
+            Assert.Equal(("resource", "payments-db/payments"), (dbTarget.GetProperty("kind").GetString(), dbTarget.GetProperty("name").GetString()));
+            Assert.Equal(JsonValueKind.Null, failing.GetProperty("target").ValueKind);
 
             // 7. The dependency: evidence from the caller's spans, and its traces.
             var calls = await Api($"/telemetry/dependencies/{callsId}?{window}");
@@ -112,7 +122,11 @@ namespace Juice.Observability.Tests
                 m => m.GetProperty("name").GetString() == metric && m.GetProperty("type").GetString() == "sum");
             var series = await Api($"/telemetry/metrics/series?name={metric}&serviceId={paymentsId}&stepSeconds=30&{window}");
             Assert.Equal("rate", series.GetProperty("aggregation").GetString());
-            Assert.Contains(series.GetProperty("points").EnumerateArray(), p => Math.Abs(p.GetProperty("value").GetDouble() - 1.0) < 1e-9);
+            var points = series.GetProperty("points").EnumerateArray().Select(p => p.GetProperty("value")).ToList();
+            Assert.Contains(points, v => v.ValueKind == JsonValueKind.Number && Math.Abs(v.GetDouble() - 1.0) < 1e-9);
+            // The first bucket has nothing to compare with: no data, never a rate of zero.
+            Assert.Equal(JsonValueKind.Null, points[0].ValueKind);
+            Assert.DoesNotContain(points, v => v.ValueKind == JsonValueKind.Number && v.GetDouble() == 0);
             Assert.NotEmpty((await Api($"/telemetry/service-stats?serviceId={paymentsId}&{window}")).GetProperty("points").EnumerateArray());
 
             // 10. Back to the trace directly: global search by trace id, span id and service name.

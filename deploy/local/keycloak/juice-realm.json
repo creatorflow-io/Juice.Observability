@@ -156,9 +156,6 @@
         "email",
         "basic"
       ],
-      "optionalClientScopes": [
-        "offline_access"
-      ],
       "protocolMappers": [
         {
           "name": "platform audience",
