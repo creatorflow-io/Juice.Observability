@@ -8,7 +8,7 @@ import { Router, RouterLink } from '@angular/router';
 import { ApiService } from '../core/api.service';
 import { ContextService } from '../core/context.service';
 import { Span } from '../core/models';
-import { DurationPipe } from '../shared/format';
+import { DurationPipe, formatDuration, preciseTime } from '../shared/format';
 import { ContextBar, KeyValueTable } from '../shared/ui';
 import { LogTable, problemText } from '../shared/telemetry';
 
@@ -25,6 +25,8 @@ const PALETTE = ['#3b82f6', '#8b5cf6', '#14b8a6', '#f59e0b', '#ec4899', '#22c55e
  */
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
+  // Fills the window; the waterfall and the span scroll on their own (styles.scss).
+  host: { class: 'jc-fill-page' },
   imports: [RouterLink, DatePipe, MatButtonModule, MatIconModule, MatProgressBarModule, ContextBar, KeyValueTable, LogTable, DurationPipe],
   template: `
     <jc-context-bar>
@@ -98,7 +100,7 @@ const PALETTE = ['#3b82f6', '#8b5cf6', '#14b8a6', '#f59e0b', '#ec4899', '#22c55e
             </nav>
 
             <h3>Logs of this span</h3>
-            <jc-log-table [query]="spanLogQuery()" />
+            <jc-log-table [query]="spanLogQuery()" [compact]="true" />
 
             <h3>Span</h3>
             <jc-kv [values]="{ 'service': s.service, 'environment': s.environment, 'instance': s.instance, 'host': s.host,
@@ -141,9 +143,10 @@ export class TracePage {
   protected readonly selectedId = computed(() => this.span() ?? null);
 
   private readonly spans = computed(() => this.trace.value()?.spans ?? []);
-  protected readonly start = computed(() => Math.min(...this.spans().map(s => new Date(s.startedAt).getTime())));
+  // Sub-millisecond precision: spans of a fast in-process flow start microseconds apart.
+  protected readonly start = computed(() => Math.min(...this.spans().map(s => preciseTime(s.startedAt))));
   protected readonly total = computed(() =>
-    Math.max(1, ...this.spans().map(s => new Date(s.startedAt).getTime() + s.durationMs)) - this.start());
+    Math.max(0.001, Math.max(...this.spans().map(s => preciseTime(s.startedAt) + s.durationMs)) - this.start()));
   protected readonly root = computed(() => this.spans().find(s => !s.parentSpanId) ?? this.spans()[0]);
   protected readonly services = computed(() => [...new Set(this.spans().map(s => s.service))]);
   protected readonly errors = computed(() => this.spans().filter(s => s.status === 'Error').length);
@@ -168,7 +171,7 @@ export class TracePage {
       for (const s of (byParent.get(parent) ?? []).sort((a, b) => a.startedAt.localeCompare(b.startedAt))) {
         rows.push({
           span: s, depth, children: byParent.get(s.spanId)?.length ?? 0,
-          offset: 100 * (new Date(s.startedAt).getTime() - this.start()) / this.total(),
+          offset: 100 * (preciseTime(s.startedAt) - this.start()) / this.total(),
           selfError: s.status === 'Error', slowest: slowest.has(s.spanId) && spans.length > 3,
         });
         walk(s.spanId, depth + 1);
@@ -201,7 +204,7 @@ export class TracePage {
     return out;
   });
 
-  protected readonly ticks = computed(() => [0, 25, 50, 75].map(at => ({ at, label: `${Math.round(this.total() * at / 100)} ms` })));
+  protected readonly ticks = computed(() => [0, 25, 50, 75].map(at => ({ at, label: formatDuration(this.total() * at / 100) })));
 
   color(service: string) {
     return PALETTE[this.services().indexOf(service) % PALETTE.length];
@@ -212,11 +215,11 @@ export class TracePage {
   }
 
   offsetMs(span: Span) {
-    return new Date(span.startedAt).getTime() - this.start();
+    return preciseTime(span.startedAt) - this.start();
   }
 
   eventOffset(span: Span, at: string) {
-    return new Date(at).getTime() - new Date(span.startedAt).getTime();
+    return preciseTime(at) - preciseTime(span.startedAt);
   }
 
   toggle(spanId: string, event: Event) {

@@ -14,6 +14,8 @@ $dark: mat.m2-define-dark-theme((color: (primary: mat.m2-define-palette(mat.$m2-
 
 @include mat.all-component-themes($light);
 @include layout.layout-component-themes($light);
+// Below -1, Material hides the label of fill form fields, and the filters have no placeholder to fall back on.
+html { @include mat.form-field-density(-1); }
 .dark {
   @include mat.all-component-colors($dark);
   @include layout.layout-component-colors($dark);
@@ -50,6 +52,9 @@ h3 { font-size: 14px; margin: 16px 0 6px; font-weight: 500; color: var(--jc-mute
 .jc-nowrap { white-space: nowrap; }
 .jc-bad { color: var(--jc-bad); }
 .jc-error { color: var(--jc-bad); }
+// Under a paged list: how many rows are shown, and the button for the next page.
+.jc-more { display: flex; align-items: center; gap: 12px; padding: 8px 0; font-size: 13px; }
+.jc-notice { padding: 8px 12px; border-left: 3px solid var(--jc-warn); background: var(--jc-warn-bg); font-size: 13px; }
 .jc-spacer { flex: 1; }
 
 .jc-context { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 4px 0 12px; border-bottom: 1px solid var(--jc-border); margin-bottom: 12px; }
@@ -131,6 +136,11 @@ h3 { font-size: 14px; margin: 16px 0 6px; font-weight: 500; color: var(--jc-mute
 .jc-wf-error .jc-wf-bar { outline: 2px solid var(--jc-bad); }
 .jc-wf-time { position: absolute; top: 2px; font-size: 10px; color: var(--jc-muted); transform: translateY(12px); }
 .jc-span-detail { position: sticky; top: 8px; max-height: calc(100vh - 140px); overflow: auto; }
+// The trace page fills the window and scrolls inside its panes (waterfall, span), never the whole page as well.
+mat-sidenav-content > .jc-fill-page { box-sizing: border-box; height: 100%; display: flex; flex-direction: column; overflow: hidden; }
+.jc-fill-page > .jc-trace { flex: 1; min-height: 0; grid-template-rows: minmax(0, 1fr); }
+.jc-fill-page > .jc-trace > .jc-waterfall, .jc-fill-page > .jc-trace > .jc-span-detail { overflow: auto; max-height: none; position: static; }
+.jc-fill-page .jc-wf-head { position: sticky; top: 0; z-index: 1; background: var(--jc-surface); }
 .jc-span-facts { display: flex; gap: 12px; align-items: center; margin-bottom: 6px; }
 .jc-event { border-left: 3px solid var(--jc-border); padding-left: 8px; margin: 6px 0; }
 .jc-event.jc-wf-error { border-left-color: var(--jc-bad); }
@@ -145,5 +155,8 @@ h3 { font-size: 14px; margin: 16px 0 6px; font-weight: 500; color: var(--jc-mute
 
 @media (max-width: 900px) {
   .jc-trace.jc-with-detail, .jc-topology { grid-template-columns: 1fr; }
+  // Stacked panes: the page scrolls as a whole again.
+  mat-sidenav-content > .jc-fill-page { height: auto; display: block; overflow: visible; }
+  .jc-fill-page > .jc-trace > .jc-waterfall, .jc-fill-page > .jc-trace > .jc-span-detail { overflow: visible; }
   .jc-field-wide { min-width: 0; }
 }

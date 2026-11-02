@@ -68,7 +68,7 @@ export class OverviewPage {
     params: () => this.ctx.environment(),
     stream: ({ params }) => this.api.health({ subjectType: 'service', environment: params }).pipe(map(p => p.items)),
   });
-  protected readonly alerts = rxResource({ stream: () => this.api.alerts({ state: 'firing' }).pipe(map(p => p.items)) });
+  protected readonly alerts = rxResource({ stream: () => this.api.allAlerts({ state: 'firing' }).pipe(map(p => p.items)) });
   protected readonly error = computed(() => problemText(this.health.error()));
   protected readonly counts = computed(() => {
     const counts: Partial<Record<HealthState, number>> = {};

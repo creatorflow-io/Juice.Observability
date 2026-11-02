@@ -10,6 +10,7 @@ import { RouterLink } from '@angular/router';
 import { ApiService, Query } from '../core/api.service';
 import { ContextService, MAX_SEARCH_MS } from '../core/context.service';
 import { DurationPipe } from './format';
+import { cursorList } from './paging';
 import { Chart, withGaps } from './ui';
 
 /** Shows a request's failure as a short line instead of a broken page. */
@@ -29,9 +30,9 @@ export function problemText(error: unknown): string {
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [RouterLink, DatePipe, DurationPipe, MatProgressBarModule, MatButtonModule],
   template: `
-    @if (traces.isLoading()) { <mat-progress-bar mode="indeterminate" /> }
-    @if (traces.error()) { <p class="jc-error">{{ error() }}</p> }
-    @if (traces.hasValue()) {
+    @if (traces.first.isLoading()) { <mat-progress-bar mode="indeterminate" /> }
+    @if (traces.first.error()) { <p class="jc-error">{{ error() }}</p> }
+    @if (traces.first.hasValue()) {
       @if (rows().length === 0) { <p class="jc-muted">No traces match in this window.</p> }
       @else {
         <table class="jc-table">
@@ -51,9 +52,13 @@ export function problemText(error: unknown): string {
             }
           </tbody>
         </table>
-        @if (traces.value().truncated) {
-          <button mat-button (click)="older()">Older traces</button>
-        }
+        <div class="jc-more">
+          <span class="jc-muted">{{ rows().length }} trace{{ rows().length === 1 ? '' : 's' }}{{ traces.hasMore() ? ', newest first' : '' }}</span>
+          @if (traces.hasMore()) {
+            <button mat-button (click)="traces.more()" [disabled]="traces.loadingMore()">{{ traces.loadingMore() ? 'Loading…' : 'Older traces' }}</button>
+          }
+          @if (traces.moreError()) { <span class="jc-error">{{ moreError() }}</span> }
+        </div>
       }
     }`,
 })
@@ -62,24 +67,16 @@ export class TraceTable {
   private readonly api = inject(ApiService);
   readonly query = input<Query>({});
   readonly limit = input(50);
-  /** "Older traces" moves the end of the window back to the oldest row shown. */
-  private readonly before = linkedSignal<Query, string | null>({ source: this.query, computation: () => null });
 
-  protected readonly traces = rxResource({
-    params: () => ({ query: this.query(), env: this.ctx.environment(), range: this.ctx.range(), before: this.before(), limit: this.limit() }),
-    stream: ({ params }) => {
-      const window = this.ctx.window(MAX_SEARCH_MS);
-      return this.api.traces({ environment: params.env, ...window, ...(params.before ? { to: params.before } : {}), limit: params.limit, ...params.query });
-    },
-  });
-  protected readonly rows = computed(() => this.traces.value()?.items ?? []);
+  /** "Older traces" appends the next page of the same search, over the same window. */
+  protected readonly traces = cursorList(
+    () => ({ query: this.query(), env: this.ctx.environment(), range: this.ctx.range(), abs: this.ctx.absolute(), limit: this.limit() }),
+    p => ({ environment: p.env, ...this.ctx.window(MAX_SEARCH_MS), limit: p.limit, ...p.query }),
+    q => this.api.traces(q));
+  protected readonly rows = this.traces.items;
   protected readonly longest = computed(() => Math.max(1, ...this.rows().map(t => t.durationMs)));
-  protected readonly error = computed(() => problemText(this.traces.error()));
-
-  older() {
-    const rows = this.rows();
-    if (rows.length) this.before.set(rows[rows.length - 1].startedAt);
-  }
+  protected readonly error = computed(() => problemText(this.traces.first.error()));
+  protected readonly moreError = computed(() => problemText(this.traces.moreError()));
 }
 
 /**
@@ -89,32 +86,38 @@ export class TraceTable {
 @Component({
   selector: 'jc-log-table',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [RouterLink, DatePipe, MatProgressBarModule],
+  imports: [RouterLink, DatePipe, MatProgressBarModule, MatButtonModule],
   template: `
-    @if (logs.isLoading()) { <mat-progress-bar mode="indeterminate" /> }
-    @if (logs.error()) { <p class="jc-error">{{ error() }}</p> }
-    @if (logs.hasValue()) {
+    @if (logs.first.isLoading()) { <mat-progress-bar mode="indeterminate" /> }
+    @if (logs.first.error()) { <p class="jc-error">{{ error() }}</p> }
+    @if (logs.first.hasValue()) {
       @if (rows().length === 0) { <p class="jc-muted">No log records match in this window.</p> }
       @else {
         <table class="jc-table jc-logs">
-          <thead><tr><th>Time</th><th>Severity</th><th>Service</th><th>Message</th><th>Trace</th></tr></thead>
+          <thead><tr><th>Time</th><th>Severity</th>@if (!compact()) { <th>Service</th> }<th>Message</th>@if (!compact()) { <th>Trace</th> }</tr></thead>
           <tbody>
             @for (l of rows(); track $index) {
               <tr>
                 <td class="jc-nowrap">{{ l.timestamp | date: 'MMM d, HH:mm:ss.SSS' }}</td>
                 <td><span class="jc-badge" [class]="severityClass(l.severityNumber)">{{ l.severity || l.severityNumber }}</span></td>
-                <td class="jc-nowrap">{{ l.service }}@if (l.instance) {<div class="jc-muted jc-small">{{ l.instance }}</div>}</td>
+                @if (!compact()) { <td class="jc-nowrap">{{ l.service }}@if (l.instance) {<div class="jc-muted jc-small">{{ l.instance }}</div>}</td> }
                 <td><pre class="jc-body">{{ l.body }}@if (l.bodyTruncated) {…}</pre></td>
-                <td class="jc-nowrap">
+                @if (!compact()) { <td class="jc-nowrap">
                   @if (l.traceId) {
                     <a [routerLink]="['/traces', l.traceId]" [queryParams]="ctx.keep(l.spanId ? { span: l.spanId } : {})">{{ l.spanId ? 'span' : 'trace' }} ↗</a>
                   } @else { <span class="jc-muted">—</span> }
-                </td>
+                </td> }
               </tr>
             }
           </tbody>
         </table>
-        @if (logs.value().truncated) { <p class="jc-muted">Showing the newest {{ rows().length }}; narrow the window or filters to see more.</p> }
+        <div class="jc-more">
+          <span class="jc-muted">{{ rows().length }} record{{ rows().length === 1 ? '' : 's' }}{{ logs.hasMore() ? ', newest first' : '' }}</span>
+          @if (logs.hasMore()) {
+            <button mat-button (click)="logs.more()" [disabled]="logs.loadingMore()">{{ logs.loadingMore() ? 'Loading…' : 'Older logs' }}</button>
+          }
+          @if (logs.moreError()) { <span class="jc-error">{{ moreError() }}</span> }
+        </div>
       }
     }`,
 })
@@ -122,13 +125,17 @@ export class LogTable {
   protected readonly ctx = inject(ContextService);
   private readonly api = inject(ApiService);
   readonly query = input<Query>({});
+  /** Inside a span: its service and trace are already on screen, so only time, severity and message. */
+  readonly compact = input(false);
 
-  protected readonly logs = rxResource({
-    params: () => ({ query: this.query(), env: this.ctx.environment(), range: this.ctx.range(), abs: this.ctx.absolute() }),
-    stream: ({ params }) => this.api.logs({ environment: params.env, ...this.ctx.window(MAX_SEARCH_MS), limit: 200, ...params.query }),
-  });
-  protected readonly rows = computed(() => this.logs.value()?.items ?? []);
-  protected readonly error = computed(() => problemText(this.logs.error()));
+  /** "Older logs" appends the next page of the same search, over the same window. */
+  protected readonly logs = cursorList(
+    () => ({ query: this.query(), env: this.ctx.environment(), range: this.ctx.range(), abs: this.ctx.absolute() }),
+    p => ({ environment: p.env, ...this.ctx.window(MAX_SEARCH_MS), limit: 200, ...p.query }),
+    q => this.api.logs(q));
+  protected readonly rows = this.logs.items;
+  protected readonly error = computed(() => problemText(this.logs.first.error()));
+  protected readonly moreError = computed(() => problemText(this.logs.moreError()));
 
   severityClass(n: number) {
     return n >= 17 ? 'jc-health-unhealthy' : n >= 13 ? 'jc-health-degraded' : n >= 9 ? 'jc-health-healthy' : 'jc-health-none';

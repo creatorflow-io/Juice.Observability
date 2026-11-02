@@ -54,7 +54,10 @@ export class ApiService {
   topology(environment?: string | null) { return this.get<Topology>('/topology', { environment }); }
 
   rules() { return this.get<Page<Rule>>('/rules', { limit: 200 }); }
+  /** One page of alerts, newest first; pass the previous page's `nextCursor` as `cursor` for the next. */
   alerts(query: Query) { return this.get<Page<Alert>>('/alerts', { limit: 100, ...query }); }
+  /** Every alert matching the query (bounded, like the other complete lists). */
+  allAlerts(query: Query) { return this.all<Alert>('/alerts', query); }
   alert(id: string) { return this.get<AlertDetail>(`/alerts/${id}`); }
   acknowledge(id: string, comment: string): Observable<Alert> {
     return this.tenant$.pipe(switchMap(t => this.http.post<Alert>(`${this.base}/tenants/${t.id}/alerts/${id}/acknowledgement`,

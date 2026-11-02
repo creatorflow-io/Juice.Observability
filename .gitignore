@@ -4,3 +4,7 @@ deploy/local/secrets/
 
 # Build output (Directory.Build.props)
 build/
+
+# Visual Studio
+.vs/
+src/*/Properties/

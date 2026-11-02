@@ -166,6 +166,58 @@ namespace Juice.Observability.Tests
             Assert.Empty((await JsonAsync(await Raw($"/search?q={span}"))).GetProperty("items").EnumerateArray());
         }
 
+        [Fact]
+        public async Task Paging_returns_every_trace_and_log_once_even_with_equal_timestamps_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var (service, operation, marker) = ($"tel-{_run}-paged", $"paged op {_run}", $"paged-{_run}");
+            var traces = Enumerable.Range(0, 5).Select(_ => Otlp.TraceId()).ToList();
+            // Same timestamp for every row: only the tie-breaker orders them.
+            foreach (var trace in traces)
+            {
+                await LocalStack.ClickHouseAsync($"""
+                    INSERT INTO otel.otel_traces (Timestamp, TraceId, SpanId, ServiceName, SpanName, SpanKind, StatusCode, ResourceAttributes)
+                    VALUES (toDateTime64(now() - 60, 9), '{trace}', '{Otlp.SpanId()}', '{service}', '{operation}', 'Server', 'Ok',
+                            map('juice.platform_tenant_id', '{LocalStack.TenantKey}'))
+                    """);
+                await LocalStack.ClickHouseAsync($"""
+                    INSERT INTO otel.otel_logs (Timestamp, TraceId, SpanId, ServiceName, Body, SeverityNumber, ResourceAttributes)
+                    VALUES (toDateTime64(now() - 60, 9), '{trace}', '', '{service}', '{marker} {trace}', 9,
+                            map('juice.platform_tenant_id', '{LocalStack.TenantKey}'))
+                    """);
+            }
+            await LocalStack.WaitForSpansAsync(service, 5);
+
+            await using var factory = new ApiFactory(database);
+            using var client = factory.CreateClient();
+            var token = await LocalStack.TokenAsync("victor");
+            var tenant = (await JsonAsync(await Get(client, "/api/v1/tenants", token))).GetProperty("items")[0].GetProperty("id").GetGuid();
+            var window = $"from={Uri.EscapeDataString(DateTimeOffset.UtcNow.AddMinutes(-10).ToString("O"))}&to={Uri.EscapeDataString(DateTimeOffset.UtcNow.ToString("O"))}";
+            async Task<List<string>> AllAsync(string path, Func<JsonElement, string> id)
+            {
+                var (seen, cursor, pages) = (new List<string>(), (string?)null, 0);
+                do
+                {
+                    var page = await JsonAsync(await Get(client,
+                        $"/api/v1/tenants/{tenant}{path}&{window}&limit=2{(cursor is null ? "" : $"&cursor={cursor}")}", token));
+                    seen.AddRange(page.GetProperty("items").EnumerateArray().Select(id));
+                    cursor = page.GetProperty("nextCursor").GetString();
+                    Assert.Equal(cursor is not null, page.GetProperty("truncated").GetBoolean());
+                }
+                while (cursor is not null && ++pages < 10);
+                return seen;
+            }
+
+            var pagedTraces = await AllAsync($"/telemetry/traces?operation={Uri.EscapeDataString(operation)}", t => t.GetProperty("traceId").GetString()!);
+            Assert.Equal(traces.Order(), pagedTraces.Order());
+            var pagedLogs = await AllAsync($"/telemetry/logs?q={marker}", l => l.GetProperty("traceId").GetString()!);
+            Assert.Equal(traces.Order(), pagedLogs.Order());
+
+            using var bad = await Get(client, $"/api/v1/tenants/{tenant}/telemetry/traces?cursor=not-a-cursor", token);
+            Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
+        }
+
         [Theory]
         [InlineData("/telemetry/traces/not-a-trace", HttpStatusCode.BadRequest)]
         [InlineData("/telemetry/traces?spanId=xyz", HttpStatusCode.BadRequest)]

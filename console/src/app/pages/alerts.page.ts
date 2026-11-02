@@ -1,30 +1,30 @@
 import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core';
-import { rxResource } from '@angular/core/rxjs-interop';
+import { MatButtonModule } from '@angular/material/button';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { RouterLink } from '@angular/router';
-import { map } from 'rxjs';
 import { ApiService } from '../core/api.service';
 import { ContextService } from '../core/context.service';
 import { AgoPipe } from '../shared/format';
 import { ContextBar } from '../shared/ui';
+import { cursorList } from '../shared/paging';
 import { problemText } from '../shared/telemetry';
 
-/** Alerts, newest first (Console requirements §14), filtered by state. */
+/** Alerts, newest first (Console requirements §14), filtered by state; 100 at a time, with the next on request. */
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [RouterLink, MatProgressBarModule, ContextBar, AgoPipe],
+  imports: [RouterLink, MatButtonModule, MatProgressBarModule, ContextBar, AgoPipe],
   template: `
     <jc-context-bar><h1>Alerts</h1>
       @for (s of states; track s) {
         <a class="jc-chip" [class.jc-selected]="s === (state() ?? 'firing')" routerLink="/alerts" [queryParams]="ctx.keep({ state: s })">{{ s }}</a>
       }
     </jc-context-bar>
-    @if (alerts.isLoading()) { <mat-progress-bar mode="indeterminate" /> }
-    @if (alerts.error()) { <p class="jc-error">{{ error() }}</p> }
+    @if (alerts.first.isLoading()) { <mat-progress-bar mode="indeterminate" /> }
+    @if (alerts.first.error()) { <p class="jc-error">{{ error() }}</p> }
     <table class="jc-table">
       <thead><tr><th>Severity</th><th>Rule</th><th>Subject</th><th>State</th><th>Value</th><th>Fired</th><th>Acknowledged</th></tr></thead>
       <tbody>
-        @for (a of alerts.value() ?? []; track a.id) {
+        @for (a of alerts.items(); track a.id) {
           <tr>
             <td><span class="jc-badge" [class.jc-health-unhealthy]="a.severity === 'Critical'" [class.jc-health-degraded]="a.severity === 'Warning'">{{ a.severity }}</span></td>
             <td><a [routerLink]="['/alerts', a.id]" [queryParams]="ctx.keep()">{{ a.rule }}</a></td>
@@ -34,18 +34,25 @@ import { problemText } from '../shared/telemetry';
             <td>{{ a.firedAt | ago }}</td>
             <td>{{ a.acknowledgedBy ?? '—' }}</td>
           </tr>
-        } @empty { <tr><td colspan="7" class="jc-muted">No {{ state() ?? 'firing' }} alerts.</td></tr> }
+        } @empty { @if (alerts.first.hasValue()) { <tr><td colspan="7" class="jc-muted">No {{ state() ?? 'firing' }} alerts.</td></tr> } }
       </tbody>
-    </table>`,
+    </table>
+    @if (alerts.items().length > 0) {
+      <div class="jc-more">
+        <span class="jc-muted">{{ alerts.items().length }} {{ state() ?? 'firing' }} alert{{ alerts.items().length === 1 ? '' : 's' }}{{ alerts.hasMore() ? ', newest first' : '' }}</span>
+        @if (alerts.hasMore()) {
+          <button mat-button (click)="alerts.more()" [disabled]="alerts.loadingMore()">{{ alerts.loadingMore() ? 'Loading…' : 'Load more' }}</button>
+        }
+        @if (alerts.moreError()) { <span class="jc-error">{{ moreError() }}</span> }
+      </div>
+    }`,
 })
 export class AlertsPage {
   protected readonly ctx = inject(ContextService);
   private readonly api = inject(ApiService);
   protected readonly states = ['firing', 'pending', 'resolved'];
   readonly state = input<string>();
-  protected readonly alerts = rxResource({
-    params: () => this.state() ?? 'firing',
-    stream: ({ params }) => this.api.alerts({ state: params }).pipe(map(p => p.items)),
-  });
-  protected readonly error = computed(() => problemText(this.alerts.error()));
+  protected readonly alerts = cursorList(() => this.state() ?? 'firing', state => ({ state }), q => this.api.alerts(q));
+  protected readonly error = computed(() => problemText(this.alerts.first.error()));
+  protected readonly moreError = computed(() => problemText(this.alerts.moreError()));
 }

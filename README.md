@@ -53,9 +53,9 @@ page's `nextCursor`).
 | `GET /api/v1/tenants/{tenantId}/alerts?state=&rule=` | alerts, newest first |
 | `GET /api/v1/tenants/{tenantId}/alerts/{alertId}` | an alert with its evidence, state history, the subject's health and any integration links |
 | `GET /api/v1/tenants/{tenantId}/environments` | the environments seen in telemetry |
-| `GET /api/v1/tenants/{tenantId}/telemetry/traces?serviceId=&environment=&operation=&status=&minDurationMs=&maxDurationMs=&instanceId=&resourceId=&dependencyId=&traceId=&spanId=&attribute=key=value&from=&to=` | traces with a span matching every filter, newest first (window ≤ 24 h) |
+| `GET /api/v1/tenants/{tenantId}/telemetry/traces?serviceId=&environment=&operation=&status=&minDurationMs=&maxDurationMs=&instanceId=&resourceId=&dependencyId=&traceId=&spanId=&attribute=key=value&from=&to=&cursor=` | traces with a span matching every filter, by latest matching span (window ≤ 24 h); pass `nextCursor` as `cursor`, with the same window, for the next page |
 | `GET /api/v1/tenants/{tenantId}/telemetry/traces/{traceId}` | every span (≤ 1,000) with service id, instance, host, scope, attributes, events, links, and the service or resource a call reaches |
-| `GET /api/v1/tenants/{tenantId}/telemetry/logs?serviceId=&instanceId=&resourceId=&traceId=&spanId=&minSeverity=&q=&from=&to=` | log records, newest first |
+| `GET /api/v1/tenants/{tenantId}/telemetry/logs?serviceId=&instanceId=&resourceId=&traceId=&spanId=&minSeverity=&q=&from=&to=&cursor=` | log records, newest first; `nextCursor` pages back like traces |
 | `GET /api/v1/tenants/{tenantId}/telemetry/operations?serviceId=` | a service's entry operations with throughput, error rate, p50/p95/p99 |
 | `GET /api/v1/tenants/{tenantId}/telemetry/dependencies/{dependencyId}` | an edge's evidence: calls, error rate, p95, last seen, representative traces |
 | `GET /api/v1/tenants/{tenantId}/telemetry/metrics`, `…/metrics/series?name=&stepSeconds=`, `…/service-stats?serviceId=` | metric names, one metric as a series (counter → rate), a service's requests, errors and p95; empty buckets have no point |

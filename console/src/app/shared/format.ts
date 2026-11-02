@@ -1,5 +1,11 @@
 import { Pipe, PipeTransform } from '@angular/core';
 
+/** Milliseconds since the epoch of an ISO 8601 time, keeping the sub-millisecond digits that Date.parse drops. */
+export function preciseTime(iso: string): number {
+  const fraction = /\.\d{3}(\d+)/.exec(iso)?.[1];
+  return Date.parse(iso) + (fraction ? Number(`0.${fraction}`) : 0);
+}
+
 /** 0.8 ms, 120 ms, 1.42 s, 2 m 05 s. */
 export function formatDuration(ms: number | null | undefined): string {
   if (ms === null || ms === undefined || Number.isNaN(ms)) return '—';

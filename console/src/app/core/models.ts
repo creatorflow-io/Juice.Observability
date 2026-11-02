@@ -2,7 +2,7 @@
 // storage names.
 
 export interface Page<T> { items: T[]; nextCursor: string | null; }
-export interface TelemetryPage<T> { items: T[]; truncated: boolean; }
+export interface TelemetryPage<T> { items: T[]; truncated: boolean; nextCursor?: string | null; }
 
 export interface Tenant { id: string; key: string; displayName: string; }
 export interface DeploymentEnvironment { id: string; key: string; type: string; firstSeen: string; lastSeen: string; }

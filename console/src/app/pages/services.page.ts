@@ -1,5 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, inject, input, signal } from '@angular/core';
 import { rxResource } from '@angular/core/rxjs-interop';
+import { MatPaginatorModule } from '@angular/material/paginator';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { RouterLink } from '@angular/router';
 import { SearchablePage } from '@juice-js/layout';
@@ -10,6 +11,7 @@ import { Health, HealthState } from '../core/models';
 import { AgoPipe, ReasonPipe } from '../shared/format';
 import { ContextBar, HealthBadge } from '../shared/ui';
 import { problemText } from '../shared/telemetry';
+import { screenPages } from '../shared/paging';
 
 const SEVERITY: HealthState[] = ['Critical', 'Unhealthy', 'Degraded', 'Offline', 'Unknown', 'Healthy'];
 
@@ -19,17 +21,18 @@ const SEVERITY: HealthState[] = ['Critical', 'Unhealthy', 'Degraded', 'Offline',
  */
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [RouterLink, MatProgressBarModule, ContextBar, HealthBadge, AgoPipe],
+  imports: [RouterLink, MatPaginatorModule, MatProgressBarModule, ContextBar, HealthBadge, AgoPipe],
   template: `
     <jc-context-bar><h1>Services</h1>
       @if (state()) { <span class="jc-chip">{{ state() }} <a routerLink="/services" [queryParams]="ctx.keep()">×</a></span> }
     </jc-context-bar>
     @if (data.isLoading()) { <mat-progress-bar mode="indeterminate" /> }
     @if (data.error()) { <p class="jc-error">{{ error() }}</p> }
+    @if (capped()) { <p class="jc-notice">Showing the first 5,000 only. Narrow the list with the search box or a filter.</p> }
     <table class="jc-table">
       <thead><tr><th>Service</th><th>Health by environment</th><th>Why</th><th>Last seen</th></tr></thead>
       <tbody>
-        @for (s of rows(); track s.id) {
+        @for (s of pages.visible(); track s.id) {
           <tr>
             <td><a [routerLink]="['/services', s.id]" [queryParams]="ctx.keep()">{{ s.key }}</a></td>
             <td class="jc-envs">
@@ -42,7 +45,11 @@ const SEVERITY: HealthState[] = ['Critical', 'Unhealthy', 'Degraded', 'Offline',
           </tr>
         } @empty { <tr><td colspan="4" class="jc-muted">No services{{ filter() ? ' match "' + filter() + '"' : '' }}.</td></tr> }
       </tbody>
-    </table>`,
+    </table>
+    @if (pages.needed()) {
+      <mat-paginator [length]="rows().length" [pageSize]="pages.size()" [pageIndex]="pages.index()" [pageSizeOptions]="pages.sizes"
+                     (page)="pages.change($event)" aria-label="Pages" />
+    }`,
 })
 export class ServicesPage implements SearchablePage {
   protected readonly ctx = inject(ContextService);
@@ -54,10 +61,13 @@ export class ServicesPage implements SearchablePage {
 
   protected readonly data = rxResource({
     stream: () => forkJoin({
-      services: this.api.resources('service').pipe(map(p => p.items)),
-      health: this.api.health({ subjectType: 'service' }).pipe(map(p => p.items)),
-    }),
+      services: this.api.resources('service'),
+      health: this.api.health({ subjectType: 'service' }),
+    }).pipe(map(({ services, health }) => ({
+      services: services.items, health: health.items, capped: services.nextCursor !== null || health.nextCursor !== null,
+    }))),
   });
+  protected readonly capped = computed(() => this.data.value()?.capped ?? false);
   protected readonly error = computed(() => problemText(this.data.error()));
 
   protected readonly rows = computed(() => {
@@ -79,6 +89,8 @@ export class ServicesPage implements SearchablePage {
       .filter(s => !this.state() || s.health.some(h => h.state === this.state()))
       .sort((a, b) => SEVERITY.indexOf(a.worst?.state ?? 'Unknown') - SEVERITY.indexOf(b.worst?.state ?? 'Unknown') || a.key.localeCompare(b.key));
   });
+
+  protected readonly pages = screenPages(this.rows);
 
   onSearch(query: string) { this.filter.set(query); }
 }

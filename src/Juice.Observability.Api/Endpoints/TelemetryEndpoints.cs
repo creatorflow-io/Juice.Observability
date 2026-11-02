@@ -1,3 +1,5 @@
+using System.Buffers.Text;
+using System.Text;
 using System.Text.RegularExpressions;
 using Juice.Observability.Data;
 using Juice.Observability.Discovery;
@@ -46,7 +48,8 @@ namespace Juice.Observability.Api.Endpoints
 
     public sealed record SearchHitDto(string Kind, string Id, string Title, string? TraceId);
 
-    public sealed record TelemetryPage<T>(IReadOnlyList<T> Items, bool Truncated);
+    /// <summary>A bounded page of telemetry. Trace and log searches also give <c>NextCursor</c> when there is more.</summary>
+    public sealed record TelemetryPage<T>(IReadOnlyList<T> Items, bool Truncated, string? NextCursor = null);
 
     /// <summary>
     /// Telemetry exploration for Juice Console (UI architecture §3.3, Console requirements §5–§13): traces, logs, metrics,
@@ -131,6 +134,35 @@ namespace Juice.Observability.Api.Endpoints
                 return $"{{{key}:{name}}}";
             }
         }
+
+        /// <summary>
+        /// Where a newest-first page of traces or logs ended: a time in Unix nanoseconds and a tie-breaker, so the next page
+        /// starts strictly after it and rows that share a timestamp are neither skipped nor repeated. Clients pass it back
+        /// as <c>cursor</c> with the same window and filters.
+        /// </summary>
+        private readonly record struct Position(long Nanos, string Key)
+        {
+            public string Encode() => Base64Url.EncodeToString(Encoding.UTF8.GetBytes($"{Nanos}:{Key}"));
+
+            public static bool TryParse(string? text, out Position? position)
+            {
+                position = null;
+                if (text is not { Length: > 0 }) return true;
+                try
+                {
+                    var parts = Encoding.UTF8.GetString(Base64Url.DecodeFromChars(text)).Split(':', 2);
+                    if (parts.Length != 2 || !long.TryParse(parts[0], out var nanos) || parts[1] is not { Length: > 0 and <= 64 }) return false;
+                    position = new Position(nanos, parts[1]);
+                    return true;
+                }
+                catch (FormatException)
+                {
+                    return false;
+                }
+            }
+        }
+
+        private static IResult BadCursor() => Bad("Invalid cursor", "cursor is the nextCursor of a previous page.");
 
         private sealed class FilterException(IResult problem) : Exception
         {
@@ -303,27 +335,34 @@ namespace Juice.Observability.Api.Endpoints
 
         /// <summary>
         /// Traces with at least one span meeting every filter in the window, newest first. <c>status=error</c> keeps traces
-        /// with a failed span, <c>status=ok</c> traces without one; the duration bounds apply to the matching span. To page
-        /// back, pass the oldest <c>startedAt</c> as <c>to</c>.
+        /// with a failed span, <c>status=ok</c> traces without one; the duration bounds apply to the matching span. Traces are
+        /// ordered by their latest matching span; to page back, pass <c>nextCursor</c> as <c>cursor</c> with the same window.
         /// </summary>
         private static Task<IResult> SearchTracesAsync(HttpContext http, PlatformDbContext db, ClickHouseTelemetrySource clickHouse,
             TimeProvider clock, [AsParameters] Filter filter, string? status, double? minDurationMs, double? maxDurationMs, int? limit,
-            CancellationToken ct) => Run(async () =>
+            string? cursor, CancellationToken ct) => Run(async () =>
         {
             if (Limit(limit, out var take) is { } invalid) return invalid;
+            if (!Position.TryParse(cursor, out var after) || after is { Key: var key } && !TraceIdPattern.IsMatch(key)) return BadCursor();
             if (status is not (null or "error" or "ok")) return Bad("Invalid status", "status is error or ok.");
             if (minDurationMs is < 0 || maxDurationMs is < 0) return Bad("Invalid duration", "Durations are zero or more.");
             var scope = await ScopeAsync(http, db, clock, filter, take + 1, MaxSearchRange, ct);
             if (status == "error") scope.SpanConditions.Add("StatusCode = 'Error'");
             if (minDurationMs is { } min) scope.SpanConditions.Add($"Duration >= {scope.Add("UInt64", (ulong)(min * 1_000_000))}");
             if (maxDurationMs is { } max) scope.SpanConditions.Add($"Duration <= {scope.Add("UInt64", (ulong)(max * 1_000_000))}");
-            // The matching traces, then every span of those traces near the window (a trace may start before it).
+            var afterCondition = after is { } a
+                ? $"HAVING (toUnixTimestamp64Nano(last), TraceId) < ({scope.Add("Int64", a.Nanos)}, {scope.Add("String", a.Key)})"
+                : "";
+            // The matching traces in a stable order (latest matching span, then trace id), then every span of those traces
+            // near the window (a trace may start before it). status=ok is applied after paging, so the cursor still moves on.
             const string Root = "ParentSpanId = ''";
             var sql = $"""
                 WITH matched AS (
-                    SELECT TraceId FROM otel.otel_traces WHERE {scope.Where("Timestamp", spans: true)}
-                    GROUP BY TraceId ORDER BY max(Timestamp) DESC LIMIT {ClickHouseTelemetrySource.Limit}
+                    SELECT TraceId, max(Timestamp) AS last FROM otel.otel_traces WHERE {scope.Where("Timestamp", spans: true)}
+                    GROUP BY TraceId {afterCondition}
+                    ORDER BY last DESC, TraceId DESC LIMIT {ClickHouseTelemetrySource.Limit}
                 )
+                SELECT s.*, toUnixTimestamp64Nano(m.last) FROM (
                 SELECT TraceId, min(Timestamp) AS started,
                        max(toUnixTimestamp64Nano(Timestamp) + Duration) - min(toUnixTimestamp64Nano(Timestamp)) AS duration,
                        if(countIf({Root}) > 0, argMinIf(ServiceName, Timestamp, {Root}), argMin(ServiceName, Timestamp)),
@@ -336,14 +375,17 @@ namespace Juice.Observability.Api.Endpoints
                 WHERE {Tenant} AND Timestamp >= {From} - INTERVAL 1 HOUR AND Timestamp < {To} + INTERVAL 1 HOUR
                   AND TraceId IN (SELECT TraceId FROM matched)
                 GROUP BY TraceId
-                {(status == "ok" ? "HAVING errors = 0" : "")}
-                ORDER BY started DESC
+                ) AS s INNER JOIN matched AS m ON s.TraceId = m.TraceId
+                ORDER BY m.last DESC, s.TraceId DESC
                 """;
-            var rows = await clickHouse.QueryAsync(sql, scope.Window, r => new TraceSummaryDto(r.GetString(0), Utc(r.GetValue(1)),
+            var rows = await clickHouse.QueryAsync(sql, scope.Window, r => (Trace: new TraceSummaryDto(r.GetString(0), Utc(r.GetValue(1)),
                 Ms(r.GetValue(2)), r.GetString(3), r.GetString(4), NonEmpty(r.GetString(5)), NonEmpty(r.GetString(6)), NonEmpty(r.GetString(7)),
                 Convert.ToInt64(r.GetValue(8)), Convert.ToInt64(r.GetValue(9)), ((string[])r.GetValue(10)).Order(StringComparer.Ordinal).ToList()),
-                ct, scope.Parameters);
-            return Results.Ok(new TelemetryPage<TraceSummaryDto>(rows.Take(take).ToList(), rows.Count > take));
+                Position: new Position(Convert.ToInt64(r.GetValue(11)), r.GetString(0))), ct, scope.Parameters);
+            var page = rows.Take(take).ToList();
+            var next = rows.Count > take ? page[^1].Position.Encode() : null;
+            return Results.Ok(new TelemetryPage<TraceSummaryDto>(
+                page.Select(r => r.Trace).Where(t => status != "ok" || t.ErrorCount == 0).ToList(), next is not null, next));
         });
 
         /// <summary>
@@ -422,13 +464,15 @@ namespace Juice.Observability.Api.Endpoints
 
         /// <summary>
         /// Log records newest first. <c>minSeverity</c> is an OpenTelemetry severity number (9 info, 13 warn, 17 error); <c>q</c>
-        /// is a case-insensitive substring of the body. <c>traceId</c> and <c>spanId</c> give a trace's or a span's logs.
+        /// is a case-insensitive substring of the body. <c>traceId</c> and <c>spanId</c> give a trace's or a span's logs. To
+        /// page back, pass <c>nextCursor</c> as <c>cursor</c> with the same window.
         /// </summary>
         private static Task<IResult> SearchLogsAsync(HttpContext http, PlatformDbContext db, ClickHouseTelemetrySource clickHouse,
             TimeProvider clock, Guid? serviceId, string? environment, Guid? instanceId, Guid? resourceId, string? traceId, string? spanId,
-            DateTimeOffset? from, DateTimeOffset? to, int? minSeverity, string? q, int? limit, CancellationToken ct) => Run(async () =>
+            DateTimeOffset? from, DateTimeOffset? to, int? minSeverity, string? q, int? limit, string? cursor, CancellationToken ct) => Run(async () =>
         {
             if (Limit(limit, out var take) is { } invalid) return invalid;
+            if (!Position.TryParse(cursor, out var after) || after is { Key: var key } && !ulong.TryParse(key, out _)) return BadCursor();
             if (minSeverity is < 0 or > 24) return Bad("Invalid minSeverity", "minSeverity is a severity number from 0 to 24.");
             if (q is { Length: > MaxText }) return Bad("Invalid q", $"q is at most {MaxText} characters.");
             var resource = resourceId is { } r ? await db.Resources.AsNoTracking().SingleOrDefaultAsync(x => x.Id == r, ct) : null;
@@ -447,18 +491,29 @@ namespace Juice.Observability.Api.Endpoints
             }
             if (minSeverity is { } severity) scope.Conditions.Add($"SeverityNumber >= {scope.Add("UInt8", (byte)severity)}");
             if (q is { Length: > 0 }) scope.Conditions.Add($"positionCaseInsensitiveUTF8(Body, {scope.Add("String", q)}) > 0");
+            // Records have no id: a hash of their content breaks ties between records with the same timestamp.
+            const string Tie = "cityHash64(TraceId, SpanId, ServiceName, SeverityNumber, Body, toString(LogAttributes), toString(ResourceAttributes))";
+            if (after is { } a)
+            {
+                var (nanos, tie) = (scope.Add("Int64", a.Nanos), scope.Add("UInt64", ulong.Parse(a.Key)));
+                scope.Conditions.Add($"Timestamp <= fromUnixTimestamp64Nano({nanos}) AND (toUnixTimestamp64Nano(Timestamp), {Tie}) < ({nanos}, {tie})");
+            }
             var rows = await clickHouse.QueryAsync($"""
                 SELECT Timestamp, SeverityText, SeverityNumber, ServiceName, {Environment}, {Instance},
-                       substringUTF8(Body, 1, {MaxBody}), lengthUTF8(Body) > {MaxBody}, TraceId, SpanId, LogAttributes
+                       substringUTF8(Body, 1, {MaxBody}), lengthUTF8(Body) > {MaxBody}, TraceId, SpanId, LogAttributes,
+                       toUnixTimestamp64Nano(Timestamp), {Tie} AS tie
                 FROM otel.otel_logs
                 WHERE {scope.Where("Timestamp")}
-                ORDER BY Timestamp DESC
+                ORDER BY Timestamp DESC, tie DESC
                 LIMIT {ClickHouseTelemetrySource.Limit}
-                """, scope.Window, x => new LogDto(Utc(x.GetValue(0)), x.GetString(1), Convert.ToInt32(x.GetValue(2)), x.GetString(3),
+                """, scope.Window, x => (Log: new LogDto(Utc(x.GetValue(0)), x.GetString(1), Convert.ToInt32(x.GetValue(2)), x.GetString(3),
                     NonEmpty(x.GetString(4)), NonEmpty(x.GetString(5)), x.GetString(6), Convert.ToBoolean(x.GetValue(7)),
                     NonEmpty(x.GetString(8)), NonEmpty(x.GetString(9)), Bounded(x.GetValue(10))),
+                    Position: new Position(Convert.ToInt64(x.GetValue(11)), Convert.ToUInt64(x.GetValue(12)).ToString())),
                 ct, scope.Parameters);
-            return Results.Ok(new TelemetryPage<LogDto>(rows.Take(take).ToList(), rows.Count > take));
+            var page = rows.Take(take).ToList();
+            var next = rows.Count > take ? page[^1].Position.Encode() : null;
+            return Results.Ok(new TelemetryPage<LogDto>(page.Select(r => r.Log).ToList(), next is not null, next));
         });
 
         // ─── operations ───

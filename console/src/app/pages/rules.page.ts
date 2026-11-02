@@ -48,8 +48,8 @@ export class RulesPage {
   protected readonly data = rxResource({
     stream: () => forkJoin({
       rules: this.api.rules().pipe(map(p => p.items)),
-      firing: this.api.alerts({ state: 'firing' }).pipe(map(p => p.items)),
-      pending: this.api.alerts({ state: 'pending' }).pipe(map(p => p.items)),
+      firing: this.api.allAlerts({ state: 'firing' }).pipe(map(p => p.items)),
+      pending: this.api.allAlerts({ state: 'pending' }).pipe(map(p => p.items)),
     }),
   });
   protected readonly error = computed(() => problemText(this.data.error()));
