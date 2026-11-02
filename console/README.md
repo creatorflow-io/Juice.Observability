@@ -15,5 +15,3 @@ BASE=http://localhost:5180 node e2e/journey.mjs   # the §21 investigation journ
   every deployment.
 - **Investigation context** (environment, time range, selected operation, span, edge) lives in the URL: every page is
   a deep link.
-- **`vendor/`** holds `@juice-js/*` packed from juice-layout source, until a release has the post-2.0.0 auth fixes and
-  `@juice-js/localize` 2.0.0. Then switch `package.json` to the published versions.

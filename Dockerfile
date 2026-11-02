@@ -3,7 +3,6 @@
 FROM node:24.22.0-alpine AS console
 WORKDIR /console
 COPY console/package.json console/package-lock.json ./
-COPY console/vendor/ vendor/
 RUN npm ci --no-audit --no-fund
 COPY console/ ./
 RUN npx ng build --configuration production

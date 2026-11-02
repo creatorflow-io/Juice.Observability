@@ -64,8 +64,7 @@ The tenant filter of the telemetry API is mutation-checked (`TelemetryApiTests`)
 - **Two D5 templates** (`mediator_errors`, `consumer_failures`) are not built.
 - **ClickHouse telemetry** has no backup in this profile; the gap is documented in the runbook.
 - **Console gaps:** Kubernetes workloads are not a resource type yet (§11); rules are read-only (D5); custom dashboards
-  and advanced analytics are P2 and not built. `@juice-js/*` is packed from juice-layout source until a release
-  includes the post-2.0.0 auth fixes and `@juice-js/localize` 2.0.0.
+  and advanced analytics are P2 and not built.
 - **The production differences** in `deployment.md`: PKI, TLS in front of Grafana, Keycloak and the API, the
   customer's IdP, a secret store.
 - **The load run** used one telemetrygen resource per signal. It does not model 10 services and 100 instances.
