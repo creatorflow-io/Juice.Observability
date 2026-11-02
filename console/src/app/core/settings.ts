@@ -9,6 +9,11 @@ export interface ConsoleSettings {
     issuer: string;
     clientId: string;
     scope: string;
+    /**
+     * Whether the issuer must use HTTPS: `'remoteOnly'` (the default) allows plain HTTP only for localhost. Set
+     * `false` only for a local stack reached by a machine address over HTTP.
+     */
+    requireHttps?: boolean | 'remoteOnly';
   };
 }
 
@@ -38,8 +43,8 @@ export async function loadSettings(): Promise<void> {
     basePath: `${origin}/auth`,
     // The bearer token goes only to the Juice API, never to another host.
     allowedUrls: settings.apiBase ? ['', settings.apiBase] : [''],
-    // Renew before expiry with the session's refresh token. The library's default requireHttps
-    // ("remoteOnly") allows plain HTTP only for a localhost issuer.
+    // Renew before expiry with the session's refresh token.
     automaticRefresh: true,
+    requireHttps: settings.auth.requireHttps ?? 'remoteOnly',
   });
 }

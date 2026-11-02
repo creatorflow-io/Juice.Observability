@@ -43,6 +43,8 @@ ensure KEYCLOAK_ADMIN_PASSWORD "$(secret)"
 ensure GRAFANA_OIDC_CLIENT_SECRET "$(secret)"
 # Password of the demo users in the local Keycloak realm (README.md lists them).
 ensure KEYCLOAK_DEMO_PASSWORD "$(openssl rand -hex 8)"
+# Host name or IP that browsers use for the Console, Keycloak and Grafana (README.md, "Another machine").
+ensure PUBLIC_HOST localhost
 
 if $force || [[ ! -f secrets/otlp-tokens ]]; then
   {

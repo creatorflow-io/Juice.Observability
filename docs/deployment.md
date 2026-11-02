@@ -36,7 +36,7 @@ The API applies database migrations on start (`Database:Migrate`). It creates th
 | Webhook endpoints and allowlist | `webhooks.json` (`Webhooks:File`) | secrets as `env:NAME` or `file:/path`, never in the file |
 | Health policy | `Health` section (environment `Health__…`) | grace, thresholds, critical dependencies, service weights |
 | Users and roles | the IdP | Console and API: client `juice-console` (public, PKCE) issuing tokens for `juice-platform` with roles `admin`, `operator`, `viewer` and the `platform_tenant` claim; Grafana (optional): client `grafana` roles `admin`, `editor`, `viewer` |
-| Console sign-in | `wwwroot/config.json` in the API image | `{"apiBase": "", "auth": {"issuer": "<IdP>", "clientId": "juice-console", "scope": "openid profile email"}}`; mount your own file over it |
+| Console sign-in | `wwwroot/config.json` in the API image | `{"apiBase": "", "auth": {"issuer": "<IdP>", "clientId": "juice-console", "scope": "openid profile email"}}`; mount your own file over it. `auth.requireHttps` (default `"remoteOnly"`: plain HTTP only for localhost) is `false` only for a local stack |
 | Grafana links | `Integrations:Grafana:BaseUrl` | optional; unset means no links |
 
 Every one of these files lives in version control (requirements §6.1). Changes take effect on the next API start, with

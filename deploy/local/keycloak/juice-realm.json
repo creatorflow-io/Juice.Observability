@@ -23,17 +23,19 @@
       "implicitFlowEnabled": false,
       "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": false,
-      "rootUrl": "http://localhost:3000",
+      "rootUrl": "http://${PUBLIC_HOST}:3000",
       "baseUrl": "/",
       "redirectUris": [
-        "http://localhost:3000/login/generic_oauth"
+        "http://localhost:3000/login/generic_oauth",
+        "http://${PUBLIC_HOST}:3000/login/generic_oauth"
       ],
       "webOrigins": [
-        "http://localhost:3000"
+        "http://localhost:3000",
+        "http://${PUBLIC_HOST}:3000"
       ],
       "attributes": {
         "pkce.code.challenge.method": "S256",
-        "post.logout.redirect.uris": "http://localhost:3000/login"
+        "post.logout.redirect.uris": "http://localhost:3000/login##http://${PUBLIC_HOST}:3000/login"
       },
       "defaultClientScopes": [
         "profile",
@@ -137,19 +139,21 @@
       "implicitFlowEnabled": false,
       "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": false,
-      "rootUrl": "http://localhost:5180",
+      "rootUrl": "http://${PUBLIC_HOST}:5180",
       "baseUrl": "/",
       "redirectUris": [
         "http://localhost:5180/*",
+        "http://${PUBLIC_HOST}:5180/*",
         "http://localhost:4200/*"
       ],
       "webOrigins": [
         "http://localhost:5180",
+        "http://${PUBLIC_HOST}:5180",
         "http://localhost:4200"
       ],
       "attributes": {
         "pkce.code.challenge.method": "S256",
-        "post.logout.redirect.uris": "http://localhost:5180/*##http://localhost:4200/*"
+        "post.logout.redirect.uris": "http://localhost:5180/*##http://${PUBLIC_HOST}:5180/*##http://localhost:4200/*"
       },
       "defaultClientScopes": [
         "profile",

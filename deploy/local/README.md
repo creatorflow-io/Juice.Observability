@@ -35,6 +35,24 @@ tests/verify.sh                 # ingestion security, tenant stamping, redaction
 
 `.env` and `secrets/` are generated, git-ignored and local only. `docker compose down -v` deletes all data.
 
+### Another machine
+
+To open the Console, Keycloak and Grafana by the machine's address instead of `localhost`, set `PUBLIC_HOST` in
+`.env` (for example `PUBLIC_HOST=10.10.10.147`) and recreate them:
+
+```bash
+docker compose --profile platform --profile grafana up -d --wait keycloak grafana platform-api
+```
+
+- Keycloak then issues every token as `http://<PUBLIC_HOST>:8080/realms/juice`; the Console's `config.json`, Grafana's
+  sign-in URLs and the Console's Grafana links follow `PUBLIC_HOST`. `localhost:5180` and `localhost:3000` keep working.
+- Recreating Keycloak re-imports the realm: users and changes made in its admin console are reset.
+- The Console's `config.json` sets `"requireHttps": false`, because Keycloak is plain HTTP here. Production uses HTTPS
+  (`docs/deployment.md`).
+- `npm start` in `console/` reads `console/public/config.json` (issuer `localhost`); with another `PUBLIC_HOST`, set its
+  issuer to `http://<PUBLIC_HOST>:8080/realms/juice` too.
+- OTLP stays on `localhost`: the Collector certificate from `init.sh` names only `localhost`, `127.0.0.1` and `otel-collector`.
+
 ## Send telemetry from a Juice host
 
 `scripts/run-sample.sh` runs the Juice sample (`samples/Juice.Samples.Observability` in the Juice repository) against
