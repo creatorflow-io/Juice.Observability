@@ -69,8 +69,8 @@ Publishing (`.github/workflows`): the backend and the console library are versio
 | You do | You get |
 |---|---|
 | push to `main`, `dev/**` | build and test only (`build.yml`) |
-| push to `release/**` that changes `src/**` (or the props / `nuget.config`) | NuGet alphas at `<VersionPrefix>-alpha.<run>` on GitHub Packages (`alpha-nuget.yml`) |
-| push to `release/**` that changes `console/projects/juice-js/observability/**` | an npm alpha at `<version>-alpha.<run>` under `@alpha` (`alpha-npm.yml`) |
+| push to `release/**` that changes `src/**` (or the props / `nuget.config`) | build and test, then, if they pass, NuGet alphas at `<VersionPrefix>-alpha.<run>` on GitHub Packages (`build.yml`) |
+| push to `release/**` that changes `console/projects/juice-js/observability/**` | build and test, then, if they pass, an npm alpha at `<version>-alpha.<run>` under `@alpha` (`build.yml`); run Build by hand on the branch to publish both |
 | create a GitHub release on `main` tagged `api-1.2.0` | the backend at 1.2.0 on nuget.org (`release.yml`) |
 | create a GitHub release on `main` tagged `console-1.4.0` | the console library at 1.4.0 on npm under `latest` |
 | the same, on `release/1.x` | a patch of an older line; npm under `release-1.x`, never replacing `latest` |
