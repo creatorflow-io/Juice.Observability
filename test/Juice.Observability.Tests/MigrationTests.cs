@@ -1,3 +1,4 @@
+using Juice.Observability.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Infrastructure;
@@ -21,7 +22,11 @@ namespace Juice.Observability.Tests
         [Fact]
         public void Model_has_no_changes_missing_a_migration()
         {
-            using var db = new ScratchDatabase("model_check").Context();
+            // Compares the model with the last migration snapshot only: no database (or local stack) is needed, so
+            // this runs on CI too.
+            var options = new DbContextOptionsBuilder<PlatformDbContext>();
+            PlatformDbContext.Configure(options, "Host=localhost;Database=model_check");
+            using var db = new PlatformDbContext(options.Options);
             Assert.False(db.Database.HasPendingModelChanges(),
                 "The model differs from the last migration: add one with dotnet ef migrations add");
         }
