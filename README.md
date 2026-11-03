@@ -88,6 +88,12 @@ Every 30 s the worker reads telemetry from its checkpoint to one minute ago, in 
 `platform_reader`. Every query filters on the Collector-stamped tenant. It reconciles each window and moves the
 checkpoint in one transaction.
 
+Each window also re-reads the 10 minutes before the checkpoint (`Discovery:Overlap`). Telemetry is stored by its own
+time, so a row can land after its window was read: a long span is written when it ends but timed by its start, and the
+Collector holds data back while ClickHouse is slow. Upserts make the re-read harmless. A dependency's span count adds
+only spans after the checkpoint, unless the dependency is first seen in the overlap. Telemetry later than one minute
+plus the overlap is still missed.
+
 - **Services** are keyed by namespace and name, across environments. Each namespace is one application.
 - **Instances** are keyed by `service.instance.id`, or by host and process id (marked derived). An instance goes
   inactive after 15 minutes without telemetry and is deleted 30 days later.

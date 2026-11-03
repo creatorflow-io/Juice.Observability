@@ -130,6 +130,43 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
+        public async Task Telemetry_stored_after_its_window_was_read_is_found_without_counting_twice_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var (orders, billing, late) = ($"disc-{_run}-orders", $"disc-{_run}-billing", $"disc-{_run}-late");
+            var ct = TestContext.Current.CancellationToken;
+            async Task CallAsync(string to, DateTimeOffset at)
+            {
+                var (trace, call) = (Otlp.TraceId(), Otlp.SpanId());
+                await LocalStack.SendAsync("traces", Otlp.Traces([("service.name", orders)], Otlp.Span(trace, call, null, "GET", Otlp.Client, at)));
+                await LocalStack.SendAsync("traces", Otlp.Traces([("service.name", to), ("service.instance.id", "i1")],
+                    Otlp.Span(trace, Otlp.SpanId(), call, "GET", Otlp.Server, at)));
+            }
+            await CallAsync(billing, DateTimeOffset.UtcNow.AddMinutes(-2));
+            await LocalStack.WaitForSpansAsync(billing, 1);
+            var runner = Runner(database);
+            await runner.RunOnceAsync(ct);
+
+            // Stored after that pass, but timed before its checkpoint: a long span, or a backlog the Collector held.
+            await CallAsync(late, DateTimeOffset.UtcNow.AddMinutes(-3));
+            await CallAsync(billing, DateTimeOffset.UtcNow.AddMinutes(-3));
+            await LocalStack.WaitForSpansAsync(late, 1);
+            await LocalStack.WaitForSpansAsync(billing, 2);
+            await runner.RunOnceAsync(ct);
+
+            await using var db = database.Context();
+            var ordersId = (await db.Services.SingleAsync(s => s.Name == orders, ct)).Id;
+            var lateService = await db.Services.SingleAsync(s => s.Name == late, ct);
+            Assert.Single(await db.Instances.Where(i => i.ServiceId == lateService.Id).ToListAsync(ct));
+            var calls = await db.Dependencies.Where(d => d.SourceServiceId == ordersId).ToListAsync(ct);
+            // A dependency first seen in the overlap counts its spans; a known one does not count the overlap again,
+            // so its earlier span is not counted twice (and its late one, before the checkpoint, not at all).
+            Assert.Equal(1, calls.Single(d => d.TargetServiceId == lateService.Id).SpanCount);
+            Assert.Equal(1, calls.Single(d => d.TargetServiceId != lateService.Id).SpanCount);
+        }
+
+        [Fact]
         public async Task Restarted_service_keeps_one_identity_and_old_instances_go_inactive_Async()
         {
             LocalStack.RequireAvailable();

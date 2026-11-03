@@ -14,7 +14,14 @@ namespace Juice.Observability.Discovery
     }
 
     /// <summary>A bounded, tenant-scoped read: [<see cref="From"/>, <see cref="To"/>), at most <see cref="Limit"/> rows.</summary>
-    public sealed record TelemetryWindow(string TenantKey, DateTimeOffset From, DateTimeOffset To, int Limit);
+    public sealed record TelemetryWindow(string TenantKey, DateTimeOffset From, DateTimeOffset To, int Limit)
+    {
+        /// <summary>
+        /// Where span counts start (<see cref="ServiceLinkObservation.FreshSpans"/>): discovery reads an overlap before
+        /// its checkpoint to find late telemetry, but counts only what no earlier pass counted. Defaults to <see cref="From"/>.
+        /// </summary>
+        public DateTimeOffset? CountFrom { get; init; }
+    }
 
     /// <summary>
     /// Platform-owned query templates over the exporter's default tables (requirements §5.1). Every query filters on the
@@ -27,6 +34,7 @@ namespace Juice.Observability.Discovery
         public const string From = "{from:DateTime64(9)}";
         public const string To = "{to:DateTime64(9)}";
         public const string Limit = "{limit:UInt32}";
+        public const string CountFrom = "{count_from:DateTime64(9)}";
 
         private static readonly (string Table, string Time)[] ResourceTables =
         [
@@ -69,7 +77,7 @@ namespace Juice.Observability.Discovery
         // five minutes before the window (a long call or a queued message).
         private static readonly string ServiceLinksQuery = $"""
             SELECT p.ns AS src_ns, p.svc AS src, p.env AS env, c.ns AS dst_ns, c.svc AS dst, p.kind AS kind,
-                   count() AS spans, min(c.ts) AS first_seen, max(c.ts) AS last_seen
+                   count() AS spans, min(c.ts) AS first_seen, max(c.ts) AS last_seen, countIf(c.ts >= {CountFrom}) AS fresh_spans
             FROM (
                 SELECT TraceId, ParentSpanId, ServiceName AS svc, ResourceAttributes['service.namespace'] AS ns, Timestamp AS ts
                 FROM otel.otel_traces
@@ -96,7 +104,8 @@ namespace Juice.Observability.Discovery
                    if(SpanAttributes['db.system.name'] != '', SpanAttributes['db.system.name'], SpanAttributes['db.system']) AS dbsys,
                    if(SpanAttributes['db.namespace'] != '', SpanAttributes['db.namespace'], SpanAttributes['db.name']) AS dbns,
                    SpanAttributes['server.address'] AS addr,
-                   count() AS spans, min(Timestamp) AS first_seen, max(Timestamp) AS last_seen
+                   count() AS spans, min(Timestamp) AS first_seen, max(Timestamp) AS last_seen,
+                   countIf(Timestamp >= {CountFrom}) AS fresh_spans
             FROM otel.otel_traces
             WHERE {Tenant} AND Timestamp >= {From} AND Timestamp < {To} AND ServiceName != ''
               AND ((SpanKind IN ('Producer', 'Consumer') AND SpanAttributes['messaging.destination.name'] != '')
@@ -137,6 +146,7 @@ namespace Juice.Observability.Discovery
                 Spans = Convert.ToInt64(r.GetValue(6)),
                 FirstSeen = Utc(r.GetValue(7)),
                 LastSeen = Utc(r.GetValue(8)),
+                FreshSpans = Convert.ToInt64(r.GetValue(9)),
             }, cancellationToken);
 
         public Task<IReadOnlyList<ResourceUseObservation>> ReadResourceUsesAsync(TelemetryWindow window, CancellationToken cancellationToken)
@@ -154,6 +164,7 @@ namespace Juice.Observability.Discovery
                 Spans = Convert.ToInt64(r.GetValue(9)),
                 FirstSeen = Utc(r.GetValue(10)),
                 LastSeen = Utc(r.GetValue(11)),
+                FreshSpans = Convert.ToInt64(r.GetValue(12)),
             }, cancellationToken);
 
         /// <summary>
@@ -171,6 +182,7 @@ namespace Juice.Observability.Discovery
             command.AddParameter("from", window.From.UtcDateTime);
             command.AddParameter("to", window.To.UtcDateTime);
             command.AddParameter("limit", (uint)window.Limit);
+            command.AddParameter("count_from", (window.CountFrom ?? window.From).UtcDateTime);
             foreach (var (name, value) in parameters ?? new Dictionary<string, object>())
             {
                 command.AddParameter(name, value);

@@ -98,3 +98,12 @@ The local profile cuts these corners on purpose. Each one changes for a producti
 | backups on the host disk | scheduled `scripts/backup.sh` copied off the host |
 
 The pinned versions, the rules and the webhook configuration stay the same.
+
+## More than one API replica
+
+Replicas can run side by side behind a load balancer. Discovery, health and rules each run in one replica at a time:
+the replica that holds a PostgreSQL advisory lock for that worker runs it, and the others skip their passes. When it
+stops or loses its database connection, another replica takes over within one pass (30 s for discovery and health,
+5 s for rules); the log says `This replica now runs {worker}`. Webhook delivery runs in every replica and
+claims each delivery, so none is sent twice. To keep workers off the API replicas, set `Discovery:Enabled`,
+`Health:Enabled`, `Rules:Enabled` and `Webhooks:Enabled` to `false` there.

@@ -16,7 +16,8 @@ namespace Juice.Observability.Rules
     /// Runs every enabled rule on its schedule with bounded workers (requirements §8, roadmap Phase 3): at most
     /// <see cref="RulesOptions.MaxConcurrency"/> evaluations at once, each cancelled after
     /// <see cref="RulesOptions.EvaluationTimeout"/>. A rule still running when it is due again is skipped, never
-    /// stacked; the delay between due time and start is recorded as evaluator lag.
+    /// stacked; the delay between due time and start is recorded as evaluator lag. Rules run in one replica at a time
+    /// (<see cref="WorkerLease"/>).
     /// </summary>
     public sealed class RuleScheduler(IServiceScopeFactory scopes, RuleEvaluator evaluator, IOptions<RulesOptions> options,
         IOptions<PlatformOptions> platform, TimeProvider clock, ILogger<RuleScheduler> logger) : BackgroundService
@@ -35,12 +36,24 @@ namespace Juice.Observability.Rules
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
+            await using var lease = WorkerLease.For(scopes, "rules", logger);
+            var held = false;
             using var timer = new PeriodicTimer(options.Value.Tick);
             do
             {
                 try
                 {
-                    await TickAsync(stoppingToken);
+                    var holds = await lease.TryHoldAsync(stoppingToken);
+                    if (holds && !held)
+                    {
+                        // Due times from before this replica took over are stale: every rule is due now.
+                        _due.Clear();
+                    }
+                    held = holds;
+                    if (held)
+                    {
+                        await TickAsync(stoppingToken);
+                    }
                 }
                 catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
                 {
@@ -156,6 +169,8 @@ namespace Juice.Observability.Rules
             await using var scope = scopes.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
             await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+            // Replicas starting together load the file one after another: the second sees the first's rules, not a conflict.
+            await db.Database.ExecuteSqlAsync($"SELECT pg_advisory_xact_lock({WorkerLease.KeyOf("rule-provisioning")})", cancellationToken);
             var tenantId = await db.Tenants.Where(t => t.Key == platform.Value.TenantKey).Select(t => t.Id).SingleAsync(cancellationToken);
             var existing = await db.Rules.Where(r => r.TenantId == tenantId).ToDictionaryAsync(r => r.Key, cancellationToken);
             var now = clock.GetUtcNow();

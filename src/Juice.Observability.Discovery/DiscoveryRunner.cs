@@ -69,7 +69,7 @@ namespace Juice.Observability.Discovery
             while (watermark < end && windows < settings.MaxWindowsPerRun)
             {
                 var to = Min(watermark + settings.MaxWindow, end);
-                var (resources, links, uses) = await ReadAsync(tenant.Key, watermark, to, cancellationToken);
+                var (resources, links, uses) = await ReadAsync(tenant.Key, watermark - settings.Overlap, to, watermark, cancellationToken);
 
                 var normalizer = new Normalizer(settings.Aliases);
                 await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
@@ -104,12 +104,13 @@ namespace Juice.Observability.Discovery
             return new DiscoveryRunResult(windows, watermark, totals);
         }
 
-        // A window that fills the row limit may be missing rows: split it, down to the minimum window.
+        // A window that fills the row limit may be missing rows: split it, down to the minimum window. Spans count from
+        // countFrom, the checkpoint the window's overlap reaches back before.
         private async Task<(List<ResourceObservation>, List<ServiceLinkObservation>, List<ResourceUseObservation>)> ReadAsync(
-            string tenantKey, DateTimeOffset from, DateTimeOffset to, CancellationToken cancellationToken)
+            string tenantKey, DateTimeOffset from, DateTimeOffset to, DateTimeOffset countFrom, CancellationToken cancellationToken)
         {
             var settings = options.Value;
-            var window = new TelemetryWindow(tenantKey, from, to, settings.RowLimit);
+            var window = new TelemetryWindow(tenantKey, from, to, settings.RowLimit) { CountFrom = countFrom };
             var resources = await source.ReadResourcesAsync(window, cancellationToken);
             var links = await source.ReadServiceLinksAsync(window, cancellationToken);
             var uses = await source.ReadResourceUsesAsync(window, cancellationToken);
@@ -126,8 +127,8 @@ namespace Juice.Observability.Discovery
                 return ([.. resources], [.. links], [.. uses]);
             }
             var middle = from + (to - from) / 2;
-            var first = await ReadAsync(tenantKey, from, middle, cancellationToken);
-            var second = await ReadAsync(tenantKey, middle, to, cancellationToken);
+            var first = await ReadAsync(tenantKey, from, middle, countFrom, cancellationToken);
+            var second = await ReadAsync(tenantKey, middle, to, countFrom, cancellationToken);
             return ([.. first.Item1, .. second.Item1], [.. first.Item2, .. second.Item2], [.. first.Item3, .. second.Item3]);
         }
 
@@ -147,18 +148,25 @@ namespace Juice.Observability.Discovery
         private static DateTimeOffset Min(DateTimeOffset a, DateTimeOffset b) => a < b ? a : b;
     }
 
-    /// <summary>Runs <see cref="DiscoveryRunner"/> every <see cref="DiscoveryOptions.Interval"/>. A failed pass is logged and retried next time.</summary>
-    public sealed class DiscoveryWorker(DiscoveryRunner runner, IOptions<DiscoveryOptions> options, ILogger<DiscoveryWorker> logger)
-        : BackgroundService
+    /// <summary>
+    /// Runs <see cref="DiscoveryRunner"/> every <see cref="DiscoveryOptions.Interval"/>, in one replica at a time
+    /// (<see cref="WorkerLease"/>). A failed pass is logged and retried next time.
+    /// </summary>
+    public sealed class DiscoveryWorker(DiscoveryRunner runner, IServiceScopeFactory scopes, IOptions<DiscoveryOptions> options,
+        ILogger<DiscoveryWorker> logger) : BackgroundService
     {
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
+            await using var lease = WorkerLease.For(scopes, "discovery", logger);
             using var timer = new PeriodicTimer(options.Value.Interval);
             do
             {
                 try
                 {
-                    await runner.RunOnceAsync(stoppingToken);
+                    if (await lease.TryHoldAsync(stoppingToken))
+                    {
+                        await runner.RunOnceAsync(stoppingToken);
+                    }
                 }
                 catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
                 {

@@ -19,6 +19,8 @@ namespace Juice.Observability.Discovery
         private readonly Dictionary<(Guid, Guid, string), ServiceInstance> _instances = new();
         private readonly Dictionary<(Guid, Guid), ServiceEnvironment> _serviceEnvironments = new();
         private readonly Dictionary<(Guid, Guid, DependencyRelation, Guid?, Guid?), Dependency> _dependencies = new();
+        // Dependencies created by this pass: their spans before the checkpoint were never counted.
+        private readonly HashSet<(Guid, Guid, DependencyRelation, Guid?, Guid?)> _created = new();
         private int _newServices, _newInstances, _newResources, _newDependencies;
 
         public async Task<ReconcileResult> ApplyAsync(Guid tenantId, IReadOnlyList<ResourceObservation> resources,
@@ -59,7 +61,7 @@ namespace Juice.Observability.Discovery
                 var environment = UpsertEnvironment(tenantId, o.Environment, o.FirstSeen, o.LastSeen);
                 var from = UpsertService(tenantId, source, o.FirstSeen, o.LastSeen);
                 var to = UpsertService(tenantId, target, o.FirstSeen, o.LastSeen);
-                UpsertDependency(tenantId, environment, from, relation, to.Id, null, DependencyConfidence.Observed, o.Spans, o.FirstSeen, o.LastSeen);
+                UpsertDependency(tenantId, environment, from, relation, to.Id, null, DependencyConfidence.Observed, o.Spans, o.FreshSpans, o.FirstSeen, o.LastSeen);
             }
 
             foreach (var o in uses)
@@ -75,7 +77,7 @@ namespace Juice.Observability.Discovery
                 var from = UpsertService(tenantId, source, o.FirstSeen, o.LastSeen);
                 var resource = UpsertResource(tenantId, used, o.FirstSeen, o.LastSeen);
                 // Only the service reports the interaction; the destination or database never does (D3).
-                UpsertDependency(tenantId, environment, from, relation, null, resource.Id, DependencyConfidence.Inferred, o.Spans, o.FirstSeen, o.LastSeen);
+                UpsertDependency(tenantId, environment, from, relation, null, resource.Id, DependencyConfidence.Inferred, o.Spans, o.FreshSpans, o.FirstSeen, o.LastSeen);
             }
 
             await db.SaveChangesAsync(cancellationToken);
@@ -233,7 +235,7 @@ namespace Juice.Observability.Discovery
         }
 
         private void UpsertDependency(Guid tenantId, DeploymentEnvironment environment, Service source, DependencyRelation relation,
-            Guid? targetService, Guid? targetResource, DependencyConfidence confidence, long spans, DateTimeOffset first, DateTimeOffset last)
+            Guid? targetService, Guid? targetResource, DependencyConfidence confidence, long spans, long freshSpans, DateTimeOffset first, DateTimeOffset last)
         {
             var key = (environment.Id, source.Id, relation, targetService, targetResource);
             if (!_dependencies.TryGetValue(key, out var dependency))
@@ -246,14 +248,16 @@ namespace Juice.Observability.Discovery
                 };
                 db.Dependencies.Add(dependency);
                 _dependencies[key] = dependency;
+                _created.Add(key);
                 _newDependencies++;
             }
             else if (confidence == DependencyConfidence.Observed)
             {
                 dependency.Confidence = DependencyConfidence.Observed;
             }
-            // Span counts accumulate per window; the checkpoint keeps a window from being read twice.
-            dependency.SpanCount += spans;
+            // Span counts accumulate per window. A window re-reads an overlap before the checkpoint (late telemetry), so
+            // a known dependency adds only the spans after it; one created now adds them all, as no earlier pass saw any.
+            dependency.SpanCount += _created.Contains(key) ? spans : freshSpans;
             Seen(dependency, first, last, (d, f) => d.FirstSeen = f, (d, l) => d.LastSeen = l, d => d.FirstSeen, d => d.LastSeen);
         }
 

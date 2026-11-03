@@ -34,7 +34,10 @@ namespace Juice.Observability.Discovery
         public string TargetName { get; init; } = "";
         /// <summary>The source span kind: <c>Client</c> or <c>Producer</c>.</summary>
         public string SourceKind { get; init; } = "";
+        /// <summary>Spans in the whole window read, overlap included.</summary>
         public long Spans { get; init; }
+        /// <summary>Spans at or after <see cref="TelemetryWindow.CountFrom"/>: the ones no earlier pass counted.</summary>
+        public long FreshSpans { get; init; }
         public DateTimeOffset FirstSeen { get; init; }
         public DateTimeOffset LastSeen { get; init; }
     }
@@ -52,7 +55,10 @@ namespace Juice.Observability.Discovery
         public string DbSystem { get; init; } = "";
         public string DbNamespace { get; init; } = "";
         public string ServerAddress { get; init; } = "";
+        /// <summary>Spans in the whole window read, overlap included.</summary>
         public long Spans { get; init; }
+        /// <summary>Spans at or after <see cref="TelemetryWindow.CountFrom"/>: the ones no earlier pass counted.</summary>
+        public long FreshSpans { get; init; }
         public DateTimeOffset FirstSeen { get; init; }
         public DateTimeOffset LastSeen { get; init; }
     }

@@ -11,10 +11,18 @@ namespace Juice.Observability.Discovery
         public TimeSpan Interval { get; set; } = TimeSpan.FromSeconds(30);
 
         /// <summary>
-        /// How far behind now a window ends, so telemetry still in the Collector's queue is not skipped. Telemetry
-        /// that arrives later than this is not read for that window; an instance seen again is updated next time.
+        /// How far behind now a window ends, so telemetry still in the Collector's queue is not skipped.
         /// </summary>
         public TimeSpan Lag { get; set; } = TimeSpan.FromSeconds(60);
+
+        /// <summary>
+        /// How far before its checkpoint each window starts reading. Telemetry is stored by its own time, so a row can
+        /// land after its window was read: a span is written when it ends but timed by its start, and the Collector's
+        /// queue holds data back while ClickHouse is slow or down. Re-reading the overlap finds the services, instances,
+        /// resources and dependencies in such rows; their spans are counted only for a dependency first seen then.
+        /// Telemetry later than <see cref="Lag"/> plus this is still missed.
+        /// </summary>
+        public TimeSpan Overlap { get; set; } = TimeSpan.FromMinutes(10);
 
         /// <summary>Where the first run starts, when there is no checkpoint.</summary>
         public TimeSpan InitialLookback { get; set; } = TimeSpan.FromHours(1);

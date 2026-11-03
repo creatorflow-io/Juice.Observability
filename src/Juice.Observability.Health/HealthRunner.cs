@@ -309,17 +309,22 @@ namespace Juice.Observability.Health
         private static bool Matches(Service s, string name) => string.Equals(Name(s), name, StringComparison.Ordinal);
     }
 
-    /// <summary>Runs <see cref="HealthRunner"/> every <see cref="HealthPolicy.Interval"/>.</summary>
-    public sealed class HealthWorker(HealthRunner runner, IOptions<HealthPolicy> options, ILogger<HealthWorker> logger) : BackgroundService
+    /// <summary>Runs <see cref="HealthRunner"/> every <see cref="HealthPolicy.Interval"/>, in one replica at a time (<see cref="WorkerLease"/>).</summary>
+    public sealed class HealthWorker(HealthRunner runner, IServiceScopeFactory scopes, IOptions<HealthPolicy> options,
+        ILogger<HealthWorker> logger) : BackgroundService
     {
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
+            await using var lease = WorkerLease.For(scopes, "health", logger);
             using var timer = new PeriodicTimer(options.Value.Interval);
             do
             {
                 try
                 {
-                    await runner.RunOnceAsync(stoppingToken);
+                    if (await lease.TryHoldAsync(stoppingToken))
+                    {
+                        await runner.RunOnceAsync(stoppingToken);
+                    }
                 }
                 catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
                 {
