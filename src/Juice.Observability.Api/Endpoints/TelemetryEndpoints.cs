@@ -73,6 +73,8 @@ namespace Juice.Observability.Api.Endpoints
 
         private static readonly Regex TraceIdPattern = new("^[0-9a-f]{32}$", RegexOptions.Compiled);
         private static readonly Regex SpanIdPattern = new("^[0-9a-f]{16}$", RegexOptions.Compiled);
+        // A W3C traceparent, "00-<trace id>-<span id>-<flags>": what Juice.Audit before 10.4 stored as a record's trace id.
+        private static readonly Regex TraceParentPattern = new("^[0-9a-f]{2}-([0-9a-f]{32})-[0-9a-f]{16}-[0-9a-f]{2}$", RegexOptions.Compiled);
         private static readonly Regex AttributeKeyPattern = new(@"^[A-Za-z0-9_.\-]{1,128}$", RegexOptions.Compiled);
         private static readonly Regex MetricNamePattern = new(@"^[A-Za-z_:][A-Za-z0-9_.:/\-]{0,254}$", RegexOptions.Compiled);
 
@@ -248,9 +250,16 @@ namespace Juice.Observability.Api.Endpoints
         }
 
         private static string TraceIdOf(string traceId)
-            => TraceIdPattern.IsMatch(traceId.ToLowerInvariant())
-                ? traceId.ToLowerInvariant()
-                : throw Invalid("Invalid trace id", "A trace id is 32 hexadecimal characters.");
+            => PlainTraceId(traceId) ?? throw Invalid("Invalid trace id", "A trace id is 32 hexadecimal characters, or a W3C traceparent.");
+
+        /// <summary>The 32-hex trace id of a trace id or a W3C traceparent; <c>null</c> for anything else.</summary>
+        private static string? PlainTraceId(string text)
+        {
+            var lower = text.Trim().ToLowerInvariant();
+            if (TraceIdPattern.IsMatch(lower)) return lower;
+            var parent = TraceParentPattern.Match(lower);
+            return parent.Success ? parent.Groups[1].Value : null;
+        }
 
         private static string ServiceCondition(Scope scope, Service service)
             => $"ServiceName = {scope.Add("String", service.Name)} AND ResourceAttributes['service.namespace'] = {scope.Add("String", service.Namespace)}";
@@ -703,8 +712,8 @@ namespace Juice.Observability.Api.Endpoints
         // ─── search ───
 
         /// <summary>
-        /// Direct lookup (Console requirements §13): a trace id, a span id (last 24 hours), or services by name. Ids that are
-        /// not found return no hit rather than an error.
+        /// Direct lookup (Console requirements §13): a trace id (or a W3C traceparent), a span id (last 24 hours), or services by
+        /// name. Ids that are not found return no hit rather than an error.
         /// </summary>
         private static Task<IResult> SearchAsync(HttpContext http, PlatformDbContext db, ClickHouseTelemetrySource clickHouse,
             TimeProvider clock, string? q, CancellationToken ct) => Run(async () =>
@@ -714,12 +723,12 @@ namespace Juice.Observability.Api.Endpoints
             var hits = new List<SearchHitDto>();
             var tenantKey = (string)http.Items[TenantKeyItem]!;
             var lower = q.ToLowerInvariant();
-            if (TraceIdPattern.IsMatch(lower))
+            if (PlainTraceId(lower) is { } traceId)
             {
                 var found = await clickHouse.QueryAsync("SELECT count() FROM otel.otel_traces_trace_id_ts WHERE TraceId = {trace:String}",
                     new TelemetryWindow(tenantKey, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, 1), r => Convert.ToInt64(r.GetValue(0)), ct,
-                    new Dictionary<string, object> { ["trace"] = lower });
-                if (found[0] > 0) hits.Add(new SearchHitDto("trace", lower, $"Trace {lower}", lower));
+                    new Dictionary<string, object> { ["trace"] = traceId });
+                if (found[0] > 0) hits.Add(new SearchHitDto("trace", traceId, $"Trace {traceId}", traceId));
             }
             else if (SpanIdPattern.IsMatch(lower))
             {

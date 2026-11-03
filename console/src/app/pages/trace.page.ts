@@ -8,7 +8,7 @@ import { Router, RouterLink } from '@angular/router';
 import { ApiService } from '../core/api.service';
 import { ContextService } from '../core/context.service';
 import { Span } from '../core/models';
-import { DurationPipe, formatDuration, preciseTime } from '../shared/format';
+import { DurationPipe, formatDuration, plainTraceId, preciseTime } from '../shared/format';
 import { ContextBar, KeyValueTable } from '../shared/ui';
 import { LogTable, problemText } from '../shared/telemetry';
 
@@ -32,7 +32,7 @@ const PALETTE = ['#3b82f6', '#8b5cf6', '#14b8a6', '#f59e0b', '#ec4899', '#22c55e
     <jc-context-bar>
       <a routerLink="/traces" [queryParams]="ctx.keep()" class="jc-crumb">Traces</a>
       <span class="jc-crumb-sep">›</span>
-      <h1 class="jc-mono">{{ traceId() }}</h1>
+      <h1 class="jc-mono">{{ id() }}</h1>
     </jc-context-bar>
     @if (trace.isLoading()) { <mat-progress-bar mode="indeterminate" /> }
     @if (trace.error()) { <p class="jc-error">{{ error() }}</p> }
@@ -45,7 +45,7 @@ const PALETTE = ['#3b82f6', '#8b5cf6', '#14b8a6', '#f59e0b', '#ec4899', '#22c55e
         <span>{{ t.spans.length }} spans · {{ services().length }} services</span>
         @if (errors() > 0) { <span class="jc-badge jc-health-unhealthy">{{ errors() }} failed</span> }
         <button mat-button (click)="showErrorsOnly.set(!showErrorsOnly())">{{ showErrorsOnly() ? 'Show all spans' : 'Error paths only' }}</button>
-        <a mat-button [routerLink]="['/logs']" [queryParams]="ctx.keep({ trace: traceId() })">Logs of this trace</a>
+        <a mat-button [routerLink]="['/logs']" [queryParams]="ctx.keep({ trace: id() })">Logs of this trace</a>
         @if (t.truncated) { <span class="jc-muted">Showing the first {{ t.spans.length }} spans.</span> }
       </div>
       <div class="jc-legend">@for (s of services(); track s) { <span><i [style.background]="color(s)"></i>{{ s }}</span> }</div>
@@ -104,7 +104,7 @@ const PALETTE = ['#3b82f6', '#8b5cf6', '#14b8a6', '#f59e0b', '#ec4899', '#22c55e
 
             <h3>Span</h3>
             <jc-kv [values]="{ 'service': s.service, 'environment': s.environment, 'instance': s.instance, 'host': s.host,
-              'trace id': traceId(), 'span id': s.spanId, 'parent span id': s.parentSpanId, 'started': s.startedAt,
+              'trace id': id(), 'span id': s.spanId, 'parent span id': s.parentSpanId, 'started': s.startedAt,
               'instrumentation scope': s.scope ? s.scope + (s.scopeVersion ? ' ' + s.scopeVersion : '') : null }" />
             <h3>Attributes</h3>
             <jc-kv [values]="s.attributes" empty="No attributes." />
@@ -133,10 +133,12 @@ export class TracePage {
   private readonly api = inject(ApiService);
   private readonly router = inject(Router);
 
+  /** A trace id, or a W3C traceparent such as a Juice.Audit record before 10.4 holds; links from either open the trace. */
   readonly traceId = input.required<string>();
   readonly span = input<string>();
 
-  protected readonly trace = rxResource({ params: () => this.traceId(), stream: ({ params }) => this.api.trace(params) });
+  protected readonly id = computed(() => plainTraceId(this.traceId()));
+  protected readonly trace = rxResource({ params: () => this.id(), stream: ({ params }) => this.api.trace(params) });
   protected readonly error = computed(() => problemText(this.trace.error()));
   protected readonly collapsed = signal(new Set<string>());
   protected readonly showErrorsOnly = signal(false);

@@ -4,7 +4,7 @@ Turns telemetry from Juice services into a resource model, health, rules, alerts
 
 | Path | Contents |
 |---|---|
-| [`docs/`](docs) | [Requirements and architecture](docs/observability-platform-requirements.md), [phased roadmap](docs/observability-platform-roadmap.md), [Phase 0 decisions](docs/phase-0-decisions.md), [deployment guide](docs/deployment.md), [runbook](docs/runbook.md), [MVP acceptance](docs/mvp-acceptance.md), [Juice 10.8 telemetry baseline](docs/juice-opentelemetry-10.8-current-state.md) |
+| [`docs/`](docs) | [Architecture diagram](docs/architecture.md), [requirements and architecture](docs/observability-platform-requirements.md), [phased roadmap](docs/observability-platform-roadmap.md), [Phase 0 decisions](docs/phase-0-decisions.md), [deployment guide](docs/deployment.md), [runbook](docs/runbook.md), [MVP acceptance](docs/mvp-acceptance.md), [Juice 10.8 telemetry baseline](docs/juice-opentelemetry-10.8-current-state.md) |
 | [`console/`](console) | **Juice Console**, the product UI (Angular 22, `juice-layout`): services, operations, traces, logs, metrics, topology, resources, alerts, rules. Served by the API image; reads only the Juice API |
 | [`deploy/local/`](deploy/local/README.md) | Local single-tenant stack: OpenTelemetry Collector, ClickHouse, PostgreSQL, Keycloak, optional Grafana, with integration and load tests |
 | `src/Juice.Observability.Data` | PostgreSQL domain model (EF Core) and migrations |
@@ -54,12 +54,12 @@ page's `nextCursor`).
 | `GET /api/v1/tenants/{tenantId}/alerts/{alertId}` | an alert with its evidence, state history, the subject's health and any integration links |
 | `GET /api/v1/tenants/{tenantId}/environments` | the environments seen in telemetry |
 | `GET /api/v1/tenants/{tenantId}/telemetry/traces?serviceId=&environment=&operation=&status=&minDurationMs=&maxDurationMs=&instanceId=&resourceId=&dependencyId=&traceId=&spanId=&attribute=key=value&from=&to=&cursor=` | traces with a span matching every filter, by latest matching span (window ≤ 24 h); pass `nextCursor` as `cursor`, with the same window, for the next page |
-| `GET /api/v1/tenants/{tenantId}/telemetry/traces/{traceId}` | every span (≤ 1,000) with service id, instance, host, scope, attributes, events, links, and the service or resource a call reaches |
+| `GET /api/v1/tenants/{tenantId}/telemetry/traces/{traceId}` | `traceId` is the 32-hex id or a W3C `traceparent`; every span (≤ 1,000) with service id, instance, host, scope, attributes, events, links, and the service or resource a call reaches |
 | `GET /api/v1/tenants/{tenantId}/telemetry/logs?serviceId=&instanceId=&resourceId=&traceId=&spanId=&minSeverity=&q=&from=&to=&cursor=` | log records, newest first; `nextCursor` pages back like traces |
 | `GET /api/v1/tenants/{tenantId}/telemetry/operations?serviceId=` | a service's entry operations with throughput, error rate, p50/p95/p99 |
 | `GET /api/v1/tenants/{tenantId}/telemetry/dependencies/{dependencyId}` | an edge's evidence: calls, error rate, p95, last seen, representative traces |
 | `GET /api/v1/tenants/{tenantId}/telemetry/metrics`, `…/metrics/series?name=&stepSeconds=`, `…/service-stats?serviceId=` | metric names, one metric as a series (counter → rate), a service's requests, errors and p95; empty buckets have no point |
-| `GET /api/v1/tenants/{tenantId}/search?q=` | a trace id, a span id (last 24 h) or services by name |
+| `GET /api/v1/tenants/{tenantId}/search?q=` | a trace id or W3C `traceparent`, a span id (last 24 h) or services by name |
 | `GET /api/v1/tenants/{tenantId}/webhooks` | webhook endpoints (destination host only, never the secret) |
 | `GET /api/v1/tenants/{tenantId}/webhooks/{endpointId}/deliveries?status=` | delivery history, each with every attempt |
 | `POST /api/v1/tenants/{tenantId}/alerts/{alertId}/acknowledgement` | acknowledge an open alert: `operator` or `admin`; send `Idempotency-Key` to retry safely |

@@ -24,6 +24,17 @@ Commands run from `deploy/local`. API calls need a bearer token (see the root RE
 `noData: true` on an alert means the last evaluation had too few samples: the alert keeps its state. Silence is
 never read as recovery. `stale: true` on health means evaluation has stopped (next section).
 
+## From an audit record to its trace
+
+A Juice.Audit access log (`Req_TraceId`) or data change (`TraceId`) holds the trace id of the request that wrote
+it; the `X-Trace-Id` response header carries the same id. Open `{console}/traces/{traceId}` to see that request's
+spans and logs, or paste the id into the Console's search box. Records written before Juice.Audit 10.4 hold the whole
+W3C `traceparent` (`00-<trace id>-<span id>-01`); the Console and the API accept that form too. A record whose id is
+neither form was written without an active trace, so the platform has no telemetry for it.
+
+The audit records themselves stay in Juice.Audit's database: before and after values are business data and never
+enter telemetry.
+
 ## Health is stale or rules stop
 
 - **Symptom:** `stale: true` on health. Check the API log for `Health evaluation failed` or `Rule ... evaluation

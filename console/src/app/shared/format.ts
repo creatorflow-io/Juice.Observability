@@ -6,6 +6,12 @@ export function preciseTime(iso: string): number {
   return Date.parse(iso) + (fraction ? Number(`0.${fraction}`) : 0);
 }
 
+/** The 32-hex trace id of a W3C traceparent ("00-<trace id>-<span id>-01"); any other text unchanged but trimmed and lower-cased. */
+export function plainTraceId(text: string): string {
+  const lower = text.trim().toLowerCase();
+  return /^[0-9a-f]{2}-([0-9a-f]{32})-[0-9a-f]{16}-[0-9a-f]{2}$/.exec(lower)?.[1] ?? lower;
+}
+
 /** 0.8 ms, 120 ms, 1.42 s, 2 m 05 s. */
 export function formatDuration(ms: number | null | undefined): string {
   if (ms === null || ms === undefined || Number.isNaN(ms)) return '—';

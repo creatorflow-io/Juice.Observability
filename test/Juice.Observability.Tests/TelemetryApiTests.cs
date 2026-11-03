@@ -85,6 +85,9 @@ namespace Juice.Observability.Tests
             // 5–6. The waterfall: hierarchy, the failing downstream span with its instance.
             var spans = (await Api($"/telemetry/traces/{trace}")).GetProperty("spans").EnumerateArray().ToList();
             Assert.Equal(4, spans.Count);
+            // A W3C traceparent, as Juice.Audit stored before 10.4, opens the same trace.
+            var traceParent = $"00-{trace}-{charge}-01";
+            Assert.Equal(trace, (await Api($"/telemetry/traces/{traceParent}")).GetProperty("traceId").GetString());
             var failing = spans.Single(s => s.GetProperty("spanId").GetString() == charge);
             Assert.Equal((call, payments, "pay-2", "Error", "production"), (failing.GetProperty("parentSpanId").GetString(),
                 failing.GetProperty("service").GetString(), failing.GetProperty("instance").GetString(), failing.GetProperty("status").GetString(),
@@ -131,6 +134,7 @@ namespace Juice.Observability.Tests
 
             // 10. Back to the trace directly: global search by trace id, span id and service name.
             Assert.Equal("trace", Assert.Single((await Api($"/search?q={trace.ToUpperInvariant()}")).GetProperty("items").EnumerateArray()).GetProperty("kind").GetString());
+            Assert.Equal(trace, Assert.Single((await Api($"/search?q=00-{trace}-{charge}-01")).GetProperty("items").EnumerateArray()).GetProperty("id").GetString());
             Assert.Equal(trace, Assert.Single((await Api($"/search?q={charge}")).GetProperty("items").EnumerateArray()).GetProperty("traceId").GetString());
             Assert.Equal(paymentsId.ToString(), Assert.Single((await Api($"/search?q={Uri.EscapeDataString($"{_run}-pay")}")).GetProperty("items").EnumerateArray()).GetProperty("id").GetString());
         }
