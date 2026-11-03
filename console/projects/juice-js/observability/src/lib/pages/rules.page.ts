@@ -1,3 +1,4 @@
+import { LinkPipe } from '../core/options';
 import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
 import { rxResource } from '@angular/core/rxjs-interop';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
@@ -15,7 +16,7 @@ import { problemText } from '../shared/telemetry';
  */
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [RouterLink, MatProgressBarModule, ContextBar, AgoPipe],
+  imports: [LinkPipe, RouterLink, MatProgressBarModule, ContextBar, AgoPipe],
   template: `
     <jc-context-bar><h1>Rules</h1><span class="jc-muted">From deployment configuration (rules.json); read-only.</span></jc-context-bar>
     @if (data.isLoading()) { <mat-progress-bar mode="indeterminate" /> }
@@ -33,7 +34,7 @@ import { problemText } from '../shared/telemetry';
             <td>{{ r.definition['forDuration'] ?? '—' }}</td>
             <td>
               @for (a of r.open; track a.id) {
-                <div><a [routerLink]="['/alerts', a.id]" [queryParams]="ctx.keep()">{{ a.state }}</a> {{ a.subjectKey }} = {{ a.lastValue ?? 'no data' }}</div>
+                <div><a [routerLink]="['alerts', a.id] | jcLink" [queryParams]="ctx.keep()">{{ a.state }}</a> {{ a.subjectKey }} = {{ a.lastValue ?? 'no data' }}</div>
               } @empty { <span class="jc-muted">none</span> }
             </td>
             <td>{{ r.lastEvaluatedAt | ago }}</td>

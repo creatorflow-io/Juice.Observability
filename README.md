@@ -5,14 +5,15 @@ Turns telemetry from Juice services into a resource model, health, rules, alerts
 | Path | Contents |
 |---|---|
 | [`docs/`](docs) | [Architecture diagram](docs/architecture.md), [requirements and architecture](docs/observability-platform-requirements.md), [phased roadmap](docs/observability-platform-roadmap.md), [Phase 0 decisions](docs/phase-0-decisions.md), [deployment guide](docs/deployment.md), [runbook](docs/runbook.md), [MVP acceptance](docs/mvp-acceptance.md), [Juice 10.8 telemetry baseline](docs/juice-opentelemetry-10.8-current-state.md) |
-| [`console/`](console) | **Juice Console**, the product UI (Angular 22, `juice-layout`): services, operations, traces, logs, metrics, topology, resources, alerts, rules. Served by the API image; reads only the Juice API |
+| [`console/`](console) | **Juice Console**, the product UI (Angular 22, `juice-layout`): services, operations, traces, logs, metrics, topology, resources, alerts, rules. The pages are the `@juice-js/observability` library (`console/projects`); served by the API image; reads only the Juice API |
 | [`deploy/local/`](deploy/local/README.md) | Local single-tenant stack: OpenTelemetry Collector, ClickHouse, PostgreSQL, Keycloak, optional Grafana, with integration and load tests |
 | `src/Juice.Observability.Data` | PostgreSQL domain model (EF Core) and migrations |
 | `src/Juice.Observability.Discovery` | Discovery: reads Collector-stamped telemetry from ClickHouse and reconciles services, instances, environments, resources and dependencies |
 | `src/Juice.Observability.Health` | Health evaluation: instances, services and applications per environment, and hosts, from ClickHouse evidence |
 | `src/Juice.Observability.Rules` | Typed scheduled rules over ClickHouse templates and the alert lifecycle |
 | `src/Juice.Observability.Webhooks` | Signed webhook notification of alert transitions: outbox, SSRF-safe delivery, retries, history |
-| `src/Juice.Observability.Api` | `/api/v1` (OIDC, tenant-scoped) and the background workers, in one host |
+| `src/Juice.Observability.Api` | `/api/v1` (OIDC, tenant-scoped) and the background workers, as a library (`AddJuiceObservability`, `MapJuiceObservability`) |
+| `src/Juice.Observability.Host` | The reference host (the image): the API library and the Console on one origin |
 | `test/Juice.Observability.Tests` | Unit tests, and integration tests against the running local stack |
 
 ## Build and test
@@ -33,6 +34,55 @@ headless browser.
 Build output goes to `build/`. Add a migration with
 `dotnet tool restore && dotnet ef migrations add <Name> --project src/Juice.Observability.Data --output-dir Migrations`;
 `MigrationTests` fails when the model changes without one.
+
+## Packages and CI
+
+Besides the image, the platform ships as libraries for a host app of the customer's own:
+
+| Package | Feed | Contents |
+|---|---|---|
+| `Juice.Observability.Api` (NuGet) | nuget.org; alpha/beta on GitHub Packages | `AddJuiceObservabilityFiles()`, `AddJuiceObservability()`, `MapJuiceObservability()`: the API, the workers, auth and health checks. Depends on `.Data`, `.Discovery`, `.Health`, `.Rules`, `.Webhooks`, also published |
+| `@juice-js/observability` (npm) | npmjs | `provideJuiceObservability()`, `OBSERVABILITY_ROUTES`, `observabilityMenus()` and the page styles ([usage](console/projects/juice-js/observability/README.md)) |
+
+`src/Juice.Observability.Host` and `console/src` are the reference host and app: they use the packages the way a
+customer would.
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+builder.Configuration.AddJuiceObservabilityFiles();
+builder.Services.AddJuiceObservability(builder.Configuration);
+var app = builder.Build();
+app.UseCorrelationId();
+app.UseAuthentication();
+app.UseAuthorization();
+app.MapJuiceObservability();
+app.Run();
+```
+
+Publishing (`.github/workflows`): the backend and the console library are versioned and released independently.
+
+| Package | Its next version lives in | Release tag |
+|---|---|---|
+| `Juice.Observability.*` | `<VersionPrefix>` in `Directory.Build.props` | `api-<version>` |
+| `@juice-js/observability` | `"version"` in `console/projects/juice-js/observability/package.json` | `console-<version>` |
+
+| You do | You get |
+|---|---|
+| push to `main`, `dev/**` | build and test only (`build.yml`) |
+| push to `release/**` that changes `src/**` (or the props / `nuget.config`) | NuGet alphas at `<VersionPrefix>-alpha.<run>` on GitHub Packages (`alpha-nuget.yml`) |
+| push to `release/**` that changes `console/projects/juice-js/observability/**` | an npm alpha at `<version>-alpha.<run>` under `@alpha` (`alpha-npm.yml`) |
+| create a GitHub release on `main` tagged `api-1.2.0` | the backend at 1.2.0 on nuget.org (`release.yml`) |
+| create a GitHub release on `main` tagged `console-1.4.0` | the console library at 1.4.0 on npm under `latest` |
+| the same, on `release/1.x` | a patch of an older line; npm under `release-1.x`, never replacing `latest` |
+| the same, with a pre-release version (`api-1.2.0-beta.1`, `console-1.4.0-rc.1`) | a beta or rc: nuget.org as a pre-release, npm under the label (`beta`, `rc`) |
+
+Each next version is the one to release: raise it after a release so alphas sort above it. Tags have no `v`.
+
+The console library calls the API over HTTP, so record which versions work together:
+
+| `@juice-js/observability` | needs `Juice.Observability.Api` |
+|---|---|
+| 0.1.x | 0.1.x |
 
 ## API
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs the platform API (src/Juice.Observability.Api) against the local stack on http://localhost:5180.
+# Runs the platform API (src/Juice.Observability.Host) against the local stack on http://localhost:5180.
 # Applies migrations on start (Database:Migrate) and provisions the tenant from JUICE_PLATFORM_TENANT_ID.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -18,4 +18,4 @@ export Rules__File="$(pwd -W 2>/dev/null || pwd)/rules.json"
 export Webhooks__File="$(pwd -W 2>/dev/null || pwd)/webhooks.json"
 export Integrations__Grafana__BaseUrl=http://localhost:3000
 
-exec dotnet run --project ../../src/Juice.Observability.Api --no-launch-profile -- "$@"
+exec dotnet run --project ../../src/Juice.Observability.Host --no-launch-profile -- "$@"

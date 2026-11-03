@@ -1,3 +1,4 @@
+import { LinkPipe } from '../core/options';
 import { ChangeDetectionStrategy, Component, computed, inject, input, signal } from '@angular/core';
 import { rxResource } from '@angular/core/rxjs-interop';
 import { DatePipe } from '@angular/common';
@@ -27,10 +28,10 @@ const PALETTE = ['#3b82f6', '#8b5cf6', '#14b8a6', '#f59e0b', '#ec4899', '#22c55e
   changeDetection: ChangeDetectionStrategy.OnPush,
   // Fills the window; the waterfall and the span scroll on their own (styles.scss).
   host: { class: 'jc-fill-page' },
-  imports: [RouterLink, DatePipe, MatButtonModule, MatIconModule, MatProgressBarModule, ContextBar, KeyValueTable, LogTable, DurationPipe],
+  imports: [LinkPipe, RouterLink, DatePipe, MatButtonModule, MatIconModule, MatProgressBarModule, ContextBar, KeyValueTable, LogTable, DurationPipe],
   template: `
     <jc-context-bar>
-      <a routerLink="/traces" [queryParams]="ctx.keep()" class="jc-crumb">Traces</a>
+      <a [routerLink]="['traces'] | jcLink" [queryParams]="ctx.keep()" class="jc-crumb">Traces</a>
       <span class="jc-crumb-sep">›</span>
       <h1 class="jc-mono">{{ id() }}</h1>
     </jc-context-bar>
@@ -45,7 +46,7 @@ const PALETTE = ['#3b82f6', '#8b5cf6', '#14b8a6', '#f59e0b', '#ec4899', '#22c55e
         <span>{{ t.spans.length }} spans · {{ services().length }} services</span>
         @if (errors() > 0) { <span class="jc-badge jc-health-unhealthy">{{ errors() }} failed</span> }
         <button mat-button (click)="showErrorsOnly.set(!showErrorsOnly())">{{ showErrorsOnly() ? 'Show all spans' : 'Error paths only' }}</button>
-        <a mat-button [routerLink]="['/logs']" [queryParams]="ctx.keep({ trace: id() })">Logs of this trace</a>
+        <a mat-button [routerLink]="['logs'] | jcLink" [queryParams]="ctx.keep({ trace: id() })">Logs of this trace</a>
         @if (t.truncated) { <span class="jc-muted">Showing the first {{ t.spans.length }} spans.</span> }
       </div>
       <div class="jc-legend">@for (s of services(); track s) { <span><i [style.background]="color(s)"></i>{{ s }}</span> }</div>
@@ -87,15 +88,15 @@ const PALETTE = ['#3b82f6', '#8b5cf6', '#14b8a6', '#f59e0b', '#ec4899', '#22c55e
             @if (s.statusMessage) { <p class="jc-error">{{ s.statusMessage }}</p> }
 
             <nav class="jc-actions">
-              @if (s.serviceId) { <a mat-stroked-button [routerLink]="['/services', s.serviceId]" [queryParams]="ctx.keep()">Service {{ s.service }}</a> }
+              @if (s.serviceId) { <a mat-stroked-button [routerLink]="['services', s.serviceId] | jcLink" [queryParams]="ctx.keep()">Service {{ s.service }}</a> }
               @if (s.target; as target) {
-                <a mat-stroked-button [routerLink]="target.kind === 'service' ? ['/services', target.id] : ['/resources', target.id]" [queryParams]="ctx.keep()">
+                <a mat-stroked-button [routerLink]="(target.kind === 'service' ? ['services', target.id] : ['resources', target.id]) | jcLink" [queryParams]="ctx.keep()">
                   {{ target.kind === 'service' ? 'Calls' : 'Uses' }} {{ target.name }}</a>
               }
               @if (s.serviceId) {
-                <a mat-stroked-button [routerLink]="['/services', s.serviceId]" [queryParams]="aroundSpan(s, { tab: 'metrics' })">Metrics around</a>
-                <a mat-stroked-button [routerLink]="['/services', s.serviceId]" [queryParams]="aroundSpan(s, { tab: 'logs' })">Service logs around</a>
-                <a mat-stroked-button [routerLink]="['/services', s.serviceId]" [queryParams]="ctx.keep({ tab: 'traces', op: s.name })">Other traces of {{ s.name }}</a>
+                <a mat-stroked-button [routerLink]="['services', s.serviceId] | jcLink" [queryParams]="aroundSpan(s, { tab: 'metrics' })">Metrics around</a>
+                <a mat-stroked-button [routerLink]="['services', s.serviceId] | jcLink" [queryParams]="aroundSpan(s, { tab: 'logs' })">Service logs around</a>
+                <a mat-stroked-button [routerLink]="['services', s.serviceId] | jcLink" [queryParams]="ctx.keep({ tab: 'traces', op: s.name })">Other traces of {{ s.name }}</a>
               }
             </nav>
 
@@ -120,7 +121,7 @@ const PALETTE = ['#3b82f6', '#8b5cf6', '#14b8a6', '#f59e0b', '#ec4899', '#22c55e
             @if (s.links.length) {
               <h3>Links</h3>
               @for (l of s.links; track l.spanId) {
-                <a [routerLink]="['/traces', l.traceId]" [queryParams]="ctx.keep({ span: l.spanId })" class="jc-mono">{{ l.traceId }} / {{ l.spanId }}</a>
+                <a [routerLink]="['traces', l.traceId] | jcLink" [queryParams]="ctx.keep({ span: l.spanId })" class="jc-mono">{{ l.traceId }} / {{ l.spanId }}</a>
               }
             }
           </aside>

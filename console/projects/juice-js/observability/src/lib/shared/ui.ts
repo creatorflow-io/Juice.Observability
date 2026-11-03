@@ -1,3 +1,4 @@
+import { ObservabilityLinks } from '../core/options';
 import {
   ChangeDetectionStrategy, Component, ElementRef, OnDestroy, afterNextRender, computed, effect, inject, input, signal, viewChild,
 } from '@angular/core';
@@ -96,6 +97,7 @@ export class ContextBar {
   protected readonly ctx = inject(ContextService);
   private readonly api = inject(ApiService);
   private readonly router = inject(Router);
+  private readonly links = inject(ObservabilityLinks);
   protected readonly ranges = Object.keys(RANGES);
   protected readonly environments = toSignal(this.api.environments().pipe(map(p => p.items), catchError(() => of([]))), { initialValue: [] });
   protected query = '';
@@ -112,8 +114,8 @@ export class ContextBar {
         this.message.set(page.items.length > 1 ? `${page.items.length} matches; showing the first.` : '');
         const extra = hit.kind === 'span' ? { span: hit.id } : {};
         void (hit.kind === 'service'
-          ? this.router.navigate(['/services', hit.id], { queryParams: this.ctx.keep() })
-          : this.router.navigate(['/traces', hit.traceId], { queryParams: this.ctx.keep(extra) }));
+          ? this.router.navigate(this.links.to('services', hit.id), { queryParams: this.ctx.keep() })
+          : this.router.navigate(this.links.to('traces', hit.traceId), { queryParams: this.ctx.keep(extra) }));
       },
       error: () => this.message.set('Search failed.'),
     });

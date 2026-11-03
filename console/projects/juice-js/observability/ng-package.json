@@ -1,0 +1,15 @@
+{
+  "$schema": "../../../node_modules/ng-packagr/ng-package.schema.json",
+  "dest": "../../../dist/juice-js/observability",
+  "lib": {
+    "entryFile": "src/public-api.ts"
+  },
+  "allowedNonPeerDependencies": ["cytoscape", "echarts"],
+  "assets": [
+    {
+      "glob": "**/*.scss",
+      "input": "./styles",
+      "output": "./styles"
+    }
+  ]
+}

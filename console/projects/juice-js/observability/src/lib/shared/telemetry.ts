@@ -1,3 +1,4 @@
+import { LinkPipe } from '../core/options';
 import { ChangeDetectionStrategy, Component, computed, inject, input, linkedSignal } from '@angular/core';
 import { rxResource } from '@angular/core/rxjs-interop';
 import { DatePipe } from '@angular/common';
@@ -28,7 +29,7 @@ export function problemText(error: unknown): string {
 @Component({
   selector: 'jc-trace-table',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [RouterLink, DatePipe, DurationPipe, MatProgressBarModule, MatButtonModule],
+  imports: [LinkPipe, RouterLink, DatePipe, DurationPipe, MatProgressBarModule, MatButtonModule],
   template: `
     @if (traces.first.isLoading()) { <mat-progress-bar mode="indeterminate" /> }
     @if (traces.first.error()) { <p class="jc-error">{{ error() }}</p> }
@@ -41,7 +42,7 @@ export function problemText(error: unknown): string {
             @for (t of rows(); track t.traceId) {
               <tr>
                 <td class="jc-nowrap">{{ t.startedAt | date: 'MMM d, HH:mm:ss.SSS' }}</td>
-                <td><a [routerLink]="['/traces', t.traceId]" [queryParams]="ctx.keep()">{{ t.rootService }} · {{ t.rootOperation }}</a>
+                <td><a [routerLink]="['traces', t.traceId] | jcLink" [queryParams]="ctx.keep()">{{ t.rootService }} · {{ t.rootOperation }}</a>
                   @if (t.services.length > 1) { <div class="jc-muted jc-small">{{ t.services.join(' → ') }}</div> }</td>
                 <td class="jc-nowrap"><span class="jc-bar" [style.width.%]="100 * t.durationMs / longest()"></span>{{ t.durationMs | duration }}</td>
                 <td>{{ t.spanCount }}</td>
@@ -86,7 +87,7 @@ export class TraceTable {
 @Component({
   selector: 'jc-log-table',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [RouterLink, DatePipe, MatProgressBarModule, MatButtonModule],
+  imports: [LinkPipe, RouterLink, DatePipe, MatProgressBarModule, MatButtonModule],
   template: `
     @if (logs.first.isLoading()) { <mat-progress-bar mode="indeterminate" /> }
     @if (logs.first.error()) { <p class="jc-error">{{ error() }}</p> }
@@ -104,7 +105,7 @@ export class TraceTable {
                 <td><pre class="jc-body">{{ l.body }}@if (l.bodyTruncated) {…}</pre></td>
                 @if (!compact()) { <td class="jc-nowrap">
                   @if (l.traceId) {
-                    <a [routerLink]="['/traces', l.traceId]" [queryParams]="ctx.keep(l.spanId ? { span: l.spanId } : {})">{{ l.spanId ? 'span' : 'trace' }} ↗</a>
+                    <a [routerLink]="['traces', l.traceId] | jcLink" [queryParams]="ctx.keep(l.spanId ? { span: l.spanId } : {})">{{ l.spanId ? 'span' : 'trace' }} ↗</a>
                   } @else { <span class="jc-muted">—</span> }
                 </td> }
               </tr>

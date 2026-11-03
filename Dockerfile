@@ -5,13 +5,13 @@ WORKDIR /console
 COPY console/package.json console/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY console/ ./
-RUN npx ng build --configuration production
+RUN npx ng build juice-console --configuration production
 
 FROM mcr.microsoft.com/dotnet/sdk:10.0.402 AS build
 WORKDIR /src
 COPY Directory.Build.props Directory.Packages.props ./
 COPY src/ src/
-RUN dotnet publish src/Juice.Observability.Api -c Release -o /app --no-self-contained
+RUN dotnet publish src/Juice.Observability.Host -c Release -o /app --no-self-contained
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0.9-alpine3.24
 # Alpine has no ICU; the platform needs no culture data.
@@ -26,4 +26,4 @@ COPY --from=console /console/dist/juice-console/browser wwwroot/
 USER $APP_UID
 EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --retries=12 CMD wget -q -O - http://127.0.0.1:8080/health/ready || exit 1
-ENTRYPOINT ["dotnet", "Juice.Observability.Api.dll"]
+ENTRYPOINT ["dotnet", "Juice.Observability.Host.dll"]

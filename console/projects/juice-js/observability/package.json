@@ -1,0 +1,42 @@
+{
+  "name": "@juice-js/observability",
+  "version": "0.1.0",
+  "description": "Juice Observability pages (services, traces, topology, logs, metrics, resources, alerts, rules) for an Angular app on juice-layout",
+  "author": "jack@creatorflow.io",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/creatorflow-io/Juice.Observability/issues"
+  },
+  "homepage": "https://github.com/creatorflow-io/Juice.Observability#readme",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/creatorflow-io/Juice.Observability.git",
+    "directory": "console/projects/juice-js/observability"
+  },
+  "peerDependencies": {
+    "@angular/cdk": "^22.0.0",
+    "@angular/common": "^22.0.0",
+    "@angular/core": "^22.0.0",
+    "@angular/forms": "^22.0.0",
+    "@angular/material": "^22.0.0",
+    "@angular/router": "^22.0.0",
+    "@juice-js/core": "^2.0.1",
+    "@juice-js/layout": "^2.0.1",
+    "rxjs": "^7.8.0"
+  },
+  "dependencies": {
+    "cytoscape": "^3.34.4",
+    "echarts": "^6.1.0",
+    "tslib": "^2.3.0"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "sass": "./styles/_observability.scss"
+    }
+  }
+}

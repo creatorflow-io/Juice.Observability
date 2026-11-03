@@ -1,3 +1,4 @@
+import { LinkPipe } from '../core/options';
 import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
@@ -12,11 +13,11 @@ import { problemText } from '../shared/telemetry';
 /** Alerts, newest first (Console requirements §14), filtered by state; 100 at a time, with the next on request. */
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [RouterLink, MatButtonModule, MatProgressBarModule, ContextBar, AgoPipe],
+  imports: [LinkPipe, RouterLink, MatButtonModule, MatProgressBarModule, ContextBar, AgoPipe],
   template: `
     <jc-context-bar><h1>Alerts</h1>
       @for (s of states; track s) {
-        <a class="jc-chip" [class.jc-selected]="s === (state() ?? 'firing')" routerLink="/alerts" [queryParams]="ctx.keep({ state: s })">{{ s }}</a>
+        <a class="jc-chip" [class.jc-selected]="s === (state() ?? 'firing')" [routerLink]="['alerts'] | jcLink" [queryParams]="ctx.keep({ state: s })">{{ s }}</a>
       }
     </jc-context-bar>
     @if (alerts.first.isLoading()) { <mat-progress-bar mode="indeterminate" /> }
@@ -27,7 +28,7 @@ import { problemText } from '../shared/telemetry';
         @for (a of alerts.items(); track a.id) {
           <tr>
             <td><span class="jc-badge" [class.jc-health-unhealthy]="a.severity === 'Critical'" [class.jc-health-degraded]="a.severity === 'Warning'">{{ a.severity }}</span></td>
-            <td><a [routerLink]="['/alerts', a.id]" [queryParams]="ctx.keep()">{{ a.rule }}</a></td>
+            <td><a [routerLink]="['alerts', a.id] | jcLink" [queryParams]="ctx.keep()">{{ a.rule }}</a></td>
             <td>{{ a.subjectKey }}</td>
             <td>{{ a.state }}@if (a.noData) { <span class="jc-muted" title="The last evaluation had too few samples; the state is kept"> · no data</span> }</td>
             <td>{{ a.lastValue ?? '—' }}</td>

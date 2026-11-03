@@ -81,6 +81,29 @@
           "builder": "@angular/build:unit-test"
         }
       }
+    },
+    "@juice-js/observability": {
+      "projectType": "library",
+      "root": "projects/juice-js/observability",
+      "sourceRoot": "projects/juice-js/observability/src",
+      "prefix": "jc",
+      "architect": {
+        "build": {
+          "builder": "@angular/build:ng-packagr",
+          "options": {
+            "project": "projects/juice-js/observability/ng-package.json"
+          },
+          "configurations": {
+            "production": {
+              "tsConfig": "projects/juice-js/observability/tsconfig.lib.prod.json"
+            },
+            "development": {
+              "tsConfig": "projects/juice-js/observability/tsconfig.lib.json"
+            }
+          },
+          "defaultConfiguration": "production"
+        }
+      }
     }
   }
 }

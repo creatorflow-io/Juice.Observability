@@ -1,3 +1,4 @@
+import { LinkPipe } from '../core/options';
 import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core';
 import { rxResource } from '@angular/core/rxjs-interop';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
@@ -14,11 +15,11 @@ import { LogTable, MetricExplorer, TraceTable, problemText } from '../shared/tel
  */
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [RouterLink, MatProgressBarModule, ContextBar, HealthBadge, ConfidenceBadge, KeyValueTable, TraceTable, LogTable,
+  imports: [LinkPipe, RouterLink, MatProgressBarModule, ContextBar, HealthBadge, ConfidenceBadge, KeyValueTable, TraceTable, LogTable,
     MetricExplorer, AgoPipe],
   template: `
     <jc-context-bar>
-      <a routerLink="/resources" [queryParams]="ctx.keep({ type: resource.value()?.type })" class="jc-crumb">Resources</a>
+      <a [routerLink]="['resources'] | jcLink" [queryParams]="ctx.keep({ type: resource.value()?.type })" class="jc-crumb">Resources</a>
       <span class="jc-crumb-sep">›</span>
       <h1>{{ resource.value()?.displayName ?? '…' }}</h1>
       <span class="jc-muted">{{ resource.value()?.type }}</span>
@@ -45,9 +46,9 @@ import { LogTable, MetricExplorer, TraceTable, problemText } from '../shared/tel
           } @else {
             <h2>Used by</h2>
             @for (e of users(); track e.id) {
-              <div class="jc-list-row"><a [routerLink]="['/services', e.source]" [queryParams]="ctx.keep()">{{ name(e.source) }}</a>
+              <div class="jc-list-row"><a [routerLink]="['services', e.source] | jcLink" [queryParams]="ctx.keep()">{{ name(e.source) }}</a>
                 <span>{{ e.relation }}</span><jc-confidence [confidence]="e.confidence" />
-                <a routerLink="/topology" [queryParams]="ctx.keep({ edge: e.id })">evidence</a></div>
+                <a [routerLink]="['topology'] | jcLink" [queryParams]="ctx.keep({ edge: e.id })">evidence</a></div>
             } @empty { <p class="jc-muted">No users seen{{ ctx.environment() ? ' in ' + ctx.environment() : '' }}.</p> }
           }
         </section>

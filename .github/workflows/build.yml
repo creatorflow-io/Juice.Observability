@@ -1,0 +1,36 @@
+name: Build
+
+# Build and test on every working branch. Publishes nothing: alpha-nuget.yml and alpha-npm.yml publish test packages, release.yml releases.
+on:
+  push:
+    branches: [ "main", "release/**", "dev/**" ]
+    paths-ignore:
+      - '**.md'
+  workflow_dispatch:
+
+jobs:
+  # Juice.Observability.* and the tests (integration tests skip themselves: no local stack on the runner)
+  dotnet:
+    uses: creatorflow-io/shared-workflows/.github/workflows/shared-build.yml@net8
+    with:
+       Stage: alpha
+       Target: |
+          10.0.x
+    secrets: inherit
+
+  # @juice-js/observability and the Console app that uses it
+  console:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: console
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+      - run: npm ci
+      - run: npm run build:lib
+      - run: npm run build

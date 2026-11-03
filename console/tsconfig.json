@@ -12,7 +12,13 @@
     "experimentalDecorators": true,
     "importHelpers": true,
     "target": "ES2022",
-    "module": "preserve"
+    "module": "preserve",
+    // The Console builds the library from source; `npm run build:lib` packs it into dist/ for publishing.
+    "paths": {
+      "@juice-js/observability": [
+        "./projects/juice-js/observability/src/public-api.ts"
+      ]
+    }
   },
   "angularCompilerOptions": {
     "enableI18nLegacyMessageIdFormat": false,

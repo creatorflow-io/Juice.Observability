@@ -1,3 +1,4 @@
+import { LinkPipe } from '../core/options';
 import { ChangeDetectionStrategy, Component, computed, inject, input, signal } from '@angular/core';
 import { rxResource } from '@angular/core/rxjs-interop';
 import { DatePipe } from '@angular/common';
@@ -19,11 +20,11 @@ import { problemText } from '../shared/telemetry';
  */
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [RouterLink, DatePipe, FormsModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatProgressBarModule,
+  imports: [LinkPipe, RouterLink, DatePipe, FormsModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatProgressBarModule,
     ContextBar, HealthBadge, KeyValueTable, AgoPipe, ReasonPipe],
   template: `
     <jc-context-bar>
-      <a routerLink="/alerts" [queryParams]="ctx.keep()" class="jc-crumb">Alerts</a><span class="jc-crumb-sep">›</span>
+      <a [routerLink]="['alerts'] | jcLink" [queryParams]="ctx.keep()" class="jc-crumb">Alerts</a><span class="jc-crumb-sep">›</span>
       <h1>{{ detail.value()?.alert?.rule ?? '…' }}</h1>
     </jc-context-bar>
     @if (detail.isLoading()) { <mat-progress-bar mode="indeterminate" /> }
@@ -35,8 +36,8 @@ import { problemText } from '../shared/telemetry';
         <span>{{ d.alert.subjectKey }}</span>
         @if (d.alert.noData) { <span class="jc-muted">no data at the last evaluation: state kept</span> }
         @if (d.alert.subjectType === 'service' && d.alert.subjectId) {
-          <a mat-flat-button [routerLink]="['/services', d.alert.subjectId]" [queryParams]="investigate(d.alert.environment)">Investigate</a>
-          <a mat-stroked-button [routerLink]="['/services', d.alert.subjectId]" [queryParams]="investigate(d.alert.environment, { tab: 'traces', status: 'error' })">Error traces</a>
+          <a mat-flat-button [routerLink]="['services', d.alert.subjectId] | jcLink" [queryParams]="investigate(d.alert.environment)">Investigate</a>
+          <a mat-stroked-button [routerLink]="['services', d.alert.subjectId] | jcLink" [queryParams]="investigate(d.alert.environment, { tab: 'traces', status: 'error' })">Error traces</a>
         }
         @for (l of d.links; track l.url) { <a mat-button [href]="l.url" target="_blank" rel="noopener">{{ l.title }} ↗</a> }
       </div>

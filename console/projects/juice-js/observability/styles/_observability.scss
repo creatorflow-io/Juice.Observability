@@ -1,0 +1,133 @@
+// Juice Observability page styles: design tokens (light, and body.dark from juice-layout's dark-mode toggle) and the
+// jc-* classes the pages use. Global by design: @use it once from the host app's styles.
+
+// ─── Juice Console design tokens ───
+:root {
+  --jc-bg: #f7f8fa; --jc-surface: #fff; --jc-border: #e3e6ea; --jc-text: #1f2328; --jc-muted: #667085;
+  --jc-accent: #0f766e; --jc-select: #e6f4f1;
+  --jc-ok: #15803d; --jc-ok-bg: #dcfce7; --jc-warn: #b45309; --jc-warn-bg: #fef3c7;
+  --jc-bad: #b91c1c; --jc-bad-bg: #fee2e2; --jc-crit: #7f1d1d; --jc-crit-bg: #fecaca;
+  --jc-off: #475569; --jc-off-bg: #e2e8f0; --jc-none: #64748b; --jc-none-bg: #f1f5f9;
+}
+body.dark {
+  --jc-bg: #111418; --jc-surface: #1a1e23; --jc-border: #2c323a; --jc-text: #e6e8eb; --jc-muted: #98a2b3;
+  --jc-accent: #5eead4; --jc-select: #12302c;
+  --jc-ok: #4ade80; --jc-ok-bg: #12301d; --jc-warn: #fbbf24; --jc-warn-bg: #3a2c0b;
+  --jc-bad: #f87171; --jc-bad-bg: #3b1515; --jc-crit: #fecaca; --jc-crit-bg: #5c1a1a;
+  --jc-off: #cbd5e1; --jc-off-bg: #2a3240; --jc-none: #94a3b8; --jc-none-bg: #232a33;
+}
+
+.jc-muted { color: var(--jc-muted); }
+.jc-small { font-size: 12px; }
+.jc-mono { font-family: 'JetBrains Mono', Consolas, monospace; font-size: 13px; }
+.jc-nowrap { white-space: nowrap; }
+.jc-bad { color: var(--jc-bad); }
+.jc-error { color: var(--jc-bad); }
+// Under a paged list: how many rows are shown, and the button for the next page.
+.jc-more { display: flex; align-items: center; gap: 12px; padding: 8px 0; font-size: 13px; }
+.jc-notice { padding: 8px 12px; border-left: 3px solid var(--jc-warn); background: var(--jc-warn-bg); font-size: 13px; }
+.jc-spacer { flex: 1; }
+
+.jc-context { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 4px 0 12px; border-bottom: 1px solid var(--jc-border); margin-bottom: 12px; }
+.jc-crumb { color: var(--jc-muted); }
+.jc-crumb-sep { color: var(--jc-muted); }
+.jc-field-sm { width: 150px; }
+.jc-field-wide { min-width: 320px; flex: 1; }
+.jc-lookup { display: flex; align-items: center; gap: 4px; border: 1px solid var(--jc-border); border-radius: 6px; padding: 2px 8px; background: var(--jc-surface);
+  input { border: 0; outline: 0; background: transparent; color: inherit; width: 240px; font: inherit; padding: 6px 0; }
+  mat-icon { color: var(--jc-muted); font-size: 18px; height: 18px; width: 18px; } }
+.jc-lookup-message { text-align: right; margin: -8px 0 8px; }
+
+.jc-card { background: var(--jc-surface); border: 1px solid var(--jc-border); border-radius: 8px; padding: 12px 16px; margin-bottom: 12px; }
+.jc-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.jc-grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 12px; }
+.jc-grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+.jc-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 12px; }
+.jc-tile { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; strong { font-size: 24px; } }
+.jc-list-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--jc-border); }
+.jc-list-row:last-child { border-bottom: 0; }
+.jc-summary { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin-bottom: 8px; }
+.jc-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.jc-filter-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+.jc-filters { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.jc-chip { display: inline-flex; gap: 6px; align-items: center; border: 1px solid var(--jc-border); border-radius: 14px; padding: 2px 10px; font-size: 13px; color: var(--jc-text); }
+.jc-chip.jc-selected { background: var(--jc-select); border-color: var(--jc-accent); }
+
+.jc-badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 500; white-space: nowrap; background: var(--jc-none-bg); color: var(--jc-none); }
+.jc-health-healthy { background: var(--jc-ok-bg); color: var(--jc-ok); }
+.jc-health-degraded { background: var(--jc-warn-bg); color: var(--jc-warn); }
+.jc-health-unhealthy { background: var(--jc-bad-bg); color: var(--jc-bad); }
+.jc-health-critical { background: var(--jc-crit-bg); color: var(--jc-crit); }
+.jc-health-offline { background: var(--jc-off-bg); color: var(--jc-off); }
+.jc-health-unknown, .jc-health-none { background: var(--jc-none-bg); color: var(--jc-none); }
+.jc-stale { font-weight: 400; }
+.jc-observed { background: var(--jc-select); color: var(--jc-accent); }
+.jc-inferred { background: transparent; color: var(--jc-muted); border: 1px dashed var(--jc-muted); }
+
+.jc-table { width: 100%; border-collapse: collapse; background: var(--jc-surface); font-size: 13px; margin-bottom: 8px;
+  th { text-align: left; font-weight: 500; color: var(--jc-muted); padding: 6px 8px; border-bottom: 1px solid var(--jc-border); white-space: nowrap; }
+  td { padding: 6px 8px; border-bottom: 1px solid var(--jc-border); vertical-align: top; }
+  tr.jc-selected td { background: var(--jc-select); } }
+.jc-bar { display: inline-block; height: 6px; border-radius: 3px; background: var(--jc-accent); opacity: .5; margin-right: 6px; max-width: 80px; vertical-align: middle; }
+.jc-envs { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.jc-body { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: 'JetBrains Mono', Consolas, monospace; font-size: 12px; max-height: 8em; overflow: auto; }
+.jc-kv { width: 100%; border-collapse: collapse; font-size: 12px;
+  th { text-align: left; color: var(--jc-muted); font-weight: 400; padding: 3px 8px 3px 0; vertical-align: top; width: 38%; word-break: break-all; }
+  td { padding: 3px 0; word-break: break-word; font-family: 'JetBrains Mono', Consolas, monospace; } }
+.jc-facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 8px 0; dt { color: var(--jc-muted); } dd { margin: 0; } }
+.jc-reasons { margin: 6px 0; padding-left: 18px; font-size: 13px; }
+
+.jc-health-strip { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 8px; }
+.jc-health-card { min-width: 240px; flex: 1; max-width: 420px; }
+.jc-health-card.jc-selected { border-color: var(--jc-accent); }
+
+.jc-chart-title { font-size: 13px; color: var(--jc-muted); margin: 4px 0; }
+.jc-chart { height: 180px; width: 100%; background: var(--jc-surface); border: 1px solid var(--jc-border); border-radius: 6px; }
+.jc-chart-empty { display: flex; align-items: center; justify-content: center; color: var(--jc-muted); font-size: 13px; }
+
+// ─── Waterfall ───
+.jc-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; margin-bottom: 6px; i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; } }
+.jc-trace { display: grid; grid-template-columns: 1fr; gap: 12px; }
+.jc-trace.jc-with-detail { grid-template-columns: minmax(0, 1.6fr) minmax(340px, 1fr); }
+.jc-waterfall { background: var(--jc-surface); border: 1px solid var(--jc-border); border-radius: 8px; font-size: 12px; overflow: hidden; }
+.jc-wf-head, .jc-wf-row { display: grid; grid-template-columns: minmax(260px, 40%) 1fr; align-items: center; }
+.jc-wf-head { color: var(--jc-muted); border-bottom: 1px solid var(--jc-border); padding: 4px 8px; }
+.jc-wf-scale { position: relative; height: 16px; span { position: absolute; transform: translateX(-2px); } }
+.jc-wf-row { padding: 2px 8px; cursor: pointer; border-bottom: 1px solid transparent; }
+.jc-wf-row:hover { background: var(--jc-select); }
+.jc-wf-row.jc-selected { background: var(--jc-select); border-bottom-color: var(--jc-accent); }
+.jc-wf-row.jc-wf-error .jc-wf-name { color: var(--jc-bad); }
+.jc-wf-name { display: flex; align-items: center; gap: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.jc-wf-service { color: var(--jc-muted); }
+.jc-wf-toggle { width: 16px; border: 0; background: transparent; color: inherit; cursor: pointer; padding: 0; font-size: 11px; }
+.jc-wf-icon { font-size: 14px; height: 14px; width: 14px; }
+.jc-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+.jc-wf-track { position: relative; height: 18px; }
+.jc-wf-bar { position: absolute; top: 4px; height: 10px; border-radius: 2px; opacity: .85; }
+.jc-wf-error .jc-wf-bar { outline: 2px solid var(--jc-bad); }
+.jc-wf-time { position: absolute; top: 2px; font-size: 10px; color: var(--jc-muted); transform: translateY(12px); }
+.jc-span-detail { position: sticky; top: 8px; max-height: calc(100vh - 140px); overflow: auto; }
+// The trace page fills the window and scrolls inside its panes (waterfall, span), never the whole page as well.
+mat-sidenav-content > .jc-fill-page { box-sizing: border-box; height: 100%; display: flex; flex-direction: column; overflow: hidden; }
+.jc-fill-page > .jc-trace { flex: 1; min-height: 0; grid-template-rows: minmax(0, 1fr); }
+.jc-fill-page > .jc-trace > .jc-waterfall, .jc-fill-page > .jc-trace > .jc-span-detail { overflow: auto; max-height: none; position: static; }
+.jc-fill-page .jc-wf-head { position: sticky; top: 0; z-index: 1; background: var(--jc-surface); }
+.jc-span-facts { display: flex; gap: 12px; align-items: center; margin-bottom: 6px; }
+.jc-event { border-left: 3px solid var(--jc-border); padding-left: 8px; margin: 6px 0; }
+.jc-event.jc-wf-error { border-left-color: var(--jc-bad); }
+
+// ─── Topology ───
+.jc-topology { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 12px; }
+.jc-graph { height: calc(100vh - 220px); min-height: 420px; background: var(--jc-surface); border: 1px solid var(--jc-border); border-radius: 8px; }
+.jc-graph-legend { display: flex; gap: 16px; align-items: center; font-size: 12px; color: var(--jc-muted); padding: 4px; }
+.jc-line { display: inline-block; width: 24px; border-top: 2px solid var(--jc-muted); vertical-align: middle; }
+.jc-line.jc-dashed { border-top-style: dashed; }
+.jc-side { align-self: start; }
+
+@media (max-width: 900px) {
+  .jc-trace.jc-with-detail, .jc-topology { grid-template-columns: 1fr; }
+  // Stacked panes: the page scrolls as a whole again.
+  mat-sidenav-content > .jc-fill-page { height: auto; display: block; overflow: visible; }
+  .jc-fill-page > .jc-trace > .jc-waterfall, .jc-fill-page > .jc-trace > .jc-span-detail { overflow: visible; }
+  .jc-field-wide { min-width: 0; }
+}

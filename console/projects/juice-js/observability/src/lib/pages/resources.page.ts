@@ -1,3 +1,4 @@
+import { LinkPipe } from '../core/options';
 import { ChangeDetectionStrategy, Component, computed, inject, input, signal } from '@angular/core';
 import { rxResource } from '@angular/core/rxjs-interop';
 import { MatPaginatorModule } from '@angular/material/paginator';
@@ -19,11 +20,11 @@ const TYPES = ['host', 'container', 'k8s-pod', 'database', 'messaging-destinatio
  */
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [RouterLink, MatPaginatorModule, MatProgressBarModule, ContextBar, AgoPipe],
+  imports: [LinkPipe, RouterLink, MatPaginatorModule, MatProgressBarModule, ContextBar, AgoPipe],
   template: `
     <jc-context-bar><h1>Resources</h1>
       @for (t of types; track t) {
-        <a class="jc-chip" [class.jc-selected]="t === (type() ?? 'host')" routerLink="/resources" [queryParams]="ctx.keep({ type: t })">{{ t }}</a>
+        <a class="jc-chip" [class.jc-selected]="t === (type() ?? 'host')" [routerLink]="['resources'] | jcLink" [queryParams]="ctx.keep({ type: t })">{{ t }}</a>
       }
     </jc-context-bar>
     @if (resources.isLoading()) { <mat-progress-bar mode="indeterminate" /> }
@@ -33,7 +34,7 @@ const TYPES = ['host', 'container', 'k8s-pod', 'database', 'messaging-destinatio
       <thead><tr><th>Name</th><th>Key</th><th>First seen</th><th>Last seen</th></tr></thead>
       <tbody>
         @for (r of pages.visible(); track r.id) {
-          <tr><td><a [routerLink]="['/resources', r.id]" [queryParams]="ctx.keep()">{{ r.displayName }}</a></td>
+          <tr><td><a [routerLink]="['resources', r.id] | jcLink" [queryParams]="ctx.keep()">{{ r.displayName }}</a></td>
               <td class="jc-mono jc-small">{{ r.key }}</td><td>{{ r.firstSeen | ago }}</td><td>{{ r.lastSeen | ago }}</td></tr>
         } @empty { <tr><td colspan="4" class="jc-muted">None seen.</td></tr> }
       </tbody>

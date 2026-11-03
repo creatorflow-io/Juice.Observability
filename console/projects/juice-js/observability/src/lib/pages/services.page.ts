@@ -1,3 +1,4 @@
+import { LinkPipe } from '../core/options';
 import { ChangeDetectionStrategy, Component, computed, inject, input, signal } from '@angular/core';
 import { rxResource } from '@angular/core/rxjs-interop';
 import { MatPaginatorModule } from '@angular/material/paginator';
@@ -21,10 +22,10 @@ const SEVERITY: HealthState[] = ['Critical', 'Unhealthy', 'Degraded', 'Offline',
  */
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [RouterLink, MatPaginatorModule, MatProgressBarModule, ContextBar, HealthBadge, AgoPipe],
+  imports: [LinkPipe, RouterLink, MatPaginatorModule, MatProgressBarModule, ContextBar, HealthBadge, AgoPipe],
   template: `
     <jc-context-bar><h1>Services</h1>
-      @if (state()) { <span class="jc-chip">{{ state() }} <a routerLink="/services" [queryParams]="ctx.keep()">×</a></span> }
+      @if (state()) { <span class="jc-chip">{{ state() }} <a [routerLink]="['services'] | jcLink" [queryParams]="ctx.keep()">×</a></span> }
     </jc-context-bar>
     @if (data.isLoading()) { <mat-progress-bar mode="indeterminate" /> }
     @if (data.error()) { <p class="jc-error">{{ error() }}</p> }
@@ -34,7 +35,7 @@ const SEVERITY: HealthState[] = ['Critical', 'Unhealthy', 'Degraded', 'Offline',
       <tbody>
         @for (s of pages.visible(); track s.id) {
           <tr>
-            <td><a [routerLink]="['/services', s.id]" [queryParams]="ctx.keep()">{{ s.key }}</a></td>
+            <td><a [routerLink]="['services', s.id] | jcLink" [queryParams]="ctx.keep()">{{ s.key }}</a></td>
             <td class="jc-envs">
               @for (h of s.health; track h.environment) {
                 <span><span class="jc-muted jc-small">{{ h.environment ?? '—' }}</span> <jc-health [state]="h.state" [stale]="h.stale" /></span>

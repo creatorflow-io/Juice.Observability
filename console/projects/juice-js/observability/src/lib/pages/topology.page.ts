@@ -1,3 +1,4 @@
+import { LinkPipe, ObservabilityLinks } from '../core/options';
 import {
   ChangeDetectionStrategy, Component, ElementRef, OnDestroy, afterNextRender, computed, effect, inject, input, viewChild,
 } from '@angular/core';
@@ -25,7 +26,7 @@ const HEALTH_COLORS: Record<string, string> = {
  */
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [RouterLink, MatButtonModule, MatIconModule, MatProgressBarModule, ContextBar, HealthBadge, ConfidenceBadge,
+  imports: [LinkPipe, RouterLink, MatButtonModule, MatIconModule, MatProgressBarModule, ContextBar, HealthBadge, ConfidenceBadge,
     AgoPipe, DurationPipe, PercentPipe],
   template: `
     <jc-context-bar><h1>Dependencies</h1></jc-context-bar>
@@ -60,10 +61,10 @@ const HEALTH_COLORS: Record<string, string> = {
               <dt>Last seen</dt><dd>{{ ev.lastSeen ?? e.lastSeen | ago }}</dd>
             </dl>
             <h3>Representative traces</h3>
-            @for (t of ev.errorTraces; track t) { <div><a [routerLink]="['/traces', t]" [queryParams]="ctx.keep()" class="jc-mono">{{ t.slice(0, 16) }}…</a> <span class="jc-badge jc-health-unhealthy">error</span></div> }
-            @for (t of ev.slowestTraces; track t) { <div><a [routerLink]="['/traces', t]" [queryParams]="ctx.keep()" class="jc-mono">{{ t.slice(0, 16) }}…</a> <span class="jc-muted jc-small">slow</span></div> }
+            @for (t of ev.errorTraces; track t) { <div><a [routerLink]="['traces', t] | jcLink" [queryParams]="ctx.keep()" class="jc-mono">{{ t.slice(0, 16) }}…</a> <span class="jc-badge jc-health-unhealthy">error</span></div> }
+            @for (t of ev.slowestTraces; track t) { <div><a [routerLink]="['traces', t] | jcLink" [queryParams]="ctx.keep()" class="jc-mono">{{ t.slice(0, 16) }}…</a> <span class="jc-muted jc-small">slow</span></div> }
             @if (!ev.errorTraces.length && !ev.slowestTraces.length) { <p class="jc-muted">No calls in this window.</p> }
-            <a mat-stroked-button routerLink="/traces" [queryParams]="ctx.keep({ dependency: e.id })">All traces through this edge</a>
+            <a mat-stroked-button [routerLink]="['traces'] | jcLink" [queryParams]="ctx.keep({ dependency: e.id })">All traces through this edge</a>
           }
           <p><a [routerLink]="link(e.source)" [queryParams]="ctx.keep()">Open {{ name(e.source) }}</a> ·
              <a [routerLink]="link(e.target)" [queryParams]="ctx.keep()">Open {{ name(e.target) }}</a></p>
@@ -81,6 +82,7 @@ export class TopologyPage implements OnDestroy {
   protected readonly ctx = inject(ContextService);
   private readonly api = inject(ApiService);
   private readonly router = inject(Router);
+  private readonly links = inject(ObservabilityLinks);
 
   readonly edge = input<string>();
   readonly node = input<string>();
@@ -156,7 +158,7 @@ export class TopologyPage implements OnDestroy {
 
   name(id: string) { return this.nodes().get(id)?.displayName ?? id; }
 
-  link(id: string) { return this.nodes().get(id)?.type === 'service' ? ['/services', id] : ['/resources', id]; }
+  link(id: string) { return this.links.to(this.nodes().get(id)?.type === 'service' ? 'services' : 'resources', id); }
 
   ngOnDestroy() { this.cy?.destroy(); }
 }

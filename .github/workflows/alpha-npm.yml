@@ -1,0 +1,45 @@
+name: Alpha npm
+
+# Push to a release/* branch that changes the console library: a test package of @juice-js/observability at
+# <version>-alpha.<run number> ("version" in console/projects/juice-js/observability/package.json on that branch)
+# → npmjs, dist-tag "alpha" (npm i @juice-js/observability@alpha). Beta and stable packages come only from a
+# console-* release tag (release.yml).
+on:
+  push:
+    branches: [ 'release/**' ]
+    paths:
+      - 'console/projects/juice-js/observability/**'
+      - 'console/package-lock.json'
+      - '!**.md'
+  workflow_dispatch:
+
+jobs:
+  npm:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # npm provenance
+    defaults:
+      run:
+        working-directory: console
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+      - name: Version
+        run: |
+          base=$(node -p "require('./projects/juice-js/observability/package.json').version")
+          echo "version=$base-alpha.${{ github.run_number }}" >> "$GITHUB_ENV"
+      - run: npm ci
+      - run: npm run build:lib
+      - name: Publish ${{ env.version }}
+        working-directory: console/dist/juice-js/observability
+        run: |
+          npm version "$version" --no-git-tag-version
+          npm publish --tag alpha
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

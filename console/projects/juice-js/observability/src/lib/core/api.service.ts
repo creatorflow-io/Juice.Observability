@@ -1,7 +1,7 @@
 import { HttpClient, HttpParams } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
 import { EMPTY, Observable, expand, map, reduce, shareReplay, switchMap } from 'rxjs';
-import { settings } from './settings';
+import { OBSERVABILITY_OPTIONS } from './options';
 import {
   AlertDetail, Alert, Application, DependencyEvidence, DeploymentEnvironment, Health, LogRecord, MetricInfo, Operation,
   Page, ResourceDetail, ResourceSummary, Rule, SearchHit, Series, ServiceStats, Tenant, TelemetryPage, Topology, Trace,
@@ -17,7 +17,7 @@ export type Query = Record<string, string | number | boolean | string[] | null |
 @Injectable({ providedIn: 'root' })
 export class ApiService {
   private readonly http = inject(HttpClient);
-  private readonly base = `${settings.apiBase}/api/v1`;
+  private readonly base = `${inject(OBSERVABILITY_OPTIONS).apiBase}/api/v1`;
 
   /** The caller's tenant, fetched once. */
   readonly tenant$: Observable<Tenant> = this.http.get<Page<Tenant>>(`${this.base}/tenants`).pipe(

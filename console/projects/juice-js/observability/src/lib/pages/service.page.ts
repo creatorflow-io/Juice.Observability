@@ -1,3 +1,4 @@
+import { LinkPipe, ObservabilityLinks } from '../core/options';
 import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core';
 import { rxResource } from '@angular/core/rxjs-interop';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
@@ -19,11 +20,11 @@ const TABS = ['overview', 'operations', 'dependencies', 'traces', 'logs', 'metri
  */
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [RouterLink, MatTabsModule, MatProgressBarModule, MatButtonModule, ContextBar, HealthBadge, ConfidenceBadge,
+  imports: [LinkPipe, RouterLink, MatTabsModule, MatProgressBarModule, MatButtonModule, ContextBar, HealthBadge, ConfidenceBadge,
     TraceTable, LogTable, MetricExplorer, ServiceStatsCharts, AgoPipe, DurationPipe, PercentPipe, ReasonPipe],
   template: `
     <jc-context-bar>
-      <a routerLink="/services" [queryParams]="ctx.keep()" class="jc-crumb">Services</a>
+      <a [routerLink]="['services'] | jcLink" [queryParams]="ctx.keep()" class="jc-crumb">Services</a>
       <span class="jc-crumb-sep">›</span>
       <h1>{{ service.value()?.key ?? '…' }}</h1>
       @for (l of service.value()?.links ?? []; track l.url) { <a mat-button [href]="l.url" target="_blank" rel="noopener">{{ l.title }} ↗</a> }
@@ -40,7 +41,7 @@ const TABS = ['overview', 'operations', 'dependencies', 'traces', 'logs', 'metri
               @for (r of h.reasons; track r) {
                 <li>
                   @if (dependencyOf(r); as dep) {
-                    {{ r | reason }} — <a [routerLink]="['/services', dep.id]" [queryParams]="ctx.keep()">open</a>
+                    {{ r | reason }} — <a [routerLink]="['services', dep.id] | jcLink" [queryParams]="ctx.keep()">open</a>
                   } @else { {{ r | reason }} }
                 </li>
               }
@@ -72,7 +73,7 @@ const TABS = ['overview', 'operations', 'dependencies', 'traces', 'logs', 'metri
                     <td class="jc-nowrap">
                       <a [routerLink]="[]" [queryParams]="ctx.keep({ tab: 'traces', instance: i.id })">traces</a> ·
                       <a [routerLink]="[]" [queryParams]="ctx.keep({ tab: 'logs', instance: i.id })">logs</a>
-                      @if (i.hostResourceId) { · <a [routerLink]="['/resources', i.hostResourceId]" [queryParams]="ctx.keep()">host</a> }
+                      @if (i.hostResourceId) { · <a [routerLink]="['resources', i.hostResourceId] | jcLink" [queryParams]="ctx.keep()">host</a> }
                     </td>
                   </tr>
                 } @empty { <tr><td colspan="7" class="jc-muted">No instances.</td></tr> }
@@ -124,7 +125,7 @@ const TABS = ['overview', 'operations', 'dependencies', 'traces', 'logs', 'metri
                     <td><jc-confidence [confidence]="d.edge.confidence" /></td>
                     <td>{{ d.edge.spanCount }}</td>
                     <td>{{ d.edge.lastSeen | ago }}</td>
-                    <td><a routerLink="/topology" [queryParams]="ctx.keep({ edge: d.edge.id })">evidence</a> ·
+                    <td><a [routerLink]="['topology'] | jcLink" [queryParams]="ctx.keep({ edge: d.edge.id })">evidence</a> ·
                         <a [routerLink]="[]" [queryParams]="ctx.keep({ tab: 'traces', dependency: d.edge.id })">traces</a></td>
                   </tr>
                 } @empty { <tr><td colspan="6" class="jc-muted">No downstream dependencies seen.</td></tr> }
@@ -136,7 +137,7 @@ const TABS = ['overview', 'operations', 'dependencies', 'traces', 'logs', 'metri
                 @for (d of upstream(); track d.edge.id) {
                   <tr><td><a [routerLink]="d.link" [queryParams]="ctx.keep()">{{ d.name }}</a></td><td>{{ d.edge.relation }}</td>
                       <td><jc-confidence [confidence]="d.edge.confidence" /></td><td>{{ d.edge.lastSeen | ago }}</td>
-                      <td><a routerLink="/topology" [queryParams]="ctx.keep({ edge: d.edge.id })">evidence</a></td></tr>
+                      <td><a [routerLink]="['topology'] | jcLink" [queryParams]="ctx.keep({ edge: d.edge.id })">evidence</a></td></tr>
                 } @empty { <tr><td class="jc-muted">No callers seen.</td></tr> }
               </tbody>
             </table>
@@ -166,6 +167,7 @@ export class ServicePage {
   protected readonly ctx = inject(ContextService);
   private readonly api = inject(ApiService);
   private readonly router = inject(Router);
+  private readonly links = inject(ObservabilityLinks);
 
   readonly id = input.required<string>();
   readonly tab = input<string>();
@@ -200,7 +202,7 @@ export class ServicePage {
       const node = this.nodes().get(edge[other]);
       return {
         edge, name: node?.displayName ?? edge[other], type: node?.type ?? '',
-        link: node?.type === 'service' ? ['/services', edge[other]] : ['/resources', edge[other]],
+        link: this.links.to(node?.type === 'service' ? 'services' : 'resources', edge[other]),
       };
     });
   }

@@ -15,7 +15,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\Juice.Observability.Api\Juice.Observability.Api.csproj" />
+    <ProjectReference Include="..\..\src\Juice.Observability.Host\Juice.Observability.Host.csproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -9,7 +9,8 @@ import { LayoutModule, UserProfileDialogModule } from '@juice-js/layout';
 import { LocalizeModule } from '@juice-js/localize';
 import { AuthModule } from '@juice-js/auth';
 import { AppRoutingModule } from './app-routing.module';
-import { authOptions } from './core/settings';
+import { provideJuiceObservability } from '@juice-js/observability';
+import { authOptions, settings } from './core/settings';
 import { ShowKeyHandler } from './core/show-key.handler';
 
 @Component({
@@ -39,6 +40,7 @@ export class AppComponent { }
   ],
   providers: [
     provideHttpClient(withInterceptorsFromDi()),
+    provideJuiceObservability({ apiBase: settings.apiBase, basePath: '/' }),
     provideTranslateService({ missingTranslationHandler: { provide: MissingTranslationHandler, useClass: ShowKeyHandler } }),
   ],
   bootstrap: [AppComponent],
