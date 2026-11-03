@@ -82,7 +82,7 @@ The console library calls the API over HTTP, so record which versions work toget
 
 | `@juice-js/observability` | needs `Juice.Observability.Api` |
 |---|---|
-| 0.1.x | 0.1.x |
+| 1.0.x | 1.0.x |
 
 ## API
 
