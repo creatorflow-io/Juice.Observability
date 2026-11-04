@@ -44,7 +44,7 @@ export function problemText(error: unknown): string {
                 <td class="jc-nowrap">{{ t.startedAt | date: 'MMM d, HH:mm:ss.SSS' }}</td>
                 <td><a [routerLink]="['traces', t.traceId] | jcLink" [queryParams]="ctx.keep()">{{ t.rootService }} · {{ t.rootOperation }}</a>
                   @if (t.services.length > 1) { <div class="jc-muted jc-small">{{ t.services.join(' → ') }}</div> }</td>
-                <td class="jc-nowrap"><span class="jc-bar" [style.width.%]="100 * t.durationMs / longest()"></span>{{ t.durationMs | duration }}</td>
+                <td class="jc-nowrap"><span class="jc-bar" [style.width.px]="barWidth(t.durationMs)"></span>{{ t.durationMs | duration }}</td>
                 <td>{{ t.spanCount }}</td>
                 <td>@if (t.errorCount > 0) { <span class="jc-badge jc-health-unhealthy">{{ t.errorCount }} error{{ t.errorCount > 1 ? 's' : '' }}</span> }
                     @else { <span class="jc-badge jc-health-healthy">ok</span> }</td>
@@ -76,6 +76,8 @@ export class TraceTable {
     q => this.api.traces(q));
   protected readonly rows = this.traces.items;
   protected readonly longest = computed(() => Math.max(1, ...this.rows().map(t => t.durationMs)));
+  /** Pixels, not a percentage: an auto-sized cell ignores a percentage width, so a full bar pushed the time into the next column. */
+  protected barWidth(ms: number) { return Math.max(2, 80 * ms / this.longest()); }
   protected readonly error = computed(() => problemText(this.traces.first.error()));
   protected readonly moreError = computed(() => problemText(this.traces.moreError()));
 }
