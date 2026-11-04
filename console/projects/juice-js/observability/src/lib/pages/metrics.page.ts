@@ -1,5 +1,5 @@
 import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core';
-import { rxResource } from '@angular/core/rxjs-interop';
+import { apiResource } from '../shared/resource';
 import { FormsModule } from '@angular/forms';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatSelectModule } from '@angular/material/select';
@@ -42,8 +42,8 @@ export class MetricsPage {
   readonly resource = input<string>();
   readonly metric = input<string>();
 
-  protected readonly services = rxResource({ stream: () => this.api.resources('service').pipe(map(p => p.items)) });
-  protected readonly hosts = rxResource({ stream: () => this.api.resources('host').pipe(map(p => p.items)) });
+  protected readonly services = apiResource({ stream: () => this.api.resources('service').pipe(map(p => p.items)) });
+  protected readonly hosts = apiResource({ stream: () => this.api.resources('host').pipe(map(p => p.items)) });
   protected readonly query = computed(() => ({ serviceId: this.service(), resourceId: this.resource() }));
 
   scope(change: Record<string, string | null>) {

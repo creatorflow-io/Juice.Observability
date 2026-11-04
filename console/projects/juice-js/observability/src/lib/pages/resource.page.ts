@@ -1,6 +1,6 @@
 import { LinkPipe } from '../core/options';
 import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core';
-import { rxResource } from '@angular/core/rxjs-interop';
+import { apiResource } from '../shared/resource';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { RouterLink } from '@angular/router';
 import { ApiService } from '../core/api.service';
@@ -69,8 +69,8 @@ export class ResourcePage {
   private readonly api = inject(ApiService);
   readonly id = input.required<string>();
 
-  protected readonly resource = rxResource({ params: () => this.id(), stream: ({ params }) => this.api.resource(params) });
-  protected readonly topology = rxResource({ params: () => this.ctx.environment(), stream: ({ params }) => this.api.topology(params || null) });
+  protected readonly resource = apiResource({ params: () => this.id(), stream: ({ params }) => this.api.resource(params) });
+  protected readonly topology = apiResource({ params: () => this.ctx.environment(), stream: ({ params }) => this.api.topology(params || null) });
   protected readonly error = computed(() => problemText(this.resource.error()));
   protected readonly isInfrastructure = computed(() => ['host', 'container', 'k8s-pod'].includes(this.resource.value()?.type ?? ''));
   protected readonly users = computed(() => (this.topology.value()?.edges ?? []).filter(e => e.target === this.id()));

@@ -2,21 +2,23 @@ import { LinkPipe, ObservabilityLinks } from '../core/options';
 import {
   ChangeDetectionStrategy, Component, ElementRef, OnDestroy, afterNextRender, computed, effect, inject, input, viewChild,
 } from '@angular/core';
-import { rxResource } from '@angular/core/rxjs-interop';
+import { apiResource } from '../shared/resource';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { Router, RouterLink } from '@angular/router';
-import type { Core } from 'cytoscape';
+import type { Core, StylesheetJson } from 'cytoscape';
 import { ApiService } from '../core/api.service';
 import { ContextService } from '../core/context.service';
 import { Topology } from '../core/models';
 import { AgoPipe, DurationPipe, PercentPipe } from '../shared/format';
 import { ConfidenceBadge, ContextBar, HealthBadge } from '../shared/ui';
 import { problemText } from '../shared/telemetry';
+import { onThemeChange, themeColor } from '../shared/theme';
 
-const HEALTH_COLORS: Record<string, string> = {
-  Healthy: '#16a34a', Degraded: '#d97706', Unhealthy: '#dc2626', Critical: '#991b1b', Offline: '#6b7280', Unknown: '#9ca3af',
+/** A service's health → its --jc-* colour from the app's theme (observability.colors). */
+const HEALTH_TOKENS: Record<string, string> = {
+  Healthy: 'ok', Degraded: 'warn', Unhealthy: 'bad', Critical: 'crit', Offline: 'off', Unknown: 'none',
 };
 
 /**
@@ -89,13 +91,14 @@ export class TopologyPage implements OnDestroy {
 
   private readonly graph = viewChild.required<ElementRef<HTMLDivElement>>('graph');
   private cy?: Core;
+  private stopThemeWatch?: () => void;
 
-  protected readonly topology = rxResource({ params: () => this.ctx.environment(), stream: ({ params }) => this.api.topology(params || null) });
+  protected readonly topology = apiResource({ params: () => this.ctx.environment(), stream: ({ params }) => this.api.topology(params || null) });
   protected readonly error = computed(() => problemText(this.topology.error()));
   private readonly nodes = computed(() => new Map((this.topology.value()?.nodes ?? []).map(n => [n.id, n])));
   protected readonly selectedEdge = computed(() => this.topology.value()?.edges.find(e => e.id === this.edge()) ?? null);
   protected readonly selectedNode = computed(() => (this.node() ? this.nodes().get(this.node()!) : null) ?? null);
-  protected readonly evidence = rxResource({
+  protected readonly evidence = apiResource({
     // No edge selected: undefined params leave the resource idle.
     params: () => this.edge() ? { edge: this.edge()!, env: this.ctx.environment(), range: this.ctx.range(), abs: this.ctx.absolute() } : undefined,
     stream: ({ params }) => this.api.dependency(params.edge, { environment: params.env, ...this.ctx.window() }),
@@ -107,19 +110,12 @@ export class TopologyPage implements OnDestroy {
       this.cy = cytoscape({
         container: this.graph().nativeElement,
         wheelSensitivity: 0.3,
-        style: [
-          { selector: 'node', style: {
-            label: 'data(label)', 'font-size': 11, color: '#888', 'text-valign': 'bottom', 'text-margin-y': 4,
-            'background-color': 'data(color)', width: 26, height: 26, 'border-width': 2, 'border-color': '#fff' } },
-          { selector: 'node[type = "database"]', style: { shape: 'diamond' } },
-          { selector: 'node[type = "messaging-destination"]', style: { shape: 'hexagon' } },
-          { selector: 'node[type = "service"]', style: { shape: 'round-rectangle' } },
-          { selector: 'edge', style: {
-            width: 2, 'curve-style': 'bezier', 'target-arrow-shape': 'triangle', 'line-color': '#94a3b8',
-            'target-arrow-color': '#94a3b8', label: 'data(label)', 'font-size': 9, color: '#999', 'text-rotation': 'autorotate' } },
-          { selector: 'edge[confidence = "inferred"]', style: { 'line-style': 'dashed' } },
-          { selector: ':selected', style: { 'line-color': '#2563eb', 'target-arrow-color': '#2563eb', 'border-color': '#2563eb', 'border-width': 3 } },
-        ],
+        style: this.graphStyle(),
+      });
+      // The app switched theme (light/dark): restyle and recolour the nodes.
+      this.stopThemeWatch = onThemeChange(() => {
+        this.cy?.style(this.graphStyle());
+        this.draw(this.topology.value());
       });
       this.cy.on('tap', 'edge', e => this.choose({ edge: e.target.id(), node: null }));
       this.cy.on('tap', 'node', e => this.choose({ node: e.target.id(), edge: null }));
@@ -140,7 +136,7 @@ export class TopologyPage implements OnDestroy {
     this.cy.add([
       ...topology.nodes.map(n => ({ data: {
         id: n.id, label: n.displayName, type: n.type,
-        color: n.type === 'service' ? HEALTH_COLORS[n.health ?? 'Unknown'] : '#64748b' } })),
+        color: this.color(n.type === 'service' ? HEALTH_TOKENS[n.health ?? 'Unknown'] ?? 'none' : 'muted') } })),
       ...topology.edges.filter(e => this.nodes().has(e.source) && this.nodes().has(e.target)).map(e => ({ data: {
         id: e.id, source: e.source, target: e.target, confidence: e.confidence.toLowerCase(),
         label: e.confidence.toLowerCase() === 'inferred' ? `${e.relation} (inferred)` : e.relation } })),
@@ -148,6 +144,28 @@ export class TopologyPage implements OnDestroy {
     this.cy.layout({ name: 'breadthfirst', directed: true, padding: 30, spacingFactor: 1.2 }).run();
     const id = this.edge() ?? this.node();
     if (id) this.cy.getElementById(id).select();
+  }
+
+  private color(token: string) { return themeColor(token, this.graph().nativeElement); }
+
+  /** The graph's look, in the app's theme colours. */
+  private graphStyle() {
+    const [text, muted, line, surface, selected] = [this.color('text'), this.color('muted'), this.color('border'),
+      this.color('surface'), this.color('accent')];
+    return [
+      { selector: 'node', style: {
+        label: 'data(label)', 'font-size': 11, color: text, 'text-valign': 'bottom', 'text-margin-y': 4,
+        'background-color': 'data(color)', width: 26, height: 26, 'border-width': 2, 'border-color': surface } },
+      { selector: 'node[type = "database"]', style: { shape: 'diamond' } },
+      { selector: 'node[type = "messaging-destination"]', style: { shape: 'hexagon' } },
+      { selector: 'node[type = "service"]', style: { shape: 'round-rectangle' } },
+      { selector: 'edge', style: {
+        width: 2, 'curve-style': 'bezier', 'target-arrow-shape': 'triangle', 'line-color': muted,
+        'target-arrow-color': muted, label: 'data(label)', 'font-size': 9, color: muted, 'text-rotation': 'autorotate',
+        'text-background-color': surface, 'text-background-opacity': 0.8, 'text-background-padding': '1px' } },
+      { selector: 'edge[confidence = "inferred"]', style: { 'line-style': 'dashed', 'line-color': line, 'target-arrow-color': line } },
+      { selector: ':selected', style: { 'line-color': selected, 'target-arrow-color': selected, 'border-color': selected, 'border-width': 3 } },
+    ] as StylesheetJson;
   }
 
   fit() { this.cy?.fit(undefined, 30); }
@@ -160,5 +178,8 @@ export class TopologyPage implements OnDestroy {
 
   link(id: string) { return this.links.to(this.nodes().get(id)?.type === 'service' ? 'services' : 'resources', id); }
 
-  ngOnDestroy() { this.cy?.destroy(); }
+  ngOnDestroy() {
+    this.stopThemeWatch?.();
+    this.cy?.destroy();
+  }
 }

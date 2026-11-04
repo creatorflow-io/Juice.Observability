@@ -1,6 +1,6 @@
 import { LinkPipe } from '../core/options';
 import { ChangeDetectionStrategy, Component, computed, inject, input, signal } from '@angular/core';
-import { rxResource } from '@angular/core/rxjs-interop';
+import { apiResource } from '../shared/resource';
 import { MatPaginatorModule } from '@angular/material/paginator';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { RouterLink } from '@angular/router';
@@ -60,7 +60,7 @@ export class ServicesPage implements SearchablePage {
   private readonly reasonPipe = new ReasonPipe();
   protected readonly reason = (r: string) => this.reasonPipe.transform(r);
 
-  protected readonly data = rxResource({
+  protected readonly data = apiResource({
     stream: () => forkJoin({
       services: this.api.resources('service'),
       health: this.api.health({ subjectType: 'service' }),

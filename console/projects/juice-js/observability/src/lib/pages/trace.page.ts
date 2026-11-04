@@ -1,6 +1,6 @@
 import { LinkPipe } from '../core/options';
 import { ChangeDetectionStrategy, Component, computed, inject, input, signal } from '@angular/core';
-import { rxResource } from '@angular/core/rxjs-interop';
+import { apiResource } from '../shared/resource';
 import { DatePipe } from '@angular/common';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
@@ -12,11 +12,11 @@ import { Span } from '../core/models';
 import { DurationPipe, formatDuration, plainTraceId, preciseTime } from '../shared/format';
 import { ContextBar, KeyValueTable } from '../shared/ui';
 import { LogTable, problemText } from '../shared/telemetry';
+import { themeColor } from '../shared/theme';
 
 interface Row { span: Span; depth: number; children: number; offset: number; selfError: boolean; slowest: boolean; }
 
 /** A stable colour per service, from a small palette that reads in both themes. */
-const PALETTE = ['#3b82f6', '#8b5cf6', '#14b8a6', '#f59e0b', '#ec4899', '#22c55e', '#06b6d4', '#a855f7', '#84cc16', '#f97316'];
 
 /**
  * A trace as a waterfall (Console requirements §6): the span hierarchy with timing relative to the trace start, so
@@ -139,7 +139,7 @@ export class TracePage {
   readonly span = input<string>();
 
   protected readonly id = computed(() => plainTraceId(this.traceId()));
-  protected readonly trace = rxResource({ params: () => this.id(), stream: ({ params }) => this.api.trace(params) });
+  protected readonly trace = apiResource({ params: () => this.id(), stream: ({ params }) => this.api.trace(params) });
   protected readonly error = computed(() => problemText(this.trace.error()));
   protected readonly collapsed = signal(new Set<string>());
   protected readonly showErrorsOnly = signal(false);
@@ -209,8 +209,11 @@ export class TracePage {
 
   protected readonly ticks = computed(() => [0, 25, 50, 75].map(at => ({ at, label: formatDuration(this.total() * at / 100) })));
 
+  /** The app's categorical colours (observability.colors $series), as CSS variables: a theme switch repaints them. */
+  private readonly seriesCount = Math.max(1, Number(themeColor('series-count')) || 1);
+
   color(service: string) {
-    return PALETTE[this.services().indexOf(service) % PALETTE.length];
+    return `var(--jc-series-${this.services().indexOf(service) % this.seriesCount + 1})`;
   }
 
   width(span: Span) {

@@ -1,6 +1,6 @@
 import { LinkPipe } from '../core/options';
 import { ChangeDetectionStrategy, Component, computed, inject, input, signal } from '@angular/core';
-import { rxResource } from '@angular/core/rxjs-interop';
+import { apiResource } from '../shared/resource';
 import { DatePipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
@@ -81,7 +81,7 @@ export class AlertPage {
   protected readonly sending = signal(false);
   protected readonly ackError = signal('');
 
-  protected readonly detail = rxResource({ params: () => this.id(), stream: ({ params }) => this.api.alert(params) });
+  protected readonly detail = apiResource({ params: () => this.id(), stream: ({ params }) => this.api.alert(params) });
   protected readonly error = computed(() => problemText(this.detail.error()));
 
   /** The service page over the alert's environment, from shortly before the breach. */

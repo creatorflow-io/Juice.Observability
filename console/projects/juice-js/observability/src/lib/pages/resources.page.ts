@@ -1,6 +1,6 @@
 import { LinkPipe } from '../core/options';
 import { ChangeDetectionStrategy, Component, computed, inject, input, signal } from '@angular/core';
-import { rxResource } from '@angular/core/rxjs-interop';
+import { apiResource } from '../shared/resource';
 import { MatPaginatorModule } from '@angular/material/paginator';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { RouterLink } from '@angular/router';
@@ -51,7 +51,7 @@ export class ResourcesPage implements SearchablePage {
   readonly type = input<string>();
   private readonly filter = signal('');
 
-  protected readonly resources = rxResource({
+  protected readonly resources = apiResource({
     params: () => this.type() ?? 'host',
     stream: ({ params }) => this.api.resources(params),
   });

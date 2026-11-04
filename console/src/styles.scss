@@ -1,6 +1,6 @@
 @use '@angular/material' as mat;
 @use '@juice-js/layout' as layout;
-// The Juice Observability pages' tokens and jc-* classes (a host app uses '@juice-js/observability').
+// The Juice Observability pages (a host app uses '@juice-js/observability'): their layout, with colours from this theme below.
 @use '../projects/juice-js/observability/styles/observability';
 
 // Angular Material and juice-layout themes, light and dark (juice-layout's dark-mode toggle sets body.dark).
@@ -16,11 +16,13 @@ $dark: mat.m2-define-dark-theme((color: (primary: mat.m2-define-palette(mat.$m2-
 
 @include mat.all-component-themes($light);
 @include layout.layout-component-themes($light);
+:root { @include observability.colors($light); }
 // Below -1, Material hides the label of fill form fields, and the filters have no placeholder to fall back on.
 html { @include mat.form-field-density(-1); }
 .dark {
   @include mat.all-component-colors($dark);
   @include layout.layout-component-colors($dark);
+  @include observability.colors($dark);
 }
 
 html, body { height: 100%; }

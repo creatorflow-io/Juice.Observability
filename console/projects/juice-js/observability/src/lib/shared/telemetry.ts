@@ -1,6 +1,6 @@
 import { LinkPipe } from '../core/options';
 import { ChangeDetectionStrategy, Component, computed, inject, input, linkedSignal } from '@angular/core';
-import { rxResource } from '@angular/core/rxjs-interop';
+import { apiResource } from './resource';
 import { DatePipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
@@ -163,8 +163,8 @@ export class LogTable {
             @for (m of names(); track m.name) { <mat-option [value]="m.name">{{ m.name }} <span class="jc-muted">({{ m.type }}{{ m.unit ? ', ' + m.unit : '' }})</span></mat-option> }
           </mat-select>
         </mat-form-field>
-        @if (series.hasValue()) {
-          <jc-chart [title]="title()" [series]="[{ name: series.value().name, points: points() }]" />
+        @if (series.value(); as s) {
+          <jc-chart [title]="title()" [series]="[{ name: s.name, points: points() }]" />
         }
       }
     }`,
@@ -175,7 +175,7 @@ export class MetricExplorer {
   readonly scope = input<Query>({});
   readonly initial = input<string | null>(null);
 
-  protected readonly metrics = rxResource({
+  protected readonly metrics = apiResource({
     params: () => ({ scope: this.scope(), env: this.ctx.environment(), range: this.ctx.range(), abs: this.ctx.absolute() }),
     stream: ({ params }) => this.api.metrics({ environment: params.env, ...this.ctx.window(), ...params.scope }),
   });
@@ -184,7 +184,7 @@ export class MetricExplorer {
     const names = this.names();
     return names.find(m => m.name === this.initial())?.name ?? names[0]?.name ?? null;
   });
-  protected readonly series = rxResource({
+  protected readonly series = apiResource({
     // Idle until a metric is chosen.
     params: () => this.selected() ? { name: this.selected()!, scope: this.scope(), env: this.ctx.environment(), range: this.ctx.range(), abs: this.ctx.absolute() } : undefined,
     stream: ({ params }) => {
@@ -229,7 +229,7 @@ export class ServiceStatsCharts {
   protected readonly percent = (v: number) => `${Math.round(v * 1000) / 10} %`;
   protected readonly ms = (v: number) => `${Math.round(v)} ms`;
 
-  protected readonly stats = rxResource({
+  protected readonly stats = apiResource({
     params: () => ({ query: this.query(), env: this.ctx.environment(), range: this.ctx.range(), abs: this.ctx.absolute() }),
     stream: ({ params }) => {
       this.window = this.ctx.window();

@@ -1,5 +1,5 @@
 import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core';
-import { rxResource } from '@angular/core/rxjs-interop';
+import { apiResource } from '../shared/resource';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatFormFieldModule } from '@angular/material/form-field';
@@ -54,7 +54,7 @@ export class LogsPage {
   readonly instance = input<string>();
   readonly resource = input<string>();
 
-  protected readonly services = rxResource({ stream: () => this.api.resources('service').pipe(map(p => p.items)) });
+  protected readonly services = apiResource({ stream: () => this.api.resources('service').pipe(map(p => p.items)) });
   protected readonly query = computed(() => ({
     serviceId: this.service(), minSeverity: this.severity(), q: this.q(), traceId: this.trace(), spanId: this.spanId(),
     instanceId: this.instance(), resourceId: this.resource(),

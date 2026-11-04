@@ -1,6 +1,6 @@
 import { LinkPipe, ObservabilityLinks } from '../core/options';
 import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core';
-import { rxResource } from '@angular/core/rxjs-interop';
+import { apiResource } from '../shared/resource';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatTabsModule } from '@angular/material/tabs';
 import { MatButtonModule } from '@angular/material/button';
@@ -181,9 +181,9 @@ export class ServicePage {
   protected readonly operation = computed(() => this.op() ?? null);
   protected readonly instanceFilter = computed(() => this.instance() ?? null);
 
-  protected readonly service = rxResource({ params: () => this.id(), stream: ({ params }) => this.api.resource(params) });
-  protected readonly topology = rxResource({ params: () => this.ctx.environment(), stream: ({ params }) => this.api.topology(params || null) });
-  protected readonly operations = rxResource({
+  protected readonly service = apiResource({ params: () => this.id(), stream: ({ params }) => this.api.resource(params) });
+  protected readonly topology = apiResource({ params: () => this.ctx.environment(), stream: ({ params }) => this.api.topology(params || null) });
+  protected readonly operations = apiResource({
     params: () => ({ id: this.id(), env: this.ctx.environment(), range: this.ctx.range(), abs: this.ctx.absolute(), on: this.tabIndex() === 1 }),
     stream: ({ params }) => this.api.operations({ serviceId: params.id, environment: params.env, ...this.ctx.window(), limit: 200 }),
   });

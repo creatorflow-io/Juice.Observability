@@ -1,6 +1,6 @@
 import { LinkPipe } from '../core/options';
 import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
-import { rxResource } from '@angular/core/rxjs-interop';
+import { apiResource } from '../shared/resource';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { RouterLink } from '@angular/router';
 import { forkJoin, map } from 'rxjs';
@@ -46,7 +46,7 @@ import { problemText } from '../shared/telemetry';
 export class RulesPage {
   protected readonly ctx = inject(ContextService);
   private readonly api = inject(ApiService);
-  protected readonly data = rxResource({
+  protected readonly data = apiResource({
     stream: () => forkJoin({
       rules: this.api.rules().pipe(map(p => p.items)),
       firing: this.api.allAlerts({ state: 'firing' }).pipe(map(p => p.items)),

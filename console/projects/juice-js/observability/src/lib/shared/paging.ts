@@ -1,5 +1,6 @@
 import { DestroyRef, Signal, computed, inject, linkedSignal, signal } from '@angular/core';
-import { rxResource, takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { apiResource } from './resource';
 import { PageEvent } from '@angular/material/paginator';
 import { Observable, map } from 'rxjs';
 import { Query } from '../core/api.service';
@@ -14,7 +15,7 @@ export interface CursorPage<T> { items: T[]; nextCursor?: string | null; }
  */
 export function cursorList<P, T>(params: () => P, query: (params: P) => Query, fetch: (query: Query) => Observable<CursorPage<T>>) {
   const destroyRef = inject(DestroyRef);
-  const first = rxResource({
+  const first = apiResource({
     params,
     stream: ({ params }) => {
       const q = query(params);

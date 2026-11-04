@@ -13,6 +13,7 @@ import type { ECharts, EChartsOption } from 'echarts';
 import { ApiService } from '../core/api.service';
 import { ContextService, RANGES } from '../core/context.service';
 import { HealthState } from '../core/models';
+import { onThemeChange, seriesColors, themeColor } from './theme';
 
 /** A health state, with "no data" for a missing one (Console requirements §10: missing data is not zero). */
 @Component({
@@ -156,6 +157,7 @@ export class Chart implements OnDestroy {
   protected readonly empty = computed(() => this.series().every(s => s.points.every(p => p.value === null)));
   private chart?: ECharts;
   private observer?: ResizeObserver;
+  private stopThemeWatch?: () => void;
 
   constructor() {
     afterNextRender(async () => {
@@ -166,6 +168,7 @@ export class Chart implements OnDestroy {
       this.chart = echarts.init(this.host().nativeElement, undefined, { renderer: 'svg' });
       this.observer = new ResizeObserver(() => this.chart?.resize());
       this.observer.observe(this.host().nativeElement);
+      this.stopThemeWatch = onThemeChange(() => this.render());
       this.render();
     });
     effect(() => { this.series(); this.render(); });
@@ -174,15 +177,18 @@ export class Chart implements OnDestroy {
   private render() {
     if (!this.chart) return;
     const format = this.format();
-    const dark = document.body.classList.contains('dark');
+    // The app's theme colours (observability.colors), read at each render so a theme switch repaints.
+    const host = this.host().nativeElement;
+    const [text, muted, border, colors] = [themeColor('text', host), themeColor('muted', host), themeColor('border', host), seriesColors(host)];
     const option: EChartsOption = {
       animation: false,
+      color: colors.length ? colors : undefined,
       grid: { left: 56, right: 16, top: 16, bottom: 28 },
       tooltip: { trigger: 'axis', valueFormatter: v => (typeof v === 'number' ? format(v) : '—') },
-      legend: this.series().length > 1 ? { top: 0, textStyle: { color: dark ? '#ddd' : '#333' } } : undefined,
-      xAxis: { type: 'time', axisLabel: { color: dark ? '#bbb' : '#555' } },
-      yAxis: { type: 'value', axisLabel: { color: dark ? '#bbb' : '#555', formatter: (v: number) => format(v) },
-        splitLine: { lineStyle: { color: dark ? '#333' : '#eee' } } },
+      legend: this.series().length > 1 ? { top: 0, textStyle: { color: text } } : undefined,
+      xAxis: { type: 'time', axisLabel: { color: muted }, axisLine: { lineStyle: { color: border } } },
+      yAxis: { type: 'value', axisLabel: { color: muted, formatter: (v: number) => format(v) },
+        splitLine: { lineStyle: { color: border } } },
       series: this.series().map(s => ({
         name: s.name, type: 'line', showSymbol: false, connectNulls: false,
         data: s.points.map(p => [p.at, p.value]),
@@ -193,6 +199,7 @@ export class Chart implements OnDestroy {
 
   ngOnDestroy() {
     this.observer?.disconnect();
+    this.stopThemeWatch?.();
     this.chart?.dispose();
   }
 }
