@@ -2,7 +2,8 @@
 
 **Run:** 2026-11-01, local reference environment (`deploy/local`). Windows 11 workstation, Docker Desktop 29.9.1.
 **Rerun:** 2026-11-04 for `dotnet test`, `verify.sh --outage`, the load, API latency, breach-to-alert and the Console
-journey. The §9 and Console results below are from that rerun, except where they give another date.
+journey. The §9 rows for ingestion freshness, reference load, API reads and breach-to-alert, and the Console section, are
+from that rerun. Everything else is from 2026-11-01 unless it gives another date.
 **Decisions:** the [Phase 0 recommendations](phase-0-decisions.md), approved 2026-11-01.
 **Repeat** (with `docker compose --profile platform --profile test`; run breach-to-alert and API latency during a load run):
 
