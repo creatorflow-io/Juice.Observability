@@ -5,8 +5,8 @@ name: Release
 #   api-1.2.0       → Juice.Observability.*    → nuget.org
 #   console-1.4.0   → @juice-js/observability  → npmjs
 # A pre-release version (api-1.2.0-beta.1, console-1.4.0-rc.1) is published as a pre-release.
-# npm dist-tag: "latest" for a release on main; "release-1.x" for a release on release/1.x (it never replaces latest);
-# for a pre-release, its label ("beta", "rc").
+# npm dist-tag: "latest" for a stable release, unless npm's latest is already a newer stable version (patching an older
+# line: then the branch name, such as "release-1.0"); for a pre-release, its label ("beta", "rc").
 on:
   release:
     types:
@@ -25,6 +25,7 @@ jobs:
         env:
           TAG: ${{ github.event.release.tag_name }}
           TARGET: ${{ github.event.release.target_commitish }}
+          NPM_PACKAGE: '@juice-js/observability'
         run: |
           if ! [[ "$TAG" =~ ^(api|console)-([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$ ]]; then
             echo "::error::The release tag must be api-<version> or console-<version>, for example api-1.2.0 or console-1.4.0-rc.1 (no 'v'), not '$TAG'"; exit 1
@@ -38,7 +39,11 @@ jobs:
           elif [[ "$TARGET" == "main" ]]; then
             tag=latest
           else
-            tag=${TARGET//\//-}
+            # A stable release from release/*: "latest" unless npm's latest is a newer stable version, so patching an
+            # older line never moves latest back. The current line is released from release/* too.
+            current=$(npm view "$NPM_PACKAGE" dist-tags.latest 2>/dev/null || true)
+            newest=$(printf '%s\n%s\n' "$current" "$version" | sort -V | tail -1)
+            if [[ -z "$current" || "$current" == *-* || "$newest" == "$version" ]]; then tag=latest; else tag=${TARGET//\//-}; fi
           fi
           {
             echo "package=$package"
@@ -102,7 +107,7 @@ jobs:
       - name: Publish ${{ env.VERSION }}
         working-directory: console/dist/juice-js/observability
         run: |
-          npm version "$VERSION" --no-git-tag-version
+          npm version "$VERSION" --no-git-tag-version --allow-same-version   # a stable tag matches package.json
           npm publish --tag "${{ needs.check.outputs.dist-tag }}"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
