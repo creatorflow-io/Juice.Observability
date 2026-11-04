@@ -1,5 +1,5 @@
 // Console requirements §21 acceptance: sign in through Keycloak, then the investigation journey, with no Grafana.
-// Needs deploy/local up with the platform profile and demo traffic from demo-shop (a failing payments-2).
+// Needs deploy/local up with the platform profile and demo traffic from e2e/demo-traffic.mjs (a failing payments-2).
 //   BASE=http://localhost:5180 BROWSER="C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe" node e2e/journey.mjs
 // Screenshots land in e2e/shots/. Exits 1 on any failed step, browser error or failed API call.
 import { chromium } from 'playwright-core';

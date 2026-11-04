@@ -1,8 +1,10 @@
 # MVP acceptance record (requirements §11)
 
 **Run:** 2026-11-01, local reference environment (`deploy/local`). Windows 11 workstation, Docker Desktop 29.9.1.
+**Rerun:** 2026-11-04 for `dotnet test`, `verify.sh --outage`, the load, API latency, breach-to-alert and the Console
+journey. The §9 and Console results below are from that rerun, except where they give another date.
 **Decisions:** the [Phase 0 recommendations](phase-0-decisions.md), approved 2026-11-01.
-**Repeat:**
+**Repeat** (with `docker compose --profile platform --profile test`; run breach-to-alert and API latency during a load run):
 
 ```bash
 dotnet test
@@ -11,6 +13,8 @@ deploy/local/tests/load.sh 30m
 deploy/local/tests/breach-to-alert.sh 3
 node deploy/local/tests/api-latency.mjs
 deploy/local/tests/restore-drill.sh
+node console/e2e/demo-traffic.mjs &    # then, about a minute later, in console/:
+BASE=http://localhost:5180 node e2e/journey.mjs
 ```
 
 | # | Criterion | Result | Evidence |
@@ -30,11 +34,11 @@ deploy/local/tests/restore-drill.sh
 
 | Measure | Target | Measured | Result |
 |---|---|---|---|
-| Ingestion freshness under reference load | p95 ≤ 30 s | p95 1.37 s, p50 0.85 s, max 1.42 s (162 probes over 30 min) | **Pass** |
-| Reference load sustained 30 min: 1,000 spans/s, 10,000 points/s, 1,000 logs/s | no loss | 1,799,994 spans, 17,798,819 metric points, 1,799,999 logs stored in 30 min; Collector: 0 refused, 0 enqueue failures, 0 send failures. Points are 1.1 % under the nominal 18 M; the Collector dropped nothing, so the generator (telemetrygen, rates approximate) sent fewer | **Pass** |
-| Platform API reads at 20 req/s (under reference load) | p95 ≤ 500 ms | p95 9.0 ms, p50 4.9 ms, 0 errors (1,200 requests) | **Pass** |
+| Ingestion freshness under reference load | p95 ≤ 30 s | p95 1.39 s, p50 0.87 s, max 1.44 s (161 probes over 30 min) | **Pass** |
+| Reference load sustained 30 min: 1,000 spans/s, 10,000 points/s, 1,000 logs/s | no loss | 1,800,002 spans, 17,805,113 metric points, 1,799,993 logs stored in 30 min; Collector: 0 refused, 0 enqueue failures, 0 send failures. Points are 1.1 % under the nominal 18 M; the Collector dropped nothing, so the generator (telemetrygen, rates approximate) sent fewer | **Pass** |
+| Platform API reads at 20 req/s (under reference load) | p95 ≤ 500 ms | p95 6.8 ms, p50 4.3 ms, 0 errors (1,200 requests) | **Pass** |
 | Health freshness | evaluated ≤ 30 s; p95 evidence-to-visible ≤ 60 s | 30 s interval; 10–11 s measured on a 1 s loop; bound about 42 s at the 30 s interval | **Pass** |
-| Rule breach-to-alert (1-minute schedule, under reference load) | p95 ≤ 2 min after ForDuration | 37 s, 59 s, 58 s after ForDuration over 3 runs (p95 59 s), polled every 5 s, during the reference load | **Pass** |
+| Rule breach-to-alert (1-minute schedule, under reference load) | p95 ≤ 2 min after ForDuration | 23 s, 59 s, 59 s after ForDuration over 3 runs (p95 59 s), polled every 5 s, during the reference load | **Pass** |
 | Webhook first dispatch after transition | p95 ≤ 30 s | dispatcher polls every 2 s; delivery written in the transition's transaction; `juice.observability.webhooks.dispatch_delay` | **Pass** (bound 2 s + send) |
 | Durability | daily backup; RPO ≤ 24 h, RTO ≤ 4 h | `scripts/backup.sh` and `scripts/backup-telemetry.sh` daily; restore drill 11 s (21 tables), telemetry 7 s (8 tables, 2026-11-04) | **Pass** |
 | Retention defaults | 30 d traces/logs, 90 d metrics | TTL on the tables | **Pass** |
@@ -42,9 +46,9 @@ deploy/local/tests/restore-drill.sh
 
 ## Console acceptance (Console requirements §21)
 
-**Run 2026-11-01**, `console/e2e/journey.mjs` in headless Edge against the API image (`docker compose --profile platform`),
-Grafana not used, demo traffic: `demo-shop/checkout` calling `demo-shop/payments`, whose instance `payments-2` fails every
-charge. **All steps pass with no browser error and no failed API call:**
+**Run 2026-11-04**, `console/e2e/journey.mjs` in headless Edge against the API image (`docker compose --profile platform`),
+Grafana not used, demo traffic from `console/e2e/demo-traffic.mjs`: `demo-shop/checkout` calling `demo-shop/payments`, whose
+instance `payments-2` fails every charge. **All steps pass with no browser error and no failed API call:**
 
 1. sign in through Keycloak as `erin` (operator); 2. the overview shows the firing alerts and unhealthy services;
 3. the services list, filtered to `production`; 4. `demo-shop/payments`: health `Unhealthy` with reasons, instances
@@ -65,4 +69,6 @@ The tenant filter of the telemetry API is mutation-checked (`TelemetryApiTests`)
   and advanced analytics are P2 and not built.
 - **The production differences** in `deployment.md`: PKI, TLS in front of Grafana, Keycloak and the API, the
   customer's IdP, a secret store.
-- **The load run** used one telemetrygen resource per signal. It does not model 10 services and 100 instances.
+- **The load run** used one telemetrygen resource per signal. It does not model 10 services and 100 instances. Since
+  2026-11-04 it goes through the test Collector, so the load shares ClickHouse with the main Collector's traffic but not
+  the main Collector itself. The test Collector has the same configuration.

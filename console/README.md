@@ -8,6 +8,7 @@ Juice API, never ClickHouse or PostgreSQL.
 npm ci
 npm start                 # http://localhost:4200, /api proxied to the API on :5180 (deploy/local/scripts/run-api.sh)
 npm run build             # dist/juice-console/browser; the API image serves it (Dockerfile)
+node e2e/demo-traffic.mjs &                       # the demo traffic the journey needs; give it about a minute first
 BASE=http://localhost:5180 node e2e/journey.mjs   # the §21 investigation journey in headless Edge (BROWSER=<path>)
 ```
 
