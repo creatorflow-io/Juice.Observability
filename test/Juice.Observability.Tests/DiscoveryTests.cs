@@ -57,6 +57,40 @@ namespace Juice.Observability.Tests
             Assert.Equal("1.1", instances[1].ServiceVersion);
         }
 
+        /// <summary>
+        /// Juice names the RabbitMQ exchange on a send span and the queue on a process span. They are two resources; the link
+        /// between the services comes from the consumer span's parent, so it does not depend on them matching.
+        /// </summary>
+        [Fact]
+        public async Task A_broker_message_links_services_when_exchange_and_queue_differ_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var (orders, billing) = ($"disc-{_run}-sender", $"disc-{_run}-receiver");
+            var (exchange, queue) = ($"x-{_run}", $"q-{_run}");
+            var at = DateTimeOffset.UtcNow.AddMinutes(-2);
+            var (trace, send) = (Otlp.TraceId(), Otlp.SpanId());
+            await LocalStack.SendAsync("traces", Otlp.Traces([("service.name", orders)],
+                Otlp.Span(trace, send, null, $"send {exchange}", Otlp.Producer, at, ("messaging.system", "rabbitmq"), ("messaging.destination.name", exchange))));
+            await LocalStack.SendAsync("traces", Otlp.Traces([("service.name", billing)],
+                Otlp.Span(trace, Otlp.SpanId(), send, $"process {queue}", Otlp.Consumer, at, ("messaging.system", "rabbitmq"), ("messaging.destination.name", queue))));
+            await LocalStack.WaitForSpansAsync(billing, 1);
+            await LocalStack.WaitForSpansAsync(orders, 1);
+
+            await Runner(database).RunOnceAsync(TestContext.Current.CancellationToken);
+
+            await using var db = database.Context();
+            var ordersId = (await db.Services.SingleAsync(s => s.Name == orders)).Id;
+            var billingId = (await db.Services.SingleAsync(s => s.Name == billing)).Id;
+            var exchangeId = (await db.Resources.SingleAsync(r => r.Key == $"rabbitmq:{exchange}")).Id;
+            var queueId = (await db.Resources.SingleAsync(r => r.Key == $"rabbitmq:{queue}")).Id;
+            var dependencies = await db.Dependencies.Where(d => d.SourceServiceId == ordersId || d.SourceServiceId == billingId).ToListAsync();
+
+            Assert.Contains(dependencies, d => d.SourceServiceId == ordersId && d.Relation == DependencyRelation.PublishesTo && d.TargetServiceId == billingId && d.Confidence == DependencyConfidence.Observed);
+            Assert.Contains(dependencies, d => d.SourceServiceId == ordersId && d.Relation == DependencyRelation.PublishesTo && d.TargetResourceId == exchangeId);
+            Assert.Contains(dependencies, d => d.SourceServiceId == billingId && d.Relation == DependencyRelation.ConsumesFrom && d.TargetResourceId == queueId);
+        }
+
         [Fact]
         public async Task Dependencies_are_inferred_from_spans_with_their_confidence_Async()
         {

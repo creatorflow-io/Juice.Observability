@@ -53,7 +53,8 @@ export class AlertsPage {
   private readonly api = inject(ApiService);
   protected readonly states = ['firing', 'pending', 'resolved'];
   readonly state = input<string>();
-  protected readonly alerts = cursorList(() => this.state() ?? 'firing', state => ({ state }), q => this.api.alerts(q));
+  protected readonly alerts = cursorList(
+    () => ({ state: this.state() ?? 'firing', environment: this.ctx.environment() }), params => params, q => this.api.alerts(q));
   protected readonly error = computed(() => problemText(this.alerts.first.error()));
   protected readonly moreError = computed(() => problemText(this.alerts.moreError()));
 }

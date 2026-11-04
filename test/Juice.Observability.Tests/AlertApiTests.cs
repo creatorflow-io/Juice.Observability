@@ -177,6 +177,43 @@ namespace Juice.Observability.Tests
             return await client.SendAsync(request, Ct);
         }
 
+        [Fact]
+        public async Task Alerts_are_filtered_by_environment_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var (tenant, firing, resolved) = await SeedAsync(database);
+            Guid staged, host;
+            await using (var db = database.Context())
+            {
+                var now = DateTimeOffset.UtcNow;
+                var rule = await db.Rules.SingleAsync();
+                var staging = new DeploymentEnvironment { TenantId = tenant, Key = "staging", Type = EnvironmentType.Staging, FirstSeen = now, LastSeen = now };
+                Alert NewAlert(string subject, HealthSubject type, Guid? environment) => new()
+                {
+                    TenantId = tenant, RuleId = rule.Id, DedupKey = $"orders-errors|{subject}", SubjectKey = subject, SubjectType = type,
+                    EnvironmentId = environment, State = AlertState.Firing, BreachStartedAt = now, FiredAt = now, LastEvaluatedAt = now, Evidence = [],
+                };
+                var (inStaging, onHost) = (NewAlert("service:shop/orders@staging", HealthSubject.Service, staging.Id), NewAlert("host:web-1", HealthSubject.Host, null));
+                db.AddRange(staging, inStaging, onHost);
+                await db.SaveChangesAsync();
+                (staged, host) = (inStaging.Id, onHost.Id);
+            }
+            await using var factory = new ApiFactory(database);
+            using var client = factory.CreateClient();
+            var viewer = await LocalStack.TokenAsync("victor");
+
+            async Task<Guid[]> List(string query) => (await JsonAsync(await Get(client, $"/api/v1/tenants/{tenant}/alerts?{query}", viewer)))
+                .GetProperty("items").EnumerateArray().Select(a => a.GetProperty("id").GetGuid()).ToArray();
+
+            Assert.Equal(new[] { firing, resolved }.Order(), (await List("environment=production")).Order());
+            Assert.Equal([firing], await List("environment=production&state=firing"));
+            Assert.Equal([staged], await List("environment=STAGING"));
+            Assert.Empty(await List("environment=nowhere"));
+            Assert.Equal(new[] { firing, resolved, staged, host }.Order(), (await List("environment=")).Order());
+            Assert.Equal(new[] { firing, resolved, staged, host }.Order(), (await List("limit=10")).Order());
+        }
+
         /// <summary>A firing alert on the orders service (with its health) and a resolved one.</summary>
         private static async Task<(Guid Tenant, Guid Firing, Guid Resolved)> SeedAsync(ScratchDatabase database)
         {

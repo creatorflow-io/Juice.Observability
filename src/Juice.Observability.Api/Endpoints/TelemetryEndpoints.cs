@@ -39,7 +39,7 @@ namespace Juice.Observability.Api.Endpoints
 
     public sealed record SeriesDto(string Name, string Type, string Unit, string Aggregation, int StepSeconds, IReadOnlyList<PointDto> Points);
 
-    public sealed record ServiceStatsPointDto(DateTimeOffset At, double RequestsPerSecond, double ErrorRate, double? P95Ms);
+    public sealed record ServiceStatsPointDto(DateTimeOffset At, double RequestsPerSecond, double MessagesPerSecond, double ErrorRate, double? P95Ms);
 
     public sealed record ServiceStatsDto(int StepSeconds, IReadOnlyList<ServiceStatsPointDto> Points);
 
@@ -676,7 +676,12 @@ namespace Juice.Observability.Api.Endpoints
             return Results.Ok(new SeriesDto(name, type, unit, aggregation, step, points));
         });
 
-        /// <summary>Requests per second, error rate and p95 latency of a service's entry spans, per bucket; empty buckets have no point.</summary>
+        /// <summary>
+        /// Throughput, error rate and p95 latency of a service's entry spans, per bucket; empty buckets have no point. A rate is
+        /// spans divided by the length of the period: here a bucket, in the operations list the whole window, so a burst shows
+        /// higher here. Consumer spans are messages, the other entry spans requests: a request and the message it causes are
+        /// not one rate.
+        /// </summary>
         private static Task<IResult> GetServiceStatsAsync(HttpContext http, PlatformDbContext db, ClickHouseTelemetrySource clickHouse,
             TimeProvider clock, Guid? serviceId, string? environment, Guid? instanceId, string? operation, DateTimeOffset? from,
             DateTimeOffset? to, int? stepSeconds, CancellationToken ct) => Run(async () =>
@@ -688,14 +693,14 @@ namespace Juice.Observability.Api.Endpoints
             }, MaxPoints, MaxSeriesRange, ct);
             var step = scope.Add("UInt32", (uint)Step(scope.Window, stepSeconds));
             var points = await clickHouse.QueryAsync($"""
-                SELECT toStartOfInterval(Timestamp, toIntervalSecond({step})) AS b, count() / {step},
+                SELECT toStartOfInterval(Timestamp, toIntervalSecond({step})) AS b, countIf(SpanKind != 'Consumer') / {step}, countIf(SpanKind = 'Consumer') / {step},
                        countIf(StatusCode = 'Error') / count(), quantile(0.95)(Duration) / 1e6
                 FROM otel.otel_traces
                 WHERE {scope.Where("Timestamp", spans: true)} AND (SpanKind IN ('Server', 'Consumer') OR ParentSpanId = '')
                 GROUP BY b ORDER BY b
                 LIMIT {ClickHouseTelemetrySource.Limit}
-                """, scope.Window, r => new ServiceStatsPointDto(Utc(r.GetValue(0)), Convert.ToDouble(r.GetValue(1)),
-                    Convert.ToDouble(r.GetValue(2)), r.IsDBNull(3) ? null : Convert.ToDouble(r.GetValue(3))), ct, scope.Parameters);
+                """, scope.Window, r => new ServiceStatsPointDto(Utc(r.GetValue(0)), Convert.ToDouble(r.GetValue(1)), Convert.ToDouble(r.GetValue(2)),
+                    Convert.ToDouble(r.GetValue(3)), r.IsDBNull(4) ? null : Convert.ToDouble(r.GetValue(4))), ct, scope.Parameters);
             return Results.Ok(new ServiceStatsDto(Step(scope.Window, stepSeconds), points));
         });
 

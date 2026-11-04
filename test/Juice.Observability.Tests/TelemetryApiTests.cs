@@ -248,6 +248,44 @@ namespace Juice.Observability.Tests
             Assert.Equal(expected, response.StatusCode);
         }
 
+        [Fact]
+        public async Task Rates_are_spans_over_the_period_and_keep_requests_and_messages_apart_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var service = $"tel-{_run}-rates";
+            var now = DateTimeOffset.UtcNow;
+            var at = new DateTimeOffset(now.Ticks - now.Ticks % TimeSpan.TicksPerMinute, TimeSpan.Zero).AddMinutes(-2).AddSeconds(30);
+            var (from, to) = (at.AddSeconds(-30).AddMinutes(-8), at.AddSeconds(-30).AddMinutes(2));   // 600 s
+            var messages = Enumerable.Range(0, 6).Select(_ => Otlp.Span(Otlp.TraceId(), Otlp.SpanId(), Otlp.SpanId(), "process orders", Otlp.Consumer, at));
+            await LocalStack.SendAsync("traces", Otlp.Traces([("service.name", service)], [.. Otlp.Requests(30, 0, at), .. messages]));
+            await LocalStack.WaitForSpansAsync(service, 36);
+            await DiscoverAsync(database);
+
+            await using var factory = new ApiFactory(database);
+            using var client = factory.CreateClient();
+            var token = await LocalStack.TokenAsync("victor");
+            var tenant = (await JsonAsync(await Get(client, "/api/v1/tenants", token))).GetProperty("items")[0].GetProperty("id").GetGuid();
+            Guid id;
+            await using (var db = database.Context())
+            {
+                id = (await db.Services.SingleAsync(s => s.Name == service)).Id;
+            }
+            var query = $"serviceId={id}&from={Uri.EscapeDataString(from.ToString("O"))}&to={Uri.EscapeDataString(to.ToString("O"))}";
+            async Task<JsonElement> Api(string path) => await JsonAsync(await Get(client, $"/api/v1/tenants/{tenant}{path}", token));
+
+            // The whole window: 30 requests and 6 messages over 600 s.
+            var operations = (await Api($"/telemetry/operations?{query}")).GetProperty("items").EnumerateArray()
+                .ToDictionary(o => o.GetProperty("kind").GetString()!, o => o.GetProperty("requestsPerSecond").GetDouble());
+            Assert.Equal(0.05, operations["Server"], 6);
+            Assert.Equal(0.01, operations["Consumer"], 6);
+
+            // One bucket of 60 s holds the same spans, and neither kind is counted in the other's rate.
+            var point = Assert.Single((await Api($"/telemetry/service-stats?{query}&stepSeconds=60")).GetProperty("points").EnumerateArray());
+            Assert.Equal(0.5, point.GetProperty("requestsPerSecond").GetDouble(), 6);
+            Assert.Equal(0.1, point.GetProperty("messagesPerSecond").GetDouble(), 6);
+        }
+
         private static Task DiscoverAsync(ScratchDatabase database)
         {
             var services = new ServiceCollection()

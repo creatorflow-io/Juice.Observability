@@ -51,8 +51,11 @@ namespace Juice.Observability.Api.Endpoints
             return Results.Ok(new Page<RuleDto>(page, rows.Count > take ? new Cursor("r", rows[take - 1].Id).Encode() : null));
         }
 
-        /// <summary>Alerts, newest first by id order, filtered by <c>state</c> and <c>rule</c> key.</summary>
-        private static async Task<IResult> ListAlertsAsync(Guid tenantId, string? state, string? rule, int? limit, string? cursor,
+        /// <summary>
+        /// Alerts, newest first by id order, filtered by <c>state</c>, <c>rule</c> key and <c>environment</c> key. A host alert
+        /// has no environment, so an environment filter leaves it out.
+        /// </summary>
+        private static async Task<IResult> ListAlertsAsync(Guid tenantId, string? state, string? rule, string? environment, int? limit, string? cursor,
             PlatformDbContext db, CancellationToken ct)
         {
             if (Cursor.Validate(limit, cursor, out var take, out var after) is { } invalid)
@@ -72,6 +75,11 @@ namespace Juice.Observability.Api.Endpoints
             if (rule is not null)
             {
                 query = query.Where(a => db.Rules.Any(r => r.Id == a.RuleId && r.Key == rule));
+            }
+            if (!string.IsNullOrEmpty(environment))
+            {
+                var key = environment.ToLowerInvariant();
+                query = query.Where(a => db.Environments.Any(e => e.Id == a.EnvironmentId && e.Key == key));
             }
             if (after is not null) query = query.Where(a => a.Id < after.After);
             var rows = await query.OrderByDescending(a => a.Id).Take(take + 1).ToListAsync(ct);

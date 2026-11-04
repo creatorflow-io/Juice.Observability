@@ -86,7 +86,7 @@ const TABS = ['overview', 'operations', 'dependencies', 'traces', 'logs', 'metri
           @if (tabIndex() === 1) {
             @if (operations.isLoading()) { <mat-progress-bar mode="indeterminate" /> }
             <table class="jc-table">
-              <thead><tr><th>Operation</th><th>Kind</th><th>Requests</th><th>Per second</th><th>Errors</th><th>p50</th><th>p95</th><th>p99</th><th>Last seen</th><th></th></tr></thead>
+              <thead><tr><th>Operation</th><th>Kind</th><th>Requests</th><th title="Average over the selected time range. The chart shows each moment, so a burst reads higher there.">Avg/s</th><th>Errors</th><th>p50</th><th>p95</th><th>p99</th><th>Last seen</th><th></th></tr></thead>
               <tbody>
                 @for (o of operations.value()?.items ?? []; track o.name + o.kind) {
                   <tr [class.jc-selected]="o.name === operation()">

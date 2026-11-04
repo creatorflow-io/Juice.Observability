@@ -86,7 +86,10 @@ export class OverviewPage {
     params: () => this.ctx.environment(),
     stream: ({ params }) => this.api.health({ subjectType: 'service', environment: params }).pipe(map(p => p.items)),
   });
-  protected readonly alerts = apiResource({ stream: () => this.api.allAlerts({ state: 'firing' }).pipe(map(p => p.items)) });
+  protected readonly alerts = apiResource({
+    params: () => this.ctx.environment(),
+    stream: ({ params }) => this.api.allAlerts({ state: 'firing', environment: params }).pipe(map(p => p.items)),
+  });
   protected readonly error = computed(() => problemText(this.health.error()));
   /** Critical first, then the newest. */
   protected readonly firing = computed(() => [...(this.alerts.value() ?? [])].sort((a, b) =>

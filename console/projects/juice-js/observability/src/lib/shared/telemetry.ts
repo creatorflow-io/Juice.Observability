@@ -217,7 +217,7 @@ export class MetricExplorer {
     @if (stats.isLoading()) { <mat-progress-bar mode="indeterminate" /> }
     @if (stats.hasValue()) {
       <div class="jc-grid-3">
-        <jc-chart title="Requests per second" [series]="[{ name: 'requests/s', points: pick('requestsPerSecond') }]" />
+        <jc-chart [title]="rates().length > 1 ? 'Requests and messages per second' : rates()[0].title" [series]="rates()" />
         <jc-chart title="Error rate" [series]="[{ name: 'errors', points: pick('errorRate') }]" [format]="percent" />
         <jc-chart title="p95 latency" [series]="[{ name: 'p95', points: pick('p95Ms') }]" [format]="ms" />
       </div>
@@ -239,7 +239,16 @@ export class ServiceStatsCharts {
     },
   });
 
-  pick(field: 'requestsPerSecond' | 'errorRate' | 'p95Ms') {
+  /** Requests and messages are separate lines; a service with only one of them shows only that one. */
+  rates() {
+    const points = this.stats.value()?.points ?? [];
+    const requests = { title: 'Requests per second', name: 'requests/s', points: this.pick('requestsPerSecond') };
+    const messages = { title: 'Messages per second', name: 'messages/s', points: this.pick('messagesPerSecond') };
+    if (!points.some(p => p.messagesPerSecond > 0)) return [requests];
+    return points.some(p => p.requestsPerSecond > 0) ? [requests, messages] : [messages];
+  }
+
+  pick(field: 'requestsPerSecond' | 'messagesPerSecond' | 'errorRate' | 'p95Ms') {
     const s = this.stats.value();
     return s ? withGaps(s.points.map(p => ({ at: p.at, value: p[field] })), this.window.from, this.window.to, s.stepSeconds) : [];
   }

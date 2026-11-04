@@ -81,7 +81,7 @@ export interface Operation {
 export interface MetricInfo { name: string; type: string; unit: string; description: string; }
 export interface Point { at: string; value: number | null; }
 export interface Series { name: string; type: string; unit: string; aggregation: string; stepSeconds: number; points: Point[]; }
-export interface ServiceStatsPoint { at: string; requestsPerSecond: number; errorRate: number; p95Ms: number | null; }
+export interface ServiceStatsPoint { at: string; requestsPerSecond: number; messagesPerSecond: number; errorRate: number; p95Ms: number | null; }
 export interface ServiceStats { stepSeconds: number; points: ServiceStatsPoint[]; }
 
 export interface DependencyEvidence {
