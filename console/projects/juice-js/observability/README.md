@@ -56,6 +56,9 @@ like juice-layout's dark-mode toggle) repaints the charts and the graph.
 
 - `apiBase`: the API origin; empty when the API serves the app.
 - `basePath`: where the routes are mounted; every link between pages goes under it.
+- `auditLink` (optional): a link from a trace to its audit records, shown on the trace page as "Audit records ↗".
+  With `@juice-js/audit` mounted at `/audit`: `auditLink: id => ['/audit/traces', id]`. A string is an external URL.
+  Without it, the trace page shows no link.
 - The router needs `bindToComponentInputs: true`. The pages take their route and query parameters as inputs.
 - The host's bearer-token interceptor (`@juice-js/auth`) must cover `apiBase`. The token carries the `platform_tenant`
   claim and a platform role (`viewer`, `operator` or `admin`).

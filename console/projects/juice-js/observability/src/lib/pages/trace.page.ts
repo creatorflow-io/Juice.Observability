@@ -1,4 +1,4 @@
-import { LinkPipe } from '../core/options';
+import { LinkPipe, ObservabilityLinks } from '../core/options';
 import { ChangeDetectionStrategy, Component, computed, inject, input, signal } from '@angular/core';
 import { apiResource } from '../shared/resource';
 import { DatePipe } from '@angular/common';
@@ -47,6 +47,10 @@ interface Row { span: Span; depth: number; children: number; offset: number; sel
         @if (errors() > 0) { <span class="jc-badge jc-health-unhealthy">{{ errors() }} failed</span> }
         <button mat-button (click)="showErrorsOnly.set(!showErrorsOnly())">{{ showErrorsOnly() ? 'Show all spans' : 'Error paths only' }}</button>
         <a mat-button [routerLink]="['logs'] | jcLink" [queryParams]="ctx.keep({ trace: id() })">Logs of this trace</a>
+        @if (auditLink(); as link) {
+          @if ('route' in link) { <a mat-button [routerLink]="link.route" data-testid="audit-link">Audit records ↗</a> }
+          @else { <a mat-button [href]="link.href" target="_blank" rel="noopener" data-testid="audit-link">Audit records ↗</a> }
+        }
         @if (t.truncated) { <span class="jc-muted">Showing the first {{ t.spans.length }} spans.</span> }
       </div>
       <div class="jc-legend">@for (s of services(); track s) { <span><i [style.background]="color(s)"></i>{{ s }}</span> }</div>
@@ -133,6 +137,7 @@ export class TracePage {
   protected readonly ctx = inject(ContextService);
   private readonly api = inject(ApiService);
   private readonly router = inject(Router);
+  private readonly links = inject(ObservabilityLinks);
 
   /** A trace id, or a W3C traceparent such as a Juice.Audit record before 10.4 holds; links from either open the trace. */
   readonly traceId = input.required<string>();
@@ -141,6 +146,8 @@ export class TracePage {
   protected readonly id = computed(() => plainTraceId(this.traceId()));
   protected readonly trace = apiResource({ params: () => this.id(), stream: ({ params }) => this.api.trace(params) });
   protected readonly error = computed(() => problemText(this.trace.error()));
+  /** The host's audit records of this trace (`auditLink`): the requests it served and the data they changed. */
+  protected readonly auditLink = computed(() => this.links.audit(this.id()));
   protected readonly collapsed = signal(new Set<string>());
   protected readonly showErrorsOnly = signal(false);
   protected readonly selectedId = computed(() => this.span() ?? null);
