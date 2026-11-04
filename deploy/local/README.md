@@ -19,7 +19,7 @@ Needs Docker with Compose, bash (Git Bash on Windows) and openssl.
 
 ```bash
 scripts/init.sh                 # once: .env with random secrets, local CA + Collector certificate, OTLP token
-docker compose up -d --wait
+docker compose up -d --wait     # add --profile test before running the integration tests
 tests/verify.sh                 # ingestion security, tenant stamping, redaction, storage and Grafana checks
 ```
 
@@ -115,8 +115,11 @@ with `resource_detection` so application telemetry never gets the Collector's ho
   The two readers share the `bounded_reader` profile: `readonly = 2` (no writes or DDL), with execution time 60 s,
   result rows 1,000,000 and memory 4 GB, each capped with `MAX` so a client cannot raise it. The Grafana data source
   sets `queryTimeout` 50 s to stay under the cap.
-- **Backups.** None in this local stack. The PostgreSQL backup and restore drill, and the stated ClickHouse backup
-  coverage (§9 durability), belong to the deployable profile, not to local development.
+- **Backups.** `scripts/backup.sh` (PostgreSQL) and `scripts/backup-telemetry.sh` (ClickHouse `otel`) write to
+  `backups/`, which git ignores. Each run is a full backup and nothing prunes old ones. See the runbook.
+- **Integration test tenant.** `--profile test` adds `otel-collector-test` on `127.0.0.1:14318`, the same configuration
+  stamping the tenant `local-test`, and the tests get their tokens from the Keycloak client `juice-platform-test`. What
+  they write stays out of the tenant the running API works on. Scripts under `tests/` still send to the main Collector.
 
 ## Grafana
 
@@ -184,7 +187,7 @@ dashboard filter.
 | `tests/verify.sh --outage` | Also: ClickHouse stopped, a record accepted and held in the exporter queue, then stored after ClickHouse returns. |
 | `tests/breach-to-alert.sh [runs]` | Through the running platform: sends a failing service and times rule `service-error-rate` firing after its ForDuration (§9: ≤ 2 min). |
 | `node tests/api-latency.mjs [seconds]` | Platform API reads at 20 requests/s, p50/p95 (§9: p95 ≤ 500 ms). |
-| `tests/restore-drill.sh` | Backs up the platform database, restores it into a scratch database, compares tables, reports the time. |
+| `tests/restore-drill.sh` | Backs up the platform database and the telemetry database, restores each into a scratch database, compares tables, reports the time. |
 | `tests/load.sh [duration]` | telemetrygen v0.163.0 at the §9 reference rates (1,000 spans/s, 10,000 metric points/s, 1,000 logs/s) over authenticated TLS, with a freshness probe every 10 s. Reports p50/p95 freshness, stored counts, and Collector refused/dropped counts. Fails if p95 > 30 s. |
 
 ### Measured (2026-10-30)

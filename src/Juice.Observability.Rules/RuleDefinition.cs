@@ -12,7 +12,8 @@ namespace Juice.Observability.Rules
     /// validated at startup; an invalid rule stops the host instead of being skipped.
     /// <para>
     /// Values per template: <c>ErrorRate</c> and <c>DeliveryFailureRate</c> a ratio (0–1), <c>LatencyP95</c>
-    /// milliseconds, <c>HostMemory</c> the used ratio (0–1): all fire above <see cref="Threshold"/>.
+    /// milliseconds, <c>HostMemory</c> the used ratio (0–1), <c>MediatorErrors</c> and <c>ConsumerFailures</c> a count in
+    /// the window: all fire above <see cref="Threshold"/>.
     /// <c>ThroughputAbsent</c> fires when a service that had traffic in the hour before the window has at most
     /// <see cref="Threshold"/> requests in it.
     /// </para>
@@ -72,6 +73,7 @@ namespace Juice.Observability.Rules
                 && (Threshold is < 0 or > 1 || Recovery is < 0 or > 1))
                 yield return $"{at}: Threshold and RecoveryThreshold are ratios from 0 to 1";
             if (Template == RuleTemplate.LatencyP95 && (Threshold <= 0 || Recovery <= 0)) yield return $"{at}: latency thresholds are positive milliseconds";
+            if (Template is RuleTemplate.MediatorErrors or RuleTemplate.ConsumerFailures && (Threshold < 0 || Recovery < 0)) yield return $"{at}: error thresholds are counts, not negative";
             if (Template == RuleTemplate.ThroughputAbsent && (Threshold < 0 || Recovery < Threshold)) yield return $"{at}: throughput thresholds are request counts, recovery at least the threshold";
             if (FiresAbove && Recovery > Threshold) yield return $"{at}: RecoveryThreshold must not be above Threshold";
             if (Template == RuleTemplate.HostMemory && (Service.Length > 0 || Environment.Length > 0)) yield return $"{at}: host rules take Host, not Service or Environment";

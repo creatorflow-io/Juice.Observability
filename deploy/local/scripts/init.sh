@@ -9,7 +9,7 @@ force=false
 
 secret() { openssl rand -hex 24; }
 
-mkdir -p secrets/tls
+mkdir -p secrets/tls backups/clickhouse
 
 if $force || [[ ! -f .env ]]; then
   cat > .env <<EOF

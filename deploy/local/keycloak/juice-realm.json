@@ -130,6 +130,62 @@
       "fullScopeAllowed": false
     },
     {
+      "clientId": "juice-platform-test",
+      "name": "Platform API tokens for the integration tests (tenant local-test)",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "defaultClientScopes": [
+        "profile",
+        "email",
+        "basic"
+      ],
+      "protocolMappers": [
+        {
+          "name": "platform audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "juice-platform",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        },
+        {
+          "name": "platform roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-client-role-mapper",
+          "config": {
+            "usermodel.clientRoleMapping.clientId": "juice-platform",
+            "claim.name": "roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
+        },
+        {
+          "name": "platform tenant",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "config": {
+            "claim.name": "platform_tenant",
+            "claim.value": "local-test",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
+        }
+      ],
+      "fullScopeAllowed": false
+    },
+    {
       "clientId": "juice-console",
       "name": "Juice Console",
       "enabled": true,
@@ -352,6 +408,14 @@
     "juice-platform": [
       {
         "client": "juice-platform-cli",
+        "roles": [
+          "admin",
+          "operator",
+          "viewer"
+        ]
+      },
+      {
+        "client": "juice-platform-test",
         "roles": [
           "admin",
           "operator",

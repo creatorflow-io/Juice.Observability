@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Backs up the platform database (PostgreSQL, custom format) to backups/juice_observability-<UTC time>.dump.
 # Schedule it daily (cron, Task Scheduler) for the requirements §9 RPO of 24 hours; copy the file off the host.
-# Telemetry in ClickHouse is not in this backup (see README.md, Backups).
+# Telemetry in ClickHouse is backed up separately: scripts/backup-telemetry.sh.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export MSYS_NO_PATHCONV=1

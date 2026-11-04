@@ -18,10 +18,10 @@ Turns telemetry from Juice services into a resource model, health, rules, alerts
 
 ## Build and test
 
-Needs the .NET 10 SDK. Integration tests need the local stack running and are skipped otherwise.
+Needs the .NET 10 SDK. Integration tests need the local stack running with `--profile test` and are skipped otherwise.
 
 ```bash
-deploy/local/scripts/init.sh && (cd deploy/local && docker compose up -d --wait)
+deploy/local/scripts/init.sh && (cd deploy/local && docker compose --profile test up -d --wait)
 dotnet test
 deploy/local/scripts/run-api.sh          # API on http://localhost:5180, migrates and provisions the tenant
 (cd console && npm ci && npm start)      # Console on http://localhost:4200, proxying /api to :5180
@@ -219,6 +219,8 @@ loaded at startup:
 | `ThroughputAbsent` | requests in the window, for services with traffic in the hour before (fires at or below) |
 | `DeliveryFailureRate` | increase of `delivery_failure_total` / `delivery_attempt_total` |
 | `HostMemory` | used / total memory from host metrics |
+| `MediatorErrors` | errors in the window: increase of `juice.mediator.errors` |
+| `ConsumerFailures` | failed messages in the window: increase of `juice.messaging.consumed` with `juice.dispatch.result = failure` |
 
 Each rule is scoped by `Service` and `Environment` (or `Host`). It also has a schedule (default 1 min), a window,
 a threshold and a recovery threshold (hysteresis), minimum samples, `ForDuration`, `RecoveryDuration` and

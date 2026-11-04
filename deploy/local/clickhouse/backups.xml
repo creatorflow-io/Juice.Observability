@@ -1,0 +1,6 @@
+<clickhouse>
+    <!-- Where BACKUP and RESTORE may read and write (scripts/backup-telemetry.sh). -->
+    <backups>
+        <allowed_path>/backups/</allowed_path>
+    </backups>
+</clickhouse>

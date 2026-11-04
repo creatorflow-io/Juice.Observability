@@ -195,7 +195,7 @@ namespace Juice.Observability.Tests
             await using var database = await LocalStack.CreateDatabaseAsync();
             var foreign = $"disc-{_run}-foreign";
             var forged = $"disc-{_run}-forged";
-            // A row stored for another tenant (as a shared deployment would hold): discovery for local-dev must skip it.
+            // A row stored for another tenant (as a shared deployment would hold): discovery for this tenant must skip it.
             await LocalStack.ClickHouseAsync($"""
                 INSERT INTO otel.otel_traces (Timestamp, TraceId, SpanId, ServiceName, SpanName, SpanKind, ResourceAttributes)
                 VALUES (now64(9) - INTERVAL 2 MINUTE, '{Otlp.TraceId()}', '{Otlp.SpanId()}', '{foreign}', 'work', 'Internal',

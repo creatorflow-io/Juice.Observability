@@ -2,7 +2,7 @@ namespace Juice.Observability.Data
 {
     // Rules and alerts (requirements §8, decision D5).
 
-    public enum RuleTemplate { ErrorRate, LatencyP95, ThroughputAbsent, DeliveryFailureRate, HostMemory }
+    public enum RuleTemplate { ErrorRate, LatencyP95, ThroughputAbsent, DeliveryFailureRate, HostMemory, MediatorErrors, ConsumerFailures }
 
     public enum AlertSeverity { Info, Warning, Critical }
 

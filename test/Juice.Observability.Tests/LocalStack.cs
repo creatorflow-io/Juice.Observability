@@ -15,11 +15,13 @@ namespace Juice.Observability.Tests
     /// <summary>
     /// The running <c>deploy/local</c> stack: its generated secrets, and helpers to send OTLP through the Collector,
     /// query ClickHouse, create a scratch PostgreSQL database and get Keycloak tokens. Integration tests call
-    /// <see cref="RequireAvailable"/> first and are skipped when the stack is not up.
+    /// <see cref="RequireAvailable"/> first and are skipped when the stack is not up. They send through the
+    /// <c>otel-collector-test</c> Collector (<c>--profile test</c>), which stamps <see cref="TenantKey"/>, so what they
+    /// write stays out of the tenant the running API works on.
     /// </summary>
     public static class LocalStack
     {
-        public const string TenantKey = "local-dev";
+        public const string TenantKey = "local-test";
 
         private static readonly Lazy<string?> Directory = new(() =>
         {
@@ -40,11 +42,10 @@ namespace Juice.Observability.Tests
                 .Select(l => l.Split('=', 2)).ToDictionary(p => p[0].Trim(), p => p[1].Trim()));
 
         private static readonly Lazy<bool> Up = new(() => Directory.Value is not null
-            && new[] { 5433, 8123, 4318, 8080 }.All(Listening)
-            && Env.Value.GetValueOrDefault("JUICE_PLATFORM_TENANT_ID") == TenantKey);
+            && new[] { 5433, 8123, 14318, 8080 }.All(Listening));
 
         public static void RequireAvailable()
-            => Assert.SkipUnless(Up.Value, "deploy/local stack is not running (scripts/init.sh; docker compose up -d --wait)");
+            => Assert.SkipUnless(Up.Value, "deploy/local stack is not running (scripts/init.sh; docker compose --profile test up -d --wait)");
 
         public static string Secret(string key) => Env.Value[key];
 
@@ -90,7 +91,7 @@ namespace Juice.Observability.Tests
                     },
                 },
             };
-            var client = new HttpClient(handler) { BaseAddress = new Uri("https://localhost:4318") };
+            var client = new HttpClient(handler) { BaseAddress = new Uri("https://localhost:14318") };
             var token = File.ReadAllText(Path.Combine(Directory.Value!, "secrets", "otlp-tokens")).Split(' ', '\n')[0].Trim();
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
             return client;
@@ -165,7 +166,7 @@ namespace Juice.Observability.Tests
         private static readonly Dictionary<string, Task<string>> Tokens = [];
 
         /// <summary>
-        /// An access token for a demo user from the <c>juice-platform-cli</c> client, requested once per test run (tokens
+        /// An access token for a demo user from the <c>juice-platform-test</c> client, requested once per test run (tokens
         /// live 5 minutes) as a real client would. Many parallel password grants for one user trip Keycloak's
         /// brute-force detection and lock the user out.
         /// </summary>
@@ -186,7 +187,7 @@ namespace Juice.Observability.Tests
             using var response = await Keycloak.PostAsync($"{Authority}/protocol/openid-connect/token", new FormUrlEncodedContent(new Dictionary<string, string>
             {
                 ["grant_type"] = "password",
-                ["client_id"] = "juice-platform-cli",
+                ["client_id"] = "juice-platform-test",
                 ["username"] = user,
                 ["password"] = Secret("KEYCLOAK_DEMO_PASSWORD"),
             }));

@@ -36,7 +36,7 @@ deploy/local/tests/restore-drill.sh
 | Health freshness | evaluated ≤ 30 s; p95 evidence-to-visible ≤ 60 s | 30 s interval; 10–11 s measured on a 1 s loop; bound about 42 s at the 30 s interval | **Pass** |
 | Rule breach-to-alert (1-minute schedule, under reference load) | p95 ≤ 2 min after ForDuration | 37 s, 59 s, 58 s after ForDuration over 3 runs (p95 59 s), polled every 5 s, during the reference load | **Pass** |
 | Webhook first dispatch after transition | p95 ≤ 30 s | dispatcher polls every 2 s; delivery written in the transition's transaction; `juice.observability.webhooks.dispatch_delay` | **Pass** (bound 2 s + send) |
-| Durability | daily backup; RPO ≤ 24 h, RTO ≤ 4 h | `scripts/backup.sh` daily; restore drill 11 s (21 tables) | **Pass** |
+| Durability | daily backup; RPO ≤ 24 h, RTO ≤ 4 h | `scripts/backup.sh` and `scripts/backup-telemetry.sh` daily; restore drill 11 s (21 tables), telemetry 7 s (8 tables, 2026-11-04) | **Pass** |
 | Retention defaults | 30 d traces/logs, 90 d metrics | TTL on the tables | **Pass** |
 | Availability objective | 99.5 % monthly | tracked in operation; readiness `/health/ready`, restart tested | not in this gate (§11) |
 
@@ -61,8 +61,6 @@ The tenant filter of the telemetry API is mutation-checked (`TelemetryApiTests`)
 
 ## Not covered or open
 
-- **Two D5 templates** (`mediator_errors`, `consumer_failures`) are not built.
-- **ClickHouse telemetry** has no backup in this profile; the gap is documented in the runbook.
 - **Console gaps:** Kubernetes workloads are not a resource type yet (§11); rules are read-only (D5); custom dashboards
   and advanced analytics are P2 and not built.
 - **The production differences** in `deployment.md`: PKI, TLS in front of Grafana, Keycloak and the API, the

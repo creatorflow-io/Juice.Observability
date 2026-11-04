@@ -32,6 +32,22 @@
         "MinimumSamples": 10
       },
       {
+        "Key": "mediator-errors",
+        "Name": "More than 5 mediator errors in 5 minutes",
+        "Template": "MediatorErrors",
+        "Severity": "Warning",
+        "Threshold": 5,
+        "RecoveryThreshold": 1
+      },
+      {
+        "Key": "consumer-failures",
+        "Name": "More than 5 failed messages in 5 minutes",
+        "Template": "ConsumerFailures",
+        "Severity": "Warning",
+        "Threshold": 5,
+        "RecoveryThreshold": 1
+      },
+      {
         "Key": "service-traffic-stopped",
         "Name": "Service traffic stopped",
         "Template": "ThroughputAbsent",

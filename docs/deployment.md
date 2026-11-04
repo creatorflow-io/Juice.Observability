@@ -95,7 +95,7 @@ The local profile cuts these corners on purpose. Each one changes for a producti
 | Keycloak, the API and Console (and Grafana) over HTTP | TLS in front of each |
 | Keycloak dev mode, demo users, password grant client | the customer's IdP; no `juice-platform-cli` client |
 | secrets in `.env` | the platform's secret store |
-| backups on the host disk | scheduled `scripts/backup.sh` copied off the host |
+| backups on the host disk | scheduled `scripts/backup.sh` and `scripts/backup-telemetry.sh` copied off the host |
 
 The pinned versions, the rules and the webhook configuration stay the same.
 

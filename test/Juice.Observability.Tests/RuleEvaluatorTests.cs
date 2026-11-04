@@ -226,6 +226,62 @@ namespace Juice.Observability.Tests
             Assert.InRange(host.Value!.Value, 0.01, 0.99);
         }
 
+        [Fact]
+        public async Task Count_templates_measure_counter_increases_Async()
+        {
+            LocalStack.RequireAvailable();
+            var templates = new RuleTemplates(new ClickHouseTelemetrySource(Options.Create(new ClickHouseOptions { ConnectionString = LocalStack.ClickHouseReader })));
+            var now = DateTimeOffset.UtcNow;
+            var window = new TelemetryWindow(LocalStack.TenantKey, now.AddMinutes(-5), now, 100);
+            var (start, before, inside, last) = (now.AddMinutes(-20), now.AddMinutes(-7), now.AddMinutes(-3), now.AddMinutes(-1));
+            var (mediator, quiet, stopped, consumer) = ($"rules-{_run}-mediator", $"rules-{_run}-quiet", $"rules-{_run}-stopped", $"rules-{_run}-consumer");
+
+            Task Send(string service, string metric, (string, string)[] attributes, params (DateTimeOffset, long)[] points)
+                => LocalStack.SendAsync("metrics", Otlp.Sum([("service.name", service)], metric, start, attributes, points));
+
+            (string, string)[] create = [("juice.operation", "Create")], fail = [("juice.operation", "Create"), ("error.type", "Boom")];
+            // 3 more errors than before the window; a new series whose first point already counts 2; 10 more requests.
+            await Send(mediator, "juice.mediator.errors", create, (before, 5), (inside, 7), (last, 8));
+            await Send(mediator, "juice.mediator.errors", fail, (last, 2));
+            await Send(mediator, "juice.mediator.requests", create, (before, 100), (last, 110));
+            // Requests, no errors: a zero, not "no data".
+            await Send(quiet, "juice.mediator.requests", create, (before, 10), (last, 12));
+            // Nothing in the window: no observation.
+            await Send(stopped, "juice.mediator.errors", create, (before, 50));
+
+            (string, string)[] ok = [("juice.dispatch.result", "success")], failed = [("juice.dispatch.result", "failure")];
+            await Send(consumer, "juice.messaging.consumed", ok, (before, 40), (last, 46));
+            await Send(consumer, "juice.messaging.consumed", failed, (before, 1), (last, 4));
+
+            for (var i = 0; i < 50 && int.Parse(await LocalStack.ClickHouseAsync($"SELECT count() FROM otel.otel_metrics_sum WHERE ServiceName LIKE 'rules-{_run}-%'")) < 13; i++)
+            {
+                await Task.Delay(200, Ct);
+            }
+
+            Task<IReadOnlyList<RuleObservation>> Observe(RuleTemplate template, string service)
+                => templates.ObserveAsync(new RuleDefinition { Key = "t", Name = "t", Template = template, Service = service }, window, Ct);
+
+            var errors = Assert.Single(await Observe(RuleTemplate.MediatorErrors, mediator));
+            Assert.Equal((5d, 10L), (errors.Value, errors.Samples));
+            var none = Assert.Single(await Observe(RuleTemplate.MediatorErrors, quiet));
+            Assert.Equal((0d, 2L), (none.Value, none.Samples));
+            Assert.Empty(await Observe(RuleTemplate.MediatorErrors, stopped));
+            var failures = Assert.Single(await Observe(RuleTemplate.ConsumerFailures, consumer));
+            Assert.Equal((3d, 9L), (failures.Value, failures.Samples));
+            Assert.Empty(await Observe(RuleTemplate.ConsumerFailures, mediator));
+        }
+
+        [Fact]
+        public void Count_templates_refuse_negative_thresholds()
+        {
+            foreach (var template in new[] { RuleTemplate.MediatorErrors, RuleTemplate.ConsumerFailures })
+            {
+                Assert.Empty(new RuleDefinition { Key = "ok-rule", Name = "n", Template = template, Threshold = 0 }.Validate());
+                Assert.NotEmpty(new RuleDefinition { Key = "ok-rule", Name = "n", Template = template, Threshold = -1 }.Validate());
+                Assert.NotEmpty(new RuleDefinition { Key = "ok-rule", Name = "n", Template = template, Host = "h" }.Validate());
+            }
+        }
+
         // ─── helpers ──────────────────────────────────────────────────────────
 
         private RuleDefinition ErrorRate(string service, Action<RuleDefinition>? configure = null)

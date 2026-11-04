@@ -21,6 +21,8 @@ services:
     volumes:
       - clickhouse-data:/var/lib/clickhouse
       - ./clickhouse/init-users.sh:/docker-entrypoint-initdb.d/init-users.sh:ro
+      - ./clickhouse/backups.xml:/etc/clickhouse-server/config.d/backups.xml:ro
+      - ./backups/clickhouse:/backups
     ports:
       - "127.0.0.1:8123:8123"
     ulimits:
@@ -56,6 +58,16 @@ services:
     depends_on:
       clickhouse:
         condition: service_healthy
+
+  # Only with --profile test: the same Collector stamping its own tenant, for the integration tests. Their services,
+  # alerts and scratch data stay out of the tenant the running API works on.
+  otel-collector-test:
+    extends: { service: otel-collector }
+    profiles: [test]
+    environment:
+      JUICE_PLATFORM_TENANT_ID: local-test
+    ports: !override
+      - "127.0.0.1:14318:4318"
 
   # Optional (UI architecture §5): only with --profile grafana. Juice Console is the product UI.
   grafana:

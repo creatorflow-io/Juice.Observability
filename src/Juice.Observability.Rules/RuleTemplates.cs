@@ -85,6 +85,32 @@ namespace Juice.Observability.Rules
             LIMIT {Limit}
             """;
 
+        // Juice's counters are cumulative, and a counter's series appears with its first increment: a first error is a new
+        // series whose only point may already be 1. So the increase is measured from the series' last value before the
+        // window, or from zero when it has none. A series without a point in the window is left out, so a service that
+        // stopped reporting has no data rather than a zero; one that reports without errors has a zero.
+        private static string CounterIncrease(string failed, string total, string metrics) => $"""
+            SELECT ns, svc, env, sumIf(increase, {failed}) AS failed, sumIf(increase, {total}) AS total
+            FROM (
+                SELECT {ServiceKeys}, MetricName, Attributes, StartTimeUnix,
+                       greatest(maxIf(Value, TimeUnix >= {From}) - maxIf(Value, TimeUnix < {From}), 0) AS increase
+                FROM otel.otel_metrics_sum
+                WHERE {Tenant} AND TimeUnix >= {From} - INTERVAL 1 HOUR AND TimeUnix < {To}
+                  AND MetricName IN ({metrics}) AND {ServiceScope}
+                GROUP BY ns, svc, env, MetricName, Attributes, StartTimeUnix
+                HAVING countIf(TimeUnix >= {From}) > 0
+            )
+            GROUP BY ns, svc, env
+            LIMIT {Limit}
+            """;
+
+        private static readonly string MediatorErrors = CounterIncrease(
+            "MetricName = 'juice.mediator.errors'", "MetricName = 'juice.mediator.requests'",
+            "'juice.mediator.errors', 'juice.mediator.requests'");
+
+        private static readonly string ConsumerFailures = CounterIncrease(
+            "Attributes['juice.dispatch.result'] = 'failure'", "1", "'juice.messaging.consumed'");
+
         public async Task<IReadOnlyList<RuleObservation>> ObserveAsync(RuleDefinition rule, TelemetryWindow window, CancellationToken cancellationToken)
         {
             var (ns, svc) = SplitService(rule.Service);
@@ -101,9 +127,16 @@ namespace Juice.Observability.Rules
                     Ratio(r.GetValue(3), r.GetValue(4)), Convert.ToInt64(Convert.ToDouble(r.GetValue(4)))), cancellationToken, scope),
                 RuleTemplate.HostMemory => await clickHouse.QueryAsync(HostMemory, window, r => new RuleObservation($"host:{r.GetString(0)}",
                     HealthSubject.Host, "", "", "", r.GetString(0), Convert.ToDouble(r.GetValue(1)), 1), cancellationToken, scope),
+                RuleTemplate.MediatorErrors => await ObserveCountAsync(MediatorErrors, window, scope, cancellationToken),
+                RuleTemplate.ConsumerFailures => await ObserveCountAsync(ConsumerFailures, window, scope, cancellationToken),
                 _ => throw new ArgumentOutOfRangeException(nameof(rule), rule.Template, "Unknown template"),
             };
         }
+
+        private Task<IReadOnlyList<RuleObservation>> ObserveCountAsync(string query, TelemetryWindow window,
+            Dictionary<string, object> scope, CancellationToken cancellationToken)
+            => clickHouse.QueryAsync(query, window, r => Service(r.GetString(0), r.GetString(1), r.GetString(2),
+                Convert.ToDouble(r.GetValue(3)), Convert.ToInt64(Convert.ToDouble(r.GetValue(4)))), cancellationToken, scope);
 
         public static string ServiceSubjectKey(string ns, string name, string environment)
             => $"service:{(ns.Length == 0 ? name : $"{ns}/{name}")}@{environment}";

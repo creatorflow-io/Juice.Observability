@@ -86,13 +86,18 @@ An invalid file keeps the API from starting, and the log names every error.
 | Task | Command |
 |---|---|
 | Back up (daily, copy off the host) | `scripts/backup.sh` → `backups/juice_observability-<time>.dump` |
+| Back up telemetry (daily, copy off the host) | `scripts/backup-telemetry.sh` → `backups/clickhouse/otel-<time>.zip` |
 | Drill (restore into a scratch database, compare tables, report time) | `tests/restore-drill.sh` |
 | Restore the live database | stop the API, `scripts/restore.sh <file> juice_observability`, start the API |
+| Restore live telemetry | stop the Collector and the API, `scripts/restore-telemetry.sh <file> otel`, start them |
 
 - **Measured (2026-11-01):** a drill of 21 tables completed in 11 s, against the 4-hour RTO target. Daily backups
   meet the 24-hour RPO target.
-- **ClickHouse telemetry is not in these backups.** Losing ClickHouse loses telemetry history; the platform's own
-  state survives in PostgreSQL. Inventory rebuilds from new telemetry. Health and rules resume on the next pass.
+- **Measured (2026-11-04):** telemetry backup and restore of 8 tables, about 29 million rows, 114 MB, in 7 s.
+- **Telemetry backups** are full copies, hold every tenant's telemetry, and are never pruned: protect them, and remove
+  old ones. Restoring live telemetry loses what arrived since the backup. Without one, losing ClickHouse loses telemetry
+  history; the platform's own state survives in PostgreSQL, inventory rebuilds from new telemetry, and health and rules
+  resume on the next pass.
 
 ## Upgrade
 
