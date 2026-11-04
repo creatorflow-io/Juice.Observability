@@ -92,6 +92,7 @@ export class TopologyPage implements OnDestroy {
   private readonly graph = viewChild.required<ElementRef<HTMLDivElement>>('graph');
   private cy?: Core;
   private stopThemeWatch?: () => void;
+  private destroyed = false;
 
   protected readonly topology = apiResource({ params: () => this.ctx.environment(), stream: ({ params }) => this.api.topology(params || null) });
   protected readonly error = computed(() => problemText(this.topology.error()));
@@ -107,6 +108,9 @@ export class TopologyPage implements OnDestroy {
   constructor() {
     afterNextRender(async () => {
       const cytoscape = (await import('cytoscape')).default;
+      // Left the page while the graph library loaded: its container is detached (no size, so cytoscape's first layout
+      // throws), and a graph made now would outlive ngOnDestroy.
+      if (this.destroyed) return;
       this.cy = cytoscape({
         container: this.graph().nativeElement,
         wheelSensitivity: 0.3,
@@ -179,6 +183,7 @@ export class TopologyPage implements OnDestroy {
   link(id: string) { return this.links.to(this.nodes().get(id)?.type === 'service' ? 'services' : 'resources', id); }
 
   ngOnDestroy() {
+    this.destroyed = true;
     this.stopThemeWatch?.();
     this.cy?.destroy();
   }
