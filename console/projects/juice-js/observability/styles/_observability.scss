@@ -101,6 +101,7 @@
   .jc-crumb { color: var(--jc-muted); }
   .jc-crumb-sep { color: var(--jc-muted); }
   .jc-field-sm { width: 150px; }
+  .jc-field-md { width: 180px; }
   .jc-field-wide { min-width: 320px; flex: 1; }
   .jc-lookup { display: flex; align-items: center; gap: 4px; border: 1px solid var(--jc-border); border-radius: 6px; padding: 2px 8px; background: var(--jc-surface);
     input { border: 0; outline: 0; background: transparent; color: inherit; width: 240px; font: inherit; padding: 6px 0; }
@@ -117,6 +118,9 @@
   .jc-list-row:last-child { border-bottom: 0; }
   .jc-summary { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin-bottom: 8px; }
   .jc-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+  // The filters, the context bar and every other field the pages size label each field. An app theme denser than -1 hides a fill field's label (and
+  // these fields have no placeholder to fall back on), so keep them at -1 whatever the app's density.
+  .jc-context, .jc-filter-form, mat-form-field[class*='jc-field-'] { @include mat.form-field-density(-1); }
   .jc-filter-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
   .jc-filters { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
   .jc-chip { display: inline-flex; gap: 6px; align-items: center; border: 1px solid var(--jc-border); border-radius: 14px; padding: 2px 10px; font-size: 13px; color: var(--jc-text); }

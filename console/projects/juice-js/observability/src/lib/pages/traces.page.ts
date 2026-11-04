@@ -37,8 +37,8 @@ import { TraceTable } from '../shared/telemetry';
           <mat-option value="">Any</mat-option><mat-option value="error">Error</mat-option><mat-option value="ok">No error</mat-option>
         </mat-select>
       </mat-form-field>
-      <mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Min duration (ms)</mat-label><input matInput type="number" min="0" name="min" [ngModel]="min() ?? ''"></mat-form-field>
-      <mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Max duration (ms)</mat-label><input matInput type="number" min="0" name="max" [ngModel]="max() ?? ''"></mat-form-field>
+      <mat-form-field subscriptSizing="dynamic" class="jc-field-md"><mat-label>Min duration (ms)</mat-label><input matInput type="number" min="0" name="min" [ngModel]="min() ?? ''"></mat-form-field>
+      <mat-form-field subscriptSizing="dynamic" class="jc-field-md"><mat-label>Max duration (ms)</mat-label><input matInput type="number" min="0" name="max" [ngModel]="max() ?? ''"></mat-form-field>
       <mat-form-field subscriptSizing="dynamic"><mat-label>Trace ID</mat-label><input matInput name="trace" [ngModel]="trace() ?? ''"></mat-form-field>
       <mat-form-field subscriptSizing="dynamic"><mat-label>Span ID</mat-label><input matInput name="spanId" [ngModel]="spanId() ?? ''"></mat-form-field>
       <mat-form-field subscriptSizing="dynamic" class="jc-field-wide">
