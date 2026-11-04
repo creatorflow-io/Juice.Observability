@@ -68,6 +68,7 @@ services:
       JUICE_PLATFORM_TENANT_ID: local-test
     ports: !override
       - "127.0.0.1:14318:4318"
+      - "127.0.0.1:18888:8888"    # its own metrics, read by tests/verify.sh --outage and tests/load.sh
 
   # Optional (UI architecture §5): only with --profile grafana. Juice Console is the product UI.
   grafana:

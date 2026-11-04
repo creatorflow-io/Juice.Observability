@@ -47,7 +47,9 @@ enter telemetry.
 
 ## Telemetry missing
 
-1. Run `tests/verify.sh`: it checks authentication, the tenant stamp and storage end to end.
+1. Start the test Collector (`docker compose --profile test up -d --wait otel-collector-test`) and run `tests/verify.sh`: it
+   checks authentication, the tenant stamp and storage end to end through that Collector, which has the main one's
+   configuration, and checks that the main one answers with a trusted certificate.
 2. Check the Collector's metrics at `http://127.0.0.1:8888/metrics`:
    - `otelcol_receiver_refused_*` means clients are rejected (token or TLS);
    - `otelcol_exporter_enqueue_failed_*` means the queue was full and data was dropped;

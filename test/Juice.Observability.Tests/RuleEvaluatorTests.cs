@@ -194,16 +194,19 @@ namespace Juice.Observability.Tests
                 Otlp.Requests(20, 0, now.AddMinutes(-1)).Select(s => Otlp.Lasting(s, TimeSpan.FromMilliseconds(300))).ToArray()));
             // Throughput absent: traffic 30 minutes ago, none in the window.
             await LocalStack.SendAsync("traces", Otlp.Traces([("service.name", gone)], Otlp.Requests(15, 0, now.AddMinutes(-30))));
-            // Delivery: cumulative counters, +20 attempts and +6 failures inside the window.
+            // Delivery: cumulative counters, +20 attempts and +6 failures since before the window, plus a new error type
+            // whose first point already counts 2.
             (string, string)[] resource = [("service.name", delivery)];
             var start = now.AddMinutes(-10);
             await LocalStack.SendAsync("metrics", Otlp.Sum(resource, "delivery_attempt_total", start, [("publisher", "outbox")],
-                (now.AddMinutes(-3), 10), (now.AddMinutes(-1), 30)));
+                (now.AddMinutes(-7), 10), (now.AddMinutes(-1), 30)));
             await LocalStack.SendAsync("metrics", Otlp.Sum(resource, "delivery_failure_total", start, [("publisher", "outbox"), ("error_type", "Timeout")],
-                (now.AddMinutes(-3), 0), (now.AddMinutes(-1), 6)));
+                (now.AddMinutes(-7), 0), (now.AddMinutes(-1), 6)));
+            await LocalStack.SendAsync("metrics", Otlp.Sum(resource, "delivery_failure_total", start, [("publisher", "outbox"), ("error_type", "Refused")],
+                (now.AddMinutes(-1), 2)));
             await LocalStack.WaitForSpansAsync(slow, 20);
             await LocalStack.WaitForSpansAsync(gone, 15);
-            for (var i = 0; i < 50 && int.Parse(await LocalStack.ClickHouseAsync($"SELECT count() FROM otel.otel_metrics_sum WHERE ServiceName = '{delivery}'")) < 4; i++)
+            for (var i = 0; i < 50 && int.Parse(await LocalStack.ClickHouseAsync($"SELECT count() FROM otel.otel_metrics_sum WHERE ServiceName = '{delivery}'")) < 5; i++)
             {
                 await Task.Delay(200, Ct);
             }
@@ -219,7 +222,7 @@ namespace Juice.Observability.Tests
             Assert.Equal((0d, 15L), (absent.Value, absent.Samples));        // no requests now, 15 in the baseline hour
 
             var failures = await Observe(RuleTemplate.DeliveryFailureRate, delivery);
-            Assert.Equal((0.3, 20L), (failures.Value, failures.Samples));   // 6 of 20 attempts
+            Assert.Equal((0.4, 20L), (failures.Value, failures.Samples));   // 6 + 2 of 20 attempts
 
             var hosts = await templates.ObserveAsync(new RuleDefinition { Key = "t", Name = "t", Template = RuleTemplate.HostMemory }, window, Ct);
             var host = Assert.Single(hosts, h => h.Host == "local-docker-host");   // the Collector's host metrics

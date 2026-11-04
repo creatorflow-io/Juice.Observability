@@ -4,10 +4,15 @@
 # Load: 1,000 spans/s, 10,000 metric points/s, 1,000 log records/s from telemetrygen over authenticated TLS OTLP.
 # This exercises the Collector → ClickHouse path only; it is not evidence of Juice export (see tests/verify.sh and the
 # sample for that). One resource per signal, so it does not model 10 services / 100 instances.
+# Needs docker compose --profile test: the load goes through the test Collector, the main one's configuration with the
+# tenant local-test, so it stays out of the tenant the running API works on.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 export MSYS_NO_PATHCONV=1
 source .env
+
+docker compose --profile test ps --status running --services 2>/dev/null | grep -qx otel-collector-test \
+  || { echo "the test Collector is not running: docker compose --profile test up -d --wait"; exit 1; }
 
 DURATION=${1:-120s}
 IMAGE=ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.163.0
@@ -18,13 +23,13 @@ NETWORK=${COMPOSE_PROJECT_NAME}_default
 
 ch() { docker compose exec -T clickhouse clickhouse client --user admin --password "$CLICKHOUSE_ADMIN_PASSWORD" -q "$1" </dev/null; }
 collector_metric() {   # sum of a Collector self-metric across its label sets
-  curl -s http://localhost:8888/metrics | awk -v m="$1" 'index($0, m) == 1 { s += $NF } END { printf "%d", s }'
+  curl -s http://localhost:18888/metrics | awk -v m="$1" 'index($0, m) == 1 { s += $NF } END { printf "%d", s }'
 }
 
 gen() {   # gen <signal> <workers> <rate per worker> [extra args...]
   local signal=$1 workers=$2 rate=$3; shift 3
   docker run --rm -d --network "$NETWORK" -v "$(pwd -W 2>/dev/null || pwd)/secrets/tls/ca.crt:/ca.crt:ro" "$IMAGE" "$signal" \
-    --otlp-endpoint otel-collector:4317 --ca-cert /ca.crt --otlp-header "Authorization=\"Bearer $TOKEN\"" \
+    --otlp-endpoint otel-collector-test:4317 --ca-cert /ca.crt --otlp-header "Authorization=\"Bearer $TOKEN\"" \
     --service "$SERVICE" --workers "$workers" --rate "$rate" --duration "$DURATION" "$@"
 }
 
@@ -47,7 +52,7 @@ probe() {
   sent=$(date +%s%3N)
   curl -s -o /dev/null --ssl-no-revoke --cacert secrets/tls/ca.crt -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
     -d '{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"probe-'$RUN'"}}]},"scopeLogs":[{"logRecords":[{"timeUnixNano":"'$now'","body":{"stringValue":"'$id'"}}]}]}]}' \
-    https://localhost:4318/v1/logs
+    https://localhost:14318/v1/logs
   for _ in $(seq 1 300); do
     if [[ "$(ch "SELECT count() FROM otel.otel_logs WHERE ServiceName = 'probe-$RUN' AND Body = '$id'")" == "1" ]]; then
       echo $(( $(date +%s%3N) - sent )); return

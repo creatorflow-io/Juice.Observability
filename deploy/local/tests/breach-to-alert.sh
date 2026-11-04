@@ -3,6 +3,8 @@
 # to alert ≤ 2 minutes after ForDuration). Needs the stack and the API (scripts/run-api.sh) with deploy/local/rules.json.
 # Sends a failing service's spans every 5 s and polls the API until rule service-error-rate fires for it.
 #   tests/breach-to-alert.sh [runs]     default 1; each run uses a new service
+# It sends to the main Collector on purpose: the alert comes from the running API, which reads only that tenant. So each
+# run leaves a breach-<id> service and its alert in the Console.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 export MSYS_NO_PATHCONV=1

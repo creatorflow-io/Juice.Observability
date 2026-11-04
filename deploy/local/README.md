@@ -18,10 +18,13 @@ read-only Grafana with a provisioned data source and dashboard.
 Needs Docker with Compose, bash (Git Bash on Windows) and openssl.
 
 ```bash
-scripts/init.sh                 # once: .env with random secrets, local CA + Collector certificate, OTLP token
-docker compose up -d --wait     # add --profile test before running the integration tests
-tests/verify.sh                 # ingestion security, tenant stamping, redaction, storage and Grafana checks
+scripts/init.sh                            # once: .env with random secrets, local CA + Collector certificate, OTLP token
+docker compose --profile test up -d --wait # --profile test adds the Collector that the tests and tests/verify.sh send to
+tests/verify.sh                            # ingestion security, tenant stamping, redaction, storage and Grafana checks
 ```
+
+`init.sh` asks for the tenant id of this deployment when run in a terminal; `JUICE_PLATFORM_TENANT_ID=<id> scripts/init.sh`
+sets it without asking, and otherwise it is `local-dev`. It is set once, when `.env` is created.
 
 | Endpoint | Address |
 |---|---|
@@ -51,7 +54,9 @@ docker compose --profile platform --profile grafana up -d --wait keycloak grafan
   (`docs/deployment.md`).
 - `npm start` in `console/` reads `console/public/config.json` (issuer `localhost`); with another `PUBLIC_HOST`, set its
   issuer to `http://<PUBLIC_HOST>:8080/realms/juice` too.
-- OTLP stays on `localhost`: the Collector certificate from `init.sh` names only `localhost`, `127.0.0.1` and `otel-collector`.
+- The Collector certificate from `init.sh` names `PUBLIC_HOST` too, so other machines can send OTLP to it. After changing
+  `PUBLIC_HOST`, run `scripts/init.sh --reissue-cert` and `docker compose restart otel-collector`. The CA stays the same, so
+  hosts that already trust `ca.crt` keep working.
 
 ## Send telemetry from a Juice host
 
@@ -119,7 +124,9 @@ with `resource_detection` so application telemetry never gets the Collector's ho
   `backups/`, which git ignores. Each run is a full backup and nothing prunes old ones. See the runbook.
 - **Integration test tenant.** `--profile test` adds `otel-collector-test` on `127.0.0.1:14318`, the same configuration
   stamping the tenant `local-test`, and the tests get their tokens from the Keycloak client `juice-platform-test`. What
-  they write stays out of the tenant the running API works on. Scripts under `tests/` still send to the main Collector.
+  they write stays out of the tenant the running API works on. `tests/verify.sh` and `tests/load.sh` send to it too. Only
+  `tests/breach-to-alert.sh` sends to the main Collector, because it waits for the running API's alert, so each run leaves
+  a `breach-<id>` service in the Console.
 
 ## Grafana
 

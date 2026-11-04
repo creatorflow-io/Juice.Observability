@@ -54,21 +54,6 @@ namespace Juice.Observability.Rules
             LIMIT {Limit}
             """;
 
-        // Delivery counters are cumulative: the increase of each series (attributes, start time) inside the window.
-        private static readonly string DeliveryFailureRate = $"""
-            SELECT ns, svc, env, sumIf(increase, MetricName = 'delivery_failure_total') AS failures,
-                   sumIf(increase, MetricName = 'delivery_attempt_total') AS attempts
-            FROM (
-                SELECT {ServiceKeys}, MetricName, Attributes, StartTimeUnix, max(Value) - min(Value) AS increase
-                FROM otel.otel_metrics_sum
-                WHERE {Tenant} AND TimeUnix >= {From} AND TimeUnix < {To}
-                  AND MetricName IN ('delivery_failure_total', 'delivery_attempt_total') AND {ServiceScope}
-                GROUP BY ns, svc, env, MetricName, Attributes, StartTimeUnix
-            )
-            GROUP BY ns, svc, env
-            LIMIT {Limit}
-            """;
-
         private static readonly string HostMemory = $"""
             SELECT host, sumIf(bytes, state = 'used') / sum(bytes) AS used
             FROM (
@@ -103,6 +88,10 @@ namespace Juice.Observability.Rules
             GROUP BY ns, svc, env
             LIMIT {Limit}
             """;
+
+        private static readonly string DeliveryFailureRate = CounterIncrease(
+            "MetricName = 'delivery_failure_total'", "MetricName = 'delivery_attempt_total'",
+            "'delivery_failure_total', 'delivery_attempt_total'");
 
         private static readonly string MediatorErrors = CounterIncrease(
             "MetricName = 'juice.mediator.errors'", "MetricName = 'juice.mediator.requests'",

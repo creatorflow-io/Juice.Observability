@@ -19,9 +19,14 @@ reference configuration. A production install uses the same files with real cert
 ```bash
 cd deploy/local
 scripts/init.sh                                     # .env secrets, local CA and Collector certificate, OTLP token
-docker compose --profile platform up -d --build --wait
+docker compose --profile platform --profile test up -d --build --wait
 tests/verify.sh                                     # ingestion, tenant stamping, redaction, Grafana, OIDC checks
+docker compose --profile test stop otel-collector-test
 ```
+
+`init.sh` asks for the tenant id, or takes it from `JUICE_PLATFORM_TENANT_ID`. Set `PUBLIC_HOST` before it runs, or run
+`scripts/init.sh --reissue-cert` after changing it, so the Collector certificate names the address hosts send to.
+`tests/verify.sh` sends through the test Collector, so its records stay out of the deployment's tenant.
 
 The API applies database migrations on start (`Database:Migrate`). It creates the tenant from
 `JUICE_PLATFORM_TENANT_ID`, and refuses to start against a database that belongs to another tenant.
