@@ -256,3 +256,7 @@ twice. The dispatcher sends every 2 s.
   fail at once. Every attempt is recorded.
 
 Configuration, secrets and receiver guidance are in [docs/deployment.md](docs/deployment.md).
+
+## License
+
+[MIT](LICENSE)

@@ -2,7 +2,7 @@
   <PropertyGroup Label="Product Information">
     <Company>Creatorflow.io</Company>
     <Product>Juice Observability</Product>
-    <Copyright>© $(Company). All rights reserved.</Copyright>
+    <Copyright>© $(Company)</Copyright>
     <Authors>$(Company)</Authors>
     <Description>$(Product): discovery, health, rules and alerts over OpenTelemetry for Juice services.</Description>
     <PackageTags>$(PackageTags); $(Company); Juice; Observability; OpenTelemetry</PackageTags>
@@ -35,6 +35,7 @@
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
   </PropertyGroup>
 
   <ItemGroup Condition="'$(IsPackable)' == 'true'">
