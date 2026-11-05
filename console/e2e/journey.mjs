@@ -38,6 +38,19 @@ await step('operations', async () => { await page.click('role=tab[name="Operatio
 await step('error-traces', async () => { await page.click('text=error traces >> nth=0'); await page.waitForSelector('text=Root operation'); });
 await step('trace-waterfall', async () => { await page.click('table.jc-table tbody tr td a >> nth=0'); await page.waitForSelector('.jc-waterfall .jc-wf-row'); });
 await step('span-selected', async () => { await page.click('.jc-wf-row.jc-wf-error >> text=POST /charge'); await page.waitForSelector('text=Logs of this span'); await page.waitForSelector('text=pool exhausted', { timeout: 15000 }); });
+await step('resource-usage', async () => {
+  // Beside the trace: CPU, memory, GC and thread pool of each instance that served it, and the toggle survives a reload.
+  await page.click('button:has-text("Resource usage")');
+  await page.waitForURL(/usage=on/);
+  await page.waitForSelector('.jc-trace-usage >> text=payments-2');
+  await page.reload();
+  for (const title of ['CPU', 'Memory', 'GC pause', 'Thread pool queue']) await page.waitForSelector(`.jc-trace-usage .jc-chart-title:text-is("${title}")`);
+  // A chart reads as empty until its series loads.
+  await page.waitForFunction(() => !document.querySelector('.jc-trace-usage .jc-chart-empty'), null, { timeout: 20000 });
+  await page.click('button:has-text("Resource usage")');
+  await page.waitForURL(u => !u.toString().includes('usage=on'));
+  await page.click('.jc-wf-row.jc-wf-error >> text=POST /charge');
+});
 await step('downstream-db', async () => {
   await page.click('.jc-wf-row >> text=INSERT charges'); await page.waitForSelector('text=Uses payments-db/payments');
   await page.click('text=Uses payments-db/payments'); await page.waitForSelector('text=Traces that reach it');

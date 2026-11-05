@@ -71,14 +71,31 @@ async function batch() {
   const instanceOf = key => (key === 'checkout' ? ['checkout', 'checkout-1'] : ['payments', key]);
   await post('traces', { resourceSpans: Object.entries(spans).filter(([, s]) => s.length).map(([key, s]) => ({ resource: resource(...instanceOf(key)), scopeSpans: [{ spans: s }] })) });
   await post('logs', { resourceLogs: Object.entries(logs).filter(([, l]) => l.length).map(([key, l]) => ({ resource: resource(...instanceOf(key)), scopeLogs: [{ logRecords: l }] })) });
+  const cumulative = (name, unit, asDouble) => ({
+    name, unit, sum: { aggregationTemporality: 2, isMonotonic: true, dataPoints: [{ asDouble, startTimeUnixNano: nanos(started), timeUnixNano: nanos(now) }] },
+  });
+  const level = (name, unit, asInt) => ({
+    name, unit, sum: { aggregationTemporality: 2, isMonotonic: false, dataPoints: [{ asInt: `${asInt}`, startTimeUnixNano: nanos(started), timeUnixNano: nanos(now) }] },
+  });
+  const uptime = (now - started) / 1000;
+  const runtime = key => [
+    cumulative('dotnet.process.cpu.time', 's', uptime * (key === 'payments-2' ? 0.8 : 0.2)),
+    level('dotnet.process.memory.working_set', 'By', key === 'payments-2' ? 420e6 : 180e6),
+    cumulative('dotnet.gc.pause.time', 's', uptime * 0.01),
+    // A level, but .NET reports it as a monotonic counter.
+    { ...level('dotnet.thread_pool.queue.length', '{work_item}', key === 'payments-2' ? 40 : 0), sum: { ...level('', '', key === 'payments-2' ? 40 : 0).sum, isMonotonic: true } },
+  ];
   await post('metrics', {
-    resourceMetrics: Object.entries(charges).map(([instance, value]) => ({
-      resource: resource('payments', instance),
-      scopeMetrics: [{ metrics: [{
-        name: 'payments.charges', unit: '{charge}',
-        sum: { aggregationTemporality: 2, isMonotonic: true, dataPoints: [{ asInt: `${value}`, startTimeUnixNano: nanos(started), timeUnixNano: nanos(now) }] },
-      }] }],
-    })),
+    resourceMetrics: [
+      ...Object.entries(charges).map(([instance, value]) => ({
+        resource: resource('payments', instance),
+        scopeMetrics: [{ metrics: [{
+          name: 'payments.charges', unit: '{charge}',
+          sum: { aggregationTemporality: 2, isMonotonic: true, dataPoints: [{ asInt: `${value}`, startTimeUnixNano: nanos(started), timeUnixNano: nanos(now) }] },
+        }, ...runtime(instance)] }],
+      })),
+      { resource: resource(...instanceOf('checkout')), scopeMetrics: [{ metrics: runtime('checkout') }] },
+    ],
   });
 }
 

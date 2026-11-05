@@ -153,6 +153,8 @@ export class Chart implements OnDestroy {
   readonly title = input('');
   readonly series = input<ChartSeries[]>([]);
   readonly format = input<(v: number) => string>(v => String(Math.round(v * 100) / 100));
+  /** Moments to mark with a vertical line. */
+  readonly marks = input<string[]>([]);
   private readonly host = viewChild.required<ElementRef<HTMLDivElement>>('host');
   protected readonly empty = computed(() => this.series().every(s => s.points.every(p => p.value === null)));
   private chart?: ECharts;
@@ -164,14 +166,14 @@ export class Chart implements OnDestroy {
       // Only what a line chart needs: the full library is three times the size.
       const [echarts, charts, components, renderers] = await Promise.all([
         import('echarts/core'), import('echarts/charts'), import('echarts/components'), import('echarts/renderers')]);
-      echarts.use([charts.LineChart, components.GridComponent, components.TooltipComponent, components.LegendComponent, renderers.SVGRenderer]);
+      echarts.use([charts.LineChart, components.GridComponent, components.TooltipComponent, components.LegendComponent, components.MarkLineComponent, renderers.SVGRenderer]);
       this.chart = echarts.init(this.host().nativeElement, undefined, { renderer: 'svg' });
       this.observer = new ResizeObserver(() => this.chart?.resize());
       this.observer.observe(this.host().nativeElement);
       this.stopThemeWatch = onThemeChange(() => this.render());
       this.render();
     });
-    effect(() => { this.series(); this.render(); });
+    effect(() => { this.series(); this.marks(); this.render(); });
   }
 
   private render() {
@@ -186,12 +188,16 @@ export class Chart implements OnDestroy {
       grid: { left: 56, right: 16, top: 16, bottom: 28 },
       tooltip: { trigger: 'axis', valueFormatter: v => (typeof v === 'number' ? format(v) : '—') },
       legend: this.series().length > 1 ? { top: 0, textStyle: { color: text } } : undefined,
-      xAxis: { type: 'time', axisLabel: { color: muted }, axisLine: { lineStyle: { color: border } } },
+      xAxis: { type: 'time', axisLabel: { color: muted, hideOverlap: true }, axisLine: { lineStyle: { color: border } } },
       yAxis: { type: 'value', axisLabel: { color: muted, formatter: (v: number) => format(v) },
         splitLine: { lineStyle: { color: border } } },
-      series: this.series().map(s => ({
+      series: this.series().map((s, i) => ({
         name: s.name, type: 'line', showSymbol: false, connectNulls: false,
         data: s.points.map(p => [p.at, p.value]),
+        ...(i === 0 && this.marks().length ? { markLine: {
+          silent: true, symbol: 'none', label: { show: false }, lineStyle: { color: muted, type: 'dashed' as const },
+          data: this.marks().map(at => ({ xAxis: at })),
+        } } : {}),
       })),
     };
     this.chart.setOption(option, true);

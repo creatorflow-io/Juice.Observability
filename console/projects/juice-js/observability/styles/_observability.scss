@@ -183,6 +183,8 @@
   // The trace page fills the window and scrolls inside its panes (waterfall, span), never the whole page as well.
   mat-sidenav-content > .jc-fill-page { box-sizing: border-box; height: 100%; display: flex; flex-direction: column; overflow: hidden; }
   .jc-fill-page > .jc-trace { flex: 1; min-height: 0; grid-template-rows: minmax(0, 1fr); }
+  .jc-fill-page > .jc-trace-usage { flex: none; max-height: 40%; overflow: auto; margin-bottom: 12px; }
+  .jc-usage-charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
   .jc-fill-page > .jc-trace > .jc-waterfall, .jc-fill-page > .jc-trace > .jc-span-detail { overflow: auto; max-height: none; position: static; }
   .jc-fill-page .jc-wf-head { position: sticky; top: 0; z-index: 1; background: var(--jc-surface); }
   .jc-span-facts { display: flex; gap: 12px; align-items: center; margin-bottom: 6px; }

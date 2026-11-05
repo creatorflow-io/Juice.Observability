@@ -62,11 +62,26 @@ instance `payments-2` fails every charge. **All steps pass with no browser error
 its span id; 9. the `INSERT charges` span to the database `payments-db/payments` and the traces that reach it;
 10. metrics around the span (`payments.charges` as a rate); 11. the service's logs around it; 12. the topology;
 13. the `checkout → payments` edge's evidence (observed, 50 % errors, representative traces); 14. global search by
-service name; 15. alerts; 16. rules. Context (environment, time range, selected operation and span) is kept in each
+service name; 15. alerts; 16. rules. Since x1-03 the journey also opens a trace's resource usage (17 steps). Context (environment, time range, selected operation and span) is kept in each
 URL and survives back navigation.
 
 The tenant filter of the telemetry API is mutation-checked (`TelemetryApiTests`); the Console serving rules are tested
 (`ConsoleHostingTests`).
+
+## After the MVP: one trace across services
+
+**Run 2026-11-05** (`Tests/Juice.Observability.Flow`): three processes, `orders → RabbitMQ → billing → RabbitMQ → shipping`,
+on unreleased Juice 10.10.0 and Juice.Audit 10.6.0 packed locally. From one trace id, through the read APIs the Console uses,
+all 25 checks pass:
+
+- every step and its time, across the three services and the broker;
+- the logs of all three services;
+- the user of the original request, on its access record and its data change; each message has its own record, without a user;
+- the `Orders`, `Invoices` and `Shipments` changes;
+- CPU, memory, GC pause and thread pool queue of each instance (.NET's `System.Runtime` meter, shown beside the trace).
+
+An order whose last step rolls back after reporting its change keeps `Orders` and `Invoices`, does not list `Shipments`,
+and records the attempt with `UncommittedChanges = 1`.
 
 ## Not covered or open
 

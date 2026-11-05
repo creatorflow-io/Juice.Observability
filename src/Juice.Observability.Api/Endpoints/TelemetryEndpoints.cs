@@ -23,7 +23,7 @@ namespace Juice.Observability.Api.Endpoints
     public sealed record SpanDto(string SpanId, string? ParentSpanId, Guid? ServiceId, string Service, string? Environment, string? Instance,
         string? Host, string Name, string Kind, DateTimeOffset StartedAt, double DurationMs, string Status, string? StatusMessage,
         string? Scope, string? ScopeVersion, IReadOnlyDictionary<string, string> Attributes, IReadOnlyList<SpanEventDto> Events,
-        IReadOnlyList<SpanLinkDto> Links, SpanTargetDto? Target);
+        IReadOnlyList<SpanLinkDto> Links, SpanTargetDto? Target, Guid? InstanceId = null);
 
     public sealed record TraceDto(string TraceId, IReadOnlyList<SpanDto> Spans, bool Truncated);
 
@@ -453,6 +453,21 @@ namespace Juice.Observability.Api.Endpoints
             var resourceKeys = spans.Select(s => normalizer.UsedResource(s.Use)).OfType<ResourceKey>().Select(k => k.Key).Distinct().ToList();
             var resources = (await db.Resources.AsNoTracking().Where(r => r.TenantId == tenantId && resourceKeys.Contains(r.Key))
                 .Select(r => new { r.Id, r.Type, r.Key, r.DisplayName }).ToListAsync(ct)).ToDictionary(r => (r.Type, r.Key));
+            // An instance whose key discovery derived (no service.instance.id) has no name on its spans to match.
+            var instanceKeys = spans.Select(s => s.Span.Instance).OfType<string>().Distinct().ToList();
+            var instances = (await (
+                from i in db.Instances.AsNoTracking()
+                join e in db.Environments.AsNoTracking() on i.EnvironmentId equals e.Id
+                where i.TenantId == tenantId && i.KeySource == InstanceKeySource.Observed && instanceKeys.Contains(i.InstanceKey)
+                select new { i.Id, i.ServiceId, Environment = e.Key, i.InstanceKey }).ToListAsync(ct))
+                .ToDictionary(i => (i.ServiceId, i.Environment, i.InstanceKey), i => i.Id);
+            Guid? InstanceIdOf((SpanDto Span, ResourceUseObservation Use) s)
+            {
+                var environment = s.Span.Environment?.Trim().ToLowerInvariant();
+                return s.Span.Instance is { } key && ServiceIdOf(s.Use) is { } serviceId
+                    && instances.TryGetValue((serviceId, string.IsNullOrEmpty(environment) ? Normalizer.UnspecifiedEnvironment : environment, key), out var id)
+                    ? id : null;
+            }
             var children = spans.Where(s => s.Span.ParentSpanId is not null).ToLookup(s => s.Span.ParentSpanId!, StringComparer.Ordinal);
 
             SpanTargetDto? TargetOf((SpanDto Span, ResourceUseObservation Use) s)
@@ -465,7 +480,7 @@ namespace Juice.Observability.Api.Endpoints
                     ? new SpanTargetDto("resource", resource.Id, resource.DisplayName)
                     : null;
             }
-            var result = spans.Take(MaxSpans).Select(s => s.Span with { ServiceId = ServiceIdOf(s.Use), Target = TargetOf(s) }).ToList();
+            var result = spans.Take(MaxSpans).Select(s => s.Span with { ServiceId = ServiceIdOf(s.Use), Target = TargetOf(s), InstanceId = InstanceIdOf(s) }).ToList();
             return Results.Ok(new TraceDto(traceId, result, spans.Count > MaxSpans));
         });
 
@@ -625,11 +640,12 @@ namespace Juice.Observability.Api.Endpoints
         /// One metric as a series over the window, summed across its series: a gauge as the average of each bucket; a
         /// monotonic sum as a rate per second (a counter reset counts from zero); another sum as its average; a histogram
         /// as the average observed value (delta of Sum over delta of Count). A bucket without data has no point: no data
-        /// is not zero.
+        /// is not zero. <c>level</c> reads a sum as its average even if it says it is monotonic: .NET reports its thread pool's
+        /// queue length and thread count that way.
         /// </summary>
         private static Task<IResult> GetSeriesAsync(HttpContext http, PlatformDbContext db, ClickHouseTelemetrySource clickHouse,
             TimeProvider clock, string? name, Guid? serviceId, string? environment, Guid? instanceId, Guid? resourceId,
-            DateTimeOffset? from, DateTimeOffset? to, int? stepSeconds, CancellationToken ct) => Run(async () =>
+            DateTimeOffset? from, DateTimeOffset? to, int? stepSeconds, bool? level, CancellationToken ct) => Run(async () =>
         {
             if (name is null || !MetricNamePattern.IsMatch(name)) return Bad("Invalid name", "name is a metric name.");
             var scope = await MetricScopeAsync(http, db, clock, serviceId, environment, instanceId, resourceId, from, to, MaxPoints, ct);
@@ -654,7 +670,7 @@ namespace Juice.Observability.Api.Endpoints
             var (aggregation, sql) = type switch
             {
                 "gauge" => ("avg", $"SELECT {bucket} AS b, avg(Value) FROM otel.otel_metrics_gauge WHERE {where} GROUP BY b ORDER BY b LIMIT {limitRows}"),
-                "sum" when !monotonic => ("avg", $"SELECT {bucket} AS b, avg(Value) FROM otel.otel_metrics_sum WHERE {where} GROUP BY b ORDER BY b LIMIT {limitRows}"),
+                "sum" when !monotonic || level == true => ("avg", $"SELECT {bucket} AS b, avg(Value) FROM otel.otel_metrics_sum WHERE {where} GROUP BY b ORDER BY b LIMIT {limitRows}"),
                 // A series' first bucket has no previous value: no delta (NULL), never a rate of zero.
                 "sum" => ("rate", $"""
                     SELECT b, if(count(d) = 0, NULL, sum(d) / {stepParameter}) FROM (

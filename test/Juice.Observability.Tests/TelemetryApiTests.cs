@@ -94,6 +94,9 @@ namespace Juice.Observability.Tests
                 failing.GetProperty("environment").GetString()));
             Assert.Equal(90, failing.GetProperty("durationMs").GetDouble());
             Assert.Equal(paymentsId, failing.GetProperty("serviceId").GetGuid());
+            // The span names its instance, so the trace page can read that instance's metrics.
+            var instanceId = failing.GetProperty("instanceId").GetGuid();
+            Assert.NotEqual(Guid.Empty, instanceId);
             // From the span to the dependency: the call reaches payments, the INSERT the database discovery recorded.
             var callTarget = spans.Single(s => s.GetProperty("spanId").GetString() == call).GetProperty("target");
             Assert.Equal(("service", paymentsId), (callTarget.GetProperty("kind").GetString(), callTarget.GetProperty("id").GetGuid()));
@@ -125,6 +128,10 @@ namespace Juice.Observability.Tests
                 m => m.GetProperty("name").GetString() == metric && m.GetProperty("type").GetString() == "sum");
             var series = await Api($"/telemetry/metrics/series?name={metric}&serviceId={paymentsId}&stepSeconds=30&{window}");
             Assert.Equal("rate", series.GetProperty("aggregation").GetString());
+            // A level that its host reports as a counter, as .NET does its thread pool queue length; and by the span's instance.
+            var level = await Api($"/telemetry/metrics/series?name={metric}&instanceId={instanceId}&level=true&stepSeconds=30&{window}");
+            Assert.Equal("avg", level.GetProperty("aggregation").GetString());
+            Assert.NotEmpty(level.GetProperty("points").EnumerateArray());
             var points = series.GetProperty("points").EnumerateArray().Select(p => p.GetProperty("value")).ToList();
             Assert.Contains(points, v => v.ValueKind == JsonValueKind.Number && Math.Abs(v.GetDouble() - 1.0) < 1e-9);
             // The first bucket has nothing to compare with: no data, never a rate of zero.

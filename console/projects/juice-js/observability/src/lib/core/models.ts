@@ -63,7 +63,7 @@ export interface Span {
   spanId: string; parentSpanId: string | null; serviceId: string | null; service: string; environment: string | null; instance: string | null;
   host: string | null; name: string; kind: string; startedAt: string; durationMs: number; status: string;
   statusMessage: string | null; scope: string | null; scopeVersion: string | null; attributes: Record<string, string>;
-  events: SpanEvent[]; links: { traceId: string; spanId: string }[]; target: SpanTarget | null;
+  events: SpanEvent[]; links: { traceId: string; spanId: string }[]; target: SpanTarget | null; instanceId: string | null;
 }
 export interface Trace { traceId: string; spans: Span[]; truncated: boolean; }
 

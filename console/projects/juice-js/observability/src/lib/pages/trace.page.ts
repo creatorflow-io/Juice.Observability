@@ -11,10 +11,24 @@ import { ContextService } from '../core/context.service';
 import { Span } from '../core/models';
 import { DurationPipe, formatDuration, plainTraceId, preciseTime } from '../shared/format';
 import { ContextBar, KeyValueTable } from '../shared/ui';
-import { LogTable, problemText } from '../shared/telemetry';
+import { InstanceMetric, LogTable, problemText } from '../shared/telemetry';
 import { themeColor } from '../shared/theme';
 
 interface Row { span: Span; depth: number; children: number; offset: number; selfError: boolean; slowest: boolean; }
+
+const MaxUsageInstances = 8;
+const UsageMarginMs = 2 * 60_000;
+
+/**
+ * .NET's built-in System.Runtime meter (.NET 9+). Counters arrive as a rate per second. The thread pool's queue length is
+ * a level that .NET reports as a counter.
+ */
+const UsageMetrics = [
+  { title: 'CPU', name: 'dotnet.process.cpu.time', level: false, format: (v: number) => `${Math.round(v * 100)} % of a core` },
+  { title: 'Memory', name: 'dotnet.process.memory.working_set', level: false, format: (v: number) => `${Math.round(v / 1048576)} MiB` },
+  { title: 'GC pause', name: 'dotnet.gc.pause.time', level: false, format: (v: number) => `${Math.round(v * 10000) / 10} ms/s` },
+  { title: 'Thread pool queue', name: 'dotnet.thread_pool.queue.length', level: true, format: (v: number) => String(Math.round(v * 10) / 10) },
+];
 
 /** A stable colour per service, from a small palette that reads in both themes. */
 
@@ -28,7 +42,7 @@ interface Row { span: Span; depth: number; children: number; offset: number; sel
   changeDetection: ChangeDetectionStrategy.OnPush,
   // Fills the window; the waterfall and the span scroll on their own (styles.scss).
   host: { class: 'jc-fill-page' },
-  imports: [LinkPipe, RouterLink, DatePipe, MatButtonModule, MatIconModule, MatProgressBarModule, ContextBar, KeyValueTable, LogTable, DurationPipe],
+  imports: [LinkPipe, RouterLink, DatePipe, MatButtonModule, MatIconModule, MatProgressBarModule, ContextBar, KeyValueTable, LogTable, DurationPipe, InstanceMetric],
   template: `
     <jc-context-bar>
       <a [routerLink]="['traces'] | jcLink" [queryParams]="ctx.keep()" class="jc-crumb">Traces</a>
@@ -47,6 +61,7 @@ interface Row { span: Span; depth: number; children: number; offset: number; sel
         @if (errors() > 0) { <span class="jc-badge jc-health-unhealthy">{{ errors() }} failed</span> }
         <button mat-button (click)="showErrorsOnly.set(!showErrorsOnly())">{{ showErrorsOnly() ? 'Show all spans' : 'Error paths only' }}</button>
         <a mat-button [routerLink]="['logs'] | jcLink" [queryParams]="ctx.keep({ trace: id() })">Logs of this trace</a>
+        <button mat-button [attr.aria-expanded]="showUsage()" (click)="toggleUsage()">Resource usage</button>
         @if (auditLink(); as link) {
           @if ('route' in link) { <a mat-button [routerLink]="link.route" data-testid="audit-link">Audit records ↗</a> }
           @else { <a mat-button [href]="link.href" target="_blank" rel="noopener" data-testid="audit-link">Audit records ↗</a> }
@@ -54,6 +69,24 @@ interface Row { span: Span; depth: number; children: number; offset: number; sel
         @if (t.truncated) { <span class="jc-muted">Showing the first {{ t.spans.length }} spans.</span> }
       </div>
       <div class="jc-legend">@for (s of services(); track s) { <span><i [style.background]="color(s)"></i>{{ s }}</span> }</div>
+
+      @if (showUsage()) {
+        <section class="jc-card jc-trace-usage" aria-label="Resource usage">
+          @for (i of instances(); track i.id) {
+            <h3>{{ i.service }} · {{ i.name }}</h3>
+            <div class="jc-usage-charts">
+              @for (m of usageMetrics; track m.name) {
+                <jc-instance-metric [title]="m.title" [name]="m.name" [format]="m.format" [level]="m.level" [instanceId]="i.id"
+                  [from]="usageWindow().from" [to]="usageWindow().to" [marks]="usageMarks()" />
+              }
+            </div>
+          } @empty {
+            <p class="jc-muted">The spans of this trace name no known instance.</p>
+          }
+          @if (hiddenInstances() > 0) { <p class="jc-muted">And {{ hiddenInstances() }} more instances.</p> }
+          <p class="jc-muted jc-small">Dashed lines mark the trace. No data: the host does not collect the <code>System.Runtime</code> meter.</p>
+        </section>
+      }
 
       <div class="jc-trace" [class.jc-with-detail]="selected()">
         <div class="jc-waterfall" role="tree">
@@ -142,6 +175,8 @@ export class TracePage {
   /** A trace id, or a W3C traceparent such as a Juice.Audit record before 10.4 holds; links from either open the trace. */
   readonly traceId = input.required<string>();
   readonly span = input<string>();
+  /** 'on' shows the resource usage strip; in the URL so a shared link keeps it. */
+  readonly usage = input<string>();
 
   protected readonly id = computed(() => plainTraceId(this.traceId()));
   protected readonly trace = apiResource({ params: () => this.id(), stream: ({ params }) => this.api.trace(params) });
@@ -165,6 +200,25 @@ export class TracePage {
     const s = this.selected();
     return s ? { spanId: s.spanId, ...this.windowAround(s) } : {};
   });
+
+  protected readonly showUsage = computed(() => this.usage() === 'on');
+  /** The instances that served this trace, in the order they joined it. */
+  private readonly allInstances = computed(() => {
+    const byId = new Map<string, { id: string; name: string; service: string }>();
+    for (const s of this.spans()) {
+      if (s.instanceId && !byId.has(s.instanceId)) byId.set(s.instanceId, { id: s.instanceId, name: s.instance ?? s.instanceId, service: s.service });
+    }
+    return [...byId.values()];
+  });
+  protected readonly instances = computed(() => this.allInstances().slice(0, MaxUsageInstances));
+  protected readonly hiddenInstances = computed(() => this.allInstances().length - this.instances().length);
+  /** Metrics are exported every few seconds, so a short trace needs a margin to have any points beside it. */
+  protected readonly usageWindow = computed(() => ({
+    from: new Date(this.start() - UsageMarginMs).toISOString(),
+    to: new Date(this.start() + this.total() + UsageMarginMs).toISOString(),
+  }));
+  protected readonly usageMarks = computed(() => [new Date(this.start()).toISOString(), new Date(this.start() + this.total()).toISOString()]);
+  protected readonly usageMetrics = UsageMetrics;
 
   /** Depth-first order with depth; spans whose parent is missing are roots. Children start-ordered. */
   private readonly rows = computed<Row[]>(() => {
@@ -240,6 +294,10 @@ export class TracePage {
     const next = new Set(this.collapsed());
     if (!next.delete(spanId)) next.add(spanId);
     this.collapsed.set(next);
+  }
+
+  toggleUsage() {
+    void this.router.navigate([], { queryParams: { usage: this.showUsage() ? null : 'on' }, queryParamsHandling: 'merge', replaceUrl: true });
   }
 
   select(spanId: string | null) {

@@ -59,6 +59,8 @@ like juice-layout's dark-mode toggle) repaints the charts and the graph.
 - `auditLink` (optional): a link from a trace to its audit records, shown on the trace page as "Audit records ↗".
   With `@juice-js/audit` mounted at `/audit`: `auditLink: id => ['/audit/traces', id]`. A string is an external URL.
   Without it, the trace page shows no link.
+- The trace page's resource usage reads .NET's `System.Runtime` meter (.NET 9+): add `AddMeter("System.Runtime")` to the
+  host's `WithMetrics`.
 - The router needs `bindToComponentInputs: true`. The pages take their route and query parameters as inputs.
 - The host's bearer-token interceptor (`@juice-js/auth`) must cover `apiBase`. The token carries the `platform_tenant`
   claim and a platform role (`viewer`, `operator` or `admin`).

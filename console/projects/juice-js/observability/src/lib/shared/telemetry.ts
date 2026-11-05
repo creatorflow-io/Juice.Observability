@@ -184,7 +184,9 @@ export class MetricExplorer {
   protected readonly names = computed(() => this.metrics.value()?.items ?? []);
   protected readonly selected = linkedSignal(() => {
     const names = this.names();
-    return names.find(m => m.name === this.initial())?.name ?? names[0]?.name ?? null;
+    // The app's own metrics first: host and runtime metrics say less about a service, and sort before most names.
+    return names.find(m => m.name === this.initial())?.name
+      ?? names.find(m => !/^(dotnet|process|system)./.test(m.name))?.name ?? names[0]?.name ?? null;
   });
   protected readonly series = apiResource({
     // Idle until a metric is chosen.
@@ -206,6 +208,38 @@ export class MetricExplorer {
     return `${s.name} — ${what}${s.unit ? ` (${s.unit}${s.aggregation === 'rate' ? '/s' : ''})` : ''}`;
   });
   protected readonly metricsError = computed(() => problemText(this.metrics.error()));
+}
+
+/**
+ * One resource metric of one instance around a moment, for the trace page. A counter reads as a rate. The window is
+ * fixed by the trace, not the context bar's range.
+ */
+@Component({
+  selector: 'jc-instance-metric',
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [Chart],
+  template: `<jc-chart [title]="title()" [series]="[{ name: name(), points: points() }]" [format]="format()" [marks]="marks()" />`,
+})
+export class InstanceMetric {
+  private readonly api = inject(ApiService);
+  readonly title = input.required<string>();
+  readonly name = input.required<string>();
+  readonly instanceId = input.required<string>();
+  readonly from = input.required<string>();
+  readonly to = input.required<string>();
+  readonly marks = input<string[]>([]);
+  readonly format = input<(v: number) => string>(v => String(Math.round(v * 100) / 100));
+  /** Reads the metric as a level, even if the host reports it as a counter. */
+  readonly level = input(false);
+
+  private readonly series = apiResource({
+    params: () => ({ name: this.name(), instanceId: this.instanceId(), from: this.from(), to: this.to(), ...(this.level() ? { level: true } : {}) }),
+    stream: ({ params }) => this.api.series(params),
+  });
+  protected readonly points = computed(() => {
+    const s = this.series.value();
+    return s ? withGaps(s.points, this.from(), this.to(), s.stepSeconds) : [];
+  });
 }
 
 /** Requests, error rate and p95 of a service (or one operation) over the window. */
