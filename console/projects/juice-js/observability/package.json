@@ -1,6 +1,6 @@
 {
   "name": "@juice-js/observability",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Juice Observability pages (services, traces, topology, logs, metrics, resources, alerts, rules) for an Angular app on juice-layout",
   "author": "jack@creatorflow.io",
   "license": "MIT",

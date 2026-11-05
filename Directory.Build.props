@@ -9,7 +9,7 @@
     <RepositoryUrl>https://github.com/creatorflow-io/Juice.Observability</RepositoryUrl>
 
     <!-- CI sets the suffix (alpha.N, beta.N) or, for a release, the whole version from the release tag -->
-    <VersionPrefix>1.0.1</VersionPrefix>
+    <VersionPrefix>1.1.0</VersionPrefix>
     <VersionSuffix>local.$([System.DateTime]::Now.ToString(`yyyyMMdd`)).1</VersionSuffix>
   </PropertyGroup>
 
