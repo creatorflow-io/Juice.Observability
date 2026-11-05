@@ -71,8 +71,8 @@ The tenant filter of the telemetry API is mutation-checked (`TelemetryApiTests`)
 ## After the MVP: one trace across services
 
 **Run 2026-11-05** (`Tests/Juice.Observability.Flow`): three processes, `orders → RabbitMQ → billing → RabbitMQ → shipping`,
-on unreleased Juice 10.10.0 and Juice.Audit 10.6.0 packed locally. From one trace id, through the read APIs the Console uses,
-all 25 checks pass:
+on released Juice 10.10.0 and Juice.Audit 10.6.0, read through the local stack's API, built from the 1.1.0 source. From one
+trace id, through the read APIs the Console uses, all 25 checks pass:
 
 - every step and its time, across the three services and the broker;
 - the logs of all three services;
