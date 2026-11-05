@@ -4,7 +4,11 @@
 **Rerun:** 2026-11-04 for `dotnet test`, `verify.sh --outage`, the load, API latency, breach-to-alert and the Console
 journey. The §9 rows for ingestion freshness, reference load, API reads and breach-to-alert, and the Console section, are
 from that rerun. Everything else is from 2026-11-01 unless it gives another date.
-**Decisions:** the [Phase 0 recommendations](phase-0-decisions.md), approved 2026-11-01.
+**Recheck:** 2026-11-05, after the 1.0.0 release, with the released code in `src` and the Console: `dotnet test` (161 pass),
+`verify.sh --outage` and the Console journey all pass. The load figures were not measured again.
+**Decisions:** the [Phase 0 recommendations](phase-0-decisions.md), approved 2026-11-01. Juice 10.8.0 inventory signed off
+2026-11-05.
+**Gate:** accepted by the project owner 2026-11-05, with the limits under "Not covered or open".
 **Repeat** (with `docker compose --profile platform --profile test`; run breach-to-alert and API latency during a load run):
 
 ```bash
@@ -69,7 +73,10 @@ The tenant filter of the telemetry API is mutation-checked (`TelemetryApiTests`)
 - **Console gaps:** Kubernetes workloads are not a resource type yet (§11); rules are read-only (D5); custom dashboards
   and advanced analytics are P2 and not built.
 - **The production differences** in `deployment.md`: PKI, TLS in front of Grafana, Keycloak and the API, the
-  customer's IdP, a secret store.
+  customer's IdP, a secret store, off-host backups. Accepted 2026-11-05 as install-time work: no production install is
+  planned yet. There is no published Docker image either; an install builds the `Dockerfile`.
+- **`host_resource` (D5)** has rule templates for memory only. CPU and filesystem are accepted as not built
+  (2026-11-05). Criterion 2 is about collecting host metrics, which covers them.
 - **The load run** used one telemetrygen resource per signal. It does not model 10 services and 100 instances. Since
   2026-11-04 it goes through the test Collector, so the load shares ClickHouse with the main Collector's traffic but not
   the main Collector itself. The test Collector has the same configuration.

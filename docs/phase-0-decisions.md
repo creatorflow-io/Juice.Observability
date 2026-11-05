@@ -106,6 +106,9 @@ cooldown and severity.
 
 Missing data evaluates to "no data", never zero (§8).
 
+**Built (accepted 2026-11-05):** `host_resource` covers memory used only (`HostMemory`). CPU and filesystem wait until a
+pilot needs them. The Collector still stores those metrics; only the rule templates are missing.
+
 ## D6 — OTLP authentication in production
 
 | Option | For | Against |
@@ -153,7 +156,7 @@ Replaces "Versions and Grafana isolation" (approved earlier on 2026-11-01). The 
 
 ## D9 — Ownership
 
-The G1–G3 framework gaps are closed in Juice 10.8.0 (unreleased). The owner names:
+The G1–G3 framework gaps are closed in Juice 10.8.0, published 2026-11-01. The owner names:
 
 - who releases Juice 10.8.0, needed before a pilot host can run it (the §9 log-load note);
 - who owns Track B (platform solution, migrations, discovery worker, API).

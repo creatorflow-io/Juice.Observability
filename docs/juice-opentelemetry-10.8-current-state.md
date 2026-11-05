@@ -1,7 +1,9 @@
 # Juice OpenTelemetry — 10.8.0 Current State and Gap Analysis
 
-**Baseline:** Juice 10.8.0 (unreleased)  
+**Baseline:** Juice 10.8.0, published 2026-11-01  
+**Signed off:** by the project owner, 2026-11-05, for 10.8.0  
 **Status:** implementation inventory and remaining work  
+**Later versions:** the diff from 10.8.0 to 10.9.0 (checked 2026-11-05) changes no meter or instrument. It adds spans for `ITimeTracker` scopes (`TimeTrackerActivitySource`), collected by `AddJuiceInstrumentation()`. The sign-off does not cover running against 10.9.0.  
 **Evidence note:** meter names, instrument names, and test coverage below were checked against the Juice repository source on 2026-10-30 (`Juice/core/src`, `Juice/core/test`, `.github/workflows`). Behavior not covered by a cited file or test is marked as unverified. Re-check against source before changing code.
 
 ## 1. Purpose and boundary
@@ -10,7 +12,7 @@ This document records what the Juice instrumentation layer already provides and 
 
 ## 2. Current state
 
-| Capability | State in 10.8.0 (unreleased) | Evidence / notes |
+| Capability | State in 10.8.0 | Evidence / notes |
 |---|---|---|
 | Juice `ActivitySource` and `Meter` | Implemented | Both named `Juice` (`JuiceActivitySource.Name`, `JuiceMeter.Name`). `AddJuiceInstrumentation()` adds exactly this source/meter and nothing else. |
 | Context attributes | Implemented | `juice.correlation_id`, `juice.causation_id`, `juice.execution_id`, and `juice.source` (`MessagingActivity.Tags`). They are distinct from W3C `TraceId`/`SpanId`. |
@@ -21,7 +23,7 @@ This document records what the Juice instrumentation layer already provides and 
 | W3C propagation over NATS | Implemented, unit-tested only | Propagation in `JetStreamConsumerEngine`; covered by `JetStreamConsumerEngineTest`. No cross-process NATS test. |
 | End-to-end trace tests | Implemented, runs on CI | `HttpTraceTests`: in-process HTTP → mediator → local channel → consumer, plus metric assertions. `CrossProcessTraceTests` (`[IntegrationTheory]`, RabbitMQ and NATS): HTTP server → mediator → SQL → `create` → outbox `deliver` (+ SQL) → `send` → consumer process `process` → `handle` → mediator → SQL, parent links asserted. Runs in `integration-tests.yml` with SQL Server, RabbitMQ and NATS containers. |
 | Audit behavior | Implemented in Juice.EF | Audit annotations/events live in `Juice.EF` and `MediatorExtensions`; there is no separate `Juice.Audit` component. |
-| Logs exported to OTLP | Implemented in 10.8.0 (unreleased) | Host-level: `WithLogging(l => l.AddJuiceInstrumentation().AddOtlpExporter())`; Juice log processor adds context and redacts payloads (`LogExportTests`). |
+| Logs exported to OTLP | Implemented in 10.8.0 | Host-level: `WithLogging(l => l.AddJuiceInstrumentation().AddOtlpExporter())`; Juice log processor adds context and redacts payloads (`LogExportTests`). |
 
 ### Outbox measurement clarification
 
@@ -56,7 +58,7 @@ Measurements outside the Juice meter, none of which `AddJuiceInstrumentation()` 
 
 ### G2 — Logs to OTLP
 
-Logs → OTLP was not implemented in the supported Juice setup before 10.8.0. **Closed in 10.8.0 (unreleased), commit `78073fc`:** `AddJuiceInstrumentation()` on `LoggerProviderBuilder` (`Juice.OpenTelemetry`, which now references the OpenTelemetry SDK, still no exporter) adds a processor that exports the `MessageContext` ids as `juice.correlation_id`, `juice.causation_id`, `juice.execution_id`, `juice.source` and removes destructured and `Payload` attributes from `Juice.*` logs unless `IncludePayloads`. Trace and span ids come from the SDK. `LogExportTests` covers each acceptance criterion below, including OTLP/HTTP to a local receiver and a stalled exporter (bounded queue, records dropped). Application logs and exception messages are exported as written. A standalone sample app is part of Phase 1A.
+Logs → OTLP was not implemented in the supported Juice setup before 10.8.0. **Closed in 10.8.0, commit `78073fc`:** `AddJuiceInstrumentation()` on `LoggerProviderBuilder` (`Juice.OpenTelemetry`, which now references the OpenTelemetry SDK, still no exporter) adds a processor that exports the `MessageContext` ids as `juice.correlation_id`, `juice.causation_id`, `juice.execution_id`, `juice.source` and removes destructured and `Payload` attributes from `Juice.*` logs unless `IncludePayloads`. Trace and span ids come from the SDK. `LogExportTests` covers each acceptance criterion below, including OTLP/HTTP to a local receiver and a stalled exporter (bounded queue, records dropped). Application logs and exception messages are exported as written. A standalone sample app is part of Phase 1A.
 
 **Required outcome:** document and demonstrate host-level .NET OpenTelemetry logging and OTLP exporter setup. Keep exporter/backend choices outside core Juice packages. Define allowlisted Juice context, trace/span correlation, redaction, and failure behavior.
 
@@ -69,7 +71,7 @@ Logs → OTLP was not implemented in the supported Juice setup before 10.8.0. **
 
 ### G3 — End-to-end trace validation
 
-**Closed in 10.8.0 (unreleased): `3df6e51`..`e3b001d`, green on CI (`integration-tests.yml`, run 41023576350).** `CrossProcessTraceTests` is an `[IntegrationTheory]` over RabbitMQ and NATS JetStream and asserts:
+**Closed in 10.8.0: `3df6e51`..`e3b001d`, green on CI (`integration-tests.yml`, run 41023576350).** `CrossProcessTraceTests` is an `[IntegrationTheory]` over RabbitMQ and NATS JetStream and asserts:
 
 ```text
 HTTP server span                         (asserted)
