@@ -62,6 +62,9 @@ namespace Juice.Observability.Data
         public Guid EnvironmentId { get; init; }
         public DateTimeOffset FirstSeen { get; set; }
         public DateTimeOffset LastSeen { get; set; }
+        /// <summary>The version of the newest instance seen, which a different one's arrival changes (Phase 5).</summary>
+        public string? CurrentVersion { get; set; }
+        public DateTimeOffset? CurrentVersionAt { get; set; }
     }
 
     public enum InstanceKeySource

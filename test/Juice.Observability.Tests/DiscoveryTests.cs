@@ -16,6 +16,110 @@ namespace Juice.Observability.Tests
         private readonly string _run = Guid.NewGuid().ToString("N")[..8];
 
         [Fact]
+        public async Task A_new_version_is_a_change_but_a_rollout_and_a_replay_are_not_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var service = $"disc-{_run}-versions";
+            var sent = 0;
+            // Spans of now: discovery reads forward from where it stopped, as it does for real telemetry.
+            async Task SendAsync(string instance, string version)
+            {
+                await LocalStack.SendAsync("traces", Otlp.Traces(
+                    [("service.name", service), ("service.instance.id", instance), ("deployment.environment.name", "production"), ("service.version", version)],
+                    Otlp.Span(Otlp.TraceId(), Otlp.SpanId(), null, "work", Otlp.Internal, DateTimeOffset.UtcNow)));
+                await LocalStack.WaitForSpansAsync(service, ++sent);
+            }
+            async Task<List<(string? From, string? To)>> DiscoverAsync()
+            {
+                await Runner(database).RunOnceAsync(TestContext.Current.CancellationToken);
+                await using var db = database.Context();
+                return (await db.ChangeEvents.Where(c => c.Source == ChangeEvent.TelemetrySource && c.Summary.Contains(service)).OrderBy(c => c.OccurredAt).ToListAsync()).Select(c => (c.FromVersion, c.ToVersion)).ToList();
+            }
+
+            // The first version seen isn't a change: nothing says what came before.
+            await SendAsync("v1-a", "1.0");
+            Assert.Empty(await DiscoverAsync());
+
+            // A new instance on a new version is one.
+            await SendAsync("v2-a", "1.1");
+            Assert.Equal([("1.0", "1.1")], await DiscoverAsync());
+
+            // The old instance still reporting 1.0 during the rollout, in a later round, isn't a step back.
+            await SendAsync("v1-a", "1.0");
+            Assert.Equal([("1.0", "1.1")], await DiscoverAsync());
+
+            // More of the same version: nothing new. Running discovery again over what it has seen: nothing new.
+            await SendAsync("v2-b", "1.1");
+            Assert.Equal([("1.0", "1.1")], await DiscoverAsync());
+            Assert.Equal([("1.0", "1.1")], await DiscoverAsync());
+
+            // A rollback is a change too.
+            await SendAsync("v1-b", "1.0");
+            Assert.Equal([("1.0", "1.1"), ("1.1", "1.0")], await DiscoverAsync());
+
+            await using var check = database.Context();
+            var change = await check.ChangeEvents.Where(c => c.ToVersion == "1.1" && c.Summary.Contains(service)).SingleAsync();
+            Assert.Equal((ChangeKind.Version, null, "production"), (change.Kind, change.Actor, change.Environment));
+            Assert.Equal((await check.Services.SingleAsync(s => s.Name == service)).Id, change.ServiceId);
+            Assert.Contains("moved from 1.0 to 1.1", change.Summary);
+        }
+
+        [Theory(DisplayName = "An install from before versions were tracked doesn't lose the first change after upgrading")]
+        [InlineData("same", "A restart on a new version")]
+        [InlineData("another", "A new instance on a new version")]
+        public async Task The_first_change_after_upgrading_isnt_lost_Async(string instance, string _)
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var start = DateTimeOffset.UtcNow.AddMinutes(-20);
+            async Task ApplyAsync(string key, int minutes)
+            {
+                await using var db = database.Context();
+                var at = start.AddMinutes(minutes);
+                await new Reconciler(db, new Normalizer([]), new DiscoveryOptions(), TimeProvider.System).ApplyAsync((await db.Tenants.SingleAsync()).Id,
+                    [new ResourceObservation { ServiceName = "orders", InstanceId = key, Environment = "production", ServiceVersion = minutes == 0 ? "1.0" : "1.1", FirstSeen = at, LastSeen = at, Records = 1 }],
+                    [], [], TestContext.Current.CancellationToken);
+            }
+            await ApplyAsync("same", 0);
+            await using var check = database.Context();
+            // As an upgraded install finds it: instances know their version, the service doesn't yet.
+            await check.ServiceEnvironments.ExecuteUpdateAsync(s => s.SetProperty(e => e.CurrentVersion, (string?)null).SetProperty(e => e.CurrentVersionAt, (DateTimeOffset?)null), TestContext.Current.CancellationToken);
+
+            await ApplyAsync(instance, 5);
+
+            var change = await check.ChangeEvents.AsNoTracking().SingleAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(("1.0", "1.1"), (change.FromVersion, change.ToVersion));
+        }
+
+        [Fact]
+        public async Task An_old_instance_reporting_later_is_not_a_step_back_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var start = DateTimeOffset.UtcNow.AddMinutes(-20);
+            async Task<List<(string? From, string? To)>> ApplyAsync(string instance, string version, int minutes)
+            {
+                await using var db = database.Context();
+                var tenant = (await db.Tenants.SingleAsync()).Id;
+                var at = start.AddMinutes(minutes);
+                await new Reconciler(db, new Normalizer([]), new DiscoveryOptions(), TimeProvider.System).ApplyAsync(tenant,
+                    [new ResourceObservation { ServiceName = "orders", InstanceId = instance, Environment = "production", ServiceVersion = version, FirstSeen = at, LastSeen = at, Records = 1 }],
+                    [], [], TestContext.Current.CancellationToken);
+                return (await db.ChangeEvents.OrderBy(c => c.OccurredAt).ToListAsync()).Select(c => (c.FromVersion, c.ToVersion)).ToList();
+            }
+
+            Assert.Empty(await ApplyAsync("old", "1.0", 0));
+            Assert.Equal([("1.0", "1.1")], await ApplyAsync("new", "1.1", 5));
+            // This window holds only the old instance's later spans, so nothing in its times gives it away.
+            Assert.Equal([("1.0", "1.1")], await ApplyAsync("old", "1.0", 10));
+            // A new instance on the old version is a rollback.
+            Assert.Equal([("1.0", "1.1"), ("1.1", "1.0")], await ApplyAsync("back", "1.0", 12));
+            // An instance updated in place is a change too.
+            Assert.Equal([("1.0", "1.1"), ("1.1", "1.0"), ("1.0", "1.2")], await ApplyAsync("back", "1.2", 14));
+        }
+
+        [Fact]
         public async Task Services_instances_environments_and_hosts_appear_from_telemetry_Async()
         {
             LocalStack.RequireAvailable();

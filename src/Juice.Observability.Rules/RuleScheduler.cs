@@ -175,11 +175,20 @@ namespace Juice.Observability.Rules
             var existing = await db.Rules.Where(r => r.TenantId == tenantId).ToDictionaryAsync(r => r.Key, cancellationToken);
             var now = clock.GetUtcNow();
             var changes = 0;
-            void Audit(string operation, Rule rule) => db.AuditRecords.Add(new AuditRecord
+            void Audit(string operation, Rule rule)
             {
-                TenantId = tenantId, Actor = Actor, Operation = operation, TargetType = "rule", TargetId = rule.Key,
-                Outcome = AuditOutcome.Succeeded, Metadata = new() { ["hash"] = rule.DefinitionHash, ["template"] = rule.Template.ToString() },
-            });
+                db.AuditRecords.Add(new AuditRecord
+                {
+                    TenantId = tenantId, Actor = Actor, Operation = operation, TargetType = "rule", TargetId = rule.Key,
+                    Outcome = AuditOutcome.Succeeded, Metadata = new() { ["hash"] = rule.DefinitionHash, ["template"] = rule.Template.ToString() },
+                });
+                db.ChangeEvents.Add(new ChangeEvent
+                {
+                    TenantId = tenantId, Kind = ChangeKind.Configuration, Source = ChangeEvent.PlatformSource, Actor = Actor,
+                    Summary = $"Rule {rule.Key}: {operation.Replace("rule.", "")}", Attributes = new() { [ChangeEvent.RuleAttribute] = rule.Key },
+                    OccurredAt = now, RecordedAt = now,
+                });
+            }
 
             foreach (var definition in definitions)
             {

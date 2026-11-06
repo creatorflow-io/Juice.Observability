@@ -33,6 +33,7 @@ namespace Juice.Observability.Data
         public DbSet<WebhookDelivery> WebhookDeliveries => Set<WebhookDelivery>();
         public DbSet<WebhookAttempt> WebhookAttempts => Set<WebhookAttempt>();
         public DbSet<LoadRun> LoadRuns => Set<LoadRun>();
+        public DbSet<ChangeEvent> ChangeEvents => Set<ChangeEvent>();
 
         /// <summary>Applies the snake_case naming used by every table. Call it when configuring the context.</summary>
         public static void Configure(DbContextOptionsBuilder options, string connectionString)
@@ -153,6 +154,7 @@ namespace Juice.Observability.Data
 
             ConfigureAlerts(model);
             ConfigureLoadRuns(model);
+            ConfigureChanges(model);
             ConfigureWebhooks(model);
 
             model.Entity<HealthSnapshot>(e =>
@@ -179,6 +181,29 @@ namespace Juice.Observability.Data
                     .IsUnique().AreNullsDistinct(false);
                 e.HasIndex(x => new { x.TenantId, x.SubjectId, x.EvaluatedAt });
                 e.HasOne<DeploymentEnvironment>().WithMany().HasForeignKey(x => x.EnvironmentId).OnDelete(DeleteBehavior.Cascade);
+            });
+        }
+
+        private static void ConfigureChanges(ModelBuilder model)
+        {
+            model.Entity<ChangeEvent>(e =>
+            {
+                e.ToTable("change_events");
+                Tenant(e);
+                e.Property(x => x.Kind).HasConversion<string>().HasMaxLength(20);
+                e.Property(x => x.Source).HasMaxLength(128);
+                e.Property(x => x.Actor).HasMaxLength(200);
+                e.Property(x => x.Summary).HasMaxLength(500);
+                e.Property(x => x.Environment).HasMaxLength(128);
+                e.Property(x => x.FromVersion).HasMaxLength(128);
+                e.Property(x => x.ToVersion).HasMaxLength(128);
+                e.Property(x => x.ExternalKey).HasMaxLength(256);
+                Json(e.Property(x => x.Attributes));
+                e.HasOne<Service>().WithMany().HasForeignKey(x => x.ServiceId).OnDelete(DeleteBehavior.SetNull);
+                e.HasOne<Resource>().WithMany().HasForeignKey(x => x.ResourceId).OnDelete(DeleteBehavior.SetNull);
+                e.HasIndex(x => new { x.TenantId, x.OccurredAt });
+                e.HasIndex(x => new { x.TenantId, x.ServiceId, x.OccurredAt });
+                e.HasIndex(x => new { x.TenantId, x.Source, x.ExternalKey }).IsUnique().HasFilter("external_key IS NOT NULL");
             });
         }
 

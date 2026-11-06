@@ -367,6 +367,12 @@ namespace Juice.Observability.Webhooks
                     TenantId = tenantId, Actor = RuleProvisioner.Actor, Operation = operation, TargetType = targetType, TargetId = target,
                     Outcome = AuditOutcome.Succeeded, Metadata = metadata,
                 });
+                // The name and the operation only: an endpoint's URL and secret stay out of change events.
+                db.ChangeEvents.Add(new ChangeEvent
+                {
+                    TenantId = tenantId, Kind = ChangeKind.Configuration, Source = ChangeEvent.PlatformSource, Actor = RuleProvisioner.Actor,
+                    Summary = $"{targetType} {target}: {operation}", OccurredAt = now, RecordedAt = now,
+                });
                 changes++;
             }
 

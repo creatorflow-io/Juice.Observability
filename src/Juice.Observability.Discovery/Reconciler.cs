@@ -27,6 +27,7 @@ namespace Juice.Observability.Discovery
             IReadOnlyList<ServiceLinkObservation> links, IReadOnlyList<ResourceUseObservation> uses, CancellationToken cancellationToken)
         {
             await LoadAsync(tenantId, resources, links, uses, cancellationToken);
+            var versions = new List<(Service Service, DeploymentEnvironment Environment, string Version, string? Known, DateTimeOffset At)>();
 
             foreach (var o in resources)
             {
@@ -40,11 +41,21 @@ namespace Juice.Observability.Discovery
                 UpsertServiceEnvironment(tenantId, service, environment, o.FirstSeen, o.LastSeen);
                 if (normalizer.Instance(o) is { } instanceKey)
                 {
+                    var known = _instances.ContainsKey((service.Id, environment.Id, instanceKey.Key));
                     var instance = UpsertInstance(tenantId, service, environment, instanceKey, o.FirstSeen, o.LastSeen);
                     if (o.LastSeen >= instance.LastSeen)
                     {
                         var version = normalizer.Value(o.ServiceVersion);
-                        if (version.Length > 0) instance.ServiceVersion = version;
+                        if (version.Length > 0)
+                        {
+                            // Only a new instance or one that changed version can announce a version: during a rollout the old
+                            // instances keep reporting theirs, which must not read as going back.
+                            if (!known || instance.ServiceVersion != version)
+                            {
+                                versions.Add((service, environment, version, KnownVersion(service, environment, instance), o.FirstSeen));
+                            }
+                            instance.ServiceVersion = version;
+                        }
                         if (hosts.FirstOrDefault(r => r.Type == ResourceType.Host) is { } host) instance.HostResourceId = host.Id;
                     }
                 }
@@ -79,6 +90,7 @@ namespace Juice.Observability.Discovery
                 // Only the service reports the interaction; the destination or database never does (D3).
                 UpsertDependency(tenantId, environment, from, relation, null, resource.Id, DependencyConfidence.Inferred, o.Spans, o.FreshSpans, o.FirstSeen, o.LastSeen);
             }
+            RecordVersionChanges(tenantId, versions);
 
             await db.SaveChangesAsync(cancellationToken);
 
@@ -94,6 +106,49 @@ namespace Juice.Observability.Discovery
 
             return new ReconcileResult(_newServices, _newInstances, _newResources, _newDependencies, deactivated, pruned);
         }
+
+        /// <summary>
+        /// A service's first version isn't a change, since nothing says what came before. After that, a different version from a newer instance is
+        /// recorded, with no actor: telemetry shows that it changed, not who changed it.
+        /// </summary>
+        private void RecordVersionChanges(Guid tenantId, List<(Service Service, DeploymentEnvironment Environment, string Version, string? Known, DateTimeOffset At)> versions)
+        {
+            foreach (var (service, environment, version, known, at) in versions.OrderBy(v => v.At))
+            {
+                var link = _serviceEnvironments[(service.Id, environment.Id)];
+                if (link.CurrentVersionAt is { } latest && at < latest)
+                {
+                    continue; // an older instance reported late
+                }
+                var previous = link.CurrentVersion ?? known;
+                link.CurrentVersion = version;
+                link.CurrentVersionAt = at;
+                if (previous is null || previous == version)
+                {
+                    continue;
+                }
+                var name = service.Namespace.Length > 0 ? $"{service.Namespace}/{service.Name}" : service.Name;
+                db.ChangeEvents.Add(new ChangeEvent
+                {
+                    TenantId = tenantId, Kind = ChangeKind.Version, Source = ChangeEvent.TelemetrySource,
+                    Summary = Bounded($"{name} moved from {previous} to {version} in {environment.Key}", 500),
+                    ServiceId = service.Id, Environment = environment.Key, FromVersion = Bounded(previous, 128), ToVersion = Bounded(version, 128),
+                    OccurredAt = at, RecordedAt = clock.GetUtcNow(),
+                    ExternalKey = $"version:{service.Id:N}:{environment.Id:N}:{at.UtcTicks}",
+                });
+            }
+        }
+
+        /// <summary>
+        /// The version already on record for a service, for when <see cref="ServiceEnvironment.CurrentVersion"/> isn't set yet: an install from before
+        /// it existed knows its instances' versions, and shouldn't lose the first change after upgrading.
+        /// </summary>
+        private string? KnownVersion(Service service, DeploymentEnvironment environment, ServiceInstance instance)
+            => instance.ServiceVersion ?? _instances.Values
+                .Where(i => i.ServiceId == service.Id && i.EnvironmentId == environment.Id && i != instance && i.ServiceVersion != null)
+                .OrderByDescending(i => i.FirstSeen).Select(i => i.ServiceVersion).FirstOrDefault();
+
+        private static string Bounded(string text, int length) => text.Length <= length ? text : text[..length];
 
         // Loads the existing records the observations can match, bounded by the names they carry.
         private async Task LoadAsync(Guid tenantId, IReadOnlyList<ResourceObservation> resources,
