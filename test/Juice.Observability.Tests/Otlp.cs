@@ -78,6 +78,41 @@ namespace Juice.Observability.Tests
             };
         }
 
+        /// <summary>A cumulative histogram with one point per (time, count, sum), all sharing one start time.</summary>
+        public static JsonObject Histogram((string Key, string Value)[] resource, string name, DateTimeOffset start,
+            params (DateTimeOffset At, long Count, double Sum)[] points)
+        {
+            static string Nanos(DateTimeOffset t) => (t.ToUnixTimeMilliseconds() * 1_000_000).ToString();
+            return new JsonObject
+            {
+                ["resourceMetrics"] = new JsonArray(new JsonObject
+                {
+                    ["resource"] = new JsonObject { ["attributes"] = Attributes(resource) },
+                    ["scopeMetrics"] = new JsonArray(new JsonObject
+                    {
+                        ["scope"] = new JsonObject { ["name"] = "Juice.Observability.Tests" },
+                        ["metrics"] = new JsonArray(new JsonObject
+                        {
+                            ["name"] = name,
+                            ["histogram"] = new JsonObject
+                            {
+                                ["aggregationTemporality"] = 2,
+                                ["dataPoints"] = new JsonArray(points.Select(p => (JsonNode)new JsonObject
+                                {
+                                    ["count"] = p.Count.ToString(),
+                                    ["sum"] = p.Sum,
+                                    ["bucketCounts"] = new JsonArray(p.Count.ToString()),
+                                    ["explicitBounds"] = new JsonArray(),
+                                    ["startTimeUnixNano"] = Nanos(start),
+                                    ["timeUnixNano"] = Nanos(p.At),
+                                }).ToArray()),
+                            },
+                        }),
+                    }),
+                }),
+            };
+        }
+
         /// <summary>A span lasting <paramref name="duration"/>.</summary>
         public static JsonObject Lasting(JsonObject span, TimeSpan duration)
         {

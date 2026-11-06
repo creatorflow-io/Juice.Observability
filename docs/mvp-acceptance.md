@@ -62,7 +62,7 @@ instance `payments-2` fails every charge. **All steps pass with no browser error
 its span id; 9. the `INSERT charges` span to the database `payments-db/payments` and the traces that reach it;
 10. metrics around the span (`payments.charges` as a rate); 11. the service's logs around it; 12. the topology;
 13. the `checkout → payments` edge's evidence (observed, 50 % errors, representative traces); 14. global search by
-service name; 15. alerts; 16. rules. Since x1-03 the journey also opens a trace's resource usage (17 steps). Context (environment, time range, selected operation and span) is kept in each
+service name; 15. alerts; 16. rules. Since x1-03 the journey also opens a trace's resource usage, and since x2-01 a service's capacity (18 steps). Context (environment, time range, selected operation and span) is kept in each
 URL and survives back navigation.
 
 The tenant filter of the telemetry API is mutation-checked (`TelemetryApiTests`); the Console serving rules are tested
@@ -82,6 +82,44 @@ trace id, through the read APIs the Console uses, all 25 checks pass:
 
 An order whose last step rolls back after reporting its change keeps `Orders` and `Invoices`, does not list `Shipments`,
 and records the attempt with `UncommittedChanges = 1`.
+
+**Capacity estimate, run 2026-11-05** (`load.mjs`, `compare.mjs`): orders at 2, 4, 8, 16, 32 and 64 per second, 3 minutes each, on
+one development machine with all three services and the stack, fitted on the first four steps only, with `Juice.EF` built
+with the pooled context fix of 10.10.1, before it was released. The 25 checks above also pass on the released 10.10.1.
+
+- Predicted CPU beyond the fit: `orders` 14% high at 32/s and 25% high at 64/s; `billing` 8% low and `shipping` 1% high at 32/s.
+  A first run, before that fix, had CPU 13% to 19% low, and consumers stuck near 8 messages/s: that was the defect, not the services.
+- **Outbox delivery is the limit the estimate doesn't show.** `orders` accepted 64 requests/s, but sent about 17 messages/s to
+  RabbitMQ, leaving 8,170 undelivered when the load ended, with CPU near 0.3 of 24 cores. Requests and CPU looked healthy throughout.
+  Delivery runs one message at a time, each with two committed `UPDATE`s and a broker confirm, so its limit is
+  `batch / (batch × time per message + interval)`. The time per message follows the disk's log flush:
+
+  | Run | Orders/s | Log flush, avg | Time per message | Delivered/s |
+  |---|---|---|---|---|
+  | 10 every 200 ms, no requests | 0 | 1.3 ms | 7.5 ms | 35 |
+  | 100 every 10 ms, no requests | 0 | 1.25 ms | 7.3 ms | 133 |
+  | 100 every 10 ms | 16 / 32 | 1.8 / 3.6 ms | 9.2 / 12.5 ms | 16 / 32 (all of them) |
+  | 100 every 10 ms | 64 | 11.9 ms | 37.6 ms | 26 |
+  | 100 every 10 ms, delayed durability forced | 64 | none waited for | 12.9 ms | 63.9 (all of them) |
+  | 100 every 10 ms, two instances | 64 | 13.9 ms | 44.5 ms | 40.6 (half the claims lost the race) |
+
+  Server CPU per `UPDATE` stayed near 0.1 ms in every run; log flushes stopped rising near 220/s. All of this shares one
+  development machine's disk with SQL Server, RabbitMQ, PostgreSQL and ClickHouse, so the numbers aren't a production limit.
+
+  **With batched claims and concurrent sends** (Juice, not released yet), against the targets agreed 2026-11-05:
+
+  | Target | Before | After | Result |
+  |---|---|---|---|
+  | One instance, no other traffic: at least 1,000/s | 133/s | 1,585/s | **Pass** |
+  | 64 orders/s: delivery keeps up | 26/s, backlog growing | 63.9/s, 10 pending | **Pass** |
+  | 64 orders/s: p95 from commit to broker under 1 s | growing | 243 ms | **Pass** |
+  | Two instances: no lost claims (changed 2026-11-06, was also at least 1.8× one) | half lost | whole batches claimed, 1.59× | **Pass** |
+  | Default settings don't cap delivery | about 2/s, calculated | 719/s | **Pass** |
+
+  Requests at 64 orders/s: client p95 57 → 29 ms; log flush 11.9 → 2.1 ms; `billing`'s queue stays empty. At 128 orders/s delivery
+  still keeps up (127.8/s, p95 400 ms), but `billing` falls behind, ending with 11,148 queued. On two instances each message took
+  about 23% longer, which accounts for the ratio; a shared broker and machine is the likely reason, not separately shown. The 1.59×
+  is not a scaling figure: rerun on separate machines before quoting one.
 
 ## Not covered or open
 

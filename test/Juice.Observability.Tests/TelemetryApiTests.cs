@@ -111,6 +111,14 @@ namespace Juice.Observability.Tests
             Assert.Equal([trace], calls.GetProperty("errorTraces").EnumerateArray().Select(t => t.GetString()));
             var uses = await Api($"/telemetry/dependencies/{databaseId}?{window}");
             Assert.Equal(("Inferred", 1L), (uses.GetProperty("confidence").GetString(), uses.GetProperty("count").GetInt64()));
+            // Every edge's figures at once, for the graph: the same as each edge's evidence, and 0 calls outside the window.
+            var stats = (await Api($"/telemetry/dependencies?{window}")).GetProperty("items").EnumerateArray()
+                .ToDictionary(s => s.GetProperty("dependencyId").GetGuid());
+            Assert.Equal((1L, 1.0), (stats[callsId].GetProperty("count").GetInt64(), stats[callsId].GetProperty("errorRate").GetDouble()));
+            Assert.Equal((1L, 0.0), (stats[databaseId].GetProperty("count").GetInt64(), stats[databaseId].GetProperty("errorRate").GetDouble()));
+            var before = $"from={Uri.EscapeDataString(at.AddHours(-2).ToString("O"))}&to={Uri.EscapeDataString(at.AddHours(-1).ToString("O"))}";
+            var quiet = (await Api($"/telemetry/dependencies?{before}")).GetProperty("items").EnumerateArray().ToDictionary(s => s.GetProperty("dependencyId").GetGuid());
+            Assert.Equal((0L, 0L), (quiet[callsId].GetProperty("count").GetInt64(), quiet[databaseId].GetProperty("count").GetInt64()));
             Assert.Equal(trace, Assert.Single((await Api($"/telemetry/traces?dependencyId={callsId}&{window}")).GetProperty("items").EnumerateArray())
                 .GetProperty("traceId").GetString());
             Assert.Single((await Api($"/telemetry/traces?attribute=db.system.name%3Dpostgresql&serviceId={paymentsId}&{window}")).GetProperty("items").EnumerateArray());
@@ -291,6 +299,191 @@ namespace Juice.Observability.Tests
             var point = Assert.Single((await Api($"/telemetry/service-stats?{query}&stepSeconds=60")).GetProperty("points").EnumerateArray());
             Assert.Equal(0.5, point.GetProperty("requestsPerSecond").GetDouble(), 6);
             Assert.Equal(0.1, point.GetProperty("messagesPerSecond").GetDouble(), 6);
+        }
+
+        [Fact]
+        public async Task Capacity_measures_each_instance_from_real_telemetry_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var (service, sampled) = ($"tel-{_run}-capacity", $"tel-{_run}-sampled");
+            var (resource, sampledResource) = (new[] { ("service.name", service), ("service.instance.id", $"{service}-1"), ("host.name", "bench-1") },
+                new[] { ("service.name", sampled), ("service.instance.id", $"{sampled}-1") });
+            var now = DateTimeOffset.UtcNow;
+            var first = new DateTimeOffset(now.Ticks - now.Ticks % TimeSpan.TicksPerMinute, TimeSpan.Zero).AddMinutes(-14);
+            const int Minutes = 12;
+            var start = first.AddMinutes(-2);
+
+            // A minute before the first bucket starts the counters. Then 6, 12, ... 72 requests a minute of 1 s each, on a
+            // process using 0.1 core idle plus 0.5 s of CPU per request, and memory of 100 MB plus 50 MB per request in flight.
+            var spans = new List<System.Text.Json.Nodes.JsonObject>();
+            var cpu = new List<(DateTimeOffset, long)> { (first.AddSeconds(-30), 1000) };
+            var (memory, cpuCount, queue) = (new List<(DateTimeOffset, long)>(), new List<(DateTimeOffset, long)>(), new List<(DateTimeOffset, long)>());
+            var (http, used) = (new List<(DateTimeOffset, long, double)> { (first.AddSeconds(-30), 500, 50d) }, 1000L);
+            for (var minute = 0; minute < Minutes; minute++)
+            {
+                var requests = (minute + 1) * 6;
+                var at = first.AddMinutes(minute);
+                spans.AddRange(Otlp.Requests(requests, 0, at.AddSeconds(10)).Select(s => Otlp.Lasting(s, TimeSpan.FromSeconds(1))));
+                used += 6 + requests / 2;
+                cpu.Add((at.AddSeconds(30), used));
+                memory.Add((at.AddSeconds(30), 100_000_000 + requests * 50_000_000L / 60));
+                cpuCount.Add((at.AddSeconds(30), 4));
+                queue.Add((at.AddSeconds(30), minute == Minutes - 1 ? 7 : 0));
+                http.Add((at.AddSeconds(30), 500 + (minute + 1) * 60, 50 + (minute + 1) * 6d));
+            }
+            // An outbox worker polling: root client spans, many times a second, that are not work.
+            var polls = Enumerable.Range(0, 600).Select(i => Otlp.Span(Otlp.TraceId(), Otlp.SpanId(), null, "SELECT outbox", Otlp.Client, first.AddMinutes(Minutes - 1).AddMilliseconds(i * 10)));
+            await LocalStack.SendAsync("traces", Otlp.Traces(resource, [.. spans, .. polls,
+                Otlp.Lasting(Otlp.Span(Otlp.TraceId(), Otlp.SpanId(), Otlp.SpanId(), "process orders", Otlp.Consumer, first.AddMinutes(Minutes - 1).AddSeconds(10)), TimeSpan.FromSeconds(1))]));
+            await LocalStack.SendAsync("metrics", Otlp.Sum(resource, "dotnet.process.cpu.time", start, [], [.. cpu]));
+            await LocalStack.SendAsync("metrics", Otlp.Sum(resource, "dotnet.process.memory.working_set", start, [], [.. memory]));
+            await LocalStack.SendAsync("metrics", Otlp.Sum(resource, "dotnet.process.cpu.count", start, [], [.. cpuCount]));
+            await LocalStack.SendAsync("metrics", Otlp.Sum(resource, "dotnet.thread_pool.queue.length", start, [], [.. queue]));
+            await LocalStack.WaitForSpansAsync(service, spans.Count + 1 + 600);
+
+            // Sampled traces: one span a minute, while the host's metric counts 60 requests a minute lasting 0.1 s each.
+            await LocalStack.SendAsync("traces", Otlp.Traces(sampledResource,
+                Enumerable.Range(0, Minutes).SelectMany(m => Otlp.Requests(1, 0, first.AddMinutes(m).AddSeconds(10))).ToArray()));
+            await LocalStack.SendAsync("metrics", Otlp.Histogram(sampledResource, "http.server.request.duration", start, [.. http]));
+            await LocalStack.WaitForSpansAsync(sampled, Minutes);
+            await DiscoverAsync(database);
+
+            await using var factory = new ApiFactory(database);
+            using var client = factory.CreateClient();
+            var token = await LocalStack.TokenAsync("victor");
+            var tenant = (await JsonAsync(await Get(client, "/api/v1/tenants", token))).GetProperty("items")[0].GetProperty("id").GetGuid();
+            Guid id, sampledId;
+            await using (var db = database.Context())
+            {
+                id = (await db.Services.SingleAsync(s => s.Name == service)).Id;
+                sampledId = (await db.Services.SingleAsync(s => s.Name == sampled)).Id;
+            }
+            // A window cutting the last bucket short: that bucket, at the highest load, must not count.
+            var window = $"from={Uri.EscapeDataString(first.ToString("O"))}&to={Uri.EscapeDataString(first.AddMinutes(Minutes).ToString("O"))}";
+            var cut = $"from={Uri.EscapeDataString(first.ToString("O"))}&to={Uri.EscapeDataString(first.AddMinutes(Minutes - 1).AddSeconds(30).ToString("O"))}";
+            Task<HttpResponseMessage> Capacity(string query) => Get(client, $"/api/v1/tenants/{tenant}/telemetry/capacity?{query}", token);
+
+            // Metrics are stored apart from spans: wait until the last point of each has arrived.
+            JsonElement result = default, viaMetric = default;
+            for (var attempt = 0; attempt < 30; attempt++)
+            {
+                result = await JsonAsync(await Capacity($"serviceId={id}&{window}"));
+                viaMetric = await JsonAsync(await Capacity($"serviceId={sampledId}&{window}"));
+                if (result.GetProperty("cpuModel").GetString() == "fitted" && result.GetProperty("memoryModel").GetString() == "fitted"
+                    && result.GetProperty("peakQueue").ValueKind == JsonValueKind.Number && result.GetProperty("coresPerInstance").ValueKind == JsonValueKind.Number
+                    && viaMetric.GetProperty("requestSource").GetString() == "metrics" && viaMetric.GetProperty("samples").GetInt32() == Minutes - 1) break;
+                await Task.Delay(TimeSpan.FromSeconds(1));
+            }
+
+            Assert.Equal("spans", result.GetProperty("requestSource").GetString());
+            Assert.Equal("fitted", result.GetProperty("cpuModel").GetString());
+            Assert.Equal(1, result.GetProperty("instances").GetInt32());
+            Assert.Equal(["bench-1"], result.GetProperty("hosts").EnumerateArray().Select(h => h.GetString()!));
+            Assert.Equal(4, result.GetProperty("coresPerInstance").GetInt32());
+            Assert.Equal(0.5, result.GetProperty("cpuSecondsPerUnit").GetDouble(), 1);
+            Assert.Equal(0.1, result.GetProperty("idleCores").GetDouble(), 1);
+            Assert.Equal(7, result.GetProperty("peakQueue").GetDouble());
+            Assert.Equal(1000, result.GetProperty("responseMs").GetDouble(), 0);
+            // The busiest bucket: 72 requests and one message over 60 s, and the message took its own second.
+            Assert.Equal(73d / 60, result.GetProperty("peakPerSecond").GetDouble(), 6);
+            Assert.Equal(100e6, result.GetProperty("idleMemoryBytes").GetDouble(), tolerance: 2e6);
+            Assert.Equal(50e6, result.GetProperty("memoryBytesPerInFlight").GetDouble(), tolerance: 2e6);
+
+            var cutShort = await JsonAsync(await Capacity($"serviceId={id}&{cut}"));
+            Assert.Equal(66d / 60, cutShort.GetProperty("peakPerSecond").GetDouble(), 6);
+            Assert.Equal(1d / 60, result.GetProperty("peakMessagesPerSecond").GetDouble(), 6);
+            Assert.Equal(1d / 60, result.GetProperty("peakMessagesInFlight").GetDouble(), 6);
+
+            // The metric's count wins over sampled spans: 1 request/s lasting 0.1 s, not the single span a minute. The first
+            // bucket has no earlier value in the window, and its sampled span doesn't stand in for the count.
+            Assert.Equal("metrics", viaMetric.GetProperty("requestSource").GetString());
+            Assert.Equal(Minutes - 1, viaMetric.GetProperty("samples").GetInt32());
+            Assert.Equal(1, viaMetric.GetProperty("peakPerSecond").GetDouble(), 6);
+            Assert.Equal(100, viaMetric.GetProperty("responseMs").GetDouble(), 3);
+            Assert.Equal("none", viaMetric.GetProperty("cpuModel").GetString());
+
+            Assert.Equal(HttpStatusCode.BadRequest, (await Capacity(window)).StatusCode);
+            Assert.Equal(HttpStatusCode.NotFound, (await Capacity($"serviceId={Guid.NewGuid()}&{window}")).StatusCode);
+        }
+
+        [Fact]
+        public async Task A_background_poll_is_not_a_request_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var service = $"tel-{_run}-polls";
+            var resource = new[] { ("service.name", service), ("service.instance.id", $"{service}-1") };
+            var at = DateTimeOffset.UtcNow.AddMinutes(-2);
+            await LocalStack.SendAsync("traces", Otlp.Traces(resource,
+                Otlp.Span(Otlp.TraceId(), Otlp.SpanId(), null, "GET /orders", Otlp.Server, at),
+                Otlp.Span(Otlp.TraceId(), Otlp.SpanId(), null, "SELECT outbox", Otlp.Client, at),
+                Otlp.Span(Otlp.TraceId(), Otlp.SpanId(), null, "SELECT outbox", Otlp.Client, at),
+                Otlp.Span(Otlp.TraceId(), Otlp.SpanId(), null, "nightly job", Otlp.Internal, at)));
+            await LocalStack.WaitForSpansAsync(service, 4);
+            await DiscoverAsync(database);
+
+            await using var factory = new ApiFactory(database);
+            using var client = factory.CreateClient();
+            var token = await LocalStack.TokenAsync("victor");
+            var tenant = (await JsonAsync(await Get(client, "/api/v1/tenants", token))).GetProperty("items")[0].GetProperty("id").GetGuid();
+            Guid id;
+            await using (var db = database.Context()) id = (await db.Services.SingleAsync(s => s.Name == service)).Id;
+            var query = $"serviceId={id}&from={Uri.EscapeDataString(at.AddMinutes(-5).ToString("O"))}&to={Uri.EscapeDataString(DateTimeOffset.UtcNow.ToString("O"))}";
+
+            var operations = (await JsonAsync(await Get(client, $"/api/v1/tenants/{tenant}/telemetry/operations?{query}", token))).GetProperty("items")
+                .EnumerateArray().Select(o => o.GetProperty("name").GetString()).Order().ToList();
+            Assert.Equal(["GET /orders", "nightly job"], operations);
+            var points = (await JsonAsync(await Get(client, $"/api/v1/tenants/{tenant}/telemetry/service-stats?{query}&stepSeconds=60", token))).GetProperty("points").EnumerateArray();
+            Assert.Equal(2d / 60, points.Sum(p => p.GetProperty("requestsPerSecond").GetDouble()), 6);
+        }
+
+        [Fact]
+        public async Task Capacity_compares_outbox_messages_created_and_delivered_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var service = $"tel-{_run}-outbox";
+            var resource = new[] { ("service.name", service), ("service.instance.id", $"{service}-1") };
+            var now = DateTimeOffset.UtcNow;
+            var first = new DateTimeOffset(now.Ticks - now.Ticks % TimeSpan.TicksPerMinute, TimeSpan.Zero).AddMinutes(-3);
+
+            // 30 messages created in the window's first minute. 10 delivered, 20 s after each was created; 1 failed to send;
+            // the rest still waiting. A message with two routes counts once, and "create" spans of other libraries don't count.
+            var spans = new List<System.Text.Json.Nodes.JsonObject>();
+            for (var i = 0; i < 30; i++)
+            {
+                var (trace, create, id, at) = (Otlp.TraceId(), Otlp.SpanId(), $"message-{i}", first.AddSeconds(1 + i));
+                spans.Add(Otlp.Span(trace, create, null, "create OrderPlaced", Otlp.Producer, at, ("messaging.message.id", id)));
+                if (i >= 11) continue;
+                var outcome = i == 10 ? "failed" : "published";
+                spans.Add(Otlp.Span(trace, Otlp.SpanId(), create, "deliver rabbitmq", Otlp.Internal, at.AddSeconds(20),
+                    ("messaging.message.id", id), ("juice.delivery.outcome", outcome)));
+                if (i == 0) spans.Add(Otlp.Span(trace, Otlp.SpanId(), create, "deliver second-route", Otlp.Internal, at.AddSeconds(20),
+                    ("messaging.message.id", id), ("juice.delivery.outcome", "published")));
+            }
+            var juice = Otlp.Traces(resource, [.. spans]);
+            juice["resourceSpans"]![0]!["scopeSpans"]![0]!["scope"]!["name"] = "Juice";
+            await LocalStack.SendAsync("traces", juice);
+            await LocalStack.SendAsync("traces", Otlp.Traces(resource, Otlp.Span(Otlp.TraceId(), Otlp.SpanId(), null, "create bucket", Otlp.Producer, first.AddSeconds(5))));
+            await LocalStack.WaitForSpansAsync(service, spans.Count + 1);
+            await DiscoverAsync(database);
+
+            await using var factory = new ApiFactory(database);
+            using var client = factory.CreateClient();
+            var token = await LocalStack.TokenAsync("victor");
+            var tenant = (await JsonAsync(await Get(client, "/api/v1/tenants", token))).GetProperty("items")[0].GetProperty("id").GetGuid();
+            Guid id2;
+            await using (var db = database.Context()) id2 = (await db.Services.SingleAsync(s => s.Name == service)).Id;
+
+            var window = $"from={Uri.EscapeDataString(first.ToString("O"))}&to={Uri.EscapeDataString(first.AddMinutes(2).ToString("O"))}";
+            var outbox = (await JsonAsync(await Get(client, $"/api/v1/tenants/{tenant}/telemetry/capacity?serviceId={id2}&{window}", token))).GetProperty("outbox");
+
+            Assert.Equal(20, outbox.GetProperty("undelivered").GetDouble());
+            Assert.Equal(30d / 60, outbox.GetProperty("createdPerSecond").GetDouble(), 6);
+            Assert.Equal(10d / 60, outbox.GetProperty("deliveredPerSecond").GetDouble(), 6);
+            Assert.Equal(20, outbox.GetProperty("recentDelaySeconds").GetDouble(), 1);
+            Assert.True(outbox.GetProperty("fallingBehind").GetBoolean());
         }
 
         private static Task DiscoverAsync(ScratchDatabase database)

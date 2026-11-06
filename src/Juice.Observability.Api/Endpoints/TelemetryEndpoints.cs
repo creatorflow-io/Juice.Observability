@@ -43,6 +43,12 @@ namespace Juice.Observability.Api.Endpoints
 
     public sealed record ServiceStatsDto(int StepSeconds, IReadOnlyList<ServiceStatsPointDto> Points);
 
+    /// <summary>One edge's traffic in a window.</summary>
+    public sealed record DependencyStatsDto(Guid DependencyId, long Count, double ErrorRate);
+
+    /// <summary>The traffic of the newest edges; <c>Truncated</c> means others were left out.</summary>
+    public sealed record DependencyStatsPageDto(IReadOnlyList<DependencyStatsDto> Items, bool Truncated);
+
     public sealed record DependencyEvidenceDto(Guid DependencyId, string Relation, string Confidence, long Count, double ErrorRate,
         double? P95Ms, DateTimeOffset? LastSeen, IReadOnlyList<string> SlowestTraces, IReadOnlyList<string> ErrorTraces);
 
@@ -93,6 +99,8 @@ namespace Juice.Observability.Api.Endpoints
             telemetry.MapGet("/metrics", ListMetricsAsync);
             telemetry.MapGet("/metrics/series", GetSeriesAsync);
             telemetry.MapGet("/service-stats", GetServiceStatsAsync);
+            telemetry.MapGet("/capacity", GetCapacityAsync);
+            telemetry.MapGet("/dependencies", ListDependencyStatsAsync);
             telemetry.MapGet("/dependencies/{dependencyId:guid}", GetDependencyEvidenceAsync);
             tenant.MapGet("/search", SearchAsync);
             return tenant;
@@ -299,10 +307,17 @@ namespace Juice.Observability.Api.Endpoints
         private static async Task<string> DependencyConditionAsync(Scope scope, PlatformDbContext db, Dependency dependency, CancellationToken ct)
         {
             var source = await db.Services.AsNoTracking().SingleAsync(s => s.Id == dependency.SourceServiceId, ct);
+            var target = dependency.TargetServiceId is { } targetId ? await db.Services.AsNoTracking().SingleAsync(s => s.Id == targetId, ct) : null;
+            var resource = target is null ? await db.Resources.AsNoTracking().SingleAsync(r => r.Id == dependency.TargetResourceId, ct) : null;
+            return DependencyCondition(scope, source, target, resource);
+        }
+
+        /// <summary><see cref="DependencyConditionAsync"/> with the edge's ends already loaded: its target service, or else its target resource.</summary>
+        private static string DependencyCondition(Scope scope, Service source, Service? target, Resource? resource)
+        {
             var condition = ServiceCondition(scope, source);
-            if (dependency.TargetServiceId is { } targetId)
+            if (target is not null)
             {
-                var target = await db.Services.AsNoTracking().SingleAsync(s => s.Id == targetId, ct);
                 return $"""
                     {condition} AND SpanKind IN ('Client', 'Producer') AND (TraceId, SpanId) IN (
                         SELECT TraceId, ParentSpanId FROM otel.otel_traces
@@ -310,8 +325,7 @@ namespace Juice.Observability.Api.Endpoints
                           AND {ServiceCondition(scope, target)} AND SpanKind IN ('Server', 'Consumer'))
                     """;
             }
-            var resource = await db.Resources.AsNoTracking().SingleAsync(r => r.Id == dependency.TargetResourceId, ct);
-            return $"{condition} AND SpanKind IN ('Client', 'Producer', 'Consumer') AND {ResourceCondition(scope, resource).Condition}";
+            return $"{condition} AND SpanKind IN ('Client', 'Producer', 'Consumer') AND {ResourceCondition(scope, resource!).Condition}";
         }
 
         private static IResult? Limit(int? limit, out int take)
@@ -543,7 +557,8 @@ namespace Juice.Observability.Api.Endpoints
         // ─── operations ───
 
         /// <summary>
-        /// A service's operations: its entry spans (server, consumer, or a trace root) by name and kind, busiest first, with
+        /// A service's operations: its entry spans (server, consumer, or a trace root other than a client span, which is a
+        /// background poll such as an outbox worker's SELECT) by name and kind, busiest first, with
         /// throughput, error rate and latency percentiles over the window.
         /// </summary>
         private static Task<IResult> ListOperationsAsync(HttpContext http, PlatformDbContext db, ClickHouseTelemetrySource clickHouse,
@@ -561,7 +576,7 @@ namespace Juice.Observability.Api.Endpoints
                 SELECT SpanName, toString(SpanKind), count() AS n, countIf(StatusCode = 'Error') / n,
                        quantiles(0.5, 0.95, 0.99)(Duration), max(Timestamp)
                 FROM otel.otel_traces
-                WHERE {scope.Where("Timestamp")} AND (SpanKind IN ('Server', 'Consumer') OR ParentSpanId = '')
+                WHERE {scope.Where("Timestamp")} AND (SpanKind IN ('Server', 'Consumer') OR (ParentSpanId = '' AND SpanKind != 'Client'))
                 GROUP BY SpanName, SpanKind
                 ORDER BY n DESC
                 LIMIT {ClickHouseTelemetrySource.Limit}
@@ -576,6 +591,52 @@ namespace Juice.Observability.Api.Endpoints
         });
 
         // ─── dependencies ───
+
+        /// <summary>Beyond this many edges a graph can't be read anyway, and each one adds to the query.</summary>
+        private const int MaxDependencyStats = 200;
+        /// <summary>Edges counted by one query, which keeps its parameters to a size every server accepts.</summary>
+        private const int DependencyStatsBatch = 25;
+
+        /// <summary>
+        /// Calls and error rate of each edge in the window, for colouring the graph: the same spans as an edge's evidence.
+        /// Edges with no calls in the window are returned with a count of 0.
+        /// </summary>
+        private static Task<IResult> ListDependencyStatsAsync(HttpContext http, PlatformDbContext db, ClickHouseTelemetrySource clickHouse,
+            TimeProvider clock, string? environment, DateTimeOffset? from, DateTimeOffset? to, CancellationToken ct) => Run(async () =>
+        {
+            var filter = new Filter { Environment = environment, From = from, To = to };
+            // Validates the window, and serves the first batch's query.
+            Scope? next = await ScopeAsync(http, db, clock, filter, 1, MaxSeriesRange, ct);
+            var tenantId = await db.Tenants.AsNoTracking().Where(t => t.Key == next.Window.TenantKey).Select(t => t.Id).SingleAsync(ct);
+            var dependencies = await db.Dependencies.AsNoTracking().Where(d => d.TenantId == tenantId)
+                .OrderByDescending(d => d.LastSeen).ThenBy(d => d.Id).Take(MaxDependencyStats + 1).ToListAsync(ct);
+            var counted = dependencies.Take(MaxDependencyStats).ToList();
+            // Every edge's ends in two queries, not one or two per edge.
+            var serviceIds = counted.Select(d => d.SourceServiceId).Concat(counted.Select(d => d.TargetServiceId).OfType<Guid>()).Distinct().ToList();
+            var resourceIds = counted.Where(d => d.TargetServiceId is null).Select(d => d.TargetResourceId).OfType<Guid>().Distinct().ToList();
+            var services = await db.Services.AsNoTracking().Where(s => s.TenantId == tenantId && serviceIds.Contains(s.Id)).ToDictionaryAsync(s => s.Id, ct);
+            var resources = await db.Resources.AsNoTracking().Where(r => r.TenantId == tenantId && resourceIds.Contains(r.Id)).ToDictionaryAsync(r => r.Id, ct);
+            var items = new List<DependencyStatsDto>();
+            foreach (var batch in counted.Chunk(DependencyStatsBatch))
+            {
+                // Each query has its own parameters.
+                var scope = next ?? await ScopeAsync(http, db, clock, filter, 1, MaxSeriesRange, ct);
+                next = null;
+                var conditions = batch.Select(d => DependencyCondition(scope, services[d.SourceServiceId],
+                    d.TargetServiceId is { } target ? services[target] : null,
+                    d.TargetServiceId is null ? resources[d.TargetResourceId!.Value] : null)).ToList();
+                var columns = string.Join(", ", conditions.Select(c => $"countIf({c}), countIf(StatusCode = 'Error' AND ({c}))"));
+                var rows = await clickHouse.QueryAsync($"""
+                    SELECT {columns} FROM otel.otel_traces WHERE {scope.Where("Timestamp", spans: true)}
+                    """, scope.Window, r => batch.Select((dependency, i) =>
+                    {
+                        var (count, errors) = (Convert.ToInt64(r.GetValue(i * 2)), Convert.ToInt64(r.GetValue(i * 2 + 1)));
+                        return new DependencyStatsDto(dependency.Id, count, count > 0 ? (double)errors / count : 0);
+                    }).ToList(), ct, scope.Parameters);
+                items.AddRange(rows[0]);
+            }
+            return Results.Ok(new DependencyStatsPageDto(items, dependencies.Count > MaxDependencyStats));
+        });
 
         /// <summary>
         /// Evidence for one dependency edge from the caller's spans: call count, error rate, p95, last seen, and the slowest
@@ -712,12 +773,139 @@ namespace Juice.Observability.Api.Endpoints
                 SELECT toStartOfInterval(Timestamp, toIntervalSecond({step})) AS b, countIf(SpanKind != 'Consumer') / {step}, countIf(SpanKind = 'Consumer') / {step},
                        countIf(StatusCode = 'Error') / count(), quantile(0.95)(Duration) / 1e6
                 FROM otel.otel_traces
-                WHERE {scope.Where("Timestamp", spans: true)} AND (SpanKind IN ('Server', 'Consumer') OR ParentSpanId = '')
+                WHERE {scope.Where("Timestamp", spans: true)} AND (SpanKind IN ('Server', 'Consumer') OR (ParentSpanId = '' AND SpanKind != 'Client'))
                 GROUP BY b ORDER BY b
                 LIMIT {ClickHouseTelemetrySource.Limit}
                 """, scope.Window, r => new ServiceStatsPointDto(Utc(r.GetValue(0)), Convert.ToDouble(r.GetValue(1)), Convert.ToDouble(r.GetValue(2)),
                     Convert.ToDouble(r.GetValue(3)), r.IsDBNull(4) ? null : Convert.ToDouble(r.GetValue(4))), ct, scope.Parameters);
             return Results.Ok(new ServiceStatsDto(Step(scope.Window, stepSeconds), points));
+        });
+
+        // ─── capacity ───
+
+        /// <summary>A week of minutes for five instances.</summary>
+        private const int MaxCapacityRows = 50_400;
+        /// <summary>One length for any window: longer buckets would average away the peaks that sizing is about.</summary>
+        private const int CapacityStepSeconds = 60;
+        /// <summary>How far back "the outbox is behind now" looks.</summary>
+        private const int CapacityRecentSeconds = 300;
+        private const string InstanceOfRow = $"concat({Instance}, '|', {Host}, '|', ResourceAttributes['process.pid'])";
+
+        /// <summary>
+        /// What a service was measured to need, per instance: each instance's work, CPU, memory and thread pool queue per
+        /// bucket, read by <see cref="CapacityEstimate"/>. Only server and consumer spans are work: a root span may be a background
+        /// poll, such as an outbox worker's SELECT many times a second, which would swamp the real load. Requests come from <c>http.server.request.duration</c> when the host
+        /// exports it, because spans undercount when traces are sampled; otherwise from entry spans, and <c>requestSource</c>
+        /// says which. Messages always come from spans. CPU, memory and the queue come from .NET's <c>System.Runtime</c> meter.
+        /// Buckets the window cuts short are left out: they would pair part of the spans with a whole CPU delta.
+        /// </summary>
+        private static Task<IResult> GetCapacityAsync(HttpContext http, PlatformDbContext db, ClickHouseTelemetrySource clickHouse,
+            TimeProvider clock, Guid? serviceId, string? environment, DateTimeOffset? from, DateTimeOffset? to, CancellationToken ct) => Run(async () =>
+        {
+            if (serviceId is null) return Bad("Invalid serviceId", "serviceId is required.");
+            var scope = await ScopeAsync(http, db, clock, new Filter { ServiceId = serviceId, Environment = environment, From = from, To = to },
+                MaxCapacityRows, MaxSeriesRange, ct);
+            const int step = CapacityStepSeconds;
+            var stepParameter = scope.Add("UInt32", (uint)step);
+            string Bucket(string time) => $"toStartOfInterval({time}, toIntervalSecond({stepParameter}))";
+            var metrics = scope.Where("TimeUnix");
+
+            var spans = await clickHouse.QueryAsync($"""
+                SELECT {InstanceOfRow} AS instance, {Bucket("Timestamp")} AS b, countIf(SpanKind = 'Server'), countIf(SpanKind = 'Consumer'),
+                       sumIf(Duration, SpanKind = 'Server') / 1e9, sumIf(Duration, SpanKind = 'Consumer') / 1e9
+                FROM otel.otel_traces
+                WHERE {scope.Where("Timestamp")} AND SpanKind IN ('Server', 'Consumer')
+                GROUP BY instance, b ORDER BY b DESC
+                LIMIT {ClickHouseTelemetrySource.Limit}
+                """, scope.Window, r => (Key: (r.GetString(0), Utc(r.GetValue(1))), Requests: Convert.ToDouble(r.GetValue(2)), Messages: Convert.ToDouble(r.GetValue(3)),
+                    RequestSeconds: Convert.ToDouble(r.GetValue(4)), MessageSeconds: Convert.ToDouble(r.GetValue(5))), ct, scope.Parameters);
+
+            // How fast a cumulative value grew per second, per instance and bucket, summed across its series. A series' first
+            // bucket has no earlier value and gives no row; a gap divides by its real length, so a late export isn't a spike.
+            async Task<Dictionary<(string, DateTimeOffset), double>> GrowthAsync(string table, string column, string metric)
+            {
+                const string Frame = "OVER (PARTITION BY series ORDER BY b ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)";
+                var rows = await clickHouse.QueryAsync($"""
+                    SELECT instance, b, sum(d / dt) FROM (
+                        SELECT instance, b, if(v >= prev, v - prev, v) AS d, dateDiff('second', before, b) AS dt FROM (
+                            SELECT series, instance, b, v, lagInFrame(v, 1, v) {Frame} AS prev, lagInFrame(b, 1, b) {Frame} AS before FROM (
+                                SELECT cityHash64(ResourceAttributes, Attributes) AS series, {InstanceOfRow} AS instance, {Bucket("TimeUnix")} AS b, max({column}) AS v
+                                FROM otel.{table} WHERE {metrics} AND MetricName = {scope.Add("String", metric)} GROUP BY series, instance, b)))
+                    WHERE dt > 0
+                    GROUP BY instance, b ORDER BY b DESC
+                    LIMIT {ClickHouseTelemetrySource.Limit}
+                    """, scope.Window, r => (Key: (r.GetString(0), Utc(r.GetValue(1))), Rate: Convert.ToDouble(r.GetValue(2))), ct, scope.Parameters);
+                return rows.ToDictionary(r => r.Key, r => r.Rate);
+            }
+            var cores = await GrowthAsync("otel_metrics_sum", "Value", "dotnet.process.cpu.time");
+            var requestRate = await GrowthAsync("otel_metrics_histogram", "Count", "http.server.request.duration");
+            var requestSeconds = await GrowthAsync("otel_metrics_histogram", "Sum", "http.server.request.duration");
+
+            var (memoryName, queueName, cpuCountName) = (scope.Add("String", "dotnet.process.memory.working_set"),
+                scope.Add("String", "dotnet.thread_pool.queue.length"), scope.Add("String", "dotnet.process.cpu.count"));
+            // .NET reports the queue length as a monotonic counter, and these may be gauges or sums: each is read as a level.
+            var levels = await clickHouse.QueryAsync($"""
+                SELECT {InstanceOfRow} AS instance, {Bucket("TimeUnix")} AS b,
+                       countIf(MetricName = {memoryName}), avgIf(Value, MetricName = {memoryName}),
+                       countIf(MetricName = {queueName}), maxIf(Value, MetricName = {queueName}),
+                       maxIf(Value, MetricName = {cpuCountName})
+                FROM otel.otel_metrics_sum
+                WHERE {metrics} AND MetricName IN ({memoryName}, {queueName}, {cpuCountName})
+                GROUP BY instance, b ORDER BY b DESC
+                LIMIT {ClickHouseTelemetrySource.Limit}
+                """, scope.Window, r => (Key: (r.GetString(0), Utc(r.GetValue(1))),
+                    Memory: Convert.ToInt64(r.GetValue(2)) > 0 ? Convert.ToDouble(r.GetValue(3)) : (double?)null,
+                    Queue: Convert.ToInt64(r.GetValue(4)) > 0 ? Convert.ToDouble(r.GetValue(5)) : (double?)null,
+                    CpuCount: Convert.ToDouble(r.GetValue(6))), ct, scope.Parameters);
+
+            var spansOf = spans.ToDictionary(s => s.Key);
+            var levelsOf = levels.ToDictionary(l => l.Key);
+            // An instance's first bucket has no growth to read. If it exports the metric, sampled spans must not stand in for it.
+            var countedByMetric = requestRate.Keys.Select(k => k.Item1).ToHashSet();
+            var samples = spansOf.Keys.Concat(cores.Keys).Concat(requestRate.Keys).Concat(levelsOf.Keys).Distinct()
+                .Where(k => k.Item2 >= scope.Window.From && k.Item2.AddSeconds(step) <= scope.Window.To)
+                .Where(k => requestRate.ContainsKey(k) || !countedByMetric.Contains(k.Item1))
+                .Select(k =>
+                {
+                    spansOf.TryGetValue(k, out var s);
+                    levelsOf.TryGetValue(k, out var l);
+                    var measured = requestRate.TryGetValue(k, out var rate);
+                    var perSecond = (measured ? rate : s.Requests / step) + s.Messages / step;
+                    var inFlight = (measured ? requestSeconds.GetValueOrDefault(k) : s.RequestSeconds / step) + s.MessageSeconds / step;
+                    return new CapacitySample(k.Item1, k.Item2, perSecond, inFlight, cores.TryGetValue(k, out var c) ? c : null, l.Memory, l.Queue,
+                        s.Messages / step, s.MessageSeconds / step);
+                }).ToList();
+
+            var truncated = new[] { spans.Count, cores.Count, requestRate.Count, levels.Count }.Any(n => n >= MaxCapacityRows);
+            var hosts = samples.Select(s => s.Instance.Split('|')[1]).Where(h => h.Length > 0).Distinct().Order(StringComparer.Ordinal).Take(20).ToList();
+            var cpuCount = levels.Select(l => l.CpuCount).DefaultIfEmpty(0).Max();
+
+            // Juice's own spans: "create" when a message is written to the outbox, "deliver" with its outcome when it's sent. A
+            // message counts once however many routes it has. A delivery's parent is the span that created its message.
+            const string Created = "SpanKind = 'Producer' AND SpanName LIKE 'create %' AND ScopeName = 'Juice'";
+            const string Delivered = "SpanName LIKE 'deliver %' AND ScopeName = 'Juice' AND SpanAttributes['juice.delivery.outcome'] = 'published'";
+            var traces = scope.Where("Timestamp");
+            var outboxPoints = await clickHouse.QueryAsync($"""
+                SELECT {Bucket("Timestamp")} AS b, uniqExactIf(SpanAttributes['messaging.message.id'], {Created}), uniqExactIf(SpanAttributes['messaging.message.id'], {Delivered})
+                FROM otel.otel_traces
+                WHERE {traces} AND (({Created}) OR ({Delivered}))
+                GROUP BY b ORDER BY b DESC
+                LIMIT {ClickHouseTelemetrySource.Limit}
+                """, scope.Window, r => new OutboxPoint(Utc(r.GetValue(0)), Convert.ToDouble(r.GetValue(1)), Convert.ToDouble(r.GetValue(2))), ct, scope.Parameters);
+            var whole = outboxPoints.Where(p => p.At >= scope.Window.From && p.At.AddSeconds(step) <= scope.Window.To).ToList();
+            // Only the newest minutes: this joins on the deliveries, and it answers "is it behind now?". A message created
+            // before the window has no create span to join, so a delay longer than the window doesn't show here.
+            var delays = await clickHouse.QueryAsync($"""
+                SELECT quantile(0.95)(dateDiff('millisecond', c.created, d.delivered)) / 1000.0, count()
+                FROM (SELECT TraceId, ParentSpanId, Timestamp AS delivered FROM otel.otel_traces
+                      WHERE {traces} AND {Delivered} AND Timestamp >= {ClickHouseTelemetrySource.To} - INTERVAL {CapacityRecentSeconds} SECOND) AS d
+                INNER JOIN (SELECT TraceId, SpanId, Timestamp AS created FROM otel.otel_traces WHERE {traces} AND {Created}) AS c
+                    ON d.TraceId = c.TraceId AND d.ParentSpanId = c.SpanId
+                """, scope.Window, r => (Seconds: Convert.ToDouble(r.GetValue(0)), Count: Convert.ToInt64(r.GetValue(1))), ct, scope.Parameters);
+            var recentDelay = delays.Count > 0 && delays[0].Count > 0 ? delays[0].Seconds : (double?)null;
+
+            return Results.Ok(CapacityEstimate.From(samples, step, truncated, requestRate.Count > 0 ? "metrics" : spans.Count > 0 ? "spans" : "none",
+                hosts, cpuCount > 0 ? (int)cpuCount : null) with { Outbox = CapacityEstimate.Backlog(whole, step, recentDelay) });
         });
 
         /// <summary>The bucket size: given, or the window over about 60 points; never more than <see cref="MaxPoints"/> points.</summary>

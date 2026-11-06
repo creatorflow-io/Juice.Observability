@@ -107,8 +107,10 @@ page's `nextCursor`).
 | `GET /api/v1/tenants/{tenantId}/telemetry/traces/{traceId}` | `traceId` is the 32-hex id or a W3C `traceparent`; every span (≤ 1,000) with service id, instance, host, scope, attributes, events, links, and the service or resource a call reaches |
 | `GET /api/v1/tenants/{tenantId}/telemetry/logs?serviceId=&instanceId=&resourceId=&traceId=&spanId=&minSeverity=&q=&from=&to=&cursor=` | log records, newest first; `nextCursor` pages back like traces |
 | `GET /api/v1/tenants/{tenantId}/telemetry/operations?serviceId=` | a service's entry operations with throughput, error rate, p50/p95/p99 |
+| `GET /api/v1/tenants/{tenantId}/telemetry/dependencies?environment=&from=&to=` | calls and error rate of the newest 200 edges in the window, for colouring the graph |
 | `GET /api/v1/tenants/{tenantId}/telemetry/dependencies/{dependencyId}` | an edge's evidence: calls, error rate, p95, last seen, representative traces |
 | `GET /api/v1/tenants/{tenantId}/telemetry/metrics`, `…/metrics/series?name=&stepSeconds=`, `…/service-stats?serviceId=` | metric names, one metric as a series (counter → rate), a service's requests, errors and p95; empty buckets have no point |
+| `GET /api/v1/tenants/{tenantId}/telemetry/capacity?serviceId=&environment=&from=&to=` | what a service was measured to need per instance, for the Console's capacity calculator: CPU per request or message, idle CPU and memory, memory growth, highest load, whether the data supported separating them, and whether its outbox delivery keeps up (from Juice's `create` and `deliver` spans) |
 | `GET /api/v1/tenants/{tenantId}/search?q=` | a trace id or W3C `traceparent`, a span id (last 24 h) or services by name |
 | `GET /api/v1/tenants/{tenantId}/webhooks` | webhook endpoints (destination host only, never the secret) |
 | `GET /api/v1/tenants/{tenantId}/webhooks/{endpointId}/deliveries?status=` | delivery history, each with every attempt |
