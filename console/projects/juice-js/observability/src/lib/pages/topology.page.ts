@@ -1,6 +1,6 @@
 import { LinkPipe, ObservabilityLinks } from '../core/options';
 import {
-  ChangeDetectionStrategy, Component, ElementRef, OnDestroy, afterNextRender, computed, effect, inject, input, viewChild,
+  ChangeDetectionStrategy, Component, ElementRef, OnDestroy, afterNextRender, computed, effect, inject, input, untracked, viewChild,
 } from '@angular/core';
 import { apiResource } from '../shared/resource';
 import { MatButtonModule } from '@angular/material/button';
@@ -21,10 +21,15 @@ const HEALTH_TOKENS: Record<string, string> = {
   Healthy: 'ok', Degraded: 'warn', Unhealthy: 'bad', Critical: 'crit', Offline: 'off', Unknown: 'none',
 };
 
+/** The error rates of the health policy's defaults (phase 0 decision D4). */
+const EDGE_WARN_ERROR_RATE = 0.01;
+const EDGE_BAD_ERROR_RATE = 0.05;
+
 /**
  * Dependency topology (Console requirements §9): services, databases and destinations; zoom, pan and selection.
  * Observed edges are solid, inferred ones dashed and labelled, so an inference never reads as a confirmed call. A
- * selected edge shows its evidence and representative traces; the selection is in the URL.
+ * selected edge shows its evidence and representative traces; the selection is in the URL. Edges are coloured by their error
+ * rate in the selected window, and fade when they had no calls in it.
  */
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -39,10 +44,13 @@ const HEALTH_TOKENS: Record<string, string> = {
         <div #graph class="jc-graph" aria-label="Dependency graph"></div>
         <div class="jc-graph-legend">
           <span><i class="jc-line"></i> observed</span><span><i class="jc-line jc-dashed"></i> inferred</span>
+          <span><i class="jc-line jc-line-warn"></i> errors ≥ 1%</span><span><i class="jc-line jc-line-bad"></i> errors ≥ 5%</span>
+          <span><i class="jc-line jc-line-idle"></i> no calls in window</span>
           <span>■ service ◆ database ⬣ destination</span>
           <button mat-button (click)="fit()">Fit</button>
         </div>
         @if (topology.value()?.truncated) { <p class="jc-muted">Showing the most recent edges only.</p> }
+        @if (edgeStats.value()?.truncated) { <p class="jc-muted">Only the most recent edges are coloured.</p> }
         @if (topology.hasValue() && topology.value()!.nodes.length === 0) { <p class="jc-muted">No dependencies seen{{ ctx.environment() ? ' in ' + ctx.environment() : '' }}.</p> }
       </div>
 
@@ -99,6 +107,10 @@ export class TopologyPage implements OnDestroy {
   private readonly nodes = computed(() => new Map((this.topology.value()?.nodes ?? []).map(n => [n.id, n])));
   protected readonly selectedEdge = computed(() => this.topology.value()?.edges.find(e => e.id === this.edge()) ?? null);
   protected readonly selectedNode = computed(() => (this.node() ? this.nodes().get(this.node()!) : null) ?? null);
+  protected readonly edgeStats = apiResource({
+    params: () => ({ env: this.ctx.environment(), range: this.ctx.range(), abs: this.ctx.absolute() }),
+    stream: ({ params }) => this.api.dependencyStats({ environment: params.env, ...this.ctx.window() }),
+  });
   protected readonly evidence = apiResource({
     // No edge selected: undefined params leave the resource idle.
     params: () => this.edge() ? { edge: this.edge()!, env: this.ctx.environment(), range: this.ctx.range(), abs: this.ctx.absolute() } : undefined,
@@ -126,7 +138,10 @@ export class TopologyPage implements OnDestroy {
       this.cy.on('tap', e => { if (e.target === this.cy) this.choose({ node: null, edge: null }); });
       this.draw(this.topology.value());
     });
-    effect(() => this.draw(this.topology.value()));
+    // Redraw (and so re-layout and re-fit) on new topology only: draw() also reads the selection and the edge figures,
+    // which would otherwise redraw the graph on every click and time-range change. The effects below handle those.
+    effect(() => { const topology = this.topology.value(); untracked(() => this.draw(topology)); });
+    effect(() => { this.edgeStats.value(); this.colourEdges(); });
     effect(() => {
       const id = this.edge() ?? this.node();
       this.cy?.elements().unselect();
@@ -148,6 +163,17 @@ export class TopologyPage implements OnDestroy {
     this.cy.layout({ name: 'breadthfirst', directed: true, padding: 30, spacingFactor: 1.2 }).run();
     const id = this.edge() ?? this.node();
     if (id) this.cy.getElementById(id).select();
+    this.colourEdges();
+  }
+
+  /** Separate from drawing, so a new time range doesn't move the graph. An edge with no figures keeps the plain look. */
+  private colourEdges() {
+    if (!this.cy) return;
+    this.cy.edges().data('traffic', null);
+    for (const s of this.edgeStats.value()?.items ?? []) {
+      this.cy.getElementById(s.dependencyId).data('traffic', s.count === 0 ? 'idle'
+        : s.errorRate >= EDGE_BAD_ERROR_RATE ? 'bad' : s.errorRate >= EDGE_WARN_ERROR_RATE ? 'warn' : 'ok');
+    }
   }
 
   private color(token: string) { return themeColor(token, this.graph().nativeElement); }
@@ -168,6 +194,9 @@ export class TopologyPage implements OnDestroy {
         'target-arrow-color': muted, label: 'data(label)', 'font-size': 9, color: muted, 'text-rotation': 'autorotate',
         'text-background-color': surface, 'text-background-opacity': 0.8, 'text-background-padding': '1px' } },
       { selector: 'edge[confidence = "inferred"]', style: { 'line-style': 'dashed', 'line-color': line, 'target-arrow-color': line } },
+      { selector: 'edge[traffic = "warn"]', style: { 'line-color': this.color('warn'), 'target-arrow-color': this.color('warn'), width: 3 } },
+      { selector: 'edge[traffic = "bad"]', style: { 'line-color': this.color('bad'), 'target-arrow-color': this.color('bad'), width: 3 } },
+      { selector: 'edge[traffic = "idle"]', style: { opacity: 0.35 } },
       { selector: ':selected', style: { 'line-color': selected, 'target-arrow-color': selected, 'border-color': selected, 'border-width': 3 } },
     ] as StylesheetJson;
   }

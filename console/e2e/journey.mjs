@@ -1,5 +1,6 @@
 // Console requirements §21 acceptance: sign in through Keycloak, then the investigation journey, with no Grafana.
-// Needs deploy/local up with the platform profile and demo traffic from e2e/demo-traffic.mjs (a failing payments-2).
+// Needs deploy/local up with the platform profile and demo traffic from e2e/demo-traffic.mjs (a failing payments-2),
+// started at least 3 minutes before: the Capacity tab needs CPU readings from two whole minutes.
 //   BASE=http://localhost:5180 BROWSER="C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe" node e2e/journey.mjs
 // Screenshots land in e2e/shots/. Exits 1 on any failed step, browser error or failed API call.
 import { chromium } from 'playwright-core';
@@ -61,7 +62,12 @@ await step('metrics-around', async () => {
   await page.waitForSelector('text=payments.charges', { timeout: 20000 });
 });
 await step('logs-around', async () => { await page.click('role=tab[name="Logs"]'); await page.waitForSelector('text=pool exhausted'); });
-await step('topology', async () => { await page.goto(`${base}/topology?env=production&range=15m`); await page.waitForSelector('.jc-graph canvas, .jc-graph svg, .jc-graph div', { timeout: 15000 }); await page.waitForTimeout(1500); });
+await step('topology', async () => {
+  // The graph's edge colours come from every edge's figures for the window.
+  const stats = page.waitForResponse(r => /\/telemetry\/dependencies\?/.test(r.url()), { timeout: 20000 });
+  await page.goto(`${base}/topology?env=production&range=15m`);
+  const items = (await (await stats).json()).items;
+  if (!items.some(i => i.errorRate >= 0.05)) throw new Error('no failing edge in the graph figures'); await page.waitForSelector('.jc-graph canvas, .jc-graph svg, .jc-graph div', { timeout: 15000 }); await page.waitForTimeout(1500); });
 await step('topology-edge', async () => {
   // From a service's Dependencies tab to the edge's evidence, as an investigator would.
   await page.goto(`${base}/services?env=production&range=15m`); await page.click('text=demo-shop/checkout');
@@ -72,6 +78,16 @@ await step('global-search', async () => {
   await page.goto(`${base}/services?env=production&range=15m`); await page.waitForSelector('text=demo-shop/payments');
   await page.fill('.jc-lookup input', 'checkout'); await page.press('.jc-lookup input', 'Enter');
   await page.waitForURL(/\/services\/[0-9a-f-]{36}/); await page.waitForSelector('text=Instances');
+});
+await step('capacity', async () => {
+  await page.goto(`${base}/services?env=production&range=15m`); await page.click('text=demo-shop/payments');
+  await page.click('role=tab[name="Capacity"]'); await page.waitForSelector('[data-testid=capacity-plan]', { timeout: 20000 });
+  // The plan follows the inputs: more users, more cores.
+  const cores = async () => Number(await page.textContent('[data-testid=capacity-plan] div:nth-child(2) strong'));
+  await page.fill('input[name=users]', '100'); const few = await cores();
+  await page.fill('input[name=users]', '100000'); const many = await cores();
+  if (!(many > few)) throw new Error(`cores for 100 users ${few}, for 100000 users ${many}`);
+  await page.waitForSelector('[data-testid=capacity-beyond]');
 });
 await step('alerts', async () => { await page.goto(`${base}/alerts?env=production`); await page.waitForSelector('text=service-error-rate'); });
 await step('rules', async () => { await page.goto(`${base}/rules`); await page.waitForSelector('text=Service error rate'); });

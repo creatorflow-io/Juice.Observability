@@ -84,6 +84,27 @@ export interface Series { name: string; type: string; unit: string; aggregation:
 export interface ServiceStatsPoint { at: string; requestsPerSecond: number; messagesPerSecond: number; errorRate: number; p95Ms: number | null; }
 export interface ServiceStats { stepSeconds: number; points: ServiceStatsPoint[]; }
 
+/** What a service was measured to need, per instance. A unit of work is a request or a message. */
+export interface Capacity {
+  stepSeconds: number; samples: number; instances: number; truncated: boolean; requestSource: 'metrics' | 'spans' | 'none';
+  hosts: string[]; coresPerInstance: number | null; peakPerSecond: number; responseMs: number | null;
+  responseLowLoadMs: number | null; responseHighLoadMs: number | null; peakQueue: number | null;
+  /** `fitted` separates idle CPU from CPU per unit; `average` is CPU over work in the busiest samples, so it can read high. */
+  cpuModel: 'fitted' | 'average' | 'none'; cpuSecondsPerUnit: number | null; idleCores: number | null; peakCores: number | null;
+  /** `fitted` is idle plus growth per unit in flight; `peak` is only the highest seen. */
+  memoryModel: 'fitted' | 'peak' | 'none'; idleMemoryBytes: number | null; memoryBytesPerInFlight: number | null; peakMemoryBytes: number | null;
+  /** Near 1, a consumer was busy nearly all the time: if it handles one message at a time, it was at its limit whatever CPU says. */
+  peakMessagesPerSecond: number; peakMessagesInFlight: number;
+  /** Null when the service created and delivered no outbox messages in the window. */
+  outbox: OutboxBacklog | null;
+}
+
+/** `undelivered` is created minus delivered in the window, so it includes rolled-back messages. The delay is the p95 from creating to delivering, in the newest minutes. */
+export interface OutboxBacklog { createdPerSecond: number; deliveredPerSecond: number; undelivered: number; recentDelaySeconds: number | null; fallingBehind: boolean; }
+
+export interface DependencyStats { dependencyId: string; count: number; errorRate: number; }
+export interface DependencyStatsPage { items: DependencyStats[]; truncated: boolean; }
+
 export interface DependencyEvidence {
   dependencyId: string; relation: string; confidence: string; count: number; errorRate: number; p95Ms: number | null;
   lastSeen: string | null; slowestTraces: string[]; errorTraces: string[];

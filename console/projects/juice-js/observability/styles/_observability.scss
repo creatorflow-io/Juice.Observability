@@ -159,6 +159,14 @@
   .jc-health-card.jc-selected { border-color: var(--jc-accent); }
 
   .jc-chart-title { font-size: 13px; color: var(--jc-muted); margin: 4px 0; }
+  .jc-capacity-inputs { display: flex; flex-wrap: wrap; gap: 12px; margin: 8px 0 16px; }
+  .jc-capacity-inputs mat-form-field { width: 170px; }
+  .jc-capacity-result { display: flex; flex-wrap: wrap; gap: 12px 32px; margin-bottom: 12px; }
+  .jc-capacity-result div { display: flex; flex-direction: column; }
+  .jc-capacity-result strong { font-size: 24px; font-weight: 500; line-height: 1.2; }
+  .jc-capacity-notes { margin: 12px 0 0; padding-left: 18px; font-size: 13px; }
+  .jc-capacity-measured th { width: 240px; }
+
   .jc-chart { height: 180px; width: 100%; background: var(--jc-surface); border: 1px solid var(--jc-border); border-radius: 6px; }
   .jc-chart-empty { display: flex; align-items: center; justify-content: center; color: var(--jc-muted); font-size: 13px; }
 
@@ -192,6 +200,7 @@
   .jc-usage-charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
   .jc-fill-page > .jc-trace > .jc-waterfall, .jc-fill-page > .jc-trace > .jc-span-detail { overflow: auto; max-height: none; position: static; }
   .jc-fill-page .jc-wf-head { position: sticky; top: 0; z-index: 1; background: var(--jc-surface); }
+  .jc-span-detail h2 { min-width: 0; overflow-wrap: anywhere; }
   .jc-span-facts { display: flex; gap: 12px; align-items: center; margin-bottom: 6px; }
   .jc-event { border-left: 3px solid var(--jc-border); padding-left: 8px; margin: 6px 0; }
   .jc-event.jc-wf-error { border-left-color: var(--jc-bad); }
@@ -200,9 +209,11 @@
   .jc-topology { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 12px; }
   .jc-graph { height: calc(100vh - 220px); min-height: 420px; background: var(--jc-surface); border: 1px solid var(--jc-border); border-radius: 8px; }
   .jc-graph-legend { display: flex; gap: 16px; align-items: center; font-size: 12px; color: var(--jc-muted); padding: 4px; }
-  .jc-span-detail h2 { min-width: 0; overflow-wrap: anywhere; }
   .jc-line { display: inline-block; width: 24px; border-top: 2px solid var(--jc-muted); vertical-align: middle; }
   .jc-line.jc-dashed { border-top-style: dashed; }
+  .jc-line.jc-line-warn { border-top: 3px solid var(--jc-warn); }
+  .jc-line.jc-line-bad { border-top: 3px solid var(--jc-bad); }
+  .jc-line.jc-line-idle { opacity: 0.35; }
   .jc-side { align-self: start; }
 
   @media (max-width: 900px) {

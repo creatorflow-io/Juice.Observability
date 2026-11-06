@@ -10,8 +10,9 @@ import { ContextService } from '../core/context.service';
 import { AgoPipe, DurationPipe, PercentPipe, ReasonPipe } from '../shared/format';
 import { ConfidenceBadge, ContextBar, HealthBadge } from '../shared/ui';
 import { LogTable, MetricExplorer, ServiceStatsCharts, TraceTable, problemText } from '../shared/telemetry';
+import { ServiceCapacity } from '../shared/capacity';
 
-const TABS = ['overview', 'operations', 'dependencies', 'traces', 'logs', 'metrics'] as const;
+const TABS = ['overview', 'operations', 'dependencies', 'traces', 'logs', 'metrics', 'capacity'] as const;
 
 /**
  * One service across its environments (Console requirements §8): health with reasons, instances, operations,
@@ -21,7 +22,7 @@ const TABS = ['overview', 'operations', 'dependencies', 'traces', 'logs', 'metri
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [LinkPipe, RouterLink, MatTabsModule, MatProgressBarModule, MatButtonModule, ContextBar, HealthBadge, ConfidenceBadge,
-    TraceTable, LogTable, MetricExplorer, ServiceStatsCharts, AgoPipe, DurationPipe, PercentPipe, ReasonPipe],
+    TraceTable, LogTable, MetricExplorer, ServiceStatsCharts, ServiceCapacity, AgoPipe, DurationPipe, PercentPipe, ReasonPipe],
   template: `
     <jc-context-bar>
       <a [routerLink]="['services'] | jcLink" [queryParams]="ctx.keep()" class="jc-crumb">Services</a>
@@ -160,6 +161,10 @@ const TABS = ['overview', 'operations', 'dependencies', 'traces', 'logs', 'metri
         <mat-tab label="Metrics">
           @if (tabIndex() === 5) { <jc-metric-explorer [scope]="{ serviceId: id(), instanceId: instanceFilter() }" /> }
         </mat-tab>
+
+        <mat-tab label="Capacity">
+          @if (tabIndex() === 6) { <jc-service-capacity [serviceId]="id()" [environments]="environments()" /> }
+        </mat-tab>
       </mat-tab-group>
     }`,
 })
@@ -194,6 +199,8 @@ export class ServicePage {
     const env = this.ctx.environment();
     return (this.service.value()?.instances ?? []).filter(i => !env || i.environment === env);
   });
+
+  protected readonly environments = computed(() => (this.service.value()?.instances ?? []).map(i => i.environment));
 
   private readonly nodes = computed(() => new Map((this.topology.value()?.nodes ?? []).map(n => [n.id, n])));
   private edgesWhere(match: 'source' | 'target') {
