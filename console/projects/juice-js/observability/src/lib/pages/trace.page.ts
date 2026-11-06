@@ -125,15 +125,16 @@ const UsageMetrics = [
             @if (s.statusMessage) { <p class="jc-error">{{ s.statusMessage }}</p> }
 
             <nav class="jc-actions">
-              @if (s.serviceId) { <a mat-stroked-button [routerLink]="['services', s.serviceId] | jcLink" [queryParams]="ctx.keep()">Service {{ s.service }}</a> }
+              @if (s.serviceId) { <a mat-stroked-button [routerLink]="['services', s.serviceId] | jcLink" [queryParams]="ctx.keep()" [title]="'Service ' + s.service">Service {{ s.service }}</a> }
               @if (s.target; as target) {
-                <a mat-stroked-button [routerLink]="(target.kind === 'service' ? ['services', target.id] : ['resources', target.id]) | jcLink" [queryParams]="ctx.keep()">
+                <a mat-stroked-button [routerLink]="(target.kind === 'service' ? ['services', target.id] : ['resources', target.id]) | jcLink" [queryParams]="ctx.keep()"
+                   [title]="(target.kind === 'service' ? 'Calls ' : 'Uses ') + target.name">
                   {{ target.kind === 'service' ? 'Calls' : 'Uses' }} {{ target.name }}</a>
               }
               @if (s.serviceId) {
                 <a mat-stroked-button [routerLink]="['services', s.serviceId] | jcLink" [queryParams]="aroundSpan(s, { tab: 'metrics' })">Metrics around</a>
                 <a mat-stroked-button [routerLink]="['services', s.serviceId] | jcLink" [queryParams]="aroundSpan(s, { tab: 'logs' })">Service logs around</a>
-                <a mat-stroked-button [routerLink]="['services', s.serviceId] | jcLink" [queryParams]="ctx.keep({ tab: 'traces', op: s.name })">Other traces of {{ s.name }}</a>
+                <a mat-stroked-button [routerLink]="['services', s.serviceId] | jcLink" [queryParams]="ctx.keep({ tab: 'traces', op: s.name })" [title]="'Other traces of ' + s.name">Other traces of {{ s.name }}</a>
               }
             </nav>
 

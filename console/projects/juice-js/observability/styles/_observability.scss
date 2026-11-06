@@ -117,7 +117,11 @@
   .jc-list-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--jc-border); }
   .jc-list-row:last-child { border-bottom: 0; }
   .jc-summary { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin-bottom: 8px; }
-  .jc-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+  .jc-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; min-width: 0; }
+  // A button label can carry a span name (a whole SQL statement, say): keep each button within the row and cut its label
+  // with an ellipsis; the full text is on the button's title.
+  .jc-actions > .mat-mdc-button-base { max-width: 100%; min-width: 0; }
+  .jc-actions .mdc-button__label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   // The filters, the context bar and every other field the pages size label each field. An app theme denser than -1 hides a fill field's label (and
   // these fields have no placeholder to fall back on), so keep them at -1 whatever the app's density.
   .jc-context, .jc-filter-form, mat-form-field[class*='jc-field-'] { @include mat.form-field-density(-1); }
@@ -160,7 +164,8 @@
 
   // ─── Waterfall ───
   .jc-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; margin-bottom: 6px; i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; } }
-  .jc-trace { display: grid; grid-template-columns: 1fr; gap: 12px; }
+  // minmax(0, …), not a bare 1fr: a 1fr column grows to fit its longest unbreakable line (a span name in a button label) instead of letting it clip.
+  .jc-trace { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
   .jc-trace.jc-with-detail { grid-template-columns: minmax(0, 1.6fr) minmax(340px, 1fr); }
   .jc-waterfall { background: var(--jc-surface); border: 1px solid var(--jc-border); border-radius: 8px; font-size: 12px; overflow: hidden; }
   .jc-wf-head, .jc-wf-row { display: grid; grid-template-columns: minmax(260px, 40%) 1fr; align-items: center; }
@@ -195,12 +200,13 @@
   .jc-topology { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 12px; }
   .jc-graph { height: calc(100vh - 220px); min-height: 420px; background: var(--jc-surface); border: 1px solid var(--jc-border); border-radius: 8px; }
   .jc-graph-legend { display: flex; gap: 16px; align-items: center; font-size: 12px; color: var(--jc-muted); padding: 4px; }
+  .jc-span-detail h2 { min-width: 0; overflow-wrap: anywhere; }
   .jc-line { display: inline-block; width: 24px; border-top: 2px solid var(--jc-muted); vertical-align: middle; }
   .jc-line.jc-dashed { border-top-style: dashed; }
   .jc-side { align-self: start; }
 
   @media (max-width: 900px) {
-    .jc-trace.jc-with-detail, .jc-topology { grid-template-columns: 1fr; }
+    .jc-trace.jc-with-detail, .jc-topology { grid-template-columns: minmax(0, 1fr); }
     // Stacked panes: the page scrolls as a whole again.
     mat-sidenav-content > .jc-fill-page { height: auto; display: block; overflow: visible; }
     .jc-fill-page > .jc-trace > .jc-waterfall, .jc-fill-page > .jc-trace > .jc-span-detail { overflow: visible; }
