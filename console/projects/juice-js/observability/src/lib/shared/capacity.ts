@@ -3,8 +3,10 @@ import { FormsModule } from '@angular/forms';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { RouterLink } from '@angular/router';
 import { ApiService } from '../core/api.service';
 import { ContextService } from '../core/context.service';
+import { LinkPipe } from '../core/options';
 import { Capacity } from '../core/models';
 import { apiResource } from './resource';
 import { problemText } from './telemetry';
@@ -90,7 +92,7 @@ function rate(value: number): string { return value >= 10 ? value.toFixed(0) : v
 @Component({
   selector: 'jc-service-capacity',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [FormsModule, MatFormFieldModule, MatInputModule, MatProgressBarModule],
+  imports: [FormsModule, MatFormFieldModule, MatInputModule, MatProgressBarModule, RouterLink, LinkPipe],
   template: `
     @if (capacity.isLoading()) { <mat-progress-bar mode="indeterminate" /> }
     @if (capacity.error()) { <p class="jc-error">{{ error() }}</p> }
@@ -135,13 +137,16 @@ function rate(value: number): string { return value >= 10 ? value.toFixed(0) : v
               <li class="jc-bad">Response time already rises with load: {{ r.low }} ms when quiet, {{ r.high }} ms when busy. Something may be near its limit, so the real capacity may be lower.</li>
             }
             @if (busyConsumer()) {
-              <li class="jc-bad" data-testid="capacity-busy-consumer">Message processing was busy nearly all the time, at about {{ perSecond(m.peakMessagesPerSecond) }} messages/s per instance. If it handles one message at a time, that is its limit whatever CPU says, and its queue may be growing. The estimate uses that rate. See which step takes the time in a trace.</li>
+              <li class="jc-bad" data-testid="capacity-busy-consumer">Message processing was busy nearly all the time, at about {{ perSecond(m.peakMessagesPerSecond) }} messages/s per instance. If it handles one message at a time, that is its limit whatever CPU says, and its queue may be growing. The estimate uses that rate, but a saturated consumer's rate can fall, so it may not hold. See which step takes the time in a trace.</li>
             }
             @if (m.outbox?.fallingBehind) {
               <li class="jc-bad" data-testid="capacity-outbox-behind">Outbox delivery is falling behind: {{ count(m.outbox!.undelivered) }} messages created in this window weren't delivered. CPU and requests can look healthy while this grows, and the estimate doesn't include it. If another service delivers this outbox, this doesn't apply.</li>
             }
             @if (m.peakQueue !== null && m.peakQueue >= notableQueue) {
               <li class="jc-bad">The thread pool queue reached {{ m.peakQueue }}: work was waiting for a thread.</li>
+            }
+            @if (m.cpuModel === 'average') {
+              <li data-testid="capacity-load-hint">Load didn't vary enough here to separate idle CPU from the cost of each request, so this is rough. A <a [routerLink]="['load-runs'] | jcLink" [queryParams]="ctx.keep()">load test</a> gives a better estimate.</li>
             }
             <li>Assumes cost grows in a straight line with load. A database, lock or connection limit can be reached long before CPU runs out.</li>
             <li>Covers this service only, not its databases, brokers or the services it calls.</li>
@@ -196,7 +201,7 @@ function rate(value: number): string { return value >= 10 ? value.toFixed(0) : v
     }`,
 })
 export class ServiceCapacity {
-  private readonly ctx = inject(ContextService);
+  protected readonly ctx = inject(ContextService);
   private readonly api = inject(ApiService);
   readonly serviceId = input.required<string>();
   /** The environments the service runs in: figures across several mix their hardware. */
