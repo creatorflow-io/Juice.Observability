@@ -121,6 +121,11 @@ with the pooled context fix of 10.10.1, before it was released. The 25 checks ab
   about 23% longer, which accounts for the ratio; a shared broker and machine is the likely reason, not separately shown. The 1.59×
   is not a scaling figure: rerun on separate machines before quoting one.
 
+**Why a consumer's rate falls, run 2026-11-06.** At a steady 64 orders/s, `billing` handled 64 messages/s for about 2 minutes, then about 30/s, reproduced 3 times. This
+is the development machine's disk, not Juice: a flush timed in a container the flow doesn't use went from 0.78 ms to 4.2-5.2 ms at the same moment, and stayed above idle after the
+flow stopped, while SQL Server's lock waits stayed near zero. `billing` handles one message at a time with 3-4 flushes each, which accounts for the difference. Why the disk slows
+isn't proven. So the 45-64 messages/s seen on this machine aren't a limit of the code: rerun on a dedicated disk before quoting one.
+
 ## Not covered or open
 
 - **Console gaps:** Kubernetes workloads are not a resource type yet (§11); rules are read-only (D5); custom dashboards

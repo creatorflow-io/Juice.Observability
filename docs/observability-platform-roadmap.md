@@ -131,6 +131,8 @@
 
 **Acceptance gate:** related timeline is tenant scoped; secrets are excluded; temporal proximity is labeled correlation, not proven root cause.
 
+**Status:** see [Phase 5 acceptance](phase-5-acceptance.md).
+
 ## Phase 6 — Broader notifications and incident workflow
 
 **Goal:** extend the MVP webhook path and group operational work.

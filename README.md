@@ -111,6 +111,9 @@ page's `nextCursor`).
 | `GET /api/v1/tenants/{tenantId}/telemetry/dependencies/{dependencyId}` | an edge's evidence: calls, error rate, p95, last seen, representative traces |
 | `GET /api/v1/tenants/{tenantId}/telemetry/metrics`, `…/metrics/series?name=&stepSeconds=`, `…/service-stats?serviceId=` | metric names, one metric as a series (counter → rate), a service's requests, errors and p95; empty buckets have no point |
 | `GET /api/v1/tenants/{tenantId}/telemetry/capacity?serviceId=&environment=&from=&to=` | what a service was measured to need per instance, for the Console's capacity calculator: CPU per request or message, idle CPU and memory, memory growth, highest load, whether the data supported separating them, and whether its outbox delivery keeps up (from Juice's `create` and `deliver` spans) |
+| `POST /api/v1/tenants/{tenantId}/changes`, `GET …/changes?serviceId=&resourceId=&environment=&kind=` | report a change (operator or admin) and list them, newest first |
+| `GET /api/v1/tenants/{tenantId}/timeline?serviceId=&environment=&from=&to=` | changes, health transitions and alert transitions in one order |
+| `GET /api/v1/tenants/{tenantId}/alerts/{alertId}/related` | what happened around an alert, ranked with the reason for every point, labelled as correlation |
 | `POST /api/v1/tenants/{tenantId}/load-runs`, `POST …/load-runs/{id}/end` | mark a load test's window (operator or admin; `Idempotency-Key` on start); the platform generates no load |
 | `GET /api/v1/tenants/{tenantId}/load-runs?environment=`, `…/load-runs/{id}/results` | the runs; each service's load, p95, errors, thread pool queue, consumer busy and outbox backlog per time step, and where it started to struggle |
 | `GET /api/v1/tenants/{tenantId}/search?q=` | a trace id or W3C `traceparent`, a span id (last 24 h) or services by name |
@@ -244,6 +247,35 @@ a threshold and a recovery threshold (hysteresis), minimum samples, `ForDuration
     `juice.observability.alerts.transitions`.
 - **Breach-to-alert.** Firing comes at most lag (10 s) plus one schedule after `ForDuration`: 70 s for a 1-minute
   rule, against the 2-minute target. Measured in tests at 22 s with a 5 s schedule and a 10 s `ForDuration`.
+
+## Changes and correlation
+
+A change event comes from one of three places:
+
+- **Telemetry:** a new `service.version` from a new instance is recorded with no actor, since telemetry shows that it changed, not who changed it. A service's first version isn't a change, and old instances still reporting during a rollout don't read as going back.
+- **A pipeline:** `POST /changes` (operator or admin). The actor comes from the token. Reporting the same `source` and `externalKey` again returns the first event.
+- **The platform:** its own rules and webhooks when configuration loads them.
+
+```bash
+curl -X POST "$PLATFORM_URL/api/v1/tenants/$TENANT_ID/changes" -H "Authorization: Bearer $PLATFORM_TOKEN" -H 'Content-Type: application/json' -d '{
+  "kind": "deployment", "summary": "Deployed orders 1.4.2", "service": "shop/orders", "environment": "production", "toVersion": "1.4.2",
+  "source": "github-actions", "externalKey": "run-4211", "attributes": { "commit": "abc123", "url": "https://ci.example.com/runs/4211" }
+}'
+```
+
+**Secrets:** only summaries are stored. Attributes are allowlisted (`commit`, `branch`, `tag`, `pipeline`, `build`, `image`, `ticket`, `url`, `reason`); anything else is dropped, name included. Text is masked for passwords, tokens, API keys, URL credentials and connection strings before it's stored. That catches common shapes, not every secret, so send a summary, not a command or a log.
+
+**Correlation:** an alert's page lists what happened from 2 hours before its breach to 5 minutes after, on its subject, on what the subject directly depends on, and to its rule. Each item's score is the sum of points shown with their reasons:
+
+| Reason | Points |
+|---|---|
+| Before the breach | up to 40, falling to 0 at 2 hours |
+| After the breach began (so it didn't start it) | 5 |
+| On the alert's own subject / its rule / a direct dependency | 30 / 20 / 15 |
+| Deployment or version / configuration or a dependency's health / other | 15 / 10 / 5 |
+| Same environment | 10 |
+
+This is a reading order, not a diagnosis. Being close in time is correlation, and the API and the Console say so wherever these are shown.
 
 ## Load test runs
 
