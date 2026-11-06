@@ -111,6 +111,8 @@ page's `nextCursor`).
 | `GET /api/v1/tenants/{tenantId}/telemetry/dependencies/{dependencyId}` | an edge's evidence: calls, error rate, p95, last seen, representative traces |
 | `GET /api/v1/tenants/{tenantId}/telemetry/metrics`, `…/metrics/series?name=&stepSeconds=`, `…/service-stats?serviceId=` | metric names, one metric as a series (counter → rate), a service's requests, errors and p95; empty buckets have no point |
 | `GET /api/v1/tenants/{tenantId}/telemetry/capacity?serviceId=&environment=&from=&to=` | what a service was measured to need per instance, for the Console's capacity calculator: CPU per request or message, idle CPU and memory, memory growth, highest load, whether the data supported separating them, and whether its outbox delivery keeps up (from Juice's `create` and `deliver` spans) |
+| `POST /api/v1/tenants/{tenantId}/load-runs`, `POST …/load-runs/{id}/end` | mark a load test's window (operator or admin; `Idempotency-Key` on start); the platform generates no load |
+| `GET /api/v1/tenants/{tenantId}/load-runs?environment=`, `…/load-runs/{id}/results` | the runs; each service's load, p95, errors, thread pool queue, consumer busy and outbox backlog per time step, and where it started to struggle |
 | `GET /api/v1/tenants/{tenantId}/search?q=` | a trace id or W3C `traceparent`, a span id (last 24 h) or services by name |
 | `GET /api/v1/tenants/{tenantId}/webhooks` | webhook endpoints (destination host only, never the secret) |
 | `GET /api/v1/tenants/{tenantId}/webhooks/{endpointId}/deliveries?status=` | delivery history, each with every attempt |
@@ -242,6 +244,43 @@ a threshold and a recovery threshold (hysteresis), minimum samples, `ForDuration
     `juice.observability.alerts.transitions`.
 - **Breach-to-alert.** Firing comes at most lag (10 s) plus one schedule after `ForDuration`: 70 s for a 1-minute
   rule, against the 2-minute target. Measured in tests at 22 s with a 5 s schedule and a 10 s `ForDuration`.
+
+## Load test runs
+
+The platform generates no load. A load test marks its window, and the Console's Load runs page reads each service's telemetry from it,
+compares runs, and shows where a service started to struggle, which everyday traffic can't reveal. Marking needs a token with the
+operator or admin role. With k6:
+
+```javascript
+import http from 'k6/http';
+
+const runs = `${__ENV.PLATFORM_URL}/api/v1/tenants/${__ENV.TENANT_ID}/load-runs`;
+const headers = { Authorization: `Bearer ${__ENV.PLATFORM_TOKEN}`, 'Content-Type': 'application/json' };
+
+export const options = { stages: [{ duration: '5m', target: 50 }, { duration: '5m', target: 200 }] };
+
+export function setup() {
+  const body = JSON.stringify({ name: 'checkout, up to 200 users', environment: 'staging' });
+  return http.post(runs, body, { headers }).json();
+}
+
+export default function () { http.get(__ENV.TARGET_URL); }
+
+export function teardown(run) { http.post(`${runs}/${run.id}/end`, null, { headers }); }
+```
+
+A run with no end, because the test died, is read up to now. A limit is the first time step of two in a row where one of these holds:
+
+| Limit | Condition |
+|---|---|
+| `latency` | p95 at least twice the fastest step in the quieter half of the run, and at least 50 ms more |
+| `consumer-busy` | an instance spent at least 90 % of the time handling messages. A message's wait in its queue isn't in its span, so this limit doesn't show in latency |
+| `queue` | at least 10 work items waiting for a thread (`dotnet.thread_pool.queue.length`) |
+| `errors` | error rate at least 5 %, and 4 points above the quiet quarter's |
+| `backlog` | outbox messages created but not delivered still growing, at least 10 and 5 % of those created. Includes rolled-back messages |
+
+Figures come from spans, so they undercount if traces are sampled. Steps the window cuts short are left out, and a step runs from 15 s
+to an hour by the run's length. The broker's own queue depth and the database aren't measured.
 
 ## Webhooks
 

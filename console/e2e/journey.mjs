@@ -91,6 +91,22 @@ await step('capacity', async () => {
 });
 await step('alerts', async () => { await page.goto(`${base}/alerts?env=production`); await page.waitForSelector('text=service-error-rate'); });
 await step('rules', async () => { await page.goto(`${base}/rules`); await page.waitForSelector('text=Service error rate'); });
+await step('load-runs', async () => {
+  // A test marks its window through the API; here, a short one over the demo traffic.
+  const token = (await (await fetch(`${env.KEYCLOAK_URL ?? 'http://localhost:8080'}/realms/juice/protocol/openid-connect/token`, { method: 'POST',
+    body: new URLSearchParams({ grant_type: 'password', client_id: 'juice-platform-cli', username: 'erin', password: env.KEYCLOAK_DEMO_PASSWORD }) })).json()).access_token;
+  const api = { authorization: `Bearer ${token}`, 'content-type': 'application/json' };
+  const tenant = (await (await fetch(`${base}/api/v1/tenants`, { headers: api })).json()).items[0].id;
+  const runs = `${base}/api/v1/tenants/${tenant}/load-runs`;
+  const name = `journey ${Date.now()}`;
+  const run = await (await fetch(runs, { method: 'POST', headers: api, body: JSON.stringify({ name, environment: 'production' }) })).json();
+  await new Promise(r => setTimeout(r, 40_000)); // long enough for two whole 15 s steps
+  await fetch(`${runs}/${run.id}/end`, { method: 'POST', headers: api });
+  await page.goto(`${base}/load-runs`); await page.waitForSelector(`text=${name}`);
+  await page.check(`input[aria-label="Compare ${name}"]`);
+  await page.waitForSelector('[data-testid=load-compare] >> text=demo-shop/payments', { timeout: 20000 });
+  await page.reload(); await page.waitForSelector('[data-testid=load-compare]'); // the selection is in the URL
+});
 
 console.log('\nPROBLEMS:\n' + (problems.length ? [...new Set(problems)].join('\n') : 'none'));
 await browser.close();

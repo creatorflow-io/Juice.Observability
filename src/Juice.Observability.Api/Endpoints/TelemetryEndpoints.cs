@@ -100,6 +100,7 @@ namespace Juice.Observability.Api.Endpoints
             telemetry.MapGet("/metrics/series", GetSeriesAsync);
             telemetry.MapGet("/service-stats", GetServiceStatsAsync);
             telemetry.MapGet("/capacity", GetCapacityAsync);
+            tenant.MapGet("/load-runs/{runId:guid}/results", GetLoadRunResultsAsync);
             telemetry.MapGet("/dependencies", ListDependencyStatsAsync);
             telemetry.MapGet("/dependencies/{dependencyId:guid}", GetDependencyEvidenceAsync);
             tenant.MapGet("/search", SearchAsync);
@@ -783,6 +784,11 @@ namespace Juice.Observability.Api.Endpoints
 
         // ─── capacity ───
 
+        /// <summary>Juice's own span for a message written to the outbox.</summary>
+        private const string Created = "SpanKind = 'Producer' AND SpanName LIKE 'create %' AND ScopeName = 'Juice'";
+        /// <summary>Juice's own span for a delivery that was sent.</summary>
+        private const string Delivered = "SpanName LIKE 'deliver %' AND ScopeName = 'Juice' AND SpanAttributes['juice.delivery.outcome'] = 'published'";
+
         /// <summary>A week of minutes for five instances.</summary>
         private const int MaxCapacityRows = 50_400;
         /// <summary>One length for any window: longer buckets would average away the peaks that sizing is about.</summary>
@@ -882,8 +888,6 @@ namespace Juice.Observability.Api.Endpoints
 
             // Juice's own spans: "create" when a message is written to the outbox, "deliver" with its outcome when it's sent. A
             // message counts once however many routes it has. A delivery's parent is the span that created its message.
-            const string Created = "SpanKind = 'Producer' AND SpanName LIKE 'create %' AND ScopeName = 'Juice'";
-            const string Delivered = "SpanName LIKE 'deliver %' AND ScopeName = 'Juice' AND SpanAttributes['juice.delivery.outcome'] = 'published'";
             var traces = scope.Where("Timestamp");
             var outboxPoints = await clickHouse.QueryAsync($"""
                 SELECT {Bucket("Timestamp")} AS b, uniqExactIf(SpanAttributes['messaging.message.id'], {Created}), uniqExactIf(SpanAttributes['messaging.message.id'], {Delivered})
@@ -906,6 +910,75 @@ namespace Juice.Observability.Api.Endpoints
 
             return Results.Ok(CapacityEstimate.From(samples, step, truncated, requestRate.Count > 0 ? "metrics" : spans.Count > 0 ? "spans" : "none",
                 hosts, cpuCount > 0 ? (int)cpuCount : null) with { Outbox = CapacityEstimate.Backlog(whole, step, recentDelay) });
+        });
+
+        // ─── load runs ───
+
+        /// <summary>The time step of a run's results: the shortest of these that gives at most <see cref="MaxLoadRunSteps"/> steps.</summary>
+        private static readonly int[] LoadRunSteps = [15, 30, 60, 120, 300, 600, 1800, 3600];
+        private const int MaxLoadRunSteps = 120;
+        private const int MaxLoadRunServices = 50;
+        private const string EntrySpan = "(SpanKind IN ('Server', 'Consumer') OR (ParentSpanId = '' AND SpanKind != 'Client'))";
+
+        /// <summary>
+        /// What each service did during a load run, step by step, and where it started to struggle (<see cref="LoadRunAnalysis"/>). Steps
+        /// the window cuts short are left out, since they would read low. A run with no end is read up to now.
+        /// </summary>
+        private static Task<IResult> GetLoadRunResultsAsync(HttpContext http, PlatformDbContext db, ClickHouseTelemetrySource clickHouse,
+            TimeProvider clock, Guid tenantId, Guid runId, CancellationToken ct) => Run(async () =>
+        {
+            var run = await db.LoadRuns.AsNoTracking().SingleOrDefaultAsync(r => r.TenantId == tenantId && r.Id == runId, ct) ?? throw Missing("Load run");
+            var end = run.EndedAt ?? clock.GetUtcNow();
+            if (end - run.StartedAt > MaxSeriesRange) end = run.StartedAt + MaxSeriesRange;
+            var seconds = (end - run.StartedAt).TotalSeconds;
+            var step = Array.Find(LoadRunSteps, s => seconds / s <= MaxLoadRunSteps);
+            if (step == 0) step = LoadRunSteps[^1];
+            if (seconds <= 0) return Results.Ok(new LoadRunResultsDto(LoadRunEndpoints.ToDto(run), step, [], false));
+
+            var limit = MaxLoadRunServices * MaxLoadRunSteps;
+            var scope = await ScopeAsync(http, db, clock, new Filter { Environment = run.Environment, From = run.StartedAt, To = end }, limit, MaxSeriesRange, ct);
+            var stepParameter = scope.Add("UInt32", (uint)step);
+            string Bucket(string time) => $"toStartOfInterval({time}, toIntervalSecond({stepParameter}))";
+            const string Namespace = "ResourceAttributes['service.namespace']";
+
+            var spans = await clickHouse.QueryAsync($"""
+                SELECT {Namespace} AS ns, ServiceName, {Bucket("Timestamp")} AS b,
+                       countIf({EntrySpan}) AS entries, countIf({EntrySpan} AND StatusCode = 'Error'), quantileIf(0.95)(Duration, {EntrySpan}) / 1e6,
+                       sumIf(Duration, SpanKind = 'Consumer') / 1e9 / {stepParameter} / greatest(1, uniqExact({Instance})),
+                       uniqExactIf(SpanAttributes['messaging.message.id'], {Created}), uniqExactIf(SpanAttributes['messaging.message.id'], {Delivered})
+                FROM otel.otel_traces
+                WHERE {scope.Where("Timestamp")} AND ({EntrySpan} OR ({Created}) OR ({Delivered}))
+                GROUP BY ns, ServiceName, b ORDER BY b
+                LIMIT {ClickHouseTelemetrySource.Limit}
+                """, scope.Window, r => (Service: (r.GetString(0), r.GetString(1)), At: Utc(r.GetValue(2)), Entries: Convert.ToDouble(r.GetValue(3)), Errors: Convert.ToDouble(r.GetValue(4)),
+                    P95: Convert.ToDouble(r.GetValue(5)), Busy: Convert.ToDouble(r.GetValue(6)), Created: Convert.ToDouble(r.GetValue(7)), Delivered: Convert.ToDouble(r.GetValue(8))), ct, scope.Parameters);
+
+            var queueName = scope.Add("String", "dotnet.thread_pool.queue.length");
+            var queues = (await clickHouse.QueryAsync($"""
+                SELECT {Namespace} AS ns, ServiceName, {Bucket("TimeUnix")} AS b, max(Value)
+                FROM otel.otel_metrics_sum
+                WHERE {scope.Where("TimeUnix")} AND MetricName = {queueName}
+                GROUP BY ns, ServiceName, b
+                LIMIT {ClickHouseTelemetrySource.Limit}
+                """, scope.Window, r => (Key: ((r.GetString(0), r.GetString(1)), Utc(r.GetValue(2))), Value: Convert.ToDouble(r.GetValue(3))), ct, scope.Parameters))
+                .ToDictionary(q => q.Key, q => q.Value);
+
+            var services = (await db.Services.AsNoTracking().Where(s => s.TenantId == tenantId).Select(s => new { s.Id, s.Namespace, s.Name }).ToListAsync(ct))
+                .ToDictionary(s => (s.Namespace, s.Name), s => s.Id);
+            var analyzed = spans.Where(s => s.At >= run.StartedAt && s.At.AddSeconds(step) <= end).GroupBy(s => s.Service).Select(group =>
+            {
+                var backlog = 0d;
+                var points = group.OrderBy(s => s.At).Select(s =>
+                {
+                    backlog = Math.Max(0, backlog + s.Created - s.Delivered);
+                    return new LoadRunPointDto(s.At, s.Entries / step, s.Entries > 0 ? s.Errors / s.Entries : 0, s.Entries > 0 ? s.P95 : null,
+                        queues.TryGetValue((s.Service, s.At), out var queue) ? queue : null, s.Busy, s.Created, s.Delivered, backlog);
+                }).ToList();
+                var (ns, name) = group.Key;
+                return LoadRunAnalysis.Analyze(services.TryGetValue(group.Key, out var id) ? id : null, ns.Length > 0 ? $"{ns}/{name}" : name, points);
+            }).OrderByDescending(s => s.PeakPerSecond).ToList();
+            return Results.Ok(new LoadRunResultsDto(LoadRunEndpoints.ToDto(run), step, analyzed.Take(MaxLoadRunServices).ToList(),
+                analyzed.Count > MaxLoadRunServices || spans.Count >= limit));
         });
 
         /// <summary>The bucket size: given, or the window over about 60 points; never more than <see cref="MaxPoints"/> points.</summary>

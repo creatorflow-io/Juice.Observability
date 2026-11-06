@@ -102,6 +102,19 @@ export interface Capacity {
 /** `undelivered` is created minus delivered in the window, so it includes rolled-back messages. The delay is the p95 from creating to delivering, in the newest minutes. */
 export interface OutboxBacklog { createdPerSecond: number; deliveredPerSecond: number; undelivered: number; recentDelaySeconds: number | null; fallingBehind: boolean; }
 
+export interface LoadRun { id: string; name: string; environment: string | null; startedAt: string; endedAt: string | null; startedBy: string; }
+export interface LoadRunPoint {
+  at: string; perSecond: number; errorRate: number; p95Ms: number | null; queue: number | null; consumerBusy: number;
+  created: number; delivered: number; backlog: number;
+}
+/** Where a service started to struggle. */
+export interface LoadRunLimit { reason: string; at: string; perSecond: number; value: number; baseline: number | null; }
+export interface LoadRunService {
+  serviceId: string | null; name: string; points: LoadRunPoint[]; peakPerSecond: number; p95AtPeakMs: number | null;
+  errorRateAtPeak: number; baselineP95Ms: number | null; limit: LoadRunLimit | null;
+}
+export interface LoadRunResults { run: LoadRun; stepSeconds: number; services: LoadRunService[]; truncated: boolean; }
+
 export interface DependencyStats { dependencyId: string; count: number; errorRate: number; }
 export interface DependencyStatsPage { items: DependencyStats[]; truncated: boolean; }
 

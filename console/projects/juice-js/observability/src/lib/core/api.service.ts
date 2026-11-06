@@ -3,7 +3,7 @@ import { Injectable, inject } from '@angular/core';
 import { EMPTY, Observable, expand, map, reduce, shareReplay, switchMap } from 'rxjs';
 import { OBSERVABILITY_OPTIONS } from './options';
 import {
-  AlertDetail, Alert, Application, DependencyEvidence, DependencyStatsPage, DeploymentEnvironment, Health, LogRecord, MetricInfo, Operation,
+  AlertDetail, Alert, Application, DependencyEvidence, DependencyStatsPage, DeploymentEnvironment, LoadRun, LoadRunResults, Health, LogRecord, MetricInfo, Operation,
   Page, ResourceDetail, ResourceSummary, Rule, SearchHit, Series, Capacity, ServiceStats, Tenant, TelemetryPage, Topology, Trace,
   TraceSummary,
 } from './models';
@@ -72,6 +72,8 @@ export class ApiService {
   series(query: Query) { return this.get<Series>('/telemetry/metrics/series', query); }
   serviceStats(query: Query) { return this.get<ServiceStats>('/telemetry/service-stats', query); }
   capacity(query: Query) { return this.get<Capacity>('/telemetry/capacity', query); }
+  loadRuns(query: Query) { return this.get<Page<LoadRun>>('/load-runs', query); }
+  loadRunResults(id: string) { return this.get<LoadRunResults>(`/load-runs/${id}/results`); }
   dependencyStats(query: Query) { return this.get<DependencyStatsPage>('/telemetry/dependencies', query); }
   dependency(id: string, query: Query) { return this.get<DependencyEvidence>(`/telemetry/dependencies/${id}`, query); }
   search(q: string) { return this.get<TelemetryPage<SearchHit>>('/search', { q }); }

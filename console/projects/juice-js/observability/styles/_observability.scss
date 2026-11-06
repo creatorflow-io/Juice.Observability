@@ -166,6 +166,8 @@
   .jc-capacity-result strong { font-size: 24px; font-weight: 500; line-height: 1.2; }
   .jc-capacity-notes { margin: 12px 0 0; padding-left: 18px; font-size: 13px; }
   .jc-capacity-measured th { width: 240px; }
+  .jc-load-steps { margin-top: 12px; }
+  .jc-load-steps summary { cursor: pointer; font-size: 13px; }
 
   .jc-chart { height: 180px; width: 100%; background: var(--jc-surface); border: 1px solid var(--jc-border); border-radius: 6px; }
   .jc-chart-empty { display: flex; align-items: center; justify-content: center; color: var(--jc-muted); font-size: 13px; }

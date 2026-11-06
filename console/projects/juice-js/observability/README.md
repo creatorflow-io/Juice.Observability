@@ -62,6 +62,7 @@ like juice-layout's dark-mode toggle) repaints the charts and the graph.
 - The trace page's resource usage and a service's Capacity tab read .NET's `System.Runtime` meter (.NET 9+): add
   `AddMeter("System.Runtime")` to the host's `WithMetrics`. If traces are sampled, also add `AddAspNetCoreInstrumentation()`
   there: the Capacity tab then counts requests from `http.server.request.duration`, not from spans, which undercount.
+- The Load runs page reads windows a load test marks through the API: see "Load test runs" in the platform's README.
 - The router needs `bindToComponentInputs: true`. The pages take their route and query parameters as inputs.
 - The host's bearer-token interceptor (`@juice-js/auth`) must cover `apiBase`. The token carries the `platform_tenant`
   claim and a platform role (`viewer`, `operator` or `admin`).

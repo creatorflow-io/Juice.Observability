@@ -32,6 +32,7 @@ namespace Juice.Observability.Data
         public DbSet<WebhookAllowlistEntry> WebhookAllowlist => Set<WebhookAllowlistEntry>();
         public DbSet<WebhookDelivery> WebhookDeliveries => Set<WebhookDelivery>();
         public DbSet<WebhookAttempt> WebhookAttempts => Set<WebhookAttempt>();
+        public DbSet<LoadRun> LoadRuns => Set<LoadRun>();
 
         /// <summary>Applies the snake_case naming used by every table. Call it when configuring the context.</summary>
         public static void Configure(DbContextOptionsBuilder options, string connectionString)
@@ -151,6 +152,7 @@ namespace Juice.Observability.Data
             });
 
             ConfigureAlerts(model);
+            ConfigureLoadRuns(model);
             ConfigureWebhooks(model);
 
             model.Entity<HealthSnapshot>(e =>
@@ -177,6 +179,19 @@ namespace Juice.Observability.Data
                     .IsUnique().AreNullsDistinct(false);
                 e.HasIndex(x => new { x.TenantId, x.SubjectId, x.EvaluatedAt });
                 e.HasOne<DeploymentEnvironment>().WithMany().HasForeignKey(x => x.EnvironmentId).OnDelete(DeleteBehavior.Cascade);
+            });
+        }
+
+        private static void ConfigureLoadRuns(ModelBuilder model)
+        {
+            model.Entity<LoadRun>(e =>
+            {
+                e.ToTable("load_runs");
+                Tenant(e);
+                e.Property(x => x.Name).HasMaxLength(128);
+                e.Property(x => x.Environment).HasMaxLength(128);
+                e.Property(x => x.StartedBy).HasMaxLength(200);
+                e.HasIndex(x => new { x.TenantId, x.Environment });
             });
         }
 
