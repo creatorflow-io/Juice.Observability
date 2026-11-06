@@ -102,6 +102,13 @@ export interface Capacity {
 /** `undelivered` is created minus delivered in the window, so it includes rolled-back messages. The delay is the p95 from creating to delivering, in the newest minutes. */
 export interface OutboxBacklog { createdPerSecond: number; deliveredPerSecond: number; undelivered: number; recentDelaySeconds: number | null; fallingBehind: boolean; }
 
+export interface TimelineEntry { at: string; type: 'change' | 'health' | 'alert'; title: string; detail: string | null; state: string | null; id: string | null; serviceId: string | null; environment: string | null; }
+export interface Timeline { from: string; to: string; entries: TimelineEntry[]; truncated: boolean; }
+export interface CorrelationReason { code: string; text: string; points: number; }
+export interface CorrelatedItem { type: string; id: string; at: string; title: string; detail: string | null; kind: string | null; scope: string; score: number; reasons: CorrelationReason[]; }
+/** What happened near an alert: correlation, never a proven cause. */
+export interface Related { relation: string; note: string; breachStartedAt: string; items: CorrelatedItem[]; }
+
 export interface LoadRun { id: string; name: string; environment: string | null; startedAt: string; endedAt: string | null; startedBy: string; }
 export interface LoadRunPoint {
   at: string; perSecond: number; errorRate: number; p95Ms: number | null; queue: number | null; consumerBusy: number;

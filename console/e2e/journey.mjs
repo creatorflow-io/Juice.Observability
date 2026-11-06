@@ -91,6 +91,28 @@ await step('capacity', async () => {
 });
 await step('alerts', async () => { await page.goto(`${base}/alerts?env=production`); await page.waitForSelector('text=service-error-rate'); });
 await step('rules', async () => { await page.goto(`${base}/rules`); await page.waitForSelector('text=Service error rate'); });
+await step('alert-related', async () => {
+  // A change reported just now is on the alert's subject: its page lists it, with reasons, labelled as correlation.
+  const token = (await (await fetch('http://localhost:8080/realms/juice/protocol/openid-connect/token', { method: 'POST',
+    body: new URLSearchParams({ grant_type: 'password', client_id: 'juice-platform-cli', username: 'erin', password: env.KEYCLOAK_DEMO_PASSWORD }) })).json()).access_token;
+  const api = { authorization: `Bearer ${token}`, 'content-type': 'application/json' };
+  const tenant = (await (await fetch(`${base}/api/v1/tenants`, { headers: api })).json()).items[0].id;
+  const alerts = (await (await fetch(`${base}/api/v1/tenants/${tenant}/alerts?state=firing&environment=production&limit=50`, { headers: api })).json()).items;
+  const alert = alerts.find(a => a.subjectType === 'service');
+  if (!alert) throw new Error('no firing service alert: is the demo traffic running?');
+  const summary = `Journey deployment ${Date.now()}`;
+  const reported = await fetch(`${base}/api/v1/tenants/${tenant}/changes`, { method: 'POST', headers: api, body: JSON.stringify({
+    kind: 'deployment', summary: `${summary} --password hunter2`, service: alert.subjectKey.replace(/^service:/, '').replace(/@.*$/, ''), environment: 'production',
+    occurredAt: new Date(new Date(alert.breachStartedAt).getTime() - 60_000).toISOString() }) });
+  if (!reported.ok) throw new Error(`POST /changes: ${reported.status}`);
+  await page.goto(`${base}/alerts/${alert.id}?env=production`);
+  await page.waitForSelector(`[data-testid=alert-related] >> text=${summary}`, { timeout: 20000 });
+  const section = await page.textContent('[data-testid=alert-related]');
+  if (section.includes('hunter2')) throw new Error('a secret reached the page');
+  if (!(await page.textContent('[data-testid=alert-related-note]')).includes('not a proven cause')) throw new Error('not labelled as correlation');
+  await page.click('[data-testid=alert-related] >> text=Open the timeline');
+  await page.waitForSelector(`[data-testid=timeline] >> text=${summary}`, { timeout: 20000 });
+});
 await step('load-runs', async () => {
   // A test marks its window through the API; here, a short one over the demo traffic.
   const token = (await (await fetch(`${env.KEYCLOAK_URL ?? 'http://localhost:8080'}/realms/juice/protocol/openid-connect/token`, { method: 'POST',

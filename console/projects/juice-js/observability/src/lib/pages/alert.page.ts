@@ -51,6 +51,25 @@ import { problemText } from '../shared/telemetry';
           } @empty { <p class="jc-muted">No health for this subject.</p> }
         </section>
       </div>
+      <section class="jc-card" data-testid="alert-related">
+        <h2>Around this alert</h2>
+        @if (related.value(); as r) {
+          <p class="jc-notice" data-testid="alert-related-note">{{ r.note }}</p>
+          <table class="jc-table"><tbody>
+            @for (i of r.items; track i.type + i.id) {
+              <tr>
+                <td class="jc-nowrap">{{ i.at | date: 'MMM d, HH:mm:ss' }}</td>
+                <td><strong>{{ i.title }}</strong>@if (i.detail) { <div class="jc-muted jc-small">{{ i.detail }}</div> }</td>
+                <td class="jc-small"><ul class="jc-reasons">@for (x of i.reasons; track x.code) { <li>{{ x.text }} <span class="jc-muted">(+{{ x.points }})</span></li> }</ul></td>
+              </tr>
+            } @empty { <tr><td class="jc-muted">No changes or dependency health changes in the 2 hours before this alert.</td></tr> }
+          </tbody></table>
+          @if (d.alert.subjectId && d.alert.subjectType === 'service') {
+            <a mat-stroked-button [routerLink]="['timeline'] | jcLink" [queryParams]="timelineLink(d.alert.subjectId, d.alert.environment, r.breachStartedAt)">Open the timeline</a>
+          }
+        }
+        @if (related.error()) { <p class="jc-error">{{ relatedError() }}</p> }
+      </section>
       <section class="jc-card">
         <h2>History</h2>
         <table class="jc-table"><tbody>
@@ -83,8 +102,16 @@ export class AlertPage {
 
   protected readonly detail = apiResource({ params: () => this.id(), stream: ({ params }) => this.api.alert(params) });
   protected readonly error = computed(() => problemText(this.detail.error()));
+  protected readonly related = apiResource({ params: () => this.id(), stream: ({ params }) => this.api.relatedToAlert(params) });
+  protected readonly relatedError = computed(() => problemText(this.related.error()));
 
   /** The service page over the alert's environment, from shortly before the breach. */
+  /** The service's timeline from 2 hours before the breach to 1 hour after. */
+  timelineLink(service: string, environment: string | null, breach: string) {
+    const at = new Date(breach).getTime();
+    return this.ctx.keep({ service, env: environment, range: null, from: new Date(at - 2 * 3_600_000).toISOString(), to: new Date(at + 3_600_000).toISOString() });
+  }
+
   investigate(environment: string | null, extra: Record<string, string> = {}) {
     const alert = this.detail.value()?.alert;
     const start = alert?.breachStartedAt ? new Date(alert.breachStartedAt).getTime() - 15 * 60_000 : null;

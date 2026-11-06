@@ -61,6 +61,7 @@ namespace Juice.Observability.Api.Endpoints
             tenant.MapHealthEndpoints();
             tenant.MapAlertEndpoints();
             tenant.MapLoadRunEndpoints();
+            tenant.MapChangeEndpoints();
             tenant.MapWebhookEndpoints();
             tenant.MapTelemetryEndpoints();
             return app;

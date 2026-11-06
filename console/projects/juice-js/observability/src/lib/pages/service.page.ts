@@ -55,6 +55,7 @@ const TABS = ['overview', 'operations', 'dependencies', 'traces', 'logs', 'metri
         } @empty { <p class="jc-muted">No health evaluated yet: no data.</p> }
       </div>
 
+      <p><a mat-stroked-button [routerLink]="['timeline'] | jcLink" [queryParams]="ctx.keep({ service: id() })" data-testid="service-timeline">Timeline</a></p>
       <mat-tab-group [selectedIndex]="tabIndex()" (selectedIndexChange)="openTab($event)" animationDuration="0ms" mat-stretch-tabs="false">
         <mat-tab label="Overview">
           @if (tabIndex() === 0) {

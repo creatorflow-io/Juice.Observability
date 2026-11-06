@@ -25,6 +25,7 @@ export const OBSERVABILITY_ROUTES: Routes = [
   page('alerts', 'Alerts', () => import('./pages/alerts.page').then(m => m.AlertsPage)),
   page('alerts/:id', 'Alert', () => import('./pages/alert.page').then(m => m.AlertPage)),
   page('rules', 'Rules', () => import('./pages/rules.page').then(m => m.RulesPage)),
+  page('timeline', 'Timeline', () => import('./pages/timeline.page').then(m => m.TimelinePage)),
   page('load-runs', 'Load runs', () => import('./pages/load-runs.page').then(m => m.LoadRunsPage)),
 ];
 
@@ -42,6 +43,7 @@ export function observabilityMenus(basePath = '/', order = 1): Menus {
     { id: 'resources', label: 'Resources', icon: 'dns', routerLink: link('resources') },
     { id: 'alerts', label: 'Alerts', icon: 'notifications', routerLink: link('alerts') },
     { id: 'rules', label: 'Rules', icon: 'rule', routerLink: link('rules') },
+    { id: 'timeline', label: 'Timeline', icon: 'history', routerLink: link('timeline') },
     { id: 'load-runs', label: 'Load runs', icon: 'speed', routerLink: link('load-runs') },
   ].map((menu, index) => ({ ...menu, order: order + index }));
 }
