@@ -51,7 +51,7 @@ namespace Juice.Observability.Tests
                 Definitions = [new RuleDefinition { Key = $"errors-{_run}", Name = "Errors", Template = RuleTemplate.ErrorRate, Threshold = 0.05, RecoveryThreshold = 0.02 }],
             });
             RuleProvisioner Replica() => new(services.GetRequiredService<IServiceScopeFactory>(), rules,
-                Options.Create(new PlatformOptions { TenantKey = LocalStack.TenantKey }), TimeProvider.System, NullLogger<RuleProvisioner>.Instance);
+                Options.Create(new PlatformOptions { TenantKey = LocalStack.TenantKey }), TimeProvider.System, NullLogger<RuleProvisioner>.Instance, []);
 
             await Task.WhenAll(Enumerable.Range(0, 4).Select(_ => Task.Run(() => Replica().StartAsync(ct), ct)));
 

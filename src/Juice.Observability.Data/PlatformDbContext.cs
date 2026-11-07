@@ -34,6 +34,12 @@ namespace Juice.Observability.Data
         public DbSet<WebhookAttempt> WebhookAttempts => Set<WebhookAttempt>();
         public DbSet<LoadRun> LoadRuns => Set<LoadRun>();
         public DbSet<ChangeEvent> ChangeEvents => Set<ChangeEvent>();
+        public DbSet<Silence> Silences => Set<Silence>();
+        public DbSet<EscalationPolicy> EscalationPolicies => Set<EscalationPolicy>();
+        public DbSet<AlertEscalation> AlertEscalations => Set<AlertEscalation>();
+        public DbSet<Incident> Incidents => Set<Incident>();
+        public DbSet<IncidentAlert> IncidentAlerts => Set<IncidentAlert>();
+        public DbSet<IncidentEvent> IncidentEvents => Set<IncidentEvent>();
 
         /// <summary>Applies the snake_case naming used by every table. Call it when configuring the context.</summary>
         public static void Configure(DbContextOptionsBuilder options, string connectionString)
@@ -156,6 +162,8 @@ namespace Juice.Observability.Data
             ConfigureLoadRuns(model);
             ConfigureChanges(model);
             ConfigureWebhooks(model);
+            ConfigureNotifications(model);
+            ConfigureIncidents(model);
 
             model.Entity<HealthSnapshot>(e =>
             {
@@ -181,6 +189,91 @@ namespace Juice.Observability.Data
                     .IsUnique().AreNullsDistinct(false);
                 e.HasIndex(x => new { x.TenantId, x.SubjectId, x.EvaluatedAt });
                 e.HasOne<DeploymentEnvironment>().WithMany().HasForeignKey(x => x.EnvironmentId).OnDelete(DeleteBehavior.Cascade);
+            });
+        }
+
+        private static void ConfigureNotifications(ModelBuilder model)
+        {
+            model.Entity<Silence>(e =>
+            {
+                e.ToTable("silences");
+                Tenant(e);
+                e.Property(x => x.Kind).HasConversion<string>().HasMaxLength(20);
+                e.Property(x => x.Comment).HasMaxLength(500);
+                e.Property(x => x.Service).HasMaxLength(256);
+                e.Property(x => x.Environment).HasMaxLength(256);
+                e.Property(x => x.Host).HasMaxLength(256);
+                e.Property(x => x.MaximumSeverity).HasConversion<string>().HasMaxLength(20);
+                e.Property(x => x.CreatedBy).HasMaxLength(256);
+                e.Property(x => x.CancelledBy).HasMaxLength(256);
+                e.HasIndex(x => new { x.TenantId, x.EndsAt });
+            });
+
+            model.Entity<EscalationPolicy>(e =>
+            {
+                e.ToTable("escalation_policies");
+                Tenant(e);
+                e.Property(x => x.Key).HasMaxLength(63);
+                e.Property(x => x.Name).HasMaxLength(200);
+                e.Property(x => x.MinimumSeverity).HasConversion<string>().HasMaxLength(20);
+                e.Property(x => x.Steps).HasColumnType("jsonb").HasConversion(new ValueConverter<List<EscalationStep>, string>(
+                        v => JsonSerializer.Serialize(v, JsonOptions),
+                        v => JsonSerializer.Deserialize<List<EscalationStep>>(v, JsonOptions) ?? new()),
+                    new ValueComparer<List<EscalationStep>>(
+                        (a, b) => JsonSerializer.Serialize(a, JsonOptions) == JsonSerializer.Serialize(b, JsonOptions),
+                        v => JsonSerializer.Serialize(v, JsonOptions).GetHashCode(),
+                        v => JsonSerializer.Deserialize<List<EscalationStep>>(JsonSerializer.Serialize(v, JsonOptions), JsonOptions)!));
+                e.HasIndex(x => new { x.TenantId, x.Key }).IsUnique();
+            });
+
+            model.Entity<AlertEscalation>(e =>
+            {
+                e.ToTable("alert_escalations");
+                Tenant(e);
+                e.Property(x => x.State).HasConversion<string>().HasMaxLength(20);
+                e.Property(x => x.StopReason).HasMaxLength(40);
+                e.HasIndex(x => new { x.AlertId, x.PolicyId }).IsUnique();
+                e.HasIndex(x => new { x.State, x.NextAt });
+                e.HasOne<Alert>().WithMany().HasForeignKey(x => x.AlertId).OnDelete(DeleteBehavior.Cascade);
+                e.HasOne<EscalationPolicy>().WithMany().HasForeignKey(x => x.PolicyId).OnDelete(DeleteBehavior.Restrict);
+            });
+        }
+
+        private static void ConfigureIncidents(ModelBuilder model)
+        {
+            model.Entity<Incident>(e =>
+            {
+                e.ToTable("incidents");
+                Tenant(e);
+                e.Property(x => x.Title).HasMaxLength(200);
+                e.Property(x => x.Severity).HasConversion<string>().HasMaxLength(20);
+                e.Property(x => x.State).HasConversion<string>().HasMaxLength(20);
+                e.Property(x => x.CreatedBy).HasMaxLength(256);
+                e.HasIndex(x => new { x.TenantId, x.State });
+            });
+
+            model.Entity<IncidentAlert>(e =>
+            {
+                e.ToTable("incident_alerts");
+                e.HasKey(x => new { x.IncidentId, x.AlertId });
+                e.Property(x => x.AddedBy).HasMaxLength(256);
+                e.HasIndex(x => x.AlertId);
+                Tenant(e);
+                e.HasOne<Incident>().WithMany().HasForeignKey(x => x.IncidentId).OnDelete(DeleteBehavior.Cascade);
+                e.HasOne<Alert>().WithMany().HasForeignKey(x => x.AlertId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            model.Entity<IncidentEvent>(e =>
+            {
+                e.ToTable("incident_events");
+                Tenant(e);
+                e.Property(x => x.Actor).HasMaxLength(256);
+                e.Property(x => x.Type).HasMaxLength(40);
+                e.Property(x => x.FromState).HasConversion<string>().HasMaxLength(20);
+                e.Property(x => x.ToState).HasConversion<string>().HasMaxLength(20);
+                e.Property(x => x.Text).HasMaxLength(2000);
+                e.HasIndex(x => new { x.IncidentId, x.At });
+                e.HasOne<Incident>().WithMany().HasForeignKey(x => x.IncidentId).OnDelete(DeleteBehavior.Cascade);
             });
         }
 
@@ -232,6 +325,7 @@ namespace Juice.Observability.Data
                 e.Property(x => x.Severity).HasConversion<string>().HasMaxLength(20);
                 e.Property(x => x.Definition).HasColumnType("jsonb");
                 e.Property(x => x.DefinitionHash).HasMaxLength(64);
+                e.Property(x => x.ManagedBy).HasMaxLength(20).HasDefaultValue(ManagedBy.Configuration);
                 e.HasIndex(x => new { x.TenantId, x.Key }).IsUnique();
             });
 
@@ -289,8 +383,10 @@ namespace Juice.Observability.Data
                 e.Property(x => x.Key).HasMaxLength(63);
                 e.Property(x => x.Url).HasMaxLength(2048);
                 e.Property(x => x.SecretRef).HasMaxLength(512);
+                e.Property(x => x.Kind).HasConversion<string>().HasMaxLength(20).HasDefaultValue(ChannelKind.Webhook);
                 e.Property(x => x.MinimumSeverity).HasConversion<string>().HasMaxLength(20);
                 e.Property(x => x.DefinitionHash).HasMaxLength(64);
+                e.Property(x => x.ManagedBy).HasMaxLength(20).HasDefaultValue(ManagedBy.Configuration);
                 e.HasIndex(x => new { x.TenantId, x.Key }).IsUnique();
             });
 
@@ -299,6 +395,7 @@ namespace Juice.Observability.Data
                 e.ToTable("webhook_allowlist");
                 e.HasKey(x => new { x.TenantId, x.Destination });
                 e.Property(x => x.Destination).HasMaxLength(256);
+                e.Property(x => x.ManagedBy).HasMaxLength(20).HasDefaultValue(ManagedBy.Configuration);
                 e.HasOne<PlatformTenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
             });
 
@@ -312,8 +409,9 @@ namespace Juice.Observability.Data
                 e.Property(x => x.LastError).HasMaxLength(500);
                 e.HasIndex(x => new { x.Status, x.NextAttemptAt });
                 e.HasIndex(x => new { x.TenantId, x.EndpointId, x.CreatedAt });
-                // One delivery per transition and endpoint, so a replayed evaluation cannot notify twice.
-                e.HasIndex(x => new { x.TransitionId, x.EndpointId }).IsUnique();
+                // One delivery per transition, endpoint and escalation step, so a replayed evaluation or escalation cannot notify twice.
+                e.HasIndex(x => new { x.TransitionId, x.EndpointId, x.EscalationStep }).IsUnique();
+                e.HasIndex(x => new { x.TenantId, x.AlertId });
                 e.HasOne<WebhookEndpoint>().WithMany().HasForeignKey(x => x.EndpointId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne<Alert>().WithMany().HasForeignKey(x => x.AlertId).OnDelete(DeleteBehavior.Cascade);
             });

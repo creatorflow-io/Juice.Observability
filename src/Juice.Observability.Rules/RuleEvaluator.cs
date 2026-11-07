@@ -115,6 +115,27 @@ namespace Juice.Observability.Rules
 
         public static string DedupKey(string ruleKey, string subjectKey) => $"{ruleKey}|{subjectKey}";
 
+        /// <summary>
+        /// Resolves a rule's open alerts because the rule no longer watches them: disabled, or its scope changed. Left alone they would be held as "no data"
+        /// forever, firing and escalating with nothing able to end them. <paramref name="reason"/> says this isn't a measured recovery. Commits with the caller's change.
+        /// </summary>
+        public static async Task<int> CloseOpenAlertsAsync(PlatformDbContext db, Rule rule, string reason, IEnumerable<IAlertNotifier> notifiers, DateTimeOffset now, CancellationToken cancellationToken)
+        {
+            var open = await db.Alerts.Where(a => a.TenantId == rule.TenantId && a.RuleId == rule.Id && a.State != AlertState.Resolved).ToListAsync(cancellationToken);
+            foreach (var alert in open)
+            {
+                var transition = Transition(db, alert, alert.State, AlertState.Resolved, now, alert.LastValue, reason, rule.Template);
+                alert.State = AlertState.Resolved;
+                alert.ResolvedAt = now;
+                alert.RecoveringSince = null;
+                if (alert.FiredAt is not null)
+                {
+                    foreach (var notifier in notifiers) notifier.OnTransition(db, rule, alert, transition);
+                }
+            }
+            return open.Count;
+        }
+
         private static AlertTransition Transition(PlatformDbContext db, Alert alert, AlertState? from, AlertState to, DateTimeOffset at,
             double? value, string reason, RuleTemplate template)
         {

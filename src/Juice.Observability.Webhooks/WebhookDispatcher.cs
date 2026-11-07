@@ -1,7 +1,9 @@
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Globalization;
+using System.Collections.Concurrent;
 using System.Net;
+using System.Net.Mail;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
@@ -40,13 +42,66 @@ namespace Juice.Observability.Webhooks
         public TimeSpan RequestTimeout { get; set; } = TimeSpan.FromSeconds(10);
         /// <summary>Response bytes read; the rest is discarded.</summary>
         public int MaxResponseBytes { get; set; } = 64 * 1024;
+        /// <summary>A secret reference set through the API may name only environment variables with this prefix.</summary>
+        public string ApiSecretEnvPrefix { get; set; } = "JUICE_WEBHOOK_";
+        /// <summary>A secret reference set through the API may name only files directly in this folder; unset refuses files.</summary>
+        public string? ApiSecretDirectory { get; set; }
+        /// <summary>Hosts a Slack or Teams channel may post to beyond those services' own, such as a compatible server inside the network.</summary>
+        public List<string> AdditionalChatHosts { get; set; } = [];
+        /// <summary>Where the Console is, for links in notifications; unset leaves them out.</summary>
+        public string? ConsoleUrl { get; set; }
+        public SmtpOptions Smtp { get; set; } = new();
+    }
+
+    /// <summary>The server email channels send through. Part of the deployment, never set through the API.</summary>
+    public sealed class SmtpOptions
+    {
+        public string Host { get; set; } = "";
+        public int Port { get; set; } = 587;
+        public string From { get; set; } = "";
+        /// <summary>Requires STARTTLS.</summary>
+        public bool UseTls { get; set; } = true;
+        public string? UsernameRef { get; set; }
+        public string? PasswordRef { get; set; }
+        public bool IsConfigured => Host.Length > 0 && From.Length > 0;
+    }
+
+    /// <summary>Where Slack and Teams channels may post. The address still goes through the same SSRF checks as any webhook.</summary>
+    public static class ChatDestination
+    {
+        private static readonly string[] SlackHosts = ["hooks.slack.com"];
+        private static readonly string[] TeamsSuffixes = [".webhook.office.com", ".logic.azure.com", ".api.powerplatform.com"];
+
+        public static bool IsAllowed(ChannelKind kind, string url, IReadOnlyCollection<string> additional)
+        {
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme is not ("https" or "http") || uri.UserInfo.Length > 0)
+            {
+                return false;
+            }
+            var host = uri.Host;
+            if (additional.Contains(host, StringComparer.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+            return uri.Scheme == "https" && kind switch
+            {
+                ChannelKind.Slack => SlackHosts.Contains(host, StringComparer.OrdinalIgnoreCase),
+                ChannelKind.Teams => TeamsSuffixes.Any(s => host.EndsWith(s, StringComparison.OrdinalIgnoreCase)),
+                _ => false,
+            };
+        }
     }
 
     public sealed partial class EndpointDefinition
     {
         public string Key { get; set; } = "";
+        public ChannelKind Kind { get; set; }
+        /// <summary>A signed webhook's address. Slack and Teams keep theirs behind <see cref="SecretRef"/>, since it's a credential.</summary>
         public string Url { get; set; } = "";
         public string SecretRef { get; set; } = "";
+        public List<string> Recipients { get; set; } = [];
+        public List<string> Environments { get; set; } = [];
+        public int GroupWindowSeconds { get; set; }
         public List<string> Events { get; set; } = [WebhookOutbox.Firing, WebhookOutbox.Resolved];
         public List<string> RuleKeys { get; set; } = [];
         public AlertSeverity MinimumSeverity { get; set; } = AlertSeverity.Info;
@@ -56,16 +111,38 @@ namespace Juice.Observability.Webhooks
         {
             var at = $"webhook '{Key}'";
             if (!KeyPattern().IsMatch(Key)) yield return $"{at}: Key must match {KeyPattern()}";
-            if (!Uri.TryCreate(Url, UriKind.Absolute, out var uri) || uri.Scheme is not ("https" or "http") || uri.UserInfo.Length > 0)
-                yield return $"{at}: Url must be an absolute https URL without credentials";
-            else if (uri.Scheme == "http" && !allowHttp)
-                yield return $"{at}: Url must be https (AllowHttpToAllowlisted is off)";
-            if (!SecretReference.IsValid(SecretRef)) yield return $"{at}: SecretRef must be env:NAME or file:/path";
+            if (!Enum.IsDefined(Kind)) yield return $"{at}: unknown Kind";
+            if (Kind == ChannelKind.Webhook)
+            {
+                if (!Uri.TryCreate(Url, UriKind.Absolute, out var uri) || uri.Scheme is not ("https" or "http") || uri.UserInfo.Length > 0)
+                    yield return $"{at}: Url must be an absolute https URL without credentials";
+                else if (uri.Scheme == "http" && !allowHttp)
+                    yield return $"{at}: Url must be https (AllowHttpToAllowlisted is off)";
+            }
+            else if (Url.Length > 0)
+            {
+                yield return $"{at}: only a signed webhook takes Url; a {Kind} channel's address is behind SecretRef";
+            }
+            if (Kind == ChannelKind.Email)
+            {
+                if (SecretRef.Length > 0) yield return $"{at}: an email channel takes no SecretRef";
+                if (Recipients.Count is 0 or > MaxRecipients) yield return $"{at}: an email channel takes 1 to {MaxRecipients} Recipients";
+                foreach (var recipient in Recipients.Where(r => !MailAddress.TryCreate(r, out _))) yield return $"{at}: '{recipient}' isn't an email address";
+            }
+            else
+            {
+                if (!SecretReference.IsValid(SecretRef)) yield return $"{at}: SecretRef must be env:NAME or file:/path";
+                if (Recipients.Count > 0) yield return $"{at}: only an email channel takes Recipients";
+            }
+            if (GroupWindowSeconds is < 0 or > 3600) yield return $"{at}: GroupWindowSeconds must be 0 to 3600";
+            if (Environments.Any(e => e.Length is 0 or > 256 || e != e.ToLowerInvariant())) yield return $"{at}: Environments are lowercase keys";
             if (Events.Count == 0 || Events.Any(e => e is not (WebhookOutbox.Firing or WebhookOutbox.Resolved)))
                 yield return $"{at}: Events are {WebhookOutbox.Firing} and/or {WebhookOutbox.Resolved}";
         }
 
         public string Hash() => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(this))));
+
+        public const int MaxRecipients = 20;
 
         [GeneratedRegex("^[a-z0-9][a-z0-9-]{1,62}$")]
         private static partial Regex KeyPattern();
@@ -85,31 +162,62 @@ namespace Juice.Observability.Webhooks
     {
         public const string Firing = "alert.firing";
         public const string Resolved = "alert.resolved";
+        /// <summary>Sent by an escalation policy, to the endpoints it names, whatever events they take otherwise.</summary>
+        public const string Escalated = "alert.escalated";
 
         public void OnTransition(PlatformDbContext db, Rule rule, Alert alert, AlertTransition transition)
         {
             var type = transition.ToState == AlertState.Firing ? Firing : Resolved;
+            var now = clock.GetUtcNow();
+            var context = new AlertContext(rule.Key, alert.SubjectKey, alert.Severity);
+            var silences = db.Silences.AsNoTracking().Where(s => s.TenantId == alert.TenantId && s.CancelledAt == null && s.StartsAt <= now && (s.RepeatWeekly || s.EndsAt > now)).ToList();
+            var silence = SilenceMatcher.Find(silences, context, now);
             var endpoints = db.WebhookEndpoints.AsNoTracking().Where(e => e.TenantId == alert.TenantId && e.Enabled).ToList()
-                .Where(e => e.Events.Contains(type) && (e.RuleKeys.Length == 0 || e.RuleKeys.Contains(rule.Key)) && alert.Severity >= e.MinimumSeverity);
+                .Where(e => e.Events.Contains(type) && (e.RuleKeys.Length == 0 || e.RuleKeys.Contains(rule.Key)) && alert.Severity >= e.MinimumSeverity
+                    && (e.Environments.Length == 0 || context.Environment is { } environment && e.Environments.Contains(environment)));
             foreach (var endpoint in endpoints)
             {
                 var id = Guid.CreateVersion7();
                 db.WebhookDeliveries.Add(new WebhookDelivery
                 {
                     Id = id, TenantId = alert.TenantId, EndpointId = endpoint.Id, AlertId = alert.Id, TransitionId = transition.Id,
-                    Event = type, Payload = Payload(id, type, rule, alert, transition), CreatedAt = clock.GetUtcNow(),
-                    NextAttemptAt = clock.GetUtcNow(),
+                    Event = type, Payload = Payload(id, type, platform.Value.TenantKey, rule, alert, transition, null), CreatedAt = now,
+                    NextAttemptAt = now + TimeSpan.FromSeconds(endpoint.GroupWindowSeconds),
+                    Status = silence is null ? DeliveryStatus.Pending : DeliveryStatus.Suppressed, SuppressedBy = silence?.Id,
+                });
+            }
+            if (type == Firing)
+            {
+                StartEscalations(db, alert, context, now);
+            }
+        }
+
+        /// <summary>Every enabled policy matching the alert, from its first step. A policy with no way to reach anyone would never have been accepted.</summary>
+        private static void StartEscalations(PlatformDbContext db, Alert alert, AlertContext context, DateTimeOffset now)
+        {
+            foreach (var policy in db.EscalationPolicies.AsNoTracking().Where(p => p.TenantId == alert.TenantId && p.Enabled).ToList())
+            {
+                if (policy.Steps.Count == 0 || alert.Severity < policy.MinimumSeverity || (policy.RuleKeys.Length > 0 && !policy.RuleKeys.Contains(context.RuleKey))
+                    || (policy.Environments.Length > 0 && (context.Environment is not { } environment || !policy.Environments.Contains(environment))))
+                {
+                    continue;
+                }
+                db.AlertEscalations.Add(new AlertEscalation
+                {
+                    TenantId = alert.TenantId, AlertId = alert.Id, PolicyId = policy.Id, State = EscalationState.Active,
+                    NextAt = (alert.FiredAt ?? now) + TimeSpan.FromMinutes(policy.Steps[0].AfterMinutes),
                 });
             }
         }
 
-        private string Payload(Guid id, string type, Rule rule, Alert alert, AlertTransition transition)
+        internal static string Payload(Guid id, string type, string tenant, Rule rule, Alert alert, AlertTransition transition, (string Policy, int Step)? escalation)
             => JsonSerializer.Serialize(new
             {
                 id,
                 type,
                 occurredAt = transition.At,
-                tenant = platform.Value.TenantKey,
+                tenant,
+                escalation = escalation is { } e ? new { policy = e.Policy, step = e.Step } : null,
                 alert = new
                 {
                     id = alert.Id,
@@ -132,7 +240,7 @@ namespace Juice.Observability.Webhooks
     /// Sends due deliveries: signs, posts through the SSRF-checked client, records the attempt, and schedules retries
     /// with exponential backoff and jitter for transient failures (network, timeout, 408, 429, 5xx) up to
     /// <see cref="WebhookOptions.MaxAttempts"/>. Other responses and blocked destinations fail at once. Nothing here
-    /// touches alert state.
+    /// touches alert state. A silence that started after a delivery was queued still holds it, checked just before sending.
     /// </summary>
     public sealed class WebhookDispatcher(IServiceScopeFactory scopes, IOptions<WebhookOptions> options, TimeProvider clock,
         ILogger<WebhookDispatcher> logger) : BackgroundService
@@ -143,7 +251,10 @@ namespace Juice.Observability.Webhooks
         private static readonly Histogram<double> DispatchDelay = Meter.CreateHistogram<double>("juice.observability.webhooks.dispatch_delay", "s",
             "From the alert transition to the first attempt (requirements §9: p95 ≤ 30 s)");
 
-        private readonly Lazy<HttpClient> _client = new(() => CreateClient(scopes, options.Value));
+        /// <summary>The allowlist is a tenant's, and a pooled connection skips the connect check, so tenants never share a client.</summary>
+        private readonly ConcurrentDictionary<Guid, Lazy<HttpClient>> _clients = new();
+
+        private const int MaxGroup = 100;
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
@@ -194,6 +305,19 @@ namespace Juice.Observability.Webhooks
             var delivery = await db.WebhookDeliveries.SingleAsync(d => d.Id == claimed.Id, cancellationToken);
             var endpoint = await db.WebhookEndpoints.AsNoTracking().SingleAsync(e => e.Id == delivery.EndpointId, cancellationToken);
 
+            var silences = await NotificationWorker.ActiveAsync(db, now, cancellationToken);
+            if (await SilencingAsync(db, delivery, silences, now, cancellationToken) is { } silence)
+            {
+                delivery.Status = DeliveryStatus.Suppressed;
+                delivery.SuppressedBy = silence.Id;
+                await db.SaveChangesAsync(cancellationToken);
+                return;
+            }
+            if (endpoint.GroupWindowSeconds > 0 && delivery.Attempts == 0 && !await GatherGroupAsync(db, delivery, endpoint, silences, now, cancellationToken))
+            {
+                return;
+            }
+
             var number = delivery.Attempts + 1;
             var started = Stopwatch.GetTimestamp();
             int? status = null;
@@ -203,22 +327,19 @@ namespace Juice.Observability.Webhooks
             {
                 error = "endpoint_disabled";
             }
+            else if (endpoint.Kind == ChannelKind.Email)
+            {
+                (error, retry) = await SendEmailAsync(endpoint, delivery, cancellationToken);
+            }
             else
             {
                 try
                 {
-                    var timestamp = now.ToUnixTimeSeconds();
-                    using var request = new HttpRequestMessage(HttpMethod.Post, endpoint.Url)
-                    {
-                        Content = new StringContent(delivery.Payload, Encoding.UTF8, "application/json"),
-                    };
-                    request.Headers.Add(WebhookSigner.IdHeader, delivery.Id.ToString());
-                    request.Headers.Add(WebhookSigner.TimestampHeader, timestamp.ToString(CultureInfo.InvariantCulture));
-                    request.Headers.Add(WebhookSigner.SignatureHeader,
-                        WebhookSigner.Sign(SecretReference.Resolve(endpoint.SecretRef), delivery.Id.ToString(), timestamp, delivery.Payload));
+                    using var request = BuildRequest(endpoint, delivery, now);
                     using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                     timeout.CancelAfter(options.Value.RequestTimeout);
-                    using var response = await _client.Value.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+                    var client = _clients.GetOrAdd(endpoint.TenantId, tenant => new Lazy<HttpClient>(() => CreateClient(scopes, options.Value, tenant))).Value;
+                    using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
                     status = (int)response.StatusCode;
                     await DrainAsync(response, options.Value.MaxResponseBytes, timeout.Token);
                     retry = status is 408 or 429 or >= 500;
@@ -227,6 +348,10 @@ namespace Juice.Observability.Webhooks
                 catch (HttpRequestException ex) when (ex.InnerException is DestinationBlockedException blocked)
                 {
                     error = blocked.Reason;
+                }
+                catch (ChatDestinationRefusedException)
+                {
+                    error = "chat_url_not_allowed";
                 }
                 catch (InvalidOperationException ex) when (ex.Message.StartsWith("Webhook secret", StringComparison.Ordinal))
                 {
@@ -275,6 +400,119 @@ namespace Juice.Observability.Webhooks
             Attempts.Add(1, new KeyValuePair<string, object?>("outcome", outcome));
         }
 
+        private static async Task<Silence?> SilencingAsync(PlatformDbContext db, WebhookDelivery delivery, List<Silence> silences, DateTimeOffset now, CancellationToken cancellationToken)
+        {
+            var mine = silences.Where(s => s.TenantId == delivery.TenantId).ToList();
+            if (mine.Count == 0)
+            {
+                return null;
+            }
+            var alert = await db.Alerts.AsNoTracking().SingleAsync(a => a.Id == delivery.AlertId, cancellationToken);
+            var rule = await db.Rules.AsNoTracking().Where(r => r.Id == alert.RuleId).Select(r => r.Key).SingleAsync(cancellationToken);
+            return SilenceMatcher.Find(mine, new AlertContext(rule, alert.SubjectKey, alert.Severity), now);
+        }
+
+        /// <summary>
+        /// A first attempt on a grouping endpoint takes every delivery waiting for the same endpoint and event, due or not, and carries them in its payload. Returns
+        /// false when another dispatcher's group already took this one. The lock is per endpoint, so two can't each take the other.
+        /// </summary>
+        private static async Task<bool> GatherGroupAsync(PlatformDbContext db, WebhookDelivery delivery, WebhookEndpoint endpoint, List<Silence> silences, DateTimeOffset now, CancellationToken cancellationToken)
+        {
+            await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+            await db.Database.ExecuteSqlAsync($"SELECT pg_advisory_xact_lock({WorkerLease.KeyOf($"delivery-group:{endpoint.Id}")})", cancellationToken);
+            await db.Entry(delivery).ReloadAsync(cancellationToken);
+            if (delivery.Status != DeliveryStatus.Pending)
+            {
+                return false;
+            }
+            var waiting = await db.WebhookDeliveries
+                .Where(d => d.EndpointId == endpoint.Id && d.Event == delivery.Event && d.Id != delivery.Id && d.Status == DeliveryStatus.Pending && d.Attempts == 0)
+                .OrderBy(d => d.Id).Take(MaxGroup - 1).ToListAsync(cancellationToken);
+            var taken = new List<WebhookDelivery>();
+            foreach (var other in waiting)
+            {
+                if (await SilencingAsync(db, other, silences, now, cancellationToken) is { } silence)
+                {
+                    other.Status = DeliveryStatus.Suppressed;
+                    other.SuppressedBy = silence.Id;
+                    continue;
+                }
+                other.Status = DeliveryStatus.Grouped;
+                other.GroupedInto = delivery.Id;
+                taken.Add(other);
+            }
+            if (taken.Count > 0)
+            {
+                delivery.Payload = NotificationView.Group(delivery.Id, delivery.Event, now, [delivery.Payload, .. taken.Select(d => d.Payload)]);
+            }
+            await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return true;
+        }
+
+        /// <summary>A signed webhook sends the payload itself; chat channels get it written for people, at an address only their secret knows.</summary>
+        private HttpRequestMessage BuildRequest(WebhookEndpoint endpoint, WebhookDelivery delivery, DateTimeOffset now)
+        {
+            if (endpoint.Kind == ChannelKind.Webhook)
+            {
+                var timestamp = now.ToUnixTimeSeconds();
+                var signed = new HttpRequestMessage(HttpMethod.Post, endpoint.Url) { Content = new StringContent(delivery.Payload, Encoding.UTF8, "application/json") };
+                signed.Headers.Add(WebhookSigner.IdHeader, delivery.Id.ToString());
+                signed.Headers.Add(WebhookSigner.TimestampHeader, timestamp.ToString(CultureInfo.InvariantCulture));
+                signed.Headers.Add(WebhookSigner.SignatureHeader, WebhookSigner.Sign(SecretReference.Resolve(endpoint.SecretRef), delivery.Id.ToString(), timestamp, delivery.Payload));
+                return signed;
+            }
+            var url = SecretReference.Resolve(endpoint.SecretRef);
+            if (!ChatDestination.IsAllowed(endpoint.Kind, url, options.Value.AdditionalChatHosts))
+            {
+                throw new ChatDestinationRefusedException();
+            }
+            var view = NotificationView.Parse(delivery.Payload);
+            var body = endpoint.Kind == ChannelKind.Slack ? ChannelFormatter.SlackBody(view, options.Value.ConsoleUrl) : ChannelFormatter.TeamsBody(view, options.Value.ConsoleUrl);
+            return new HttpRequestMessage(HttpMethod.Post, url) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
+        }
+
+        /// <summary>The error, if any, and whether it's worth retrying: a server's 4xx and a lost connection are, its 5xx says the mail will never be accepted.</summary>
+        private async Task<(string? Error, bool Retry)> SendEmailAsync(WebhookEndpoint endpoint, WebhookDelivery delivery, CancellationToken cancellationToken)
+        {
+            var smtp = options.Value.Smtp;
+            if (!smtp.IsConfigured)
+            {
+                return ("smtp_not_configured", false);
+            }
+            try
+            {
+                var (subject, body) = ChannelFormatter.Email(NotificationView.Parse(delivery.Payload), options.Value.ConsoleUrl);
+                using var message = new MailMessage { From = new MailAddress(smtp.From), Subject = subject, Body = body, IsBodyHtml = false };
+                foreach (var recipient in endpoint.Recipients) message.To.Add(recipient);
+                using var client = new SmtpClient(smtp.Host, smtp.Port) { EnableSsl = smtp.UseTls, DeliveryMethod = SmtpDeliveryMethod.Network, UseDefaultCredentials = false };
+                if (smtp.UsernameRef is { Length: > 0 } username && smtp.PasswordRef is { Length: > 0 } password)
+                {
+                    client.Credentials = new NetworkCredential(SecretReference.Resolve(username), SecretReference.Resolve(password));
+                }
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeout.CancelAfter(options.Value.RequestTimeout);
+                await client.SendMailAsync(message, timeout.Token);
+                return (null, false);
+            }
+            catch (SmtpException ex) when ((int)ex.StatusCode is >= 500 and < 600)
+            {
+                return ($"smtp_{(int)ex.StatusCode}", false);
+            }
+            catch (SmtpException ex)
+            {
+                return ((int)ex.StatusCode > 0 ? $"smtp_{(int)ex.StatusCode}" : "smtp_unavailable", true);
+            }
+            catch (InvalidOperationException ex) when (ex.Message.StartsWith("Webhook secret", StringComparison.Ordinal))
+            {
+                return ("secret_unavailable", true);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                return ("timeout", true);
+            }
+        }
+
         /// <summary>Exponential backoff from <see cref="WebhookOptions.RetryBase"/>, capped, with ±20 % jitter.</summary>
         internal TimeSpan Backoff(int attempt)
         {
@@ -299,7 +537,7 @@ namespace Juice.Observability.Webhooks
         /// checks every address against <see cref="DestinationPolicy"/> and the current allowlist, and connects only to
         /// a checked address. It runs for every new connection, so DNS is revalidated each time.
         /// </summary>
-        private static HttpClient CreateClient(IServiceScopeFactory scopes, WebhookOptions options)
+        private static HttpClient CreateClient(IServiceScopeFactory scopes, WebhookOptions options, Guid tenantId)
         {
             var handler = new SocketsHttpHandler
             {
@@ -319,7 +557,7 @@ namespace Juice.Observability.Webhooks
                     await using (var scope = scopes.CreateAsyncScope())
                     {
                         var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-                        allowlist = (await db.WebhookAllowlist.AsNoTracking().ToListAsync(cancellationToken))
+                        allowlist = (await db.WebhookAllowlist.AsNoTracking().Where(a => a.TenantId == tenantId).ToListAsync(cancellationToken))
                             .Select(a => new AllowedDestination(a.Destination, a.Ports)).ToList();
                     }
                     var scheme = context.InitialRequestMessage.RequestUri?.Scheme ?? "";
@@ -335,10 +573,14 @@ namespace Juice.Observability.Webhooks
         }
     }
 
+    /// <summary>The URL behind a chat channel's secret isn't where such a channel may post.</summary>
+    internal sealed class ChatDestinationRefusedException : Exception;
+
     /// <summary>
     /// Loads <c>Webhooks:Endpoints</c> and <c>Webhooks:Allowlist</c> at startup: invalid configuration stops the host;
     /// every endpoint create, update or disable and every allowlist addition or removal writes an audit record
-    /// (requirements §8: allowlist changes are audited).
+    /// (requirements §8: allowlist changes are audited). The file owns what it lists, taking over a key the API created. What it no longer
+    /// lists is disabled or removed as before and handed to the API; what the API created and the file never listed is left alone.
     /// </summary>
     public sealed class WebhookProvisioner(IServiceScopeFactory scopes, IOptions<WebhookOptions> options, IOptions<PlatformOptions> platform,
         TimeProvider clock, ILogger<WebhookProvisioner> logger) : IHostedService
@@ -381,19 +623,26 @@ namespace Juice.Observability.Webhooks
             {
                 var hash = definition.Hash();
                 // The URL host is audited, never the secret or the full URL (which may carry a token in its path).
-                var metadata = new Dictionary<string, string> { ["host"] = new Uri(definition.Url).Host, ["secretRef"] = definition.SecretRef };
+                var metadata = new Dictionary<string, string> { ["kind"] = definition.Kind.ToString(), ["secretRef"] = definition.SecretRef };
+                if (definition.Kind == ChannelKind.Webhook) metadata["host"] = new Uri(definition.Url).Host;
                 if (!endpoints.TryGetValue(definition.Key, out var endpoint))
                 {
                     db.WebhookEndpoints.Add(new WebhookEndpoint
                     {
-                        TenantId = tenantId, Key = definition.Key, Url = definition.Url, SecretRef = definition.SecretRef,
-                        Events = [.. definition.Events], RuleKeys = [.. definition.RuleKeys], MinimumSeverity = definition.MinimumSeverity,
-                        Enabled = definition.Enabled, DefinitionHash = hash, LoadedAt = now,
+                        TenantId = tenantId, Key = definition.Key, Kind = definition.Kind, Url = definition.Url, SecretRef = definition.SecretRef,
+                        Events = [.. definition.Events], RuleKeys = [.. definition.RuleKeys], Environments = [.. definition.Environments],
+                        Recipients = [.. definition.Recipients], GroupWindowSeconds = definition.GroupWindowSeconds, MinimumSeverity = definition.MinimumSeverity,
+                        Enabled = definition.Enabled, DefinitionHash = hash, LoadedAt = now, ManagedBy = ManagedBy.Configuration,
                     });
                     Audit("webhook.create", "webhook", definition.Key, metadata);
                 }
-                else if (endpoint.DefinitionHash != hash)
+                else if (endpoint.DefinitionHash != hash || endpoint.ManagedBy != ManagedBy.Configuration)
                 {
+                    endpoint.ManagedBy = ManagedBy.Configuration;
+                    endpoint.Kind = definition.Kind;
+                    endpoint.Environments = [.. definition.Environments];
+                    endpoint.Recipients = [.. definition.Recipients];
+                    endpoint.GroupWindowSeconds = definition.GroupWindowSeconds;
                     endpoint.Url = definition.Url;
                     endpoint.SecretRef = definition.SecretRef;
                     endpoint.Events = [.. definition.Events];
@@ -406,11 +655,15 @@ namespace Juice.Observability.Webhooks
                 }
             }
             var configured = settings.Endpoints.Select(e => e.Key).ToHashSet();
-            foreach (var removed in endpoints.Values.Where(e => e.Enabled && !configured.Contains(e.Key)))
+            foreach (var removed in endpoints.Values.Where(e => e.ManagedBy == ManagedBy.Configuration && !configured.Contains(e.Key)))
             {
-                removed.Enabled = false;
+                removed.ManagedBy = ManagedBy.Api;
                 removed.LoadedAt = now;
-                Audit("webhook.disable", "webhook", removed.Key, []);
+                if (removed.Enabled)
+                {
+                    removed.Enabled = false;
+                    Audit("webhook.disable", "webhook", removed.Key, []);
+                }
             }
 
             var allowlist = await db.WebhookAllowlist.Where(a => a.TenantId == tenantId).ToDictionaryAsync(a => a.Destination, cancellationToken);
@@ -419,18 +672,19 @@ namespace Juice.Observability.Webhooks
                 var ports = entry.Ports.Order().ToArray();
                 if (!allowlist.TryGetValue(entry.Destination, out var existing))
                 {
-                    db.WebhookAllowlist.Add(new WebhookAllowlistEntry { TenantId = tenantId, Destination = entry.Destination, Ports = ports, LoadedAt = now });
+                    db.WebhookAllowlist.Add(new WebhookAllowlistEntry { TenantId = tenantId, Destination = entry.Destination, Ports = ports, LoadedAt = now, ManagedBy = ManagedBy.Configuration });
                     Audit("webhook.allowlist.add", "webhook_allowlist", entry.Destination, new() { ["ports"] = string.Join(",", ports) });
                 }
-                else if (!existing.Ports.Order().SequenceEqual(ports))
+                else if (!existing.Ports.Order().SequenceEqual(ports) || existing.ManagedBy != ManagedBy.Configuration)
                 {
+                    existing.ManagedBy = ManagedBy.Configuration;
                     existing.Ports = ports;
                     existing.LoadedAt = now;
                     Audit("webhook.allowlist.update", "webhook_allowlist", entry.Destination, new() { ["ports"] = string.Join(",", ports) });
                 }
             }
             var allowed = settings.Allowlist.Select(a => a.Destination).ToHashSet();
-            foreach (var removed in allowlist.Values.Where(a => !allowed.Contains(a.Destination)))
+            foreach (var removed in allowlist.Values.Where(a => a.ManagedBy == ManagedBy.Configuration && !allowed.Contains(a.Destination)))
             {
                 db.WebhookAllowlist.Remove(removed);
                 Audit("webhook.allowlist.remove", "webhook_allowlist", removed.Destination, []);
@@ -456,6 +710,8 @@ namespace Juice.Observability.Webhooks
             {
                 services.AddSingleton<WebhookDispatcher>();
                 services.AddHostedService(sp => sp.GetRequiredService<WebhookDispatcher>());
+                services.AddSingleton<NotificationWorker>();
+                services.AddHostedService(sp => sp.GetRequiredService<NotificationWorker>());
             }
             return services;
         }

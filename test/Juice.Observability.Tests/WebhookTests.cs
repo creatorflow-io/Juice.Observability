@@ -255,7 +255,7 @@ namespace Juice.Observability.Tests
         }
 
         /// <summary>A webhook receiver on this machine's private address. Answers with the given status codes in turn, then 200.</summary>
-        private sealed class Receiver : IAsyncDisposable
+        internal sealed class Receiver : IAsyncDisposable
         {
             public sealed record Received(string Id, string Timestamp, string Signature, string Body);
 

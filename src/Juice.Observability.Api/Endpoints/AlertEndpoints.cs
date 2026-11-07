@@ -10,7 +10,8 @@ using Microsoft.Extensions.Options;
 
 namespace Juice.Observability.Api.Endpoints
 {
-    public sealed record RuleDto(string Key, string Name, string Template, string Severity, bool Enabled, RuleDefinition Definition, DateTimeOffset LoadedAt);
+    /// <summary><c>Etag</c> goes in <c>If-Match</c> when changing the rule.</summary>
+    public sealed record RuleDto(string Key, string Name, string Template, string Severity, bool Enabled, RuleDefinition Definition, DateTimeOffset LoadedAt, string ManagedBy, string Etag);
 
     public sealed record AlertDto(Guid Id, string Rule, string SubjectKey, string SubjectType, Guid? SubjectId, string? Environment,
         string Severity, string State, DateTimeOffset BreachStartedAt, DateTimeOffset? FiredAt, DateTimeOffset? ResolvedAt,
@@ -23,7 +24,7 @@ namespace Juice.Observability.Api.Endpoints
 
     public sealed record AcknowledgeRequest(string? Comment);
 
-    /// <summary>Phase 3 endpoints (requirements §6.1): read-only rules, alerts, acknowledgement.</summary>
+    /// <summary>Phase 3 endpoints (requirements §6.1): reading rules, alerts, acknowledgement. Changing rules is in <see cref="RuleAdminEndpoints"/>.</summary>
     public static partial class AlertEndpoints
     {
         public const int MaxHistory = 500;
@@ -46,8 +47,7 @@ namespace Juice.Observability.Api.Endpoints
             var query = db.Rules.AsNoTracking().Where(r => r.TenantId == tenantId);
             if (after is not null) query = query.Where(r => r.Id > after.After);
             var rows = await query.OrderBy(r => r.Id).Take(take + 1).ToListAsync(ct);
-            var page = rows.Take(take).Select(r => new RuleDto(r.Key, r.Name, r.Template.ToString(), r.Severity.ToString(), r.Enabled,
-                RuleDefinition.FromJson(r.Definition), r.LoadedAt)).ToList();
+            var page = rows.Take(take).Select(RuleAdminEndpoints.ToDto).ToList();
             return Results.Ok(new Page<RuleDto>(page, rows.Count > take ? new Cursor("r", rows[take - 1].Id).Encode() : null));
         }
 
@@ -171,6 +171,8 @@ namespace Juice.Observability.Api.Endpoints
             }
 
             await using var transaction = await db.Database.BeginTransactionAsync(ct);
+            // Locked, so an escalation running now either sees this acknowledgement or finishes first (Phase 6).
+            await db.Database.ExecuteSqlAsync($"SELECT 1 FROM alerts WHERE id = {alertId} AND tenant_id = {tenantId} FOR UPDATE", ct);
             var alert = await db.Alerts.SingleOrDefaultAsync(a => a.TenantId == tenantId && a.Id == alertId, ct);
             if (alert is null)
             {
@@ -204,7 +206,7 @@ namespace Juice.Observability.Api.Endpoints
             return Results.Text(body, "application/json", Encoding.UTF8, StatusCodes.Status200OK);
         }
 
-        private static async Task<List<AlertDto>> ToDtosAsync(PlatformDbContext db, Guid tenantId, IReadOnlyList<Alert> alerts, CancellationToken ct)
+        internal static async Task<List<AlertDto>> ToDtosAsync(PlatformDbContext db, Guid tenantId, IReadOnlyList<Alert> alerts, CancellationToken ct)
         {
             var ruleIds = alerts.Select(a => a.RuleId).Distinct().ToList();
             var rules = await db.Rules.AsNoTracking().Where(r => r.TenantId == tenantId && ruleIds.Contains(r.Id)).ToDictionaryAsync(r => r.Id, r => r.Key, ct);

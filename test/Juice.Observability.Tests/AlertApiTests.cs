@@ -47,10 +47,6 @@ namespace Juice.Observability.Tests
                 var rules = await JsonAsync(await Get(client, $"/api/v1/tenants/{tenant}/rules", token));
                 Assert.Equal(2, rules.GetProperty("items").GetArrayLength());
                 Assert.Equal(0.05, rules.GetProperty("items")[0].GetProperty("definition").GetProperty("threshold").GetDouble());
-                // Read-only in the MVP: no route changes a rule.
-                using var post = new HttpRequestMessage(HttpMethod.Post, $"/api/v1/tenants/{tenant}/rules") { Content = JsonContent.Create(new { }) };
-                post.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await LocalStack.TokenAsync("alice"));
-                Assert.Equal(HttpStatusCode.MethodNotAllowed, (await client.SendAsync(post, Ct)).StatusCode);
             }
             Assert.Equal([("rule.create", "orders-errors"), ("rule.create", "billing-errors")], await AuditAsync());
 

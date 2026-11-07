@@ -7,8 +7,8 @@ namespace Juice.Observability.Data
     public enum AlertSeverity { Info, Warning, Critical }
 
     /// <summary>
-    /// A typed rule, loaded from deployment configuration at startup (requirements §6.1). <see cref="Definition"/>
-    /// holds the validated settings as JSON; <see cref="DefinitionHash"/> tells a changed definition from a reload.
+    /// A typed rule, from deployment configuration at startup or the API (<see cref="ManagedBy"/>). <see cref="Definition"/>
+    /// holds the validated settings as JSON; <see cref="DefinitionHash"/> tells a changed definition from a reload, and is the rule's ETag.
     /// </summary>
     public sealed class Rule
     {
@@ -22,6 +22,7 @@ namespace Juice.Observability.Data
         public required string DefinitionHash { get; set; }
         public bool Enabled { get; set; } = true;
         public DateTimeOffset LoadedAt { get; set; }
+        public string ManagedBy { get; set; } = Data.ManagedBy.Api;
     }
 
     public enum AlertState { Pending, Firing, Resolved }

@@ -53,6 +53,23 @@ namespace Juice.Observability.Webhooks
             => reference.StartsWith("env:", StringComparison.Ordinal) && reference.Length > 4
             || reference.StartsWith("file:", StringComparison.Ordinal) && reference.Length > 5;
 
+        /// <summary>
+        /// A reference set through the API, stricter than one in the deployment's own file: otherwise an admin could name any environment variable or
+        /// file on the host and have it used as a signing key or a URL. Only variables with the configured prefix, or files directly in the configured folder.
+        /// </summary>
+        public static bool IsAllowedFromApi(string reference, WebhookOptions options)
+        {
+            if (!IsValid(reference)) return false;
+            if (reference.StartsWith("env:", StringComparison.Ordinal))
+            {
+                return options.ApiSecretEnvPrefix is { Length: > 0 } prefix && reference[4..].StartsWith(prefix, StringComparison.Ordinal) && reference.Length > 4 + prefix.Length;
+            }
+            if (options.ApiSecretDirectory is not { Length: > 0 } directory) return false;
+            var path = reference[5..];
+            return Path.IsPathRooted(path) && !path.Contains("..", StringComparison.Ordinal)
+                && string.Equals(Path.GetDirectoryName(Path.GetFullPath(path)), Path.GetFullPath(directory).TrimEnd(Path.DirectorySeparatorChar), StringComparison.Ordinal);
+        }
+
         public static string Resolve(string reference)
         {
             var value = reference switch

@@ -149,12 +149,19 @@ namespace Juice.Observability.Rules
     /// <summary>
     /// Loads <c>Rules:Definitions</c> at startup (requirements §6.1): validates every rule (any error stops the host),
     /// creates new rules, updates changed ones and disables rules removed from configuration (alerts keep their
-    /// rule). Each change writes an <see cref="AuditRecord"/> in the same transaction.
+    /// rule). Each change writes an <see cref="AuditRecord"/> in the same transaction. The file owns what it lists, taking over a key the API
+    /// created; a rule it no longer lists is disabled and handed to the API; a rule the API created and the file never listed is left alone.
     /// </summary>
     public sealed class RuleProvisioner(IServiceScopeFactory scopes, IOptions<RulesOptions> options, IOptions<PlatformOptions> platform,
-        TimeProvider clock, ILogger<RuleProvisioner> logger) : IHostedService
+        TimeProvider clock, ILogger<RuleProvisioner> logger, IEnumerable<IAlertNotifier> notifiers) : IHostedService
     {
         public const string Actor = "deployment-config";
+        public const string ClosedRuleDisabled = "rule_disabled";
+        public const string ClosedRuleChanged = "rule_changed";
+
+        /// <summary>A change after which an open alert's subject may never be observed again, so nothing could resolve it.</summary>
+        public static bool ChangesWhatItWatches(RuleDefinition before, RuleDefinition after)
+            => before.Template != after.Template || before.Service != after.Service || before.Environment != after.Environment || before.Host != after.Host;
 
         public async Task StartAsync(CancellationToken cancellationToken)
         {
@@ -199,14 +206,19 @@ namespace Juice.Observability.Rules
                     {
                         TenantId = tenantId, Key = definition.Key, Name = definition.Name, Template = definition.Template,
                         Severity = definition.Severity, Definition = definition.ToJson(), DefinitionHash = hash,
-                        Enabled = definition.Enabled, LoadedAt = now,
+                        Enabled = definition.Enabled, LoadedAt = now, ManagedBy = ManagedBy.Configuration,
                     };
                     db.Rules.Add(rule);
                     Audit("rule.create", rule);
                     changes++;
                 }
-                else if (rule.DefinitionHash != hash)
+                else if (rule.DefinitionHash != hash || rule.ManagedBy != ManagedBy.Configuration)
                 {
+                    rule.ManagedBy = ManagedBy.Configuration;
+                    if (ChangesWhatItWatches(RuleDefinition.FromJson(rule.Definition), definition) || !definition.Enabled)
+                    {
+                        await RuleEvaluator.CloseOpenAlertsAsync(db, rule, definition.Enabled ? ClosedRuleChanged : ClosedRuleDisabled, notifiers, now, cancellationToken);
+                    }
                     rule.Name = definition.Name;
                     rule.Template = definition.Template;
                     rule.Severity = definition.Severity;
@@ -219,12 +231,18 @@ namespace Juice.Observability.Rules
                 }
             }
             var configured = definitions.Select(d => d.Key).ToHashSet();
-            foreach (var removed in existing.Values.Where(r => r.Enabled && !configured.Contains(r.Key)))
+            foreach (var removed in existing.Values.Where(r => r.ManagedBy == ManagedBy.Configuration && !configured.Contains(r.Key)))
             {
-                removed.Enabled = false;
+                removed.ManagedBy = ManagedBy.Api;
                 removed.LoadedAt = now;
-                Audit("rule.disable", removed);
-                changes++;
+                // Whether or not it's enabled: an earlier version disabled rules without closing their alerts, and those would fire forever.
+                await RuleEvaluator.CloseOpenAlertsAsync(db, removed, ClosedRuleDisabled, notifiers, now, cancellationToken);
+                if (removed.Enabled)
+                {
+                    removed.Enabled = false;
+                    Audit("rule.disable", removed);
+                    changes++;
+                }
             }
             await db.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
