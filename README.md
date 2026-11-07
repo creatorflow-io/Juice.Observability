@@ -11,7 +11,7 @@ Turns telemetry from Juice services into a resource model, health, rules, alerts
 | `src/Juice.Observability.Discovery` | Discovery: reads Collector-stamped telemetry from ClickHouse and reconciles services, instances, environments, resources and dependencies |
 | `src/Juice.Observability.Health` | Health evaluation: instances, services and applications per environment, and hosts, from ClickHouse evidence |
 | `src/Juice.Observability.Rules` | Typed scheduled rules over ClickHouse templates and the alert lifecycle |
-| `src/Juice.Observability.Webhooks` | Signed webhook notification of alert transitions: outbox, SSRF-safe delivery, retries, history |
+| `src/Juice.Observability.Webhooks` | Notification of alert transitions: outbox, SSRF-safe delivery to signed webhooks, Slack, Teams and email, retries, history, silences, grouping, escalation |
 | `src/Juice.Observability.Api` | `/api/v1` (OIDC, tenant-scoped) and the background workers, as a library (`AddJuiceObservability`, `MapJuiceObservability`) |
 | `src/Juice.Observability.Host` | The reference host (the image): the API library and the Console on one origin |
 | `test/Juice.Observability.Tests` | Unit tests, and integration tests against the running local stack |
@@ -99,7 +99,15 @@ page's `nextCursor`).
 | `GET /api/v1/tenants/{tenantId}/resources/{id}` | a service with its instances, or a resource (a host lists the instances on it) |
 | `GET /api/v1/tenants/{tenantId}/topology?environment=` | services and resources with the dependencies between them, each with its evidence and confidence; with an environment, each node's health |
 | `GET /api/v1/tenants/{tenantId}/health?subjectType=&environment=&state=` | current health with reasons, policy version, evidence window and `stale` |
-| `GET /api/v1/tenants/{tenantId}/rules` | the loaded rules (read-only) |
+| `GET /api/v1/tenants/{tenantId}/rules` | the rules, each with who owns it (`managedBy`) and its `etag` |
+| `POST …/rules`, `PUT …/rules/{key}` | create or change a rule (admin); a typed template, never a query. `If-Match` with the `etag` refuses a change over someone else's. Disabling or rescoping resolves its open alerts |
+| `GET`, `POST …/webhooks`, `PUT …/webhooks/{id}` | channels: `webhook`, `slack`, `teams` or `email`, with routing and `groupWindowSeconds`. Changes are admin only; no address or secret is ever returned |
+| `GET`, `PUT`, `DELETE …/webhooks/allowlist` | private destinations channels may reach (admin to change; `DELETE` takes `?destination=`) |
+| `GET`, `POST …/silences`, `DELETE …/silences/{id}` | silences and maintenance windows (operator or admin to change); `?all=true` includes those over |
+| `GET`, `POST …/escalation-policies`, `PUT …/escalation-policies/{key}` | who is told as an alert stays open (admin to change) |
+| `GET …/alerts/{alertId}/notifications` | an alert's deliveries with their attempts, escalations, active silences and incidents |
+| `GET`, `POST …/incidents`, `GET …/incidents/{id}` | incidents with their alerts and record (operator or admin to change) |
+| `POST …/incidents/{id}/transitions`, `…/notes`, `…/alerts`, `DELETE …/incidents/{id}/alerts/{alertId}` | moving an incident, noting, and its alerts; each audited |
 | `GET /api/v1/tenants/{tenantId}/alerts?state=&rule=` | alerts, newest first |
 | `GET /api/v1/tenants/{tenantId}/alerts/{alertId}` | an alert with its evidence, state history, the subject's health and any integration links |
 | `GET /api/v1/tenants/{tenantId}/environments` | the environments seen in telemetry |
@@ -247,6 +255,14 @@ a threshold and a recovery threshold (hysteresis), minimum samples, `ForDuration
     `juice.observability.alerts.transitions`.
 - **Breach-to-alert.** Firing comes at most lag (10 s) plus one schedule after `ForDuration`: 70 s for a 1-minute
   rule, against the 2-minute target. Measured in tests at 22 s with a 5 s schedule and a 10 s `ForDuration`.
+
+## Notifications and incidents
+
+Rules, channels, the allowlist and escalation can be changed through the API and the Console, by admins, with an audit record. The deployment's files still work: a row belongs to whichever side created it, and the [runbook](docs/runbook.md#change-rules-webhooks-or-the-allowlist) has the details.
+
+A channel chooses what it takes by event, rule, environment and severity, and can group what arrives in a window into one notification. A **silence** or maintenance window holds notifications, not alerts, and what it held goes out when it ends if it still matters. An **escalation policy** tells more channels as an alert stays open, and stops when the alert resolves or, if the policy says so, when it's acknowledged. An **incident** groups alerts into a piece of work with its own record, and doesn't change them.
+
+**Status:** see [Phase 6 acceptance](docs/phase-6-acceptance.md), including what hasn't been tried against real Slack, Teams and TLS mail servers.
 
 ## Changes and correlation
 

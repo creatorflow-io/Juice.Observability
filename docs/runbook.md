@@ -66,11 +66,23 @@ Token changes need the restart; this was tested.
 
 ## Change rules, webhooks or the allowlist
 
+Each rule, endpoint and allowlist entry belongs to one side:
+
+| It's | Change it | Notes |
+|---|---|---|
+| Listed in `rules.json` or `webhooks.json` | In the file, then restart the API | The API refuses with `409`. If the API created the same key, the file takes it over |
+| Created through the API or the Console | Through the API or the Console, as an admin | A restart leaves it alone |
+| Removed from the file | Through the API or the Console | A removed rule or endpoint is disabled and handed over; a removed allowlist entry is deleted |
+
+To change a file:
+
 1. Edit `rules.json` or `webhooks.json` and commit it.
 2. Restart the API: `docker compose --profile platform restart platform-api`.
 3. Check `audit_records` for `rule.create|update|disable`, `webhook.*` and `webhook.allowlist.*`.
 
 An invalid file keeps the API from starting, and the log names every error.
+
+**Disabling a rule, or changing its template or scope, resolves its open alerts** with the reason `rule_disabled` or `rule_changed`, and sends those notifications. Removing a rule from the file does too, so check a file before deploying it: an emptied one resolves every alert its rules had open.
 
 ## Webhook deliveries
 
@@ -82,6 +94,35 @@ An invalid file keeps the API from starting, and the log names every error.
   are never retried.
 - **Alert state.** A failed delivery never changes alert state. To resend, fix the receiver, then set the delivery
   back to `Pending` in `webhook_deliveries`. Receivers deduplicate on `webhook-id`.
+- **One alert.** `GET /alerts/{id}/notifications` and the alert page show every delivery, escalation, silence and incident for it.
+- **Other statuses.** `Suppressed` is held by a silence, `Dropped` was held and no longer mattered, and `Grouped` went out inside the delivery named by `groupedInto`.
+- **Other errors.** `chat_url_not_allowed`: the URL behind a Slack or Teams reference isn't that service's, and isn't in `Webhooks:AdditionalChatHosts`. `secret_unavailable`: the reference isn't set on the host; it retries. `smtp_not_configured`: no `Webhooks:Smtp`. `smtp_5xx`: the mail server refused for good. `smtp_4xx` and `smtp_unavailable` retry.
+
+## Silences and maintenance windows
+
+Use the Silences page, or `Silence this` on an alert. Operators and admins can do this.
+
+- **Alerts carry on.** A silence holds notifications and escalation only: alerts still fire, resolve and appear in the Console.
+- **When it ends,** what it held goes out if it still matters: a firing alert still firing, or a resolve for a receiver told it was firing. The rest is dropped.
+- **Every silence** needs a reason, a scope and an end, at most 7 days away. To hold everything, say so with `allAlerts`. A silence with a maximum severity lets more serious alerts through.
+- **A maintenance window** can start up to 90 days ahead and repeat weekly, for at most 72 hours each time, until it's ended.
+- **Where did the alerts go?** The Silences page lists what's active and how much each holds. `End now` releases on the next pass, about 2 seconds later.
+
+## Escalation
+
+A policy tells named channels as an alert stays open, by minutes after it fired, and starts when a matching alert fires. It's on the Notifications page, for admins.
+
+- **It stops** when the alert resolves, when it's acknowledged if the policy says so, or when the policy is disabled. The alert page shows why.
+- **A silence holds it.** The step stays due, and goes out when the silence ends if the alert is still open.
+- **Check the channels.** A step whose channels are all disabled counts as sent, with only a warning in the log.
+
+## Incidents
+
+Use `Open an incident` on an alert, or the Incidents page. Operators and admins can do this.
+
+- **States:** Open, Investigating, Mitigated, Resolved. Resolving and reopening need a comment.
+- **They don't touch alerts.** Resolving an incident leaves its alerts as they are, and the page says if some are still open.
+- **The record** is on the page, and `audit_records` holds `incident.*`. Notes are masked for common secret shapes, but write a summary rather than paste a terminal.
 
 ## Backup and restore
 

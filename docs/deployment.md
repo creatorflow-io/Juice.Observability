@@ -37,15 +37,19 @@ The API applies database migrations on start (`Database:Migrate`). It creates th
 |---|---|---|
 | Tenant | `.env` `JUICE_PLATFORM_TENANT_ID` | stamped by the Collector, provisioned by the API; never changes after install |
 | OTLP clients | `secrets/otlp-tokens`, one token per line | restart the Collector after a change (runbook) |
-| Rules | `rules.json` (`Rules:File`) | validated at start; an invalid rule stops the API; every change audited |
-| Webhook endpoints and allowlist | `webhooks.json` (`Webhooks:File`) | secrets as `env:NAME` or `file:/path`, never in the file |
+| Rules | `rules.json` (`Rules:File`), or the API and Console | validated at start; an invalid rule stops the API; every change audited |
+| Channels and allowlist | `webhooks.json` (`Webhooks:File`), or the API and Console | secrets as `env:NAME` or `file:/path`, never in the file |
+| Secrets for channels set through the API | environment variables named `Webhooks:ApiSecretEnvPrefix` (default `JUICE_WEBHOOK_`) + a name, or files directly in `Webhooks:ApiSecretDirectory` | the API refuses any other reference, so an admin can't name other secrets on the host |
+| Email channels | `Webhooks:Smtp`: `Host`, `Port` (587), `From`, `UseTls` (true: STARTTLS), `UsernameRef`, `PasswordRef` | without it, email channels are refused; implicit TLS on 465 isn't supported |
+| Slack and Teams | The channel's URL behind a secret reference | they post only to `hooks.slack.com`, `*.webhook.office.com`, `*.logic.azure.com` and `*.api.powerplatform.com`, plus any in `Webhooks:AdditionalChatHosts` |
+| Links in notifications | `Webhooks:ConsoleUrl` | optional; unset means no links |
 | Health policy | `Health` section (environment `Health__…`) | grace, thresholds, critical dependencies, service weights |
 | Users and roles | the IdP | Console and API: client `juice-console` (public, PKCE) issuing tokens for `juice-platform` with roles `admin`, `operator`, `viewer` and the `platform_tenant` claim; Grafana (optional): client `grafana` roles `admin`, `editor`, `viewer` |
 | Console sign-in | `wwwroot/config.json` in the API image | `{"apiBase": "", "auth": {"issuer": "<IdP>", "clientId": "juice-console", "scope": "openid profile email"}}`; mount your own file over it. `auth.requireHttps` (default `"remoteOnly"`: plain HTTP only for localhost) is `false` only for a local stack |
 | Grafana links | `Integrations:Grafana:BaseUrl` | optional; unset means no links |
 
 Every one of these files lives in version control (requirements §6.1). Changes take effect on the next API start, with
-an audit record for each.
+an audit record for each. What the API creates lives in the platform database instead, also audited: the [runbook](runbook.md#change-rules-webhooks-or-the-allowlist) says which side owns what.
 
 ### A webhook endpoint
 

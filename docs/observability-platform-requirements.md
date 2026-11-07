@@ -214,7 +214,7 @@ Every mutation (acknowledgement, and later rule, webhook endpoint, and allowlist
 
 Endpoints are delivered with the roadmap phase that owns their data: applications, resources, topology (Phase 1); health, plus instance and dependency-evidence detail in resource and topology responses (Phase 2); rules, alerts, acknowledgement (Phase 3); webhook deliveries (Phase 4). The versioning, authentication, tenant check, problem details, pagination, idempotency, and audit contracts above apply from Phase 1.
 
-In MVP, rules, webhook endpoints, and the webhook private-destination allowlist are provisioned from version-controlled deployment configuration, validated and loaded at startup; each load that changes them writes an `AuditRecord`. The rules endpoint is read-only. Create/update APIs for these are post-MVP (Phase 6).
+In MVP, rules, webhook endpoints, and the webhook private-destination allowlist are provisioned from version-controlled deployment configuration, validated and loaded at startup; each load that changes them writes an `AuditRecord`. The rules endpoint is read-only. Create/update APIs for these are post-MVP (Phase 6), now delivered: see the [Phase 6 acceptance](phase-6-acceptance.md).
 
 ## 7. Health model and rollup semantics
 

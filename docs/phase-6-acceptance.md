@@ -1,0 +1,68 @@
+# Phase 6 acceptance: broader notifications and incident workflow
+
+**Status:** verified, waiting for the owner's review. All 361 tests pass, both browser journeys pass on an image with the final code, and all 21 mutation checks were caught. **Not yet reviewed by the owner.** Slack, Teams and a TLS mail server have not been tried for real: see Limits.
+
+## How it was checked
+
+| Check | Result |
+|---|---|
+| Test suite | 361 of 361 |
+| Notifications journey (`console/e2e/notifications.mjs`) against a rebuilt image | No problems. It received 3 signed, 2 Slack, 2 Teams and 2 mail notifications, and a channel answering 503 showed its retries and reason |
+| Main journey (`console/e2e/journey.mjs`) on the same image | No problems |
+| Mutation checks: 21 deliberate breaks, one at a time, against the notification, incident and webhook tests | 21 of 21 caught |
+
+The mutation checks cover silences, closing alerts, secret references, the per-tenant allowlist, Slack escaping, grouping races, escalation, file ownership, roles, audit, masking, chat hosts, routing and addresses in the audit. They show that a test notices each of those breaks, not that the behaviour is right everywhere.
+
+## The gate
+
+| Roadmap requirement | How it's met | Evidence |
+|---|---|---|
+| Delivery failure and retry are visible | `GET /alerts/{id}/notifications` and the alert page list every delivery with status, attempts and last error. `GET /webhooks` counts failures in the last 24 hours and what's waiting, and the Notifications page has each channel's history | `One_alerts_notifications_show_failure_retry_silence_and_escalation`, journey step `failures-visible` with a receiver answering 503 |
+| Silence behaviour is visible | The alert page says a silence is holding notifications, and why. A held delivery shows `Suppressed` with its silence, and the Silences page counts what each holds | `A_silence_holds_the_notification_not_the_alert...`, journey step `silence-holds-escalation` |
+| Incident transitions are auditable | Each one writes an audit record and an event on the incident in one transaction, with actor and correlation id. Refused ones are audited too | `Every_transition_is_recorded_and_audited_and_changes_no_alert`, journey step `incident` |
+| Escalation stops on resolution or acknowledgement according to policy | Resolving always stops it. Acknowledging stops it if the policy's `stopOnAcknowledge` says so, and `alert_escalations.stop_reason` records why | `Resolving_stops_an_escalation`, `Acknowledging_stops_an_escalation_only_if_the_policy_says_so`, journey step `acknowledge-stops-escalation` |
+
+## Deliverables
+
+- **Create and update APIs** for rules, endpoints and the allowlist, admin only and audited, with an `If-Match` check on rules. The deployment's files still work; each row belongs to one side (see the [runbook](runbook.md)).
+- **Channels:** signed webhook, Slack, Teams and email.
+- **Routing:** an endpoint chooses events, rules, environments and minimum severity.
+- **Grouping:** `groupWindowSeconds` waits and sends what gathered as one notification.
+- **Deduplication:** one delivery per transition, endpoint and escalation step, by a unique index.
+- **Silences and maintenance windows:** scoped, always with a reason and an end, optionally weekly. They hold notifications and never change an alert.
+- **Escalation:** ordered steps by minutes after firing.
+- **Delivery history** per channel and per alert.
+- **Incidents:** Open, Investigating, Mitigated, Resolved, reopening, notes, alerts, and their own record of who did what.
+- **Console:** Rules can be changed; new Notifications, Silences and Incidents pages; the alert page shows notifications and links to silence it or open an incident.
+
+## Decisions to check
+
+These weren't in the roadmap, so they're mine to justify and yours to overrule.
+
+- **What a silence held is released when it ends, if it still matters.** Still firing: sent, so a real outage after maintenance gets noticed. Resolved meanwhile: dropped, unless the receiver was told it was firing, in which case it hears the resolve.
+- **Operators can silence and open incidents; only admins change rules, channels, the allowlist and escalation.** Stopping noise during an outage shouldn't need an admin.
+- **Disabling a rule, or changing its template or scope, resolves its open alerts** with `rule_disabled` or `rule_changed`. Nothing would watch them any more, and they'd fire and escalate forever. This also fixes alerts stranded by rules removed from the file in earlier versions. A file emptied by mistake therefore resolves its alerts and sends those notifications.
+- **A secret reference set through the API is restricted** to `env:JUICE_WEBHOOK_*`, or files directly in `Webhooks:ApiSecretDirectory`. Otherwise an admin could name any variable or file on the host as a signing key.
+- **Slack and Teams URLs live behind a secret reference**, not in the database, since the URL is the credential. They may only post to those services' hosts, plus `Webhooks:AdditionalChatHosts`.
+- **Text from telemetry is made harmless per channel.** A service named `<!channel>` can't page a Slack channel, and `[x](http://evil)` can't become a Teams link.
+- **Incidents and alerts don't drive each other.** Resolving an incident changes no alert. An alert is in one unresolved incident at most.
+- **Rules and endpoints are disabled, never deleted,** since alerts and deliveries keep them.
+
+## Fixed along the way
+
+- **The allowlist was read across tenants** when connecting. It's now per tenant, with one HTTP client per tenant so a pooled connection can't skip the check.
+- **An incident's record could show "Alert added" before "Opened".** Both had the same time and sorted by an id that's random within a millisecond, which also made one test fail now and then. They're now a microsecond apart. The test then passed in 8 repeat runs and the full suite; the cause is reasoned from the code, not observed directly.
+
+## Limits
+
+- **Slack, Teams and TLS mail haven't met the real thing.** The formats follow those services' documentation and reached local receivers only, and the mail test server has no TLS. Try each with a real channel before relying on it.
+- **Implicit TLS on port 465 isn't supported:** `System.Net.Mail` does STARTTLS only.
+- **There is no test-send button.** A channel's first check is its first real alert.
+- **Delivery isn't retried by hand** from the API or Console: the runbook's SQL still applies.
+- **An escalation step whose channels are all disabled** counts as sent, with only a log warning.
+- **The escalation and acknowledgement lock has no race test.** It's reasoned from the row lock, and the tests cover each order, not the overlap.
+- **Removing an allowlist entry** can leave an open connection in use for up to a minute.
+- **Incidents have no assignee, don't notify anyone, and aren't on the Timeline.**
+- **The Console shows change buttons to everyone;** the API refuses and the page says which role is needed.
+- **Upgrading writes one `webhook.update` audit record and change event** per file-managed endpoint on first start, since the definition gained fields.
+- **Silences, incidents and deliveries are kept indefinitely.** No retention policy exists for them yet.

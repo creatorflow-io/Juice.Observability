@@ -141,6 +141,8 @@
 
 **Acceptance gate:** delivery failure/retry and silence behavior are visible; incident transitions are auditable; escalation stops on resolution or acknowledgement according to policy.
 
+**Status:** see [Phase 6 acceptance](phase-6-acceptance.md).
+
 ## Phase 7 — Juice Agent enrollment and read-only diagnostics
 
 **Goal:** add a control channel only after the platform can identify and authorize resources.
