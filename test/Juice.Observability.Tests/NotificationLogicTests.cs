@@ -87,14 +87,56 @@ namespace Juice.Observability.Tests
             => Assert.False(SilenceMatcher.Matches(Silence(maximum: AlertSeverity.Warning), Orders with { Severity = AlertSeverity.Critical }));
 
         [Theory]
-        [InlineData(WebhookOutbox.Firing, AlertState.Firing, false, HeldOutcome.Send)]
-        [InlineData(WebhookOutbox.Firing, AlertState.Resolved, false, HeldOutcome.Drop)]
-        [InlineData(WebhookOutbox.Escalated, AlertState.Firing, true, HeldOutcome.Send)]
-        [InlineData(WebhookOutbox.Escalated, AlertState.Resolved, true, HeldOutcome.Drop)]
-        [InlineData(WebhookOutbox.Resolved, AlertState.Resolved, true, HeldOutcome.Send)]
-        [InlineData(WebhookOutbox.Resolved, AlertState.Resolved, false, HeldOutcome.Drop)]
-        public void What_a_silence_held_is_sent_only_if_it_still_matters(string @event, AlertState state, bool told, HeldOutcome expected)
-            => Assert.Equal(expected, HeldNotification.Decide(@event, state, told));
+        [InlineData(NotificationPlan.Firing, AlertState.Firing, false, false, true, HeldOutcome.Send)]
+        [InlineData(NotificationPlan.Firing, AlertState.Resolved, false, false, true, HeldOutcome.Drop)]
+        [InlineData(NotificationPlan.Escalated, AlertState.Firing, true, false, true, HeldOutcome.Send)]
+        [InlineData(NotificationPlan.Escalated, AlertState.Resolved, true, false, true, HeldOutcome.Drop)]
+        [InlineData(NotificationPlan.Resolved, AlertState.Resolved, true, false, true, HeldOutcome.Send)]
+        [InlineData(NotificationPlan.Resolved, AlertState.Resolved, false, false, true, HeldOutcome.Drop)]
+        // Acknowledged while held: someone is on it, so the firing is noise. A step follows its policy.
+        [InlineData(NotificationPlan.Firing, AlertState.Firing, false, true, true, HeldOutcome.Drop)]
+        [InlineData(NotificationPlan.Firing, AlertState.Firing, false, true, false, HeldOutcome.Drop)]
+        [InlineData(NotificationPlan.Escalated, AlertState.Firing, true, true, true, HeldOutcome.Drop)]
+        [InlineData(NotificationPlan.Escalated, AlertState.Firing, true, true, false, HeldOutcome.Send)]
+        // A resolve still reaches whoever heard the firing, acknowledged or not.
+        [InlineData(NotificationPlan.Resolved, AlertState.Resolved, true, true, true, HeldOutcome.Send)]
+        public void What_a_silence_held_is_sent_only_if_it_still_matters(string @event, AlertState state, bool told, bool acknowledged, bool stopsOnAcknowledge, HeldOutcome expected)
+            => Assert.Equal(expected, HeldNotification.Decide(@event, state, told, acknowledged, stopsOnAcknowledge));
+
+        public static TheoryData<int, int, int, int> Spacing => new()
+        {
+            // Steps at 5, 15 and 30 minutes after firing. Sent on time: the schedule stands.
+            { 1, 5, 15, 15 },
+            { 2, 15, 30, 30 },
+            // Sent late, after an hour's silence or a host down: the next step waits its gap from then, not all at once.
+            { 1, 60, 15, 70 },
+            { 2, 70, 30, 85 },
+            // A little late: still the later of the two.
+            { 1, 12, 15, 22 },
+        };
+
+        [Theory]
+        [MemberData(nameof(Spacing))]
+        public void Steps_keep_their_spacing_when_one_goes_out_late(int next, int sentMinutes, int scheduled, int dueMinutes)
+        {
+            List<EscalationStep> steps = [new() { AfterMinutes = 5 }, new() { AfterMinutes = 15 }, new() { AfterMinutes = 30 }];
+            Assert.Equal(scheduled, steps[next].AfterMinutes);
+            Assert.Equal(Start.AddMinutes(dueMinutes), EscalationDecision.NextAt(steps, next, Start, Start.AddMinutes(sentMinutes)));
+        }
+
+        [Fact]
+        public void The_first_step_is_due_by_its_time_after_firing()
+        {
+            List<EscalationStep> steps = [new() { AfterMinutes = 5 }];
+            Assert.Equal(Start.AddMinutes(5), EscalationDecision.NextAt(steps, 0, Start, Start.AddMinutes(60)));
+        }
+
+        [Theory]
+        [InlineData("{\"type\":\"alert.escalated\",\"escalation\":{\"policy\":\"pager\",\"step\":1}}", "pager")]
+        [InlineData("{\"type\":\"alert.firing\",\"escalation\":null}", null)]
+        [InlineData("not json", null)]
+        public void A_held_step_names_its_policy(string payload, string? expected)
+            => Assert.Equal(expected, NotificationWorker.PolicyKey(payload));
 
         [Theory]
         [InlineData(AlertState.Resolved, false, true, true, false, true, EscalationAction.Stop, "resolved")]
@@ -162,7 +204,7 @@ namespace Juice.Observability.Tests
         public void A_chat_channel_posts_only_to_its_own_service(ChannelKind kind, string url, bool allowed)
             => Assert.Equal(allowed, ChatDestination.IsAllowed(kind, url, ["chat.internal.example"]));
 
-        private static string Payload(string subject = "service:shop/orders@production", string type = WebhookOutbox.Firing, string ruleName = "Orders errors", double? value = 0.25) => JsonSerializer.Serialize(new
+        private static string Payload(string subject = "service:shop/orders@production", string type = NotificationPlan.Firing, string ruleName = "Orders errors", double? value = 0.25) => JsonSerializer.Serialize(new
         {
             id = Guid.NewGuid(), type, tenant = "t", escalation = (object?)null,
             alert = new { id = Guid.NewGuid(), rule = "orders-errors", ruleName, severity = "Critical", state = "Firing", subject, value, reason = "breach" },
@@ -215,9 +257,9 @@ namespace Juice.Observability.Tests
         public void A_group_counts_everything_and_lists_a_bounded_few()
         {
             var id = Guid.NewGuid();
-            var payload = NotificationView.Group(id, WebhookOutbox.Firing, Start, Enumerable.Range(0, 15).Select(i => Payload($"service:s{i}@production")));
+            var payload = NotificationView.Group(id, NotificationPlan.Firing, Start, Enumerable.Range(0, 15).Select(i => Payload($"service:s{i}@production")));
             var view = NotificationView.Parse(payload);
-            Assert.Equal((WebhookOutbox.Firing, 15), (view.Event, view.Alerts.Count));
+            Assert.Equal((NotificationPlan.Firing, 15), (view.Event, view.Alerts.Count));
             Assert.Equal("Firing: 15 alerts", ChannelFormatter.Title(view));
             var body = ChannelFormatter.SlackBody(view, null);
             Assert.Contains("s9@", body);

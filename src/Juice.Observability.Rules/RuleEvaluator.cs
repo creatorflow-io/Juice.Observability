@@ -1,5 +1,7 @@
 using System.Diagnostics.Metrics;
 using System.Globalization;
+using Juice.Domain;
+using Juice.MediatR;
 using Juice.Observability.Data;
 using Juice.Observability.Discovery;
 using Microsoft.EntityFrameworkCore;
@@ -9,32 +11,47 @@ using Microsoft.Extensions.Options;
 
 namespace Juice.Observability.Rules
 {
-    /// <summary>
-    /// Told about every transition that notifies: Firing, and Resolved after firing. Called inside the evaluation's
-    /// transaction with its context, so whatever it adds (a webhook outbox row) commits with the alert change, and
-    /// nothing it does over the network can roll the alert back.
-    /// </summary>
-    public interface IAlertNotifier
-    {
-        void OnTransition(PlatformDbContext db, Rule rule, Alert alert, AlertTransition transition);
-    }
-
     public sealed record RuleEvaluation(string RuleKey, DateTimeOffset At, int Subjects, int Opened, int Fired, int Resolved);
+
+    /// <summary>Evaluate one rule now. Its alert changes, and the notifications they raise, commit together through the TransactionBehavior.</summary>
+    public sealed record EvaluateRule(Rule Rule) : MessageBase, IRequest<RuleEvaluation>;
+
+    /// <summary>
+    /// Runs a rule's evaluation as a command (<see cref="EvaluateRule"/>), so the mediator's TransactionBehavior saves the alerts, the domain events they raised
+    /// and the outbox in one transaction. The scheduler and tests call this.
+    /// </summary>
+    public sealed class RuleEvaluator(IServiceScopeFactory scopes, ILogger<RuleEvaluator> logger)
+    {
+        internal static readonly Meter Meter = new("Juice.Observability");
+
+        public async Task<RuleEvaluation> EvaluateAsync(Rule rule, CancellationToken cancellationToken)
+        {
+            using var context = PlatformMessageContext.Begin("rules");
+            await using var scope = scopes.CreateAsyncScope();
+            var result = await scope.ServiceProvider.GetRequiredService<IMediator>().Send(new EvaluateRule(rule), cancellationToken);
+            if (result.Opened + result.Fired + result.Resolved > 0)
+            {
+                logger.LogInformation("Rule {Rule}: {Opened} opened, {Fired} fired, {Resolved} resolved", rule.Key, result.Opened, result.Fired, result.Resolved);
+            }
+            return result;
+        }
+    }
 
     /// <summary>
     /// Evaluates one rule: observes its template over the window ending <see cref="RulesOptions.Lag"/> before now,
     /// applies <see cref="AlertLifecycle"/> to every observed subject and every open alert (an open alert whose subject
-    /// returned nothing is evaluated as no data), and writes alerts and their transitions in one transaction.
+    /// returned nothing is evaluated as no data), and changes alerts and their transitions. A transition that notifies raises
+    /// <see cref="AlertTransitioned"/>; nothing here saves, begins or commits, or knows who is notified.
     /// </summary>
-    public sealed class RuleEvaluator(IServiceScopeFactory scopes, RuleTemplates templates, IOptions<RulesOptions> options,
-        IOptions<PlatformOptions> platform, TimeProvider clock, ILogger<RuleEvaluator> logger, IEnumerable<IAlertNotifier> notifiers)
+    public sealed class EvaluateRuleHandler(PlatformDbContext db, RuleTemplates templates, IOptions<RulesOptions> options,
+        IOptions<PlatformOptions> platform, TimeProvider clock) : IRequestHandler<EvaluateRule, RuleEvaluation>
     {
-        internal static readonly Meter Meter = new("Juice.Observability");
-        private static readonly Counter<long> Transitions = Meter.CreateCounter<long>("juice.observability.alerts.transitions", "{transition}",
+        private static readonly Counter<long> Transitions = RuleEvaluator.Meter.CreateCounter<long>("juice.observability.alerts.transitions", "{transition}",
             "Alert state transitions, by rule template and new state");
 
-        public async Task<RuleEvaluation> EvaluateAsync(Rule rule, CancellationToken cancellationToken)
+        public async ValueTask<RuleEvaluation> Handle(EvaluateRule request, CancellationToken cancellationToken)
         {
+            var rule = request.Rule;
             var definition = RuleDefinition.FromJson(rule.Definition);
             var now = clock.GetUtcNow();
             var at = new DateTimeOffset((now - options.Value.Lag).UtcTicks / TimeSpan.TicksPerSecond * TimeSpan.TicksPerSecond, TimeSpan.Zero);
@@ -43,9 +60,6 @@ namespace Juice.Observability.Rules
                 new TelemetryWindow(platform.Value.TenantKey, from, at, options.Value.RowLimit), cancellationToken))
                 .GroupBy(o => o.SubjectKey).ToDictionary(g => g.Key, g => g.First());
 
-            await using var scope = scopes.CreateAsyncScope();
-            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-            await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
             var open = await db.Alerts.Where(a => a.TenantId == rule.TenantId && a.RuleId == rule.Id && a.State != AlertState.Resolved)
                 .ToDictionaryAsync(a => a.SubjectKey, cancellationToken);
             var keys = observations.Keys.Union(open.Keys).ToList();
@@ -94,7 +108,7 @@ namespace Juice.Observability.Rules
                     if (to == AlertState.Firing || (to == AlertState.Resolved && alert.FiredAt is not null))
                     {
                         alert.LastValue = observation?.Value;
-                        foreach (var notifier in notifiers) notifier.OnTransition(db, rule, alert, transition);
+                        Raise(alert, transition);
                     }
                 }
                 alert.RecoveringSince = decision.RecoveringSince;
@@ -104,22 +118,21 @@ namespace Juice.Observability.Rules
                 alert.NoData = condition == Condition.NoData;
                 alert.Evidence = Evidence(definition, from, at, observation, condition);
             }
-            await db.SaveChangesAsync(cancellationToken);
-            await transaction.CommitAsync(cancellationToken);
-            if (opened + fired + resolved > 0)
-            {
-                logger.LogInformation("Rule {Rule}: {Opened} opened, {Fired} fired, {Resolved} resolved", rule.Key, opened, fired, resolved);
-            }
             return new RuleEvaluation(rule.Key, at, keys.Count, opened, fired, resolved);
         }
 
         public static string DedupKey(string ruleKey, string subjectKey) => $"{ruleKey}|{subjectKey}";
 
+        /// <summary>A transition that notifies: the alert raises it, and whoever notifies hears of it through the outbox once it commits.</summary>
+        internal static void Raise(Alert alert, AlertTransition transition)
+            => alert.AddDomainEvent<INotification>(new AlertTransitioned(alert.TenantId, alert.Id, transition.Id, transition.ToState));
+
         /// <summary>
         /// Resolves a rule's open alerts because the rule no longer watches them: disabled, or its scope changed. Left alone they would be held as "no data"
-        /// forever, firing and escalating with nothing able to end them. <paramref name="reason"/> says this isn't a measured recovery. Commits with the caller's change.
+        /// forever, firing and escalating with nothing able to end them. <paramref name="reason"/> says this isn't a measured recovery. Only changes them:
+        /// it runs inside a command, whose TransactionBehavior saves them with the caller's change.
         /// </summary>
-        public static async Task<int> CloseOpenAlertsAsync(PlatformDbContext db, Rule rule, string reason, IEnumerable<IAlertNotifier> notifiers, DateTimeOffset now, CancellationToken cancellationToken)
+        public static async Task<int> CloseOpenAlertsAsync(PlatformDbContext db, Rule rule, string reason, DateTimeOffset now, CancellationToken cancellationToken)
         {
             var open = await db.Alerts.Where(a => a.TenantId == rule.TenantId && a.RuleId == rule.Id && a.State != AlertState.Resolved).ToListAsync(cancellationToken);
             foreach (var alert in open)
@@ -130,7 +143,7 @@ namespace Juice.Observability.Rules
                 alert.RecoveringSince = null;
                 if (alert.FiredAt is not null)
                 {
-                    foreach (var notifier in notifiers) notifier.OnTransition(db, rule, alert, transition);
+                    Raise(alert, transition);
                 }
             }
             return open.Count;

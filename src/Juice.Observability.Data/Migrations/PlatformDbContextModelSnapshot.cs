@@ -22,6 +22,145 @@ namespace Juice.Observability.Data.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("Juice.Messaging.Outbox.OutboxDelivery", b =>
+                {
+                    b.Property<Guid>("DeliveryId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("delivery_id");
+
+                    b.Property<DateTimeOffset>("CreationTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("creation_time");
+
+                    b.Property<string>("Destination")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("destination");
+
+                    b.Property<Guid>("EventId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("event_id");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)")
+                        .HasColumnName("last_error");
+
+                    b.Property<DateTimeOffset?>("NextAttemptOn")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("next_attempt_on");
+
+                    b.Property<string>("ProcessedBy")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("processed_by");
+
+                    b.Property<DateTimeOffset?>("ProcessedOn")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("processed_on");
+
+                    b.Property<string>("PublisherKey")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("publisher_key");
+
+                    b.Property<int>("RetryCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("retry_count");
+
+                    b.Property<string>("RoutingKey")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("routing_key");
+
+                    b.Property<int>("State")
+                        .HasColumnType("integer")
+                        .HasColumnName("state");
+
+                    b.HasKey("DeliveryId")
+                        .HasName("pk_outbox_deliveries");
+
+                    b.HasIndex("CreationTime")
+                        .HasDatabaseName("IX_OutboxDeliveries_Pending")
+                        .HasFilter("state = 0")
+                        .HasAnnotation("SqlServer:Include", new[] { "EventId", "PublisherKey" });
+
+                    NpgsqlIndexBuilderExtensions.IncludeProperties(b.HasIndex("CreationTime"), new[] { "EventId", "PublisherKey" });
+
+                    b.HasIndex("EventId")
+                        .HasDatabaseName("ix_outbox_deliveries_event_id");
+
+                    b.HasIndex("NextAttemptOn")
+                        .HasDatabaseName("IX_OutboxDeliveries_Retry")
+                        .HasFilter("state = 3 AND next_attempt_on IS NOT NULL")
+                        .HasAnnotation("SqlServer:Include", new[] { "EventId", "PublisherKey" });
+
+                    NpgsqlIndexBuilderExtensions.IncludeProperties(b.HasIndex("NextAttemptOn"), new[] { "EventId", "PublisherKey" });
+
+                    b.HasIndex("ProcessedOn")
+                        .HasDatabaseName("IX_OutboxDeliveries_Recovery")
+                        .HasFilter("state = 1")
+                        .HasAnnotation("SqlServer:Include", new[] { "EventId", "PublisherKey" });
+
+                    NpgsqlIndexBuilderExtensions.IncludeProperties(b.HasIndex("ProcessedOn"), new[] { "EventId", "PublisherKey" });
+
+                    b.HasIndex("PublisherKey")
+                        .HasDatabaseName("ix_outbox_deliveries_publisher_key");
+
+                    b.ToTable("outbox_deliveries", (string)null);
+                });
+
+            modelBuilder.Entity("Juice.Messaging.Outbox.OutboxEvent", b =>
+                {
+                    b.Property<Guid>("EventId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("event_id");
+
+                    b.Property<DateTimeOffset>("CreationTime")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("creation_time");
+
+                    b.Property<string>("EventTypeName")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("event_type_name");
+
+                    b.Property<string>("Headers")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text")
+                        .HasDefaultValue("{}")
+                        .HasColumnName("headers");
+
+                    b.Property<byte[]>("PayloadBytes")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("payload_bytes");
+
+                    b.Property<string>("TenantId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("TransactionId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("transaction_id");
+
+                    b.HasKey("EventId")
+                        .HasName("pk_outbox_events");
+
+                    b.HasIndex("TransactionId")
+                        .HasDatabaseName("ix_outbox_events_transaction_id");
+
+                    b.ToTable("outbox_events", (string)null);
+                });
+
             modelBuilder.Entity("Juice.Observability.Data.Alert", b =>
                 {
                     b.Property<Guid>("Id")
@@ -226,6 +365,11 @@ namespace Juice.Observability.Data.Migrations
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)")
                         .HasColumnName("from_state");
+
+                    b.Property<DateTimeOffset?>("NotificationsPlannedAt")
+                        .IsConcurrencyToken()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("notifications_planned_at");
 
                     b.Property<string>("Reason")
                         .IsRequired()
@@ -1786,6 +1930,18 @@ namespace Juice.Observability.Data.Migrations
                     b.ToTable("webhook_endpoints", (string)null);
                 });
 
+            modelBuilder.Entity("Juice.Messaging.Outbox.OutboxDelivery", b =>
+                {
+                    b.HasOne("Juice.Messaging.Outbox.OutboxEvent", "OutboxEvent")
+                        .WithMany("Deliveries")
+                        .HasForeignKey("EventId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_outbox_deliveries_outbox_events_event_id");
+
+                    b.Navigation("OutboxEvent");
+                });
+
             modelBuilder.Entity("Juice.Observability.Data.Alert", b =>
                 {
                     b.HasOne("Juice.Observability.Data.Rule", null)
@@ -2214,6 +2370,11 @@ namespace Juice.Observability.Data.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_webhook_endpoints_platform_tenants_tenant_id");
+                });
+
+            modelBuilder.Entity("Juice.Messaging.Outbox.OutboxEvent", b =>
+                {
+                    b.Navigation("Deliveries");
                 });
 #pragma warning restore 612, 618
         }

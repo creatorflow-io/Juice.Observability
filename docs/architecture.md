@@ -39,12 +39,12 @@ the [README](../README.md), the [requirements](observability-platform-requiremen
      │  │ resources, deps │   │ inst/svc/app/   │   │ Pending→Firing  │                        │
      │  │ checkpointed    │   │ host states     │   │ →Resolved       │                        │
      │  └────────┬────────┘   └────────┬────────┘   └────────┬────────┘                        │
-     │           │                     │                     │ alert change + outbox row       │
-     │           │                     │                     │ written in one transaction      │
+     │           │                     │                     │ alert change + Juice outbox     │
+     │           │                     │                     │ message, one transaction        │
      │           ▼                     ▼                     ▼                                 │
      │  ┌───────────────────────────────────────────────────────────────┐                     │
      │  │ PostgreSQL (EF Core): resource model, health snapshots and    │                     │
-     │  │ transitions, alerts, audit, webhook outbox and deliveries     │                     │
+     │  │ transitions, alerts, audit, Juice outbox, channel deliveries  │                     │
      │  └───────────────┬───────────────────────────────────┬───────────┘                     │
      │                  │                                   │                                 │
      │                  ▼                                   ▼                                 │
@@ -81,5 +81,11 @@ the [README](../README.md), the [requirements](observability-platform-requiremen
    - **Rules** evaluates the configured rules and runs the alert lifecycle.
 3. **Serve.** The API reads derived state from PostgreSQL. It reads raw traces, logs and metrics from ClickHouse through
    platform-owned, tenant-filtered, bounded query templates. The Console reads only the API.
-4. **Notify.** An alert change and its webhook outbox rows are written in one transaction. The dispatcher then delivers
-   signed webhooks, so a webhook can never roll an alert back.
+4. **Notify.** Everything that changes an alert is a Juice mediator command: a rule's evaluation, a rule changed through
+   the API or the rules file, an acknowledgement. The command only changes entities, and the alert raises
+   `AlertTransitioned` when it fires or resolves after firing. The framework's `TransactionBehavior` saves the change,
+   dispatches that domain event (its handler publishes `AlertTransitionedIntegrationEvent`), saves the Juice outbox, and
+   commits, all in one transaction. The outbox's `local` route hands the event to the notification module right after
+   the commit, and its delivery retries for about 85 minutes if that fails. The notification module plans the channel
+   deliveries and escalations in a command of its own, once per transition even if the event arrives twice. The
+   dispatcher then sends them, so a channel can never roll an alert back.

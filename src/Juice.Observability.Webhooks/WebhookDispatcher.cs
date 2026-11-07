@@ -9,6 +9,8 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Juice.MediatR;
+using Juice.Messaging;
 using Juice.Observability.Data;
 using Juice.Observability.Discovery;
 using Juice.Observability.Rules;
@@ -102,7 +104,7 @@ namespace Juice.Observability.Webhooks
         public List<string> Recipients { get; set; } = [];
         public List<string> Environments { get; set; } = [];
         public int GroupWindowSeconds { get; set; }
-        public List<string> Events { get; set; } = [WebhookOutbox.Firing, WebhookOutbox.Resolved];
+        public List<string> Events { get; set; } = [NotificationPlan.Firing, NotificationPlan.Resolved];
         public List<string> RuleKeys { get; set; } = [];
         public AlertSeverity MinimumSeverity { get; set; } = AlertSeverity.Info;
         public bool Enabled { get; set; } = true;
@@ -136,8 +138,8 @@ namespace Juice.Observability.Webhooks
             }
             if (GroupWindowSeconds is < 0 or > 3600) yield return $"{at}: GroupWindowSeconds must be 0 to 3600";
             if (Environments.Any(e => e.Length is 0 or > 256 || e != e.ToLowerInvariant())) yield return $"{at}: Environments are lowercase keys";
-            if (Events.Count == 0 || Events.Any(e => e is not (WebhookOutbox.Firing or WebhookOutbox.Resolved)))
-                yield return $"{at}: Events are {WebhookOutbox.Firing} and/or {WebhookOutbox.Resolved}";
+            if (Events.Count == 0 || Events.Any(e => e is not (NotificationPlan.Firing or NotificationPlan.Resolved)))
+                yield return $"{at}: Events are {NotificationPlan.Firing} and/or {NotificationPlan.Resolved}";
         }
 
         public string Hash() => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(this))));
@@ -154,42 +156,82 @@ namespace Juice.Observability.Webhooks
         public List<int> Ports { get; set; } = [];
     }
 
+    /// <summary>Plan the notifications of one alert transition: a channel's deliveries and, on firing, the escalations that match.</summary>
+    public sealed record PlanNotifications(Guid PlatformTenantId, Guid TransitionId, DateTimeOffset CommittedAt) : MessageBase, IRequest<int>;
+
     /// <summary>
-    /// Writes one delivery per matching endpoint when an alert fires or resolves, in the evaluation's transaction
-    /// (<see cref="IAlertNotifier"/>). The payload is fixed here, so every attempt sends and signs the same bytes.
+    /// Hears that an alert transition was committed, from the outbox (the <c>local</c> route: right after the commit, and from delivery if that failed), and
+    /// plans its notifications as a command of its own.
     /// </summary>
-    public sealed class WebhookOutbox(IOptions<PlatformOptions> platform, TimeProvider clock) : IAlertNotifier
+    public sealed class AlertTransitionedConsumer(IMediator mediator) : IIntegrationEventHandler<AlertTransitionedIntegrationEvent>
+    {
+        // In UTC: the message serializer reads a time back in the host's offset, and PostgreSQL stores only UTC offsets.
+        public async Task HandleAsync(AlertTransitionedIntegrationEvent @event)
+            => await mediator.Send(new PlanNotifications(@event.PlatformTenantId, @event.TransitionId, @event.CreatedAt.ToUniversalTime()));
+    }
+
+    /// <summary>
+    /// Plans a transition's notifications once. The outbox may hand a transition over twice, so a transition planned already is left alone, and two plans
+    /// racing on different replicas meet at <see cref="AlertTransition.NotificationsPlannedAt"/>, a concurrency token: the second rolls back and, retried, finds it planned.
+    /// </summary>
+    public sealed class PlanNotificationsHandler(PlatformDbContext db, IOptions<PlatformOptions> platform, TimeProvider clock) : IRequestHandler<PlanNotifications, int>
+    {
+        public async ValueTask<int> Handle(PlanNotifications request, CancellationToken cancellationToken)
+        {
+            var transition = await db.AlertTransitions.SingleOrDefaultAsync(t => t.TenantId == request.PlatformTenantId && t.Id == request.TransitionId, cancellationToken);
+            if (transition is null || transition.NotificationsPlannedAt is not null)
+            {
+                return 0;
+            }
+            var alert = await db.Alerts.AsNoTracking().SingleAsync(a => a.Id == transition.AlertId, cancellationToken);
+            var rule = await db.Rules.AsNoTracking().SingleAsync(r => r.Id == alert.RuleId, cancellationToken);
+            var now = clock.GetUtcNow();
+            transition.NotificationsPlannedAt = now;
+            // From when the transition was committed, so the dispatch delay still counts the time it spent in the outbox.
+            return NotificationPlan.Plan(db, platform.Value.TenantKey, rule, alert, transition, request.CommittedAt, now);
+        }
+    }
+
+    /// <summary>
+    /// What a transition sends: one delivery per matching endpoint, held if a silence covers it, and on firing the escalations that match. The payload is
+    /// fixed here, so every attempt sends and signs the same bytes. Only adds entities: the command's TransactionBehavior saves them.
+    /// </summary>
+    public static class NotificationPlan
     {
         public const string Firing = "alert.firing";
         public const string Resolved = "alert.resolved";
         /// <summary>Sent by an escalation policy, to the endpoints it names, whatever events they take otherwise.</summary>
         public const string Escalated = "alert.escalated";
 
-        public void OnTransition(PlatformDbContext db, Rule rule, Alert alert, AlertTransition transition)
+        /// <returns>How many deliveries it added.</returns>
+        public static int Plan(PlatformDbContext db, string tenantKey, Rule rule, Alert alert, AlertTransition transition, DateTimeOffset createdAt, DateTimeOffset now)
         {
             var type = transition.ToState == AlertState.Firing ? Firing : Resolved;
-            var now = clock.GetUtcNow();
             var context = new AlertContext(rule.Key, alert.SubjectKey, alert.Severity);
             var silences = db.Silences.AsNoTracking().Where(s => s.TenantId == alert.TenantId && s.CancelledAt == null && s.StartsAt <= now && (s.RepeatWeekly || s.EndsAt > now)).ToList();
             var silence = SilenceMatcher.Find(silences, context, now);
             var endpoints = db.WebhookEndpoints.AsNoTracking().Where(e => e.TenantId == alert.TenantId && e.Enabled).ToList()
                 .Where(e => e.Events.Contains(type) && (e.RuleKeys.Length == 0 || e.RuleKeys.Contains(rule.Key)) && alert.Severity >= e.MinimumSeverity
                     && (e.Environments.Length == 0 || context.Environment is { } environment && e.Environments.Contains(environment)));
+            var added = 0;
             foreach (var endpoint in endpoints)
             {
                 var id = Guid.CreateVersion7();
                 db.WebhookDeliveries.Add(new WebhookDelivery
                 {
                     Id = id, TenantId = alert.TenantId, EndpointId = endpoint.Id, AlertId = alert.Id, TransitionId = transition.Id,
-                    Event = type, Payload = Payload(id, type, platform.Value.TenantKey, rule, alert, transition, null), CreatedAt = now,
+                    Event = type, Payload = Payload(id, type, tenantKey, rule, alert, transition, null), CreatedAt = createdAt,
                     NextAttemptAt = now + TimeSpan.FromSeconds(endpoint.GroupWindowSeconds),
                     Status = silence is null ? DeliveryStatus.Pending : DeliveryStatus.Suppressed, SuppressedBy = silence?.Id,
                 });
+                added++;
             }
-            if (type == Firing)
+            // An alert that resolved before its firing was planned has nothing left to escalate.
+            if (type == Firing && alert.State == AlertState.Firing)
             {
                 StartEscalations(db, alert, context, now);
             }
+            return added;
         }
 
         /// <summary>Every enabled policy matching the alert, from its first step. A policy with no way to reach anyone would never have been accepted.</summary>
@@ -700,11 +742,14 @@ namespace Juice.Observability.Webhooks
 
     public static class WebhookServiceCollectionExtensions
     {
-        /// <summary>Webhook provisioning and the outbox always; the dispatcher when <c>Webhooks:Enabled</c>. Register after the rules.</summary>
+        /// <summary>
+        /// Webhook provisioning and the consumer that plans an alert transition's notifications always; the dispatcher when <c>Webhooks:Enabled</c>.
+        /// Register after the rules, with the platform's messaging (the mediator, its TransactionBehavior and the <c>local</c> outbox route).
+        /// </summary>
         public static IServiceCollection AddPlatformWebhooks(this IServiceCollection services, IConfiguration configuration)
         {
             services.Configure<WebhookOptions>(configuration.GetSection(WebhookOptions.Section));
-            services.AddSingleton<IAlertNotifier, WebhookOutbox>();
+            services.AddMessaging().AddLocalConsumer(consumer => consumer.Subscribe<AlertTransitionedIntegrationEvent, AlertTransitionedConsumer>());
             services.AddHostedService<WebhookProvisioner>();
             if (configuration.GetSection(WebhookOptions.Section).GetValue(nameof(WebhookOptions.Enabled), true))
             {

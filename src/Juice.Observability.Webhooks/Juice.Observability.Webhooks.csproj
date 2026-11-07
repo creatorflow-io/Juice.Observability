@@ -10,6 +10,11 @@
     <ProjectReference Include="..\Juice.Observability.Rules\Juice.Observability.Rules.csproj" />
   </ItemGroup>
 
+  <!-- Hears of alert transitions from the outbox's local route. -->
+  <ItemGroup>
+    <PackageReference Include="Juice.Messaging.Local" />
+  </ItemGroup>
+
   <ItemGroup>
     <InternalsVisibleTo Include="Juice.Observability.Tests" />
   </ItemGroup>

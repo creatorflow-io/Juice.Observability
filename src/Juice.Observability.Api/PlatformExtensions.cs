@@ -1,3 +1,6 @@
+using Juice.MediatR;
+using Juice.Messaging.Outbox.Delivery.Internal;
+using Juice.Messaging.Policies;
 using Juice.Observability.Api.Endpoints;
 using Juice.Observability.Data;
 using Juice.Observability.Discovery;
@@ -42,6 +45,8 @@ namespace Juice.Observability.Api
                     ?? throw new InvalidOperationException("ConnectionStrings:Platform is required")));
             // Before the discovery worker: hosted services start in registration order, and discovery needs the tenant.
             services.AddHostedService<TenantProvisioner>();
+            // After it, since the provisioner applies migrations: the outbox's delivery starts reading its tables at once.
+            services.AddPlatformMessaging();
             services.AddPlatformDiscovery(configuration);
             services.AddPlatformHealth(configuration);
             services.AddPlatformRules(configuration);
@@ -51,6 +56,50 @@ namespace Juice.Observability.Api
             services.AddPlatformProblemDetails();
             services.AddHealthChecks().AddCheck<DatabaseHealthCheck>("database", tags: ["ready"]);
             return services;
+        }
+
+        /// <summary>
+        /// The mediator, with <see cref="PlatformTransactionBehavior{TRequest, TResponse}"/> around every command, and the outbox in the platform database.
+        /// Every message goes on the <c>local</c> route: dispatched in this process right after its transaction commits, and delivered from the outbox, with
+        /// retries, if that fails or the process stops first. A consumer's own check keeps a message handled twice (once each way, or on two replicas) from
+        /// acting twice, so the in-memory guard only saves work.
+        /// </summary>
+        public static IServiceCollection AddPlatformMessaging(this IServiceCollection services)
+        {
+            services.AddMediatR(mediator => mediator
+                .RegisterServicesFromAssemblyContaining<EvaluateRule>()
+                .RegisterServicesFromAssemblyContaining<PlanNotifications>()
+                .RegisterServicesFromAssemblyContaining<ChangeRule>(includeNonPublicTypes: true));
+            services.AddScoped(typeof(IPipelineBehavior<,>), typeof(PlatformTransactionBehavior<,>));
+            var messaging = services.AddMessaging();
+            messaging.AddOutbox();
+            messaging.AddLocalChannel();
+            messaging.AddLocalPublisher();
+            messaging.AddIdempotencyInMemory();
+            messaging.AddMessageService<PlatformDbContext>();
+            messaging.AddPublishingPolicies<LocalRoute>();
+            messaging.AddDelivery(delivery =>
+            {
+                // The framework's default gives up after 3 retries, about 35 seconds: a database restart would lose an alert's notifications. These keep
+                // trying for about 85 minutes (5 s doubling, 10 retries), check every 2 seconds as the webhook dispatcher does, and take back a message
+                // whose handler has run a minute, which planning never needs.
+                delivery.AddDeliveryPolicies(options => options.DefaultPolicy = new PolicyConfiguration
+                {
+                    Interval = TimeSpan.FromSeconds(2), BatchSize = 50, Timeout = TimeSpan.FromMinutes(1),
+                    InitialRetryDelay = TimeSpan.FromSeconds(5), RetryDelayMultiplier = 2, MaxRetryAttempts = 10,
+                });
+                delivery.AddDeliveryProcessor<PlatformDbContext>(LocalRoute.Publisher);
+            });
+            return services;
+        }
+
+        /// <summary>The platform publishes only to itself, so every message takes the <c>local</c> route.</summary>
+        private sealed class LocalRoute : IMessagePublishingPolicy
+        {
+            public const string Publisher = "local";
+            private static readonly IReadOnlyCollection<PublishRoute> Routes = [new PublishRoute(Publisher, string.Empty)];
+
+            public ValueTask<IReadOnlyCollection<PublishRoute>> ResolveAsync(PolicyResolveContext context) => ValueTask.FromResult(Routes);
         }
 
         /// <summary><c>/health/live</c>, <c>/health/ready</c> (anonymous) and the platform API under <c>/api/v1</c>.</summary>

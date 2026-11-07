@@ -202,6 +202,52 @@ namespace Juice.Observability.Tests
             Assert.Equal(reason, (await db.AlertTransitions.AsNoTracking().OrderByDescending(t => t.At).FirstAsync(t => t.AlertId == alert.Id, Ct)).Reason);
         }
 
+        [Fact]
+        public async Task Closing_an_alert_reaches_its_channels_through_the_outbox_in_the_running_host_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var (tenant, _, alert) = await FiringAsync(database);
+            await using (var db = database.Context())
+            {
+                db.WebhookEndpoints.Add(new WebhookEndpoint
+                {
+                    TenantId = tenant, Key = "ops", Kind = ChannelKind.Webhook, Url = "https://hooks.example/ops", SecretRef = "env:JUICE_WEBHOOK_OPS",
+                    Events = ["alert.resolved"], DefinitionHash = "h", LoadedAt = DateTimeOffset.UtcNow, ManagedBy = ManagedBy.Api,
+                });
+                await db.SaveChangesAsync(Ct);
+            }
+            // The host as deployed: its own outbox delivery and in-process dispatch run, nothing from the test hands anything over.
+            await using var factory = new ApiFactory(database);
+            using var client = factory.CreateClient();
+            var (_, _, admin, _) = await Caller.AllAsync(client, database);
+
+            await Caller.JsonAsync(await admin.PutAsync($"/api/v1/tenants/{tenant}/rules/orders-errors",
+                new { name = "Orders errors", template = "ErrorRate", service = "shop/orders", threshold = 0.05, enabled = false, severity = "Critical" }));
+
+            Guid resolved;
+            await using (var db = database.Context())
+            {
+                // The command committed the alert's resolve, its audit and one outbox message together.
+                resolved = (await db.AlertTransitions.AsNoTracking().SingleAsync(t => t.AlertId == alert.Id && t.ToState == AlertState.Resolved, Ct)).Id;
+                Assert.Single(await db.OutboxEvents().ToListAsync(Ct));
+                Assert.Single(await db.AuditRecords.AsNoTracking().Where(a => a.Operation == "rule.update").ToListAsync(Ct));
+            }
+            WebhookDelivery? delivery = null;
+            for (var i = 0; i < 100 && delivery is null; i++)
+            {
+                await Task.Delay(100, Ct);
+                await using var db = database.Context();
+                delivery = await db.WebhookDeliveries.AsNoTracking().SingleOrDefaultAsync(d => d.TransitionId == resolved, Ct);
+            }
+            Assert.True(delivery is not null, "the resolve never reached the channel");
+            Assert.Equal("alert.resolved", delivery.Event);
+            await using (var db = database.Context())
+            {
+                Assert.NotNull((await db.AlertTransitions.AsNoTracking().SingleAsync(t => t.Id == resolved, Ct)).NotificationsPlannedAt);
+            }
+        }
+
         [Theory]
         [InlineData(true)]
         [InlineData(false)]

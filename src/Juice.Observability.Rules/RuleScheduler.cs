@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
+using Juice.MediatR;
 using Juice.Observability.Data;
 using Juice.Observability.Discovery;
 using Microsoft.EntityFrameworkCore;
@@ -152,8 +153,7 @@ namespace Juice.Observability.Rules
     /// rule). Each change writes an <see cref="AuditRecord"/> in the same transaction. The file owns what it lists, taking over a key the API
     /// created; a rule it no longer lists is disabled and handed to the API; a rule the API created and the file never listed is left alone.
     /// </summary>
-    public sealed class RuleProvisioner(IServiceScopeFactory scopes, IOptions<RulesOptions> options, IOptions<PlatformOptions> platform,
-        TimeProvider clock, ILogger<RuleProvisioner> logger, IEnumerable<IAlertNotifier> notifiers) : IHostedService
+    public sealed class RuleProvisioner(IServiceScopeFactory scopes, IOptions<RulesOptions> options, ILogger<RuleProvisioner> logger) : IHostedService
     {
         public const string Actor = "deployment-config";
         public const string ClosedRuleDisabled = "rule_disabled";
@@ -173,11 +173,53 @@ namespace Juice.Observability.Rules
                 throw new InvalidOperationException("Invalid rule configuration:\n" + string.Join("\n", errors));
             }
 
+            using var context = PlatformMessageContext.Begin("rule-provisioning");
             await using var scope = scopes.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-            await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
-            // Replicas starting together load the file one after another: the second sees the first's rules, not a conflict.
-            await db.Database.ExecuteSqlAsync($"SELECT pg_advisory_xact_lock({WorkerLease.KeyOf("rule-provisioning")})", cancellationToken);
+            // Replicas starting together load the file one after another: the second sees the first's rules, not a conflict. A session lock on the
+            // connection the command's transaction will use, since the handler runs before the TransactionBehavior begins it.
+            var key = WorkerLease.KeyOf("rule-provisioning");
+            await db.Database.OpenConnectionAsync(cancellationToken);
+            try
+            {
+                await db.Database.ExecuteSqlAsync($"SELECT pg_advisory_lock({key})", cancellationToken);
+                try
+                {
+                    var changes = await scope.ServiceProvider.GetRequiredService<IMediator>().Send(new ProvisionRules(definitions), cancellationToken);
+                    logger.LogInformation("Rules loaded: {Count} configured, {Changes} changed", definitions.Count, changes);
+                }
+                finally
+                {
+                    await db.Database.ExecuteSqlAsync($"SELECT pg_advisory_unlock({key})", CancellationToken.None);
+                }
+            }
+            finally
+            {
+                await db.Database.CloseConnectionAsync();
+            }
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
+    /// <summary>Make the rules the deployment's file lists match it. Returns how many changed.</summary>
+    public sealed record ProvisionRules(IReadOnlyList<RuleDefinition> Definitions) : MessageBase, IRequest<int>;
+
+    /// <summary>
+    /// Creates, updates and hands over rules as the file says, with an audit record and change event for each, and resolves the open alerts of a rule
+    /// that no longer watches them. Only changes entities: the TransactionBehavior saves them, and the notifications those alerts raise, together.
+    /// </summary>
+    public sealed class ProvisionRulesHandler(PlatformDbContext db, IOptions<PlatformOptions> platform, TimeProvider clock) : IRequestHandler<ProvisionRules, int>
+    {
+        private const string Actor = RuleProvisioner.Actor;
+        private const string ClosedRuleDisabled = RuleProvisioner.ClosedRuleDisabled;
+        private const string ClosedRuleChanged = RuleProvisioner.ClosedRuleChanged;
+
+        private static bool ChangesWhatItWatches(RuleDefinition before, RuleDefinition after) => RuleProvisioner.ChangesWhatItWatches(before, after);
+
+        public async ValueTask<int> Handle(ProvisionRules request, CancellationToken cancellationToken)
+        {
+            var definitions = request.Definitions;
             var tenantId = await db.Tenants.Where(t => t.Key == platform.Value.TenantKey).Select(t => t.Id).SingleAsync(cancellationToken);
             var existing = await db.Rules.Where(r => r.TenantId == tenantId).ToDictionaryAsync(r => r.Key, cancellationToken);
             var now = clock.GetUtcNow();
@@ -217,7 +259,7 @@ namespace Juice.Observability.Rules
                     rule.ManagedBy = ManagedBy.Configuration;
                     if (ChangesWhatItWatches(RuleDefinition.FromJson(rule.Definition), definition) || !definition.Enabled)
                     {
-                        await RuleEvaluator.CloseOpenAlertsAsync(db, rule, definition.Enabled ? ClosedRuleChanged : ClosedRuleDisabled, notifiers, now, cancellationToken);
+                        await EvaluateRuleHandler.CloseOpenAlertsAsync(db, rule, definition.Enabled ? ClosedRuleChanged : ClosedRuleDisabled, now, cancellationToken);
                     }
                     rule.Name = definition.Name;
                     rule.Template = definition.Template;
@@ -236,7 +278,7 @@ namespace Juice.Observability.Rules
                 removed.ManagedBy = ManagedBy.Api;
                 removed.LoadedAt = now;
                 // Whether or not it's enabled: an earlier version disabled rules without closing their alerts, and those would fire forever.
-                await RuleEvaluator.CloseOpenAlertsAsync(db, removed, ClosedRuleDisabled, notifiers, now, cancellationToken);
+                await EvaluateRuleHandler.CloseOpenAlertsAsync(db, removed, ClosedRuleDisabled, now, cancellationToken);
                 if (removed.Enabled)
                 {
                     removed.Enabled = false;
@@ -244,12 +286,8 @@ namespace Juice.Observability.Rules
                     changes++;
                 }
             }
-            await db.SaveChangesAsync(cancellationToken);
-            await transaction.CommitAsync(cancellationToken);
-            logger.LogInformation("Rules loaded: {Count} configured, {Changes} changed", definitions.Count, changes);
+            return changes;
         }
-
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
     public static class RulesServiceCollectionExtensions

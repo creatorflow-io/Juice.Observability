@@ -86,6 +86,12 @@ An invalid file keeps the API from starting, and the log names every error.
 
 ## Webhook deliveries
 
+- **An alert fired and nothing was planned.** An alert's change reaches notifications through the Juice outbox. Every
+  transition that notifies has a row in `outbox_events`, and `alert_transitions.notifications_planned_at` is set once
+  its deliveries are planned. Waiting rows in `outbox_deliveries` have `state` 0, and ones that will retry have 3 with
+  `next_attempt_on`. Retries go on for about 85 minutes; the last error is in `last_error`. A row still 3 with no
+  `next_attempt_on` has given up: fix the cause, then set it back to `state = 0`. Planning twice is harmless, since a
+  transition already planned is skipped.
 - **History.** `GET /webhooks` lists the endpoints. `GET /webhooks/{id}/deliveries?status=failed` shows each
   delivery with every attempt: status code or error, and duration.
 - **Retries.** Network errors, timeouts, 408, 429 and 5xx retry with backoff, from 10 s up to 10 minutes, for 8
@@ -103,7 +109,7 @@ An invalid file keeps the API from starting, and the log names every error.
 Use the Silences page, or `Silence this` on an alert. Operators and admins can do this.
 
 - **Alerts carry on.** A silence holds notifications and escalation only: alerts still fire, resolve and appear in the Console.
-- **When it ends,** what it held goes out if it still matters: a firing alert still firing, or a resolve for a receiver told it was firing. The rest is dropped.
+- **When it ends,** what it held goes out if it still matters: a firing alert still firing and not yet acknowledged, an escalation step its policy would still send, or a resolve for a receiver told it was firing. The rest is dropped.
 - **Every silence** needs a reason, a scope and an end, at most 7 days away. To hold everything, say so with `allAlerts`. A silence with a maximum severity lets more serious alerts through.
 - **A maintenance window** can start up to 90 days ahead and repeat weekly, for at most 72 hours each time, until it's ended.
 - **Where did the alerts go?** The Silences page lists what's active and how much each holds. `End now` releases on the next pass, about 2 seconds later.
@@ -114,6 +120,7 @@ A policy tells named channels as an alert stays open, by minutes after it fired,
 
 - **It stops** when the alert resolves, when it's acknowledged if the policy says so, or when the policy is disabled. The alert page shows why.
 - **A silence holds it.** The step stays due, and goes out when the silence ends if the alert is still open.
+- **Late steps keep their spacing.** If a step goes out late, after a silence or while no replica was running, the next one waits at least the gap the policy puts between them. With steps at 5 and 15 minutes after an hour's silence, the first goes when it ends and the second 10 minutes later, not both at once.
 - **Check the channels.** A step whose channels are all disabled counts as sent, with only a warning in the log.
 
 ## Incidents

@@ -74,9 +74,9 @@ namespace Juice.Observability.Webhooks
         {
             var what = view.Event switch
             {
-                WebhookOutbox.Firing => "Firing",
-                WebhookOutbox.Resolved => "Resolved",
-                WebhookOutbox.Escalated => view.EscalationStep is { } step ? $"Escalated (step {step})" : "Escalated",
+                NotificationPlan.Firing => "Firing",
+                NotificationPlan.Resolved => "Resolved",
+                NotificationPlan.Escalated => view.EscalationStep is { } step ? $"Escalated (step {step})" : "Escalated",
                 _ => view.Event,
             };
             return view.Alerts.Count == 1 ? $"{what}: {view.Alerts[0].RuleName}" : $"{what}: {view.Alerts.Count} alerts";

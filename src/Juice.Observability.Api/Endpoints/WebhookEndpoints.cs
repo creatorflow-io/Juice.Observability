@@ -86,7 +86,7 @@ namespace Juice.Observability.Api.Endpoints
             var definition = new EndpointDefinition
             {
                 Key = key ?? request.Key ?? "", Kind = kind, Url = request.Url?.Trim() ?? existing?.Url ?? "", SecretRef = request.SecretRef?.Trim() ?? "",
-                Events = request.Events ?? [WebhookOutbox.Firing, WebhookOutbox.Resolved], RuleKeys = request.RuleKeys ?? [], Environments = request.Environments ?? [],
+                Events = request.Events ?? [NotificationPlan.Firing, NotificationPlan.Resolved], RuleKeys = request.RuleKeys ?? [], Environments = request.Environments ?? [],
                 Recipients = request.Recipients ?? [], GroupWindowSeconds = request.GroupWindowSeconds ?? 0, MinimumSeverity = severity, Enabled = request.Enabled ?? true,
             };
             var errors = definition.Validate(options.AllowHttpToAllowlisted).ToList();

@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Juice.MediatR;
 using Juice.Observability.Data;
 using Juice.Observability.Health;
 using Juice.Observability.Rules;
@@ -122,7 +123,7 @@ namespace Juice.Observability.Api.Endpoints
         /// with a different request is refused (requirements §6.1).
         /// </summary>
         private static async Task<IResult> AcknowledgeAsync(Guid tenantId, Guid alertId, AcknowledgeRequest? request, HttpContext http,
-            PlatformDbContext db, TimeProvider clock, CancellationToken ct)
+            PlatformDbContext db, IMediator mediator, CancellationToken ct)
         {
             var actor = http.User.Actor();
             var correlationId = CorrelationId.Get(http);
@@ -170,40 +171,14 @@ namespace Juice.Observability.Api.Endpoints
                 }
             }
 
-            await using var transaction = await db.Database.BeginTransactionAsync(ct);
-            // Locked, so an escalation running now either sees this acknowledgement or finishes first (Phase 6).
-            await db.Database.ExecuteSqlAsync($"SELECT 1 FROM alerts WHERE id = {alertId} AND tenant_id = {tenantId} FOR UPDATE", ct);
-            var alert = await db.Alerts.SingleOrDefaultAsync(a => a.TenantId == tenantId && a.Id == alertId, ct);
-            if (alert is null)
+            using var context = PlatformMessageContext.Begin("api", correlationId);
+            var outcome = await mediator.Send(new AcknowledgeAlert(tenantId, alertId, comment, actor, correlationId, key, operation, requestHash), ct);
+            return outcome.Status switch
             {
-                return Results.Problem(statusCode: StatusCodes.Status404NotFound, title: "Alert not found");
-            }
-            if (alert.State == AlertState.Resolved)
-            {
-                Audit(AuditOutcome.Failed, "resolved");
-                await db.SaveChangesAsync(ct);
-                await transaction.CommitAsync(ct);
-                return Results.Problem(statusCode: StatusCodes.Status409Conflict, title: "Alert resolved", detail: "A resolved alert cannot be acknowledged.");
-            }
-            if (alert.AcknowledgedAt is null)
-            {
-                alert.AcknowledgedAt = clock.GetUtcNow();
-                alert.AcknowledgedBy = actor;
-                alert.AcknowledgeComment = comment;
-                Audit(AuditOutcome.Succeeded);
-            }
-            var body = JsonSerializer.Serialize((await ToDtosAsync(db, tenantId, [alert], ct))[0], JsonSerializerOptions.Web);
-            if (key.Length > 0)
-            {
-                db.IdempotencyRecords.Add(new IdempotencyRecord
-                {
-                    TenantId = tenantId, Key = key, Operation = operation, RequestHash = requestHash, StatusCode = StatusCodes.Status200OK,
-                    ResponseBody = body, CreatedAt = clock.GetUtcNow(),
-                });
-            }
-            await db.SaveChangesAsync(ct);
-            await transaction.CommitAsync(ct);
-            return Results.Text(body, "application/json", Encoding.UTF8, StatusCodes.Status200OK);
+                StatusCodes.Status404NotFound => Results.Problem(statusCode: StatusCodes.Status404NotFound, title: "Alert not found"),
+                StatusCodes.Status409Conflict => Results.Problem(statusCode: StatusCodes.Status409Conflict, title: "Alert resolved", detail: "A resolved alert cannot be acknowledged."),
+                _ => Results.Text(outcome.Body!, "application/json", Encoding.UTF8, outcome.Status),
+            };
         }
 
         internal static async Task<List<AlertDto>> ToDtosAsync(PlatformDbContext db, Guid tenantId, IReadOnlyList<Alert> alerts, CancellationToken ct)
@@ -218,5 +193,58 @@ namespace Juice.Observability.Api.Endpoints
 
         [GeneratedRegex("^[A-Za-z0-9_-]{1,128}$")]
         private static partial Regex IdempotencyKey();
+    }
+
+    /// <summary>Acknowledge an alert, already checked by the endpoint (role, comment, a key not used before).</summary>
+    internal sealed record AcknowledgeAlert(Guid PlatformTenantId, Guid AlertId, string? Comment, string Actor, string? CorrelationId,
+        string IdempotencyKey, string Operation, string RequestHash) : MessageBase, IRequest<AcknowledgeOutcome>;
+
+    /// <summary>The status to answer with, and the alert as JSON when it's 200.</summary>
+    internal sealed record AcknowledgeOutcome(int Status, string? Body);
+
+    /// <summary>
+    /// Marks the alert acknowledged, with its audit record, and stores the response for the <c>Idempotency-Key</c>. Only changes entities: the
+    /// TransactionBehavior saves them. Its UPDATE takes the alert's row lock in that transaction, which is the lock the escalation worker takes
+    /// (<c>FOR UPDATE</c>) before deciding a step: so an escalation either sees this acknowledgement or sent its step before it. Two acknowledgements
+    /// at the same moment can both be recorded, and the later one's name is kept.
+    /// </summary>
+    internal sealed class AcknowledgeAlertHandler(PlatformDbContext db, TimeProvider clock) : IRequestHandler<AcknowledgeAlert, AcknowledgeOutcome>
+    {
+        public async ValueTask<AcknowledgeOutcome> Handle(AcknowledgeAlert request, CancellationToken cancellationToken)
+        {
+            void Audit(AuditOutcome outcome, string? reason = null) => db.AuditRecords.Add(new AuditRecord
+            {
+                TenantId = request.PlatformTenantId, Actor = request.Actor, Operation = "alert.acknowledge", TargetType = "alert", TargetId = request.AlertId.ToString(),
+                Outcome = outcome, CorrelationId = request.CorrelationId, Metadata = reason is null ? [] : new() { ["reason"] = reason },
+            });
+
+            var alert = await db.Alerts.SingleOrDefaultAsync(a => a.TenantId == request.PlatformTenantId && a.Id == request.AlertId, cancellationToken);
+            if (alert is null)
+            {
+                return new AcknowledgeOutcome(StatusCodes.Status404NotFound, null);
+            }
+            if (alert.State == AlertState.Resolved)
+            {
+                Audit(AuditOutcome.Failed, "resolved");
+                return new AcknowledgeOutcome(StatusCodes.Status409Conflict, null);
+            }
+            if (alert.AcknowledgedAt is null)
+            {
+                alert.AcknowledgedAt = clock.GetUtcNow();
+                alert.AcknowledgedBy = request.Actor;
+                alert.AcknowledgeComment = request.Comment;
+                Audit(AuditOutcome.Succeeded);
+            }
+            var body = JsonSerializer.Serialize((await AlertEndpoints.ToDtosAsync(db, request.PlatformTenantId, [alert], cancellationToken))[0], JsonSerializerOptions.Web);
+            if (request.IdempotencyKey.Length > 0)
+            {
+                db.IdempotencyRecords.Add(new IdempotencyRecord
+                {
+                    TenantId = request.PlatformTenantId, Key = request.IdempotencyKey, Operation = request.Operation, RequestHash = request.RequestHash,
+                    StatusCode = StatusCodes.Status200OK, ResponseBody = body, CreatedAt = clock.GetUtcNow(),
+                });
+            }
+            return new AcknowledgeOutcome(StatusCodes.Status200OK, body);
+        }
     }
 }

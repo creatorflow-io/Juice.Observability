@@ -1,3 +1,6 @@
+using Juice.Domain;
+using Juice.MediatR;
+
 namespace Juice.Observability.Data
 {
     // Rules and alerts (requirements §8, decision D5).
@@ -30,9 +33,14 @@ namespace Juice.Observability.Data
     /// <summary>
     /// One occurrence of a rule's condition on one subject. At most one open (Pending or Firing) alert per
     /// <see cref="DedupKey"/>. An alert that resolves while Pending never fired (<see cref="FiredAt"/> is null).
+    /// It raises <see cref="AlertTransitioned"/> when it fires, and when it resolves after firing: the mediator's TransactionBehavior
+    /// dispatches it in the transaction that saves the alert.
     /// </summary>
-    public sealed class Alert
+    public sealed class Alert : IAggregateRoot<INotification>
     {
+        /// <summary>Raised, not stored: TransactionBehavior dispatches and clears them.</summary>
+        public IList<INotification> DomainEvents { get; } = [];
+
         public Guid Id { get; init; } = Guid.CreateVersion7();
         public Guid TenantId { get; init; }
         public Guid RuleId { get; init; }
@@ -71,7 +79,18 @@ namespace Juice.Observability.Data
         public DateTimeOffset At { get; init; }
         public double? Value { get; init; }
         public required string Reason { get; init; }
+        /// <summary>
+        /// When notifications planned this transition's deliveries and escalations. A concurrency token: the outbox may hand the transition over
+        /// twice (once right after the commit, once from delivery), and a second plan must not send everything again.
+        /// </summary>
+        public DateTimeOffset? NotificationsPlannedAt { get; set; }
     }
+
+    /// <summary>
+    /// An alert fired, or resolved after firing: the transitions that notify. A domain event, dispatched in the transaction that saves it, so
+    /// whatever its handlers add (an integration event in the outbox) commits with the alert.
+    /// </summary>
+    public sealed record AlertTransitioned(Guid PlatformTenantId, Guid AlertId, Guid TransitionId, AlertState ToState) : MessageBase, INotification;
 
     /// <summary>
     /// The stored outcome of a mutation sent with an <c>Idempotency-Key</c> (requirements §6.1): a retry with the same

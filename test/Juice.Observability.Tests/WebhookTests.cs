@@ -46,8 +46,20 @@ namespace Juice.Observability.Tests
                 Otlp.Requests(20, 20, DateTimeOffset.UtcNow.AddMinutes(-1))));
             await LocalStack.WaitForSpansAsync(service, 20);
 
-            var evaluation = await Evaluator(database).EvaluateAsync(rule, Ct);   // ForDuration 0: Pending and Firing at once
+            var evaluation = await PlatformServices.Evaluator(database).EvaluateAsync(rule, Ct);   // ForDuration 0: Pending and Firing at once
             Assert.Equal(1, evaluation.Fired);
+
+            // The evaluation committed the alert and one outbox message, and nothing about who is told: that's for the outbox's consumer.
+            Assert.Equal([(typeof(AlertTransitionedIntegrationEvent).Name, "NotPublished")], await PlatformServices.OutboxAsync(database, Ct));
+            await using (var committed = database.Context())
+            {
+                Assert.Equal(AlertState.Firing, (await committed.Alerts.SingleAsync(Ct)).State);
+                Assert.Empty(await committed.WebhookDeliveries.ToListAsync(Ct));
+            }
+            Assert.Equal(0, await Dispatcher(database).DispatchOnceAsync(Ct));
+
+            await PlatformServices.DeliverAsync(database, Ct);
+            Assert.Equal([(typeof(AlertTransitionedIntegrationEvent).Name, "Published")], await PlatformServices.OutboxAsync(database, Ct));
             Assert.Equal(1, await Dispatcher(database).DispatchOnceAsync(Ct));
 
             var request = Assert.Single(receiver.Requests);
@@ -211,12 +223,6 @@ namespace Juice.Observability.Tests
                 NullLogger<WebhookDispatcher>.Instance);
         }
 
-        private static RuleEvaluator Evaluator(ScratchDatabase database)
-            => new(Services(database).GetRequiredService<IServiceScopeFactory>(),
-                new RuleTemplates(new ClickHouseTelemetrySource(Options.Create(new ClickHouseOptions { ConnectionString = LocalStack.ClickHouseReader }))),
-                Options.Create(new RulesOptions()), Options.Create(new PlatformOptions { TenantKey = LocalStack.TenantKey }), TimeProvider.System,
-                NullLogger<RuleEvaluator>.Instance, [new WebhookOutbox(Options.Create(new PlatformOptions { TenantKey = LocalStack.TenantKey }), TimeProvider.System)]);
-
         private async Task<Rule> AddRuleAsync(ScratchDatabase database, string service)
         {
             var definition = new RuleDefinition
@@ -235,7 +241,7 @@ namespace Juice.Observability.Tests
             return rule;
         }
 
-        /// <summary>A firing alert whose Firing transition went through the outbox, as the evaluator does it.</summary>
+        /// <summary>A firing alert whose Firing transition was planned, as the outbox's consumer does it.</summary>
         private async Task<Guid> FiringAlertAsync(ScratchDatabase database)
         {
             var rule = await AddRuleAsync(database, $"hooks-{_run}-seeded");
@@ -249,7 +255,7 @@ namespace Juice.Observability.Tests
             var transition = new AlertTransition { TenantId = rule.TenantId, AlertId = alert.Id, FromState = AlertState.Pending, ToState = AlertState.Firing, At = now, Value = 0.5, Reason = "for_duration_met" };
             db.Alerts.Add(alert);
             db.AlertTransitions.Add(transition);
-            new WebhookOutbox(Options.Create(new PlatformOptions { TenantKey = LocalStack.TenantKey }), TimeProvider.System).OnTransition(db, rule, alert, transition);
+            NotificationPlan.Plan(db, LocalStack.TenantKey, rule, alert, transition, now, now);
             await db.SaveChangesAsync();
             return alert.Id;
         }

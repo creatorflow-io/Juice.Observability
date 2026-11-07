@@ -9,6 +9,9 @@
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" />
+    <!-- The platform's messaging: outbox delivery and the in-process guard against handling a message twice at once. -->
+    <PackageReference Include="Juice.Messaging.Outbox.Delivery" />
+    <PackageReference Include="Juice.Messaging.Idempotency.Caching" />
   </ItemGroup>
 
   <!-- the implicit usings of Microsoft.NET.Sdk.Web, which this project was -->

@@ -74,9 +74,12 @@ namespace Juice.Observability.Webhooks
             var ruleIds = alerts.Values.Select(a => a.RuleId).Distinct().ToList();
             var rules = await db.Rules.AsNoTracking().Where(r => ruleIds.Contains(r.Id)).ToDictionaryAsync(r => r.Id, r => r.Key, cancellationToken);
             var told = (await db.WebhookDeliveries.AsNoTracking()
-                .Where(d => alertIds.Contains(d.AlertId) && d.Event == WebhookOutbox.Firing && d.Status != DeliveryStatus.Suppressed && d.Status != DeliveryStatus.Dropped)
+                .Where(d => alertIds.Contains(d.AlertId) && d.Event == NotificationPlan.Firing && d.Status != DeliveryStatus.Suppressed && d.Status != DeliveryStatus.Dropped)
                 .Select(d => new { d.AlertId, d.EndpointId }).ToListAsync(cancellationToken))
                 .Select(d => (d.AlertId, d.EndpointId)).ToHashSet();
+            var tenantIds = held.Select(d => d.TenantId).Distinct().ToList();
+            var stopsOnAcknowledge = await db.EscalationPolicies.AsNoTracking().Where(p => tenantIds.Contains(p.TenantId))
+                .ToDictionaryAsync(p => (p.TenantId, p.Key), p => p.StopOnAcknowledge, cancellationToken);
             foreach (var delivery in held)
             {
                 var alert = alerts[delivery.AlertId];
@@ -87,7 +90,10 @@ namespace Juice.Observability.Webhooks
                     delivery.SuppressedBy = other.Id;
                     continue;
                 }
-                switch (HeldNotification.Decide(delivery.Event, alert.State, told.Contains((delivery.AlertId, delivery.EndpointId))))
+                // A policy since removed stops on acknowledgement, as a new one does by default.
+                var stops = delivery.Event != NotificationPlan.Escalated || PolicyKey(delivery.Payload) is not { } key
+                    || stopsOnAcknowledge.GetValueOrDefault((delivery.TenantId, key), true);
+                switch (HeldNotification.Decide(delivery.Event, alert.State, told.Contains((delivery.AlertId, delivery.EndpointId)), alert.AcknowledgedAt is not null, stops))
                 {
                     case HeldOutcome.Send:
                         delivery.Status = DeliveryStatus.Pending;
@@ -102,6 +108,21 @@ namespace Juice.Observability.Webhooks
                 }
             }
             await db.SaveChangesAsync(cancellationToken);
+        }
+
+        /// <summary>The policy an escalation step's payload names, or null.</summary>
+        internal static string? PolicyKey(string payload)
+        {
+            try
+            {
+                using var json = System.Text.Json.JsonDocument.Parse(payload);
+                return json.RootElement.TryGetProperty("escalation", out var escalation) && escalation.ValueKind == System.Text.Json.JsonValueKind.Object
+                    && escalation.TryGetProperty("policy", out var policy) ? policy.GetString() : null;
+            }
+            catch (System.Text.Json.JsonException)
+            {
+                return null;
+            }
         }
 
         private async Task EscalateAsync(CancellationToken cancellationToken)
@@ -167,8 +188,8 @@ namespace Juice.Observability.Webhooks
                     db.WebhookDeliveries.Add(new WebhookDelivery
                     {
                         Id = delivery, TenantId = alert.TenantId, EndpointId = endpoint.Id, AlertId = alert.Id, TransitionId = transition.Id,
-                        Event = WebhookOutbox.Escalated, EscalationStep = number, CreatedAt = now, NextAttemptAt = now,
-                        Payload = WebhookOutbox.Payload(delivery, WebhookOutbox.Escalated, platform.Value.TenantKey, rule, alert, transition, (policy.Key, number)),
+                        Event = NotificationPlan.Escalated, EscalationStep = number, CreatedAt = now, NextAttemptAt = now,
+                        Payload = NotificationPlan.Payload(delivery, NotificationPlan.Escalated, platform.Value.TenantKey, rule, alert, transition, (policy.Key, number)),
                     });
                 }
                 if (endpoints.Count < step.EndpointKeys.Count)
@@ -186,7 +207,7 @@ namespace Juice.Observability.Webhooks
             }
             else
             {
-                escalation.NextAt = (alert.FiredAt ?? now) + TimeSpan.FromMinutes(policy.Steps[escalation.NextStep].AfterMinutes);
+                escalation.NextAt = EscalationDecision.NextAt(policy.Steps, escalation.NextStep, alert.FiredAt ?? now, now);
             }
         }
     }

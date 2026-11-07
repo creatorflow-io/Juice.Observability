@@ -1,4 +1,8 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
+using Juice.EF;
+using Juice.Messaging.Outbox;
+using Juice.Messaging.Outbox.EF;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
@@ -10,8 +14,14 @@ namespace Juice.Observability.Data
     /// The platform's PostgreSQL database. Every tenant-owned table carries <c>tenant_id</c>, and every natural-key
     /// uniqueness constraint includes it, so records of two tenants never merge (requirements §6).
     /// </summary>
-    public sealed class PlatformDbContext(DbContextOptions<PlatformDbContext> options) : DbContext(options)
+    /// <remarks>
+    /// The mediator's unit of work (Juice <see cref="UnitOfWork"/>) and the outbox's store (<see cref="IOutboxContext"/>): a command's changes, the domain
+    /// events they raise and the integration events those publish are saved in one transaction by the TransactionBehavior, never by the command.
+    /// </remarks>
+    public sealed class PlatformDbContext(DbContextOptions<PlatformDbContext> options) : UnitOfWork(options), IOutboxContext
     {
+        public DbSet<OutboxEvent> Outbox => Set<OutboxEvent>();
+        public DbSet<OutboxDelivery> OutboxDeliveries => Set<OutboxDelivery>();
         public DbSet<PlatformTenant> Tenants => Set<PlatformTenant>();
         public DbSet<Application> Applications => Set<Application>();
         public DbSet<DeploymentEnvironment> Environments => Set<DeploymentEnvironment>();
@@ -48,6 +58,22 @@ namespace Juice.Observability.Data
 
         protected override void OnModelCreating(ModelBuilder model)
         {
+            // The framework's outbox tables, in this database so they commit with the change that wrote them. It names the tables and writes its
+            // partial-index filters for SQL Server ("[State] = 0"); here they follow this database: PostgreSQL, snake_case.
+            this.ConfigureOutbox(model);
+            model.Entity<OutboxEvent>().ToTable("outbox_events");
+            model.Entity<OutboxDelivery>(e =>
+            {
+                e.ToTable("outbox_deliveries");
+                foreach (var index in e.Metadata.GetIndexes())
+                {
+                    if (index.GetFilter() is { } filter)
+                    {
+                        index.SetFilter(Regex.Replace(filter, @"\[(\w+)\]", m => Regex.Replace(m.Groups[1].Value, "(?<!^)([A-Z])", "_$1").ToLowerInvariant()));
+                    }
+                }
+            });
+
             model.Entity<PlatformTenant>(e =>
             {
                 e.ToTable("platform_tenants");
@@ -333,6 +359,7 @@ namespace Juice.Observability.Data
             {
                 e.ToTable("alerts");
                 Tenant(e);
+                e.Ignore(x => x.DomainEvents);
                 e.Property(x => x.DedupKey).HasMaxLength(600);
                 e.Property(x => x.SubjectKey).HasMaxLength(512);
                 e.Property(x => x.SubjectType).HasConversion<string>().HasMaxLength(20);
@@ -356,6 +383,7 @@ namespace Juice.Observability.Data
                 e.Property(x => x.FromState).HasConversion<string>().HasMaxLength(20);
                 e.Property(x => x.ToState).HasConversion<string>().HasMaxLength(20);
                 e.Property(x => x.Reason).HasMaxLength(200);
+                e.Property(x => x.NotificationsPlannedAt).IsConcurrencyToken();
                 e.HasIndex(x => new { x.AlertId, x.At });
                 e.HasOne<Alert>().WithMany().HasForeignKey(x => x.AlertId).OnDelete(DeleteBehavior.Cascade);
             });

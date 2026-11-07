@@ -1026,7 +1026,7 @@ namespace Juice.Observability.Api.Endpoints
             var tenantId = await db.Tenants.AsNoTracking().Where(t => t.Key == tenantKey).Select(t => t.Id).SingleAsync(ct);
             var pattern = $"%{q.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_")}%";
             var services = await db.Services.AsNoTracking()
-                .Where(s => s.TenantId == tenantId && (EF.Functions.ILike(s.Name, pattern, "\\") || EF.Functions.ILike(s.Namespace, pattern, "\\")))
+                .Where(s => s.TenantId == tenantId && (Microsoft.EntityFrameworkCore.EF.Functions.ILike(s.Name, pattern, "\\") || Microsoft.EntityFrameworkCore.EF.Functions.ILike(s.Namespace, pattern, "\\")))
                 .OrderBy(s => s.Name).Take(20).ToListAsync(ct);
             hits.AddRange(services.Select(s => new SearchHitDto("service", s.Id.ToString(), Health.HealthRunner.Name(s), null)));
             return Results.Ok(new TelemetryPage<SearchHitDto>(hits, false));

@@ -84,12 +84,19 @@ namespace Juice.Observability.Webhooks
         /// <param name="event">The delivery's event.</param>
         /// <param name="state">The alert's state now.</param>
         /// <param name="receiverToldOfFiring">The endpoint was already sent, or was being sent, this alert's firing.</param>
-        public static HeldOutcome Decide(string @event, AlertState state, bool receiverToldOfFiring) => @event switch
+        /// <param name="acknowledged">Someone acknowledged the alert while it was held.</param>
+        /// <param name="stopsOnAcknowledge">For an escalation step: its policy stops when the alert is acknowledged.</param>
+        public static HeldOutcome Decide(string @event, AlertState state, bool receiverToldOfFiring, bool acknowledged, bool stopsOnAcknowledge = true) => @event switch
         {
             // Saying "resolved" about a firing it never heard of is noise; leaving it believing a resolved alert still fires is worse.
-            WebhookOutbox.Resolved => receiverToldOfFiring ? HeldOutcome.Send : HeldOutcome.Drop,
+            NotificationPlan.Resolved => receiverToldOfFiring ? HeldOutcome.Send : HeldOutcome.Drop,
+            _ when state != AlertState.Firing => HeldOutcome.Drop,
+            // Someone is already on it: announcing the firing now only adds noise.
+            NotificationPlan.Firing => acknowledged ? HeldOutcome.Drop : HeldOutcome.Send,
+            // An escalation step follows its policy, as it would have if no silence had held it.
+            NotificationPlan.Escalated => acknowledged && stopsOnAcknowledge ? HeldOutcome.Drop : HeldOutcome.Send,
             // Still firing when the silence ends: this is how a real outage after a maintenance window gets noticed.
-            _ => state == AlertState.Firing ? HeldOutcome.Send : HeldOutcome.Drop,
+            _ => HeldOutcome.Send,
         };
     }
 
@@ -106,6 +113,22 @@ namespace Juice.Observability.Webhooks
             if (!policyEnabled) return (EscalationAction.Stop, "policy_disabled");
             if (now < nextAt) return (EscalationAction.Wait, null);
             return silenced ? (EscalationAction.Hold, "silenced") : (EscalationAction.Notify, null);
+        }
+
+        /// <summary>
+        /// When step <paramref name="next"/> is due, after the one before it went out at <paramref name="sentAt"/>: its time after firing, and never sooner
+        /// after that step than the policy spaces them. Running late (a silence held the steps, or no replica ran them) then delays the rest instead of
+        /// sending them all at once, so whoever comes later still gets the time the policy gives the people before them.
+        /// </summary>
+        public static DateTimeOffset NextAt(IReadOnlyList<EscalationStep> steps, int next, DateTimeOffset firedAt, DateTimeOffset sentAt)
+        {
+            var onSchedule = firedAt + TimeSpan.FromMinutes(steps[next].AfterMinutes);
+            if (next == 0)
+            {
+                return onSchedule;
+            }
+            var spaced = sentAt + TimeSpan.FromMinutes(Math.Max(0, steps[next].AfterMinutes - steps[next - 1].AfterMinutes));
+            return spaced > onSchedule ? spaced : onSchedule;
         }
     }
 }

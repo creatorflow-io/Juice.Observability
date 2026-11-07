@@ -40,6 +40,8 @@ The mutation checks cover silences, closing alerts, secret references, the per-t
 These weren't in the roadmap, so they're mine to justify and yours to overrule.
 
 - **What a silence held is released when it ends, if it still matters.** Still firing: sent, so a real outage after maintenance gets noticed. Resolved meanwhile: dropped, unless the receiver was told it was firing, in which case it hears the resolve.
+- **An acknowledged alert's held firing is dropped** when the silence ends, since someone is already on it. A held escalation step follows its policy's `stopOnAcknowledge`.
+- **Escalation steps keep their spacing when late.** After a silence or downtime, the overdue step goes out and the next waits the policy's gap from then, so the later people still get the time the policy gives the earlier ones. Before 7 November, every overdue step went out about 2 seconds apart.
 - **Operators can silence and open incidents; only admins change rules, channels, the allowlist and escalation.** Stopping noise during an outage shouldn't need an admin.
 - **Disabling a rule, or changing its template or scope, resolves its open alerts** with `rule_disabled` or `rule_changed`. Nothing would watch them any more, and they'd fire and escalate forever. This also fixes alerts stranded by rules removed from the file in earlier versions. A file emptied by mistake therefore resolves its alerts and sends those notifications.
 - **A secret reference set through the API is restricted** to `env:JUICE_WEBHOOK_*`, or files directly in `Webhooks:ApiSecretDirectory`. Otherwise an admin could name any variable or file on the host as a signing key.
@@ -49,6 +51,8 @@ These weren't in the roadmap, so they're mine to justify and yours to overrule.
 - **Rules and endpoints are disabled, never deleted,** since alerts and deliveries keep them.
 
 ## Fixed along the way
+
+- **Notifications now hear of alerts through the Juice outbox** (7 November). Before, the rule code opened its own transaction and wrote the channel deliveries itself. Now every command that changes an alert runs under the framework's `TransactionBehavior`, which commits the alert with an `AlertTransitionedIntegrationEvent` in the outbox. The notification module plans the deliveries from that event, once per transition. See [architecture](architecture.md#data-flow) and the [runbook](runbook.md#webhook-deliveries).
 
 - **The allowlist was read across tenants** when connecting. It's now per tenant, with one HTTP client per tenant so a pooled connection can't skip the check.
 - **An incident's record could show "Alert added" before "Opened".** Both had the same time and sorted by an id that's random within a millisecond, which also made one test fail now and then. They're now a microsecond apart. The test then passed in 8 repeat runs and the full suite; the cause is reasoned from the code, not observed directly.

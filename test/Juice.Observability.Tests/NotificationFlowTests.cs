@@ -39,7 +39,6 @@ namespace Juice.Observability.Tests
         private static NotificationWorker Worker(ScratchDatabase database)
             => new(Scopes(database), Options.Create(new WebhookOptions()), Platform, TimeProvider.System, NullLogger<NotificationWorker>.Instance);
 
-        private static WebhookOutbox Outbox => new(Platform, TimeProvider.System);
 
         private static async Task<Guid> TenantAsync(PlatformDbContext db) => (await db.Tenants.SingleAsync(t => t.Key == LocalStack.TenantKey, Ct)).Id;
 
@@ -50,7 +49,7 @@ namespace Juice.Observability.Tests
             var endpoint = new WebhookEndpoint
             {
                 TenantId = tenant, Key = key, Kind = kind, Url = kind == ChannelKind.Webhook ? receiver!.Url : "", SecretRef = kind == ChannelKind.Email ? "" : $"env:{SecretVariable}",
-                Events = events ?? [WebhookOutbox.Firing, WebhookOutbox.Resolved], GroupWindowSeconds = group, Environments = environments ?? [], Recipients = recipients ?? [], DefinitionHash = "h", LoadedAt = DateTimeOffset.UtcNow, ManagedBy = ManagedBy.Api,
+                Events = events ?? [NotificationPlan.Firing, NotificationPlan.Resolved], GroupWindowSeconds = group, Environments = environments ?? [], Recipients = recipients ?? [], DefinitionHash = "h", LoadedAt = DateTimeOffset.UtcNow, ManagedBy = ManagedBy.Api,
             };
             db.WebhookEndpoints.Add(endpoint);
             if (receiver is not null)
@@ -63,8 +62,8 @@ namespace Juice.Observability.Tests
             return endpoint;
         }
 
-        /// <summary>Fires an alert through the outbox, as the evaluator does.</summary>
-        private static async Task<Guid> FireAsync(ScratchDatabase database, string subject = "service:shop/orders@production", AlertSeverity severity = AlertSeverity.Critical, string ruleKey = "orders-errors")
+        /// <summary>Fires an alert and plans its notifications, as the outbox's consumer does once the firing is committed.</summary>
+        private static async Task<Guid> FireAsync(ScratchDatabase database, string subject = "service:shop/orders@production", AlertSeverity severity = AlertSeverity.Critical, string ruleKey = "orders-errors", bool plan = true)
         {
             await using var db = database.Context();
             var tenant = await TenantAsync(db);
@@ -84,7 +83,7 @@ namespace Juice.Observability.Tests
             var transition = new AlertTransition { TenantId = tenant, AlertId = alert.Id, FromState = AlertState.Pending, ToState = AlertState.Firing, At = now, Value = 0.4, Reason = "for_duration_met" };
             db.AlertTransitions.Add(transition);
             await db.SaveChangesAsync(Ct);
-            Outbox.OnTransition(db, rule, alert, transition);
+            if (plan) NotificationPlan.Plan(db, LocalStack.TenantKey, rule, alert, transition, now, now);
             await db.SaveChangesAsync(Ct);
             return alert.Id;
         }
@@ -99,7 +98,7 @@ namespace Juice.Observability.Tests
             db.AlertTransitions.Add(transition);
             alert.State = AlertState.Resolved;
             alert.ResolvedAt = now;
-            Outbox.OnTransition(db, rule, alert, transition);
+            NotificationPlan.Plan(db, LocalStack.TenantKey, rule, alert, transition, now, now);
             await db.SaveChangesAsync(Ct);
         }
 
@@ -501,6 +500,58 @@ namespace Juice.Observability.Tests
             Assert.Equal((DeliveryStatus.Failed, "smtp_not_configured"), (delivery.Status, delivery.LastError));
         }
 
+        // ─── Planning, from the outbox ──────────────────────────────────────────
+
+        private static async Task<(int Planned, int Deliveries, int Escalations)> PlanAsync(ScratchDatabase database, Guid alert)
+        {
+            Guid tenant, transition;
+            await using (var db = database.Context())
+            {
+                var t = await db.AlertTransitions.AsNoTracking().SingleAsync(x => x.AlertId == alert && x.ToState == AlertState.Firing, Ct);
+                (tenant, transition) = (t.TenantId, t.Id);
+            }
+            await using var services = PlatformServices.Build(database);
+            using var context = PlatformMessageContext.Begin("test");
+            await using var scope = services.CreateAsyncScope();
+            var planned = await scope.ServiceProvider.GetRequiredService<Juice.MediatR.IMediator>().Send(new PlanNotifications(tenant, transition, DateTimeOffset.UtcNow), Ct);
+            await using var check = database.Context();
+            return (planned, await check.WebhookDeliveries.CountAsync(d => d.AlertId == alert, Ct), await check.AlertEscalations.CountAsync(e => e.AlertId == alert, Ct));
+        }
+
+        [Fact]
+        public async Task A_transition_handed_over_twice_is_planned_once_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var receiver = await Receiver.StartAsync();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await EndpointAsync(database, receiver);
+            await EndpointAsync(database, receiver, "first", events: [NotificationPlan.Resolved]);   // the escalation's, which takes no firing
+            await PolicyAsync(database);
+            var alert = await FireAsync(database, plan: false);
+
+            Assert.Equal((1, 1, 1), await PlanAsync(database, alert));
+            // The outbox delivers the same message again (right after the commit and from delivery, or on two replicas): nothing more is sent.
+            Assert.Equal((0, 1, 1), await PlanAsync(database, alert));
+        }
+
+        [Fact]
+        public async Task Two_plans_racing_on_one_transition_meet_at_its_token_and_the_second_rolls_back_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var alert = await FireAsync(database, plan: false);
+            await using var first = database.Context();
+            await using var second = database.Context();
+            // Both read it unplanned, as two replicas handling the same message at once would.
+            var a = await first.AlertTransitions.SingleAsync(t => t.AlertId == alert && t.ToState == AlertState.Firing, Ct);
+            var b = await second.AlertTransitions.SingleAsync(t => t.AlertId == alert && t.ToState == AlertState.Firing, Ct);
+            a.NotificationsPlannedAt = DateTimeOffset.UtcNow;
+            b.NotificationsPlannedAt = DateTimeOffset.UtcNow;
+
+            await first.SaveChangesAsync(Ct);
+            await Assert.ThrowsAsync<DbUpdateConcurrencyException>(() => second.SaveChangesAsync(Ct));
+        }
+
         // ─── Escalation ───────────────────────────────────────────────────────
 
         private static async Task<Guid> PolicyAsync(ScratchDatabase database, bool stopOnAcknowledge = true, AlertSeverity minimum = AlertSeverity.Info)
@@ -541,8 +592,8 @@ namespace Juice.Observability.Tests
         private static async Task<(Receiver First, Receiver Second)> PagersAsync(ScratchDatabase database)
         {
             var (first, second) = (await Receiver.StartAsync(), await Receiver.StartAsync());
-            await EndpointAsync(database, first, "first", events: [WebhookOutbox.Resolved]);
-            await EndpointAsync(database, second, "second", events: [WebhookOutbox.Resolved]);
+            await EndpointAsync(database, first, "first", events: [NotificationPlan.Resolved]);
+            await EndpointAsync(database, second, "second", events: [NotificationPlan.Resolved]);
             return (first, second);
         }
 
@@ -585,7 +636,7 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
-        public async Task A_host_down_past_several_steps_catches_up_one_pass_at_a_time_without_a_repeat_Async()
+        public async Task A_host_down_past_several_steps_sends_the_first_and_spaces_the_rest_Async()
         {
             LocalStack.RequireAvailable();
             await using var database = await LocalStack.CreateDatabaseAsync();
@@ -596,13 +647,44 @@ namespace Juice.Observability.Tests
             var alert = await FireAsync(database);
             await AgeAsync(database, alert, 60);
             var (dispatcher, worker) = (Dispatcher(database), Worker(database));
+            var before = DateTimeOffset.UtcNow;
             for (var i = 0; i < 4; i++)
             {
                 await worker.RunOnceAsync(Ct);
                 await dispatcher.DispatchOnceAsync(Ct);
             }
-            Assert.Single(first.Requests);
-            Assert.Single(second.Requests);
+
+            // Both steps were long overdue. The first goes now, once; the second gets the 10 minutes the policy puts between them.
+            Assert.Contains("\"step\":1", Assert.Single(first.Requests).Body);
+            Assert.Empty(second.Requests);
+            await using var db = database.Context();
+            var escalation = await db.AlertEscalations.AsNoTracking().SingleAsync(e => e.AlertId == alert, Ct);
+            Assert.Equal((EscalationState.Active, 1), (escalation.State, escalation.NextStep));
+            Assert.InRange(escalation.NextAt, before.AddMinutes(10), DateTimeOffset.UtcNow.AddMinutes(10));
+        }
+
+        [Fact]
+        public async Task A_firing_held_by_a_silence_is_dropped_if_someone_acknowledged_it_meanwhile_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var receiver = await Receiver.StartAsync();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await EndpointAsync(database, receiver);
+            var silence = await SilenceAsync(database);
+            var alert = await FireAsync(database);
+
+            await using var factory = new ApiTests.ApiFactory(database);
+            using var client = factory.CreateClient();
+            var (_, @operator, _, tenant) = await Caller.AllAsync(client, database);
+            await Caller.JsonAsync(await @operator.PostAsync($"/api/v1/tenants/{tenant}/alerts/{alert}/acknowledgement", new { comment = "on it" }));
+
+            await CancelAsync(database, silence.Id);
+            await Worker(database).RunOnceAsync(Ct);
+            await Dispatcher(database).DispatchOnceAsync(Ct);
+
+            Assert.Empty(receiver.Requests);
+            var held = Assert.Single(await DeliveriesAsync(database));
+            Assert.Equal((DeliveryStatus.Dropped, "nothing_to_say_after_silence"), (held.Status, held.LastError));
         }
 
         [Fact]

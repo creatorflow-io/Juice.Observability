@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Juice.MediatR;
 using Juice.Observability.Data;
 using Juice.Observability.Rules;
 using Microsoft.EntityFrameworkCore;
@@ -80,8 +81,8 @@ namespace Juice.Observability.Api.Endpoints
             return Results.Created($"{http.Request.Path}/{rule.Key}", ToDto(rule));
         }
 
-        private static async Task<IResult> UpdateAsync(Guid tenantId, string key, JsonElement body, HttpContext http, PlatformDbContext db, TimeProvider clock,
-            IEnumerable<IAlertNotifier> notifiers, CancellationToken ct)
+        private static async Task<IResult> UpdateAsync(Guid tenantId, string key, JsonElement body, HttpContext http, PlatformDbContext db, IMediator mediator,
+            CancellationToken ct)
         {
             var mutation = new Mutation(http, db, tenantId, "rule.update", "rule");
             if (await mutation.RequireAsync(key, ct, Roles.Admin) is { } denied) return denied;
@@ -98,40 +99,62 @@ namespace Juice.Observability.Api.Endpoints
             var (definition, problem) = Read(body, key);
             if (problem is not null) return problem;
 
-            var hash = definition!.Hash();
-            if (hash == rule.DefinitionHash)
+            if (definition!.Hash() == rule.DefinitionHash)
             {
                 return Results.Ok(ToDto(rule));
             }
+            using var context = PlatformMessageContext.Begin("api", CorrelationId.Get(http));
+            return Results.Ok(await mediator.Send(new ChangeRule(tenantId, rule.Id, definition, mutation.Actor, CorrelationId.Get(http)), ct));
+        }
+
+        internal static Dictionary<string, string> Metadata(Rule rule) => new() { ["hash"] = rule.DefinitionHash, ["template"] = rule.Template.ToString(), ["enabled"] = rule.Enabled ? "true" : "false" };
+    }
+
+    /// <summary>Change an API-owned rule, already checked by the endpoint (role, owner, <c>If-Match</c>, a valid and different definition).</summary>
+    internal sealed record ChangeRule(Guid PlatformTenantId, Guid RuleId, RuleDefinition Definition, string Actor, string? CorrelationId) : MessageBase, IRequest<RuleDto>;
+
+    /// <summary>
+    /// Changes the rule, resolves the open alerts it no longer watches, and writes the audit record and change event. Only changes entities: the
+    /// TransactionBehavior saves them, and the notifications the resolved alerts raise, in one transaction.
+    /// </summary>
+    internal sealed class ChangeRuleHandler(PlatformDbContext db, TimeProvider clock) : IRequestHandler<ChangeRule, RuleDto>
+    {
+        public async ValueTask<RuleDto> Handle(ChangeRule request, CancellationToken cancellationToken)
+        {
+            var definition = request.Definition;
+            var rule = await db.Rules.SingleAsync(r => r.TenantId == request.PlatformTenantId && r.Id == request.RuleId, cancellationToken);
             var now = clock.GetUtcNow();
-            await using var transaction = await db.Database.BeginTransactionAsync(ct);
             var closed = 0;
             if (!definition.Enabled)
             {
-                closed = await RuleEvaluator.CloseOpenAlertsAsync(db, rule, RuleProvisioner.ClosedRuleDisabled, notifiers, now, ct);
+                closed = await EvaluateRuleHandler.CloseOpenAlertsAsync(db, rule, RuleProvisioner.ClosedRuleDisabled, now, cancellationToken);
             }
             else if (RuleProvisioner.ChangesWhatItWatches(RuleDefinition.FromJson(rule.Definition), definition))
             {
-                closed = await RuleEvaluator.CloseOpenAlertsAsync(db, rule, RuleProvisioner.ClosedRuleChanged, notifiers, now, ct);
+                closed = await EvaluateRuleHandler.CloseOpenAlertsAsync(db, rule, RuleProvisioner.ClosedRuleChanged, now, cancellationToken);
             }
             var wasEnabled = rule.Enabled;
             rule.Name = definition.Name;
             rule.Template = definition.Template;
             rule.Severity = definition.Severity;
             rule.Definition = definition.ToJson();
-            rule.DefinitionHash = hash;
+            rule.DefinitionHash = definition.Hash();
             rule.Enabled = definition.Enabled;
             rule.LoadedAt = now;
             var verb = wasEnabled == rule.Enabled ? "update" : rule.Enabled ? "enable" : "disable";
-            var audit = Metadata(rule);
+            var audit = RuleAdminEndpoints.Metadata(rule);
             if (closed > 0) audit["alertsClosed"] = closed.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            mutation.Audit(AuditOutcome.Succeeded, key, audit);
-            mutation.RecordChange($"Rule {key}: {verb}", now, new() { [ChangeEvent.RuleAttribute] = key });
-            await db.SaveChangesAsync(ct);
-            await transaction.CommitAsync(ct);
-            return Results.Ok(ToDto(rule));
+            db.AuditRecords.Add(new AuditRecord
+            {
+                TenantId = request.PlatformTenantId, Actor = request.Actor, Operation = "rule.update", TargetType = "rule", TargetId = rule.Key,
+                Outcome = AuditOutcome.Succeeded, CorrelationId = request.CorrelationId, Metadata = audit,
+            });
+            db.ChangeEvents.Add(new ChangeEvent
+            {
+                TenantId = request.PlatformTenantId, Kind = ChangeKind.Configuration, Source = ChangeEvent.PlatformSource, Actor = request.Actor,
+                Summary = $"Rule {rule.Key}: {verb}", Attributes = new() { [ChangeEvent.RuleAttribute] = rule.Key }, OccurredAt = now, RecordedAt = now,
+            });
+            return RuleAdminEndpoints.ToDto(rule);
         }
-
-        private static Dictionary<string, string> Metadata(Rule rule) => new() { ["hash"] = rule.DefinitionHash, ["template"] = rule.Template.ToString(), ["enabled"] = rule.Enabled ? "true" : "false" };
     }
 }

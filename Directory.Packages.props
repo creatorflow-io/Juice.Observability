@@ -2,6 +2,15 @@
   <ItemGroup>
     <PackageVersion Include="ClickHouse.Driver" Version="1.5.0" />
     <PackageVersion Include="EFCore.NamingConventions" Version="10.0.1" />
+    <!-- The mediator's TransactionBehavior and the outbox: alert transitions reach notifications through them. -->
+    <PackageVersion Include="Juice.EF" Version="10.12.0" />
+    <PackageVersion Include="Juice.MediatR" Version="10.12.0" />
+    <PackageVersion Include="Juice.MediatR.Behaviors" Version="10.12.0" />
+    <PackageVersion Include="Juice.Messaging" Version="10.12.0" />
+    <PackageVersion Include="Juice.Messaging.Idempotency.Caching" Version="10.12.0" />
+    <PackageVersion Include="Juice.Messaging.Local" Version="10.12.0" />
+    <PackageVersion Include="Juice.Messaging.Outbox.Delivery" Version="10.12.0" />
+    <PackageVersion Include="Juice.Messaging.Outbox.EF" Version="10.12.0" />
     <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.14" />
     <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.14" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.14" />

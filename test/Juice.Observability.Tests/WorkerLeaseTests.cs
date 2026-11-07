@@ -43,15 +43,12 @@ namespace Juice.Observability.Tests
             LocalStack.RequireAvailable();
             await using var database = await LocalStack.CreateDatabaseAsync();
             var ct = TestContext.Current.CancellationToken;
-            var services = new ServiceCollection()
-                .AddDbContext<PlatformDbContext>(o => PlatformDbContext.Configure(o, database.ConnectionString))
-                .BuildServiceProvider();
             var rules = Options.Create(new RulesOptions
             {
                 Definitions = [new RuleDefinition { Key = $"errors-{_run}", Name = "Errors", Template = RuleTemplate.ErrorRate, Threshold = 0.05, RecoveryThreshold = 0.02 }],
             });
-            RuleProvisioner Replica() => new(services.GetRequiredService<IServiceScopeFactory>(), rules,
-                Options.Create(new PlatformOptions { TenantKey = LocalStack.TenantKey }), TimeProvider.System, NullLogger<RuleProvisioner>.Instance, []);
+            // Each replica its own services, as separate processes would have.
+            RuleProvisioner Replica() => new(PlatformServices.Build(database).GetRequiredService<IServiceScopeFactory>(), rules, NullLogger<RuleProvisioner>.Instance);
 
             await Task.WhenAll(Enumerable.Range(0, 4).Select(_ => Task.Run(() => Replica().StartAsync(ct), ct)));
 

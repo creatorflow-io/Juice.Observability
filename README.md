@@ -11,7 +11,7 @@ Turns telemetry from Juice services into a resource model, health, rules, alerts
 | `src/Juice.Observability.Discovery` | Discovery: reads Collector-stamped telemetry from ClickHouse and reconciles services, instances, environments, resources and dependencies |
 | `src/Juice.Observability.Health` | Health evaluation: instances, services and applications per environment, and hosts, from ClickHouse evidence |
 | `src/Juice.Observability.Rules` | Typed scheduled rules over ClickHouse templates and the alert lifecycle |
-| `src/Juice.Observability.Webhooks` | Notification of alert transitions: outbox, SSRF-safe delivery to signed webhooks, Slack, Teams and email, retries, history, silences, grouping, escalation |
+| `src/Juice.Observability.Webhooks` | Notification of alert transitions, heard from the Juice outbox: SSRF-safe delivery to signed webhooks, Slack, Teams and email, retries, history, silences, grouping, escalation |
 | `src/Juice.Observability.Api` | `/api/v1` (OIDC, tenant-scoped) and the background workers, as a library (`AddJuiceObservability`, `MapJuiceObservability`) |
 | `src/Juice.Observability.Host` | The reference host (the image): the API library and the Console on one origin |
 | `test/Juice.Observability.Tests` | Unit tests, and integration tests against the running local stack |

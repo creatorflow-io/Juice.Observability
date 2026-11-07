@@ -8,6 +8,9 @@
     <!-- one EF Core version for the design-time tools and every consumer -->
     <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" PrivateAssets="all" />
+    <!-- The context is the mediator's unit of work and holds the outbox (Juice TransactionBehavior). -->
+    <PackageReference Include="Juice.MediatR.Behaviors" />
+    <PackageReference Include="Juice.Messaging.Outbox.EF" />
   </ItemGroup>
 
 </Project>
