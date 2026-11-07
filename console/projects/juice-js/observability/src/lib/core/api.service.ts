@@ -3,7 +3,7 @@ import { Injectable, inject } from '@angular/core';
 import { EMPTY, Observable, expand, map, reduce, shareReplay, switchMap } from 'rxjs';
 import { OBSERVABILITY_OPTIONS } from './options';
 import {
-  AlertDetail, Alert, Application, DependencyEvidence, DependencyStatsPage, DeploymentEnvironment, LoadRun, LoadRunResults, Related, Timeline, Health, LogRecord, MetricInfo, Operation,
+  AlertDetail, AlertNotifications, Alert, AllowlistEntry, Application, Channel, Delivery, EscalationPolicy, IncidentDetail, IncidentEvent, IncidentSummary, Silence, DependencyEvidence, DependencyStatsPage, DeploymentEnvironment, LoadRun, LoadRunResults, Related, Timeline, Health, LogRecord, MetricInfo, Operation,
   Page, ResourceDetail, ResourceSummary, Rule, SearchHit, Series, Capacity, ServiceStats, Tenant, TelemetryPage, Topology, Trace,
   TraceSummary,
 } from './models';
@@ -37,6 +37,12 @@ export class ApiService {
     return this.tenant$.pipe(switchMap(t => this.http.get<T>(`${this.base}/tenants/${t.id}${path}`, { params })));
   }
 
+  /** A change. `Idempotency-Key` on what can be retried, so a repeated click or a lost response doesn't do it twice. */
+  private send<T>(method: 'POST' | 'PUT' | 'DELETE', path: string, body?: unknown, headers: Record<string, string> = {}): Observable<T> {
+    return this.tenant$.pipe(switchMap(t => this.http.request<T>(method, `${this.base}/tenants/${t.id}${path}`, { body, headers })));
+  }
+  private once<T>(path: string, body: unknown): Observable<T> { return this.send<T>('POST', path, body, { 'Idempotency-Key': crypto.randomUUID() }); }
+
   /** Every page of a cursor-paged list (bounded: at most `maxPages` requests). */
   private all<T>(path: string, query: Query = {}, maxPages = 25): Observable<Page<T>> {
     let pages = 0;
@@ -54,6 +60,34 @@ export class ApiService {
   topology(environment?: string | null) { return this.get<Topology>('/topology', { environment }); }
 
   rules() { return this.get<Page<Rule>>('/rules', { limit: 200 }); }
+  createRule(definition: unknown) { return this.send<Rule>('POST', '/rules', definition); }
+  /** With the rule's etag, so a change made since it was read isn't overwritten. */
+  updateRule(key: string, definition: unknown, etag: string) { return this.send<Rule>('PUT', `/rules/${key}`, definition, { 'If-Match': `"${etag}"` }); }
+
+  channels() { return this.get<Page<Channel>>('/webhooks'); }
+  createChannel(body: unknown) { return this.send<Channel>('POST', '/webhooks', body); }
+  updateChannel(id: string, body: unknown) { return this.send<Channel>('PUT', `/webhooks/${id}`, body); }
+  deliveries(id: string, query: Query = {}) { return this.get<Page<Delivery>>(`/webhooks/${id}/deliveries`, { limit: 50, ...query }); }
+  allowlist() { return this.get<Page<AllowlistEntry>>('/webhooks/allowlist'); }
+  putAllowlist(destination: string, ports: number[]) { return this.send<AllowlistEntry>('PUT', '/webhooks/allowlist', { destination, ports }); }
+  removeAllowlist(destination: string) { return this.send<void>('DELETE', `/webhooks/allowlist?destination=${encodeURIComponent(destination)}`); }
+
+  escalationPolicies() { return this.get<Page<EscalationPolicy>>('/escalation-policies'); }
+  createEscalationPolicy(body: unknown) { return this.send<EscalationPolicy>('POST', '/escalation-policies', body); }
+  updateEscalationPolicy(key: string, body: unknown) { return this.send<EscalationPolicy>('PUT', `/escalation-policies/${key}`, body); }
+
+  silences(query: Query = {}) { return this.get<Page<Silence>>('/silences', { limit: 200, ...query }); }
+  createSilence(body: unknown) { return this.once<Silence>('/silences', body); }
+  cancelSilence(id: string) { return this.send<void>('DELETE', `/silences/${id}`); }
+
+  incidents(query: Query = {}) { return this.get<Page<IncidentSummary>>('/incidents', { limit: 100, ...query }); }
+  incident(id: string) { return this.get<IncidentDetail>(`/incidents/${id}`); }
+  createIncident(body: unknown) { return this.once<IncidentSummary>('/incidents', body); }
+  moveIncident(id: string, to: string, comment: string) { return this.once<IncidentSummary>(`/incidents/${id}/transitions`, { to, comment }); }
+  addIncidentNote(id: string, text: string) { return this.once<IncidentEvent>(`/incidents/${id}/notes`, { text }); }
+  removeIncidentAlert(id: string, alertId: string) { return this.send<void>('DELETE', `/incidents/${id}/alerts/${alertId}`); }
+  alertNotifications(id: string) { return this.get<AlertNotifications>(`/alerts/${id}/notifications`); }
+
   /** One page of alerts, newest first; pass the previous page's `nextCursor` as `cursor` for the next. */
   alerts(query: Query) { return this.get<Page<Alert>>('/alerts', { limit: 100, ...query }); }
   /** Every alert matching the query (bounded, like the other complete lists). */

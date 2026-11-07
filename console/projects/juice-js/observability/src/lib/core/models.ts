@@ -49,7 +49,34 @@ export interface AlertDetail {
 }
 export interface Rule {
   key: string; name: string; template: string; severity: string; enabled: boolean;
-  definition: Record<string, unknown>; loadedAt: string;
+  definition: Record<string, unknown>; loadedAt: string; managedBy: string; etag: string;
+}
+
+export interface Channel {
+  id: string; key: string; kind: string; destination: string; events: string[]; ruleKeys: string[]; environments: string[]; recipients: string[] | null; secretRef: string | null;
+  groupWindowSeconds: number; minimumSeverity: string; enabled: boolean; managedBy: string; loadedAt: string; recentFailures: number; waiting: number;
+}
+export interface DeliveryAttempt { number: number; at: string; statusCode: number | null; error: string | null; durationMs: number; }
+export interface Delivery {
+  id: string; alertId: string; event: string; status: string; attempts: number; createdAt: string; firstAttemptAt: string | null; deliveredAt: string | null; nextAttemptAt: string | null;
+  lastStatusCode: number | null; lastError: string | null; history: DeliveryAttempt[]; suppressedBy: string | null; groupedInto: string | null; escalationStep: number;
+}
+export interface AllowlistEntry { destination: string; ports: number[]; managedBy: string; loadedAt: string; }
+export interface EscalationStep { afterMinutes: number; endpointKeys: string[]; }
+export interface EscalationPolicy {
+  id: string; key: string; name: string; enabled: boolean; ruleKeys: string[]; environments: string[]; minimumSeverity: string; stopOnAcknowledge: boolean; steps: EscalationStep[]; updatedAt: string;
+}
+export interface Silence {
+  id: string; kind: string; comment: string; ruleKeys: string[]; service: string | null; environment: string | null; host: string | null; maximumSeverity: string | null; allAlerts: boolean;
+  startsAt: string; endsAt: string; repeatWeekly: boolean; active: boolean; createdBy: string; createdAt: string; cancelledAt: string | null; cancelledBy: string | null; held: number;
+}
+export interface IncidentSummary { id: string; title: string; severity: string; state: string; createdBy: string; createdAt: string; updatedAt: string; resolvedAt: string | null; }
+export interface IncidentEvent { at: string; actor: string; type: string; from: string | null; to: string | null; text: string | null; alertId: string | null; }
+export interface IncidentDetail { incident: IncidentSummary; alerts: Alert[]; events: IncidentEvent[]; openAlerts: number; }
+export interface AlertNotifications {
+  deliveries: { endpointKey: string; kind: string; delivery: Delivery; }[];
+  escalations: { policy: string; name: string; state: string; stepsSent: number; steps: number; nextAt: string | null; stopReason: string | null; endedAt: string | null; }[];
+  silences: Silence[]; incidents: IncidentSummary[];
 }
 
 export interface TraceSummary {

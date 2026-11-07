@@ -167,6 +167,9 @@
   .jc-capacity-notes { margin: 12px 0 0; padding-left: 18px; font-size: 13px; }
   .jc-capacity-measured th { width: 240px; }
   .jc-timeline-change { font-weight: 500; }
+  .jc-form { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-bottom: 8px; @include mat.form-field-density(-1); }
+  .jc-form-actions { display: flex; align-items: center; gap: 8px; width: 100%; }
+  .jc-row-actions { white-space: nowrap; text-align: right; }
   .jc-load-steps { margin-top: 12px; }
   .jc-load-steps summary { cursor: pointer; font-size: 13px; }
 

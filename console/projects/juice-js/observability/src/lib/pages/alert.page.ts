@@ -1,7 +1,7 @@
 import { LinkPipe } from '../core/options';
 import { ChangeDetectionStrategy, Component, computed, inject, input, signal } from '@angular/core';
 import { apiResource } from '../shared/resource';
-import { DatePipe } from '@angular/common';
+import { DatePipe, LowerCasePipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatFormFieldModule } from '@angular/material/form-field';
@@ -20,7 +20,7 @@ import { problemText } from '../shared/telemetry';
  */
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [LinkPipe, RouterLink, DatePipe, FormsModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatProgressBarModule,
+  imports: [LinkPipe, RouterLink, DatePipe, LowerCasePipe, FormsModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatProgressBarModule,
     ContextBar, HealthBadge, KeyValueTable, AgoPipe, ReasonPipe],
   template: `
     <jc-context-bar>
@@ -40,7 +40,19 @@ import { problemText } from '../shared/telemetry';
           <a mat-stroked-button [routerLink]="['services', d.alert.subjectId] | jcLink" [queryParams]="investigate(d.alert.environment, { tab: 'traces', status: 'error' })">Error traces</a>
         }
         @for (l of d.links; track l.url) { <a mat-button [href]="l.url" target="_blank" rel="noopener">{{ l.title }} ↗</a> }
+        @if (d.alert.state !== 'Resolved') {
+          <a mat-stroked-button data-testid="alert-open-incident" [routerLink]="['incidents'] | jcLink" [queryParams]="incidentLink(d.alert.id, d.alert.rule, d.alert.subjectKey)">Open an incident</a>
+          <a mat-stroked-button data-testid="alert-silence" [routerLink]="['silences'] | jcLink" [queryParams]="silenceLink(d.alert.subjectKey, d.alert.environment, d.alert.subjectType)">Silence this</a>
+        }
       </div>
+      @if (notifications.value(); as n) {
+        @for (s of n.silences; track s.id) {
+          <p class="jc-notice" data-testid="alert-silenced">Notifications are held until {{ s.endsAt | date: 'MMM d, HH:mm' }}: “{{ s.comment }}” ({{ s.createdBy }}). The alert itself still fires and resolves.</p>
+        }
+        @for (i of n.incidents; track i.id) {
+          <p>In incident <a [routerLink]="['incidents', i.id] | jcLink" [queryParams]="ctx.keep()">{{ i.title }}</a> ({{ i.state }})</p>
+        }
+      }
       <div class="jc-grid-2">
         <section class="jc-card"><h2>Evidence</h2><jc-kv [values]="d.evidence" /></section>
         <section class="jc-card">
@@ -69,6 +81,30 @@ import { problemText } from '../shared/telemetry';
           }
         }
         @if (related.error()) { <p class="jc-error">{{ relatedError() }}</p> }
+      </section>
+      <section class="jc-card" data-testid="alert-notifications">
+        <h2>Notifications</h2>
+        @if (notifications.value(); as n) {
+          @for (e of n.escalations; track e.policy) {
+            <p>Escalation <strong>{{ e.name }}</strong>: {{ e.stepsSent }} of {{ e.steps }} steps sent, {{ e.state | lowercase }}@if (e.stopReason) { ({{ e.stopReason | reason }}) }@if (e.nextAt) {, next at {{ e.nextAt | date: 'HH:mm:ss' }} }</p>
+          }
+          <table class="jc-table">
+            <thead><tr><th>To</th><th>Event</th><th>Status</th><th>Attempts</th><th>Detail</th><th>When</th></tr></thead>
+            <tbody>
+              @for (x of n.deliveries; track x.delivery.id) {
+                <tr>
+                  <td>{{ x.endpointKey }} <span class="jc-muted jc-small">{{ x.kind }}</span></td>
+                  <td>{{ x.delivery.event }}@if (x.delivery.escalationStep) { step {{ x.delivery.escalationStep }} }</td>
+                  <td [class.jc-bad]="x.delivery.status === 'Failed'">{{ x.delivery.status }}</td>
+                  <td>{{ x.delivery.attempts }}</td>
+                  <td class="jc-small">{{ x.delivery.lastError }}@if (x.delivery.nextAttemptAt && x.delivery.status === 'Retrying') { · next {{ x.delivery.nextAttemptAt | date: 'HH:mm:ss' }} }</td>
+                  <td class="jc-nowrap">{{ x.delivery.createdAt | date: 'MMM d, HH:mm:ss' }}</td>
+                </tr>
+              } @empty { <tr><td colspan="6" class="jc-muted">Nothing sent about this alert: no channel takes it.</td></tr> }
+            </tbody>
+          </table>
+        }
+        @if (notifications.error()) { <p class="jc-error">{{ notificationsError() }}</p> }
       </section>
       <section class="jc-card">
         <h2>History</h2>
@@ -104,6 +140,17 @@ export class AlertPage {
   protected readonly error = computed(() => problemText(this.detail.error()));
   protected readonly related = apiResource({ params: () => this.id(), stream: ({ params }) => this.api.relatedToAlert(params) });
   protected readonly relatedError = computed(() => problemText(this.related.error()));
+  protected readonly notifications = apiResource({ params: () => this.id(), stream: ({ params }) => this.api.alertNotifications(params) });
+  protected readonly notificationsError = computed(() => problemText(this.notifications.error()));
+
+  incidentLink(alert: string, rule: string, subject: string) { return this.ctx.keep({ alert, title: `${rule} on ${subject}` }); }
+
+  /** The new-silence form, filled in for this alert's subject. */
+  silenceLink(subject: string, environment: string | null, type: string) {
+    const name = type === 'service' ? subject.replace(/^service:/, '').replace(/@[^@]*$/, '') : null;
+    const host = type === 'host' ? subject.replace(/^host:/, '') : null;
+    return this.ctx.keep({ service: name, environment, host });
+  }
 
   /** The service page over the alert's environment, from shortly before the breach. */
   /** The service's timeline from 2 hours before the breach to 1 hour after. */
@@ -125,7 +172,7 @@ export class AlertPage {
     this.sending.set(true);
     this.ackError.set('');
     this.api.acknowledge(this.id(), this.comment).subscribe({
-      next: () => { this.sending.set(false); this.detail.reload(); },
+      next: () => { this.sending.set(false); this.detail.reload(); this.notifications.reload(); },
       error: e => {
         this.sending.set(false);
         this.ackError.set((e as { status?: number }).status === 403 ? 'Acknowledging needs the operator or admin role.' : problemText(e));
