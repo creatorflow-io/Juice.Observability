@@ -356,7 +356,9 @@ Configuration, secrets and receiver guidance are in [docs/deployment.md](docs/de
 
 A Juice Agent runs on a host and answers read-only diagnostics: `host.summary`, `disk.usage` and `tcp.reachability`. It connects only outbound, to the platform's agent listener (`Agents:Port`, 8443; 5181 on the local stack), over mTLS. It enrolls once with a one-time token from an admin, sending a CSR for a key it generates and keeps, and renews its 7-day certificate itself.
 
-Every command is signed by the platform's command key and checked again by the agent before it runs: the signature, that it names this agent and tenant, its time window and lifetime, its nonce (a replay is refused), the action and its parameter bounds, and this host's own allowlist, which wins over a valid signature. There is no action that runs a command, a script or an executable. See [Phase 7 acceptance](docs/phase-7-acceptance.md), the [runbook](docs/runbook.md#juice-agents) and [deployment](docs/deployment.md#juice-agents).
+Every command is signed by the platform's command key and checked again by the agent before it runs: the signature, that it names this agent and tenant, its time window and lifetime, its nonce (a replay is refused), the action and its parameter bounds, and this host's own allowlist, which wins over a valid signature. There is no action that runs a command, a script or an executable.
+
+An admin can update an agent with `agent.update` to a package signed by a release key, kept offline. The host must trust that key in its own configuration, and the platform can't supply one. The agent's launcher runs the new version on trial: it keeps the version if it reaches the platform within 2 minutes, and goes back to the version before otherwise. The platform's command key and agent CA can be rotated without enrolling agents again. See [Phase 7 acceptance](docs/phase-7-acceptance.md), the [runbook](docs/runbook.md#juice-agents) and [deployment](docs/deployment.md#juice-agents).
 
 ## License
 

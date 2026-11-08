@@ -150,6 +150,19 @@ Use `Open an incident` on an alert, or the Incidents page. Operators and admins 
 - **An agent offline.** `online` is false when it hasn't polled for 2 minutes. Its log says why: the platform is unreachable, or
   `The platform refused this agent`, which means it was revoked or its certificate expired while it was down. To bring it back,
   clear its data directory and enroll it again with a new token.
+- **Update an agent.** `GET …/agents/packages` lists the versions offered. As an admin, `POST …/agents/{id}/commands` with
+  `agent.update` and `{ "version": "…" }`; the platform adds the package's hash. The command stays `Delivered` while the new version is
+  on trial, up to about 2 minutes. It ends `Succeeded` (`{ from, to }`) once the new version has reached the platform, and the agent's
+  `version` changes. It ends `Failed` with `rolled_back: …` when the new version exited or stayed silent, and the version before runs
+  again. Other `Failed` reasons are refusals before anything was replaced:
+  - `updates_unavailable`: no launcher, as in a plain container.
+  - `no_release_key`: the host trusts no release key.
+  - `package_mismatch`: the bytes aren't the ones the command names.
+  - `invalid_package_signature`: no release key this host trusts signed it.
+  - `invalid_package`: the zip, its manifest or its paths don't hold.
+  - `package_not_found`.
+- **After a rollback,** the launcher's log in the agent's output says why (`rolled back to version …`). The failed version is removed;
+  the version before and the one before it are kept.
 - **Revoke.** `POST …/agents/{id}/revocation` with a reason (admin). The platform refuses the agent from its next call, and its waiting
   commands are cancelled. Enrollment, renewal, revocation and every command and result are in `audit_records` (`agent.*`).
 

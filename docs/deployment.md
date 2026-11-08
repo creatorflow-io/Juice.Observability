@@ -120,6 +120,8 @@ Agents are off unless `Agents:Enabled` is `true`, with:
 | `Agents:ServerCertificateFile`, `Agents:ServerKeyFile` | the agent listener's server certificate, for the name agents use. When an intermediate issued it, put the intermediates after it in the same file: they're sent with it. Agents trust only the CA they're configured with |
 | `Agents:Port` | the agent listener, 8443 by default |
 | `Agents:CertificateLifetime` | agent certificates, 7 days by default. An agent renews when a third is left |
+| `Agents:PackageDirectory`, `Agents:ReleaseKeyFiles` | for `agent.update`: where signed agent packages are, and the release public keys, PEM, that must have signed them. Without a directory there are no updates |
+| `Agents:PreviousCaCertificateFiles`, `Agents:PreviousCommandKeyFiles` | for rotation: CAs and command keys the current ones replaced (see below) |
 
 - **The listener** serves only the agent API, and the agent API is on no other port. With agents on, Kestrel listens only on the
   endpoints code names, so the host's own are named too, as Kestrel would have chosen them: `URLS` (or `ASPNETCORE_URLS`), otherwise
@@ -133,8 +135,24 @@ Agents are off unless `Agents:Enabled` is `true`, with:
   `Agent:DataDirectory` (its key and state: keep it private and persistent), `Agent:EnrollmentTokenFile`, `Agent:HostRoot` (`/hostfs`
   in a container with the host mounted) and its allowlist, `Allowlist:Actions` (see `deploy/local/agent.json`). An empty allowlist
   permits nothing.
-- **Rotating the command key or the agent CA** needs agents to enroll again for now: an agent keeps the command key it was given
-  at enrollment, and renews against the CA. Rotation without re-enrollment is planned with signed updates (Phase 7, milestone 2).
+- **Updating agents.** An agent updates itself only when it runs under its launcher, `juice-agent-launcher --home DIR --seed DIR`,
+  started by a service manager that restarts it (systemd, a container restart policy). `--seed` installs the published agent it
+  names when that version isn't installed yet. The host must also list `agent.update` in its allowlist and trust a release key in
+  `Agent:ReleaseKeyFiles`. That key is set on the host, never by the platform. A container started from `Dockerfile.agent` runs the
+  agent without the launcher and is updated by its image; `deploy/local` runs the launcher, to try updates.
+- **Releasing a package.** Make a release key pair once and keep the private key offline:
+  `dotnet run deploy/agent/pack.cs -- --new-key release.key`. For each release, publish the agent and sign it with
+  `dotnet run deploy/agent/pack.cs -- --publish DIR --key release.key --out PACKAGES`. Copy the zip and its `.sig` into
+  `Agents:PackageDirectory`. The signature is the one `openssl dgst -sha256 -sign` makes, so either tool can sign or check it. The
+  platform offers only packages that `Agents:ReleaseKeyFiles` verifies, and whose manifest names the version in the file name.
+- **Rotating the command key.** Generate a new key and set it as `Agents:CommandKeyFile`. Put the old one in
+  `Agents:PreviousCommandKeyFiles`. The old key signs an announcement of the new one, and each agent takes it at its next poll; it then
+  trusts the new key and the one that announced it, and no older ones. Remove the old key once every agent has polled. An agent offline
+  through two rotations has to enroll again.
+- **Rotating the agent CA.** Set the new CA as `Agents:CaCertificateFile` and `Agents:CaKeyFile`. Put the old certificate (not its key)
+  in `Agents:PreviousCaCertificateFiles`. Certificates the old CA issued still get in, and each agent gets one from the new CA at its
+  next renewal. Remove the old certificate after one `Agents:CertificateLifetime`. The listener's server certificate is separate:
+  agents trust it through their own `Agent:PlatformCaFile`.
 
 ## More than one API replica
 

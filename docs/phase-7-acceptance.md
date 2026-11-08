@@ -1,6 +1,6 @@
 # Phase 7 acceptance: Juice Agent enrollment and read-only diagnostics
 
-**Status:** milestone 1 of 2 built and verified. **Not yet reviewed by the owner.** Milestone 2, signed agent updates and rollback, isn't started.
+**Status:** both milestones are built and verified: milestone 1 (enrollment and read-only diagnostics) and milestone 2 (signed updates with rollback, and rotation without re-enrollment). **Not yet reviewed by the owner.**
 
 ## The gate
 
@@ -12,9 +12,9 @@
 | A disallowed action is rejected | The local allowlist lists what this host permits; anything not listed is refused. An empty allowlist permits nothing | `A_disallowed_action_is_refused_though_the_platform_signed_it`, and on the local stack (`console/e2e/agent.mjs`) |
 | Out-of-range parameters are rejected | Each action's parameters are typed and bounded, unknown members refused, checked by the platform before it signs and again by the agent. The local allowlist can bound them further | `Out_of_range_or_unknown_parameters_are_refused`, `Valid_parameters_outside_this_hosts_bounds_are_refused` |
 | The local allowlist wins over a valid platform signature | It is checked after the signature, and a validly signed command it doesn't permit is refused, with the reason reported to the platform | `A_disallowed_action_is_refused_though_the_platform_signed_it`; end to end, `An_agent_enrolls_runs_what_its_allowlist_permits_refuses_the_rest…` |
-| No shell execution interface exists | The three actions read the host through .NET APIs and `/proc`. Nothing in the agent or its contracts can start a process, run a shell or load code a command names, and a test fails if that changes | `AgentVerifierTests.The_agent_has_no_way_to_run_a_command` |
+| No shell execution interface exists | The three diagnostics read the host through .NET APIs and `/proc`. Nothing in the agent or its contracts can start a process, run a shell or load code a command names, and a test fails if that changes. The launcher starts one thing: the agent version its signed package names, from one file, with no shell and fixed arguments. A test holds it to that | `AgentVerifierTests.The_agent_has_no_way_to_run_a_command`, `…The_launcher_starts_only_the_agent_and_only_in_one_place` |
 
-Every check above was also broken on purpose, one at a time, and a test failed each time: 15 of 15, on both the agent's and the platform's side.
+Every check above was also broken on purpose, one at a time, and a test failed each time: 15 of 15, on both the agent's and the platform's side. Milestone 2's checks were tested the same way: 13 of 13 (see below).
 
 ## Deliverables of milestone 1
 
@@ -26,6 +26,49 @@ Every check above was also broken on purpose, one at a time, and a test failed e
 - **Diagnostics:** `host.summary`, `disk.usage` and `tcp.reachability`, each with a timeout.
 - **Audit:** token creation, enrollment, renewal, revocation, every command issued and every result, refusals included.
 
+## Deliverables of milestone 2
+
+- **Signed updates.** A release key signs each agent package. It's kept offline and separate from the CA and the command key. A package is a zip of the published agent with a manifest naming its version and entry point. The signature is the one `openssl dgst -sha256 -sign` makes; `deploy/agent/pack.cs` makes keys and packages.
+- **The platform offers only packages a configured release key signed,** and whose manifest names the version in the file name (`GET …/agents/packages`). Only admins issue `agent.update`, naming a version. The platform adds the package's SHA-256, so the agent installs exactly the bytes the platform checked. Packages are served only to enrolled agents, over the agent listener.
+- **The agent checks again, on its own terms:**
+  - `agent.update` must be in its local allowlist.
+  - The bytes must have the hash the signed command names.
+  - A release key in the host's own `Agent:ReleaseKeyFiles` must have signed them, so a compromised platform can't push its own build.
+
+  Only then does it unpack into its own directory: no path outside it, at most 10,000 entries and 1 GiB.
+- **The launcher** (`juice-agent-launcher`) runs the agent and switches versions only when the agent asks.
+  - The new version runs on trial. It's kept once it has polled the platform with its certificate.
+  - If it exits, or stays silent for 2 minutes, it's stopped and the version before starts again. A launcher that stops mid-trial also goes back.
+  - The outcome becomes the command's result: `Succeeded` with `{ from, to }`, or `Failed` with `rolled_back: …`. Whichever version runs next reports it.
+- **Rotation without re-enrollment.** A new command key is announced at the next poll, signed by a key the agent trusts. The agent then trusts the new key and its announcer, and nothing older. The platform accepts certificates from CAs it has rotated away from, and agents get a certificate from the new CA when they renew.
+- **Containers are updated by their image.** The image runs the agent without the launcher. `deploy/local` runs it under the launcher so updates can be tried (`console/e2e/agent-update.mjs`).
+
+| Milestone 2 check | Evidence |
+|---|---|
+| Each of these is refused, with nothing changed that runs: bytes other than the ones the command names, a signature by no trusted release key, a package path outside its directory, a manifest for another version or entry point | `AgentUpdaterTests` |
+| Without the launcher or a release key, nothing is downloaded. Without `agent.update` in the allowlist, the command is refused before anything downloads | `AgentUpdaterTests` |
+| A version is kept only when it confirms, and only for its own update. It's rolled back when it exits, stays silent, or the launcher stopped during its trial | `AgentLauncherTests` |
+| The update's result waits for the launcher's verdict, and a redelivery gets that verdict | `AgentUpdaterTests.The_update_a_version_is_on_trial_for_isnt_answered_until_the_launcher_decides` |
+| Only admins update, only to packages the platform verified, with the platform's hash. Packages go only to enrolled agents | `AgentFlowTests.Only_admins_update_agents_and_only_to_signed_packages_the_platform_offers` |
+| An announced key is taken only when a trusted key signed exactly that key. Old keys are dropped at the next rotation | `AgentRotationTests` |
+| An agent enrolled before a rotation keeps working, learns the new key, runs commands signed with it, and renews from the new CA | `AgentFlowTests.An_agent_enrolled_before_a_rotation_follows_it_without_enrolling_again` |
+| On the local stack: an update kept, a broken one rolled back | `console/e2e/agent-update.mjs`, 8 November: `1.1.0-local` → `1.1.0-demo` `Succeeded`, confirmed 26 s after the start (its first long poll). A package with a corrupt assembly, `Failed` `rolled_back: … exited with code 134 during its trial`, back on `1.1.0-demo` within a second. An operator's update `403`. `e2e/agent.mjs` passes on the updated agent |
+
+Thirteen checks were each broken on purpose, one at a time, and a test failed every time:
+- the hash check;
+- the release signature check;
+- path confinement;
+- the manifest version check;
+- the announcement signature;
+- the announced key id;
+- accepting previous CAs;
+- dropping old keys;
+- matching the confirmation to its update;
+- rolling back an unwatched trial;
+- holding a trial's redelivery;
+- the platform's admin-only rule;
+- the platform's signature check.
+
 ## Decisions to check
 
 - **Operators can run diagnostics; only admins enroll and revoke.** Diagnostics are read-only, and checking a host during an incident shouldn't need an admin.
@@ -34,6 +77,13 @@ Every check above was also broken on purpose, one at a time, and a test failed e
 - **TCP reachability needs targets on the host's allowlist.** Otherwise an agent could be used to scan the customer's network from inside.
 - **`disk.usage` with no path** reports every filesystem, so a host that bounds paths refuses it.
 - **Results are kept indefinitely,** like incidents; no retention policy yet.
+- **An update needs three parties to agree,** because it changes the host:
+  - an admin on the platform;
+  - the host's own allowlist entry;
+  - the host's own release key.
+- **The trial is 2 minutes, and one successful poll confirms it.** That proves the new version starts, reads its identity and reaches the platform over mTLS. It doesn't run a diagnostic.
+- **An update command lives 10 minutes by default,** the maximum, to cover the download, the restart and the trial.
+- **After a rotation, an agent trusts two command keys:** the new one and the one that announced it. So commands signed just before the switch still run.
 
 ## Fixed along the way
 
@@ -62,9 +112,11 @@ Every check above was also broken on purpose, one at a time, and a test failed e
 ## Limits
 
 - **No Console page yet.** Agents are used through the API; the focused console is Phase 10.
-- **Rotating the command key or the agent CA needs agents to enroll again.** Rotation without it comes with signed updates in milestone 2.
+- **An agent that's offline through two command key rotations has to enroll again:** the key that could announce the newest one is gone.
+- **The launcher stops the agent hard** (`Kill`), not with a signal. Everything the agent writes is replaced by rename, so a stop never leaves half a file. A command running at that moment is reported `interrupted`.
+- **No package retention.** Packages stay in `Agents:PackageDirectory` until someone removes them. On a host, the launcher keeps the current version and the one before.
 - **A command issued on another replica than the agent's poll** reaches it within 5 seconds, at the poll's next look; on the same replica, at once.
 - **The enrollment guard counts per replica,** so with several replicas an address gets 10 failures a minute from each.
 - **No approval step.** The envelope has a field for an approval reference, unused until Phase 8's actions need approval.
-- **The agent runs as a plain process or container.** No Windows service or systemd unit is provided yet.
+- **The agent runs as a plain process or container.** No Windows service or systemd unit is provided yet; the launcher expects a service manager to restart it.
 - **Diagnostics from a container see the container,** except what reads the host's `/proc` and mounts under `Agent:HostRoot`.
