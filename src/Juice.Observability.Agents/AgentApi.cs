@@ -105,7 +105,7 @@ namespace Juice.Observability.Agents
             var authority = http.RequestServices.GetRequiredService<AgentAuthority>();
             var guard = http.RequestServices.GetRequiredService<EnrollmentGuard>();
             var address = http.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-            if (guard.IsBlocked(address))
+            if (await guard.IsBlockedAsync(db, address, ct))
             {
                 return Results.Problem(statusCode: StatusCodes.Status429TooManyRequests, title: "Too many failed enrollments",
                     detail: $"Try again in a minute: more than {EnrollmentGuard.MaxFailures} enrollments from this address failed.");
@@ -113,7 +113,7 @@ namespace Juice.Observability.Agents
             var now = clock.GetUtcNow();
             if (request is null || string.IsNullOrEmpty(request.Token) || string.IsNullOrEmpty(request.Csr))
             {
-                guard.Fail(address);
+                await guard.FailAsync(db, address, ct);
                 return Results.Problem(statusCode: StatusCodes.Status400BadRequest, title: "Invalid enrollment", detail: "token and csr are required.");
             }
             var tenant = await db.Tenants.SingleAsync(t => t.Key == platform.Value.TenantKey, ct);
@@ -121,7 +121,7 @@ namespace Juice.Observability.Agents
             var token = await db.AgentEnrollmentTokens.SingleOrDefaultAsync(t => t.TenantId == tenant.Id && t.TokenHash == hash, ct);
             if (token is null || token.UsedAt is not null || token.ExpiresAt <= now)
             {
-                guard.Fail(address);
+                await guard.FailAsync(db, address, ct);
                 if (token is null)
                 {
                     // Anyone can send these: logged, not audited, so they can't fill the audit table.
@@ -147,13 +147,13 @@ namespace Juice.Observability.Agents
             catch (ArgumentException e)
             {
                 logger.LogWarning("Enrollment refused a CSR: {Error}", e.Message);
-                guard.Fail(address);
+                await guard.FailAsync(db, address, ct);
                 return Results.Problem(statusCode: StatusCodes.Status400BadRequest, title: "Invalid CSR", detail: e.Message);
             }
             catch (System.Security.Cryptography.CryptographicException e)
             {
                 logger.LogWarning("Enrollment refused a CSR: {Error}", e.Message);
-                guard.Fail(address);
+                await guard.FailAsync(db, address, ct);
                 return Results.Problem(statusCode: StatusCodes.Status400BadRequest, title: "Invalid CSR", detail: "The CSR doesn't read, or its signature doesn't verify.");
             }
             token.UsedAt = now;

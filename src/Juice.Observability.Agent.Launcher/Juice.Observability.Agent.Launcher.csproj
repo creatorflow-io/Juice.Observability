@@ -11,6 +11,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Runs as a systemd service (Type=notify) or a Windows service, and as a plain process anywhere else. -->
+    <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Juice.Observability.Agent.Contracts\Juice.Observability.Agent.Contracts.csproj" />
   </ItemGroup>
 

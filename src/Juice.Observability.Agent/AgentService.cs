@@ -21,6 +21,9 @@ namespace Juice.Observability.Agent
         /// <summary>The version as packages name it: the build metadata after <c>+</c> left out.</summary>
         public static readonly string Version = (typeof(AgentService).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "0.0.0").Split('+')[0];
 
+        /// <summary>The exit code when the configuration is invalid (EX_CONFIG): nothing a restart alone fixes.</summary>
+        public const int ConfigurationExitCode = 78;
+
         /// <summary>How long a download, check and unpack may take.</summary>
         internal static readonly TimeSpan UpdateTimeout = TimeSpan.FromMinutes(5);
 
@@ -61,6 +64,8 @@ namespace Juice.Observability.Agent
             var errors = options.Value.Validate().ToList();
             if (errors.Count > 0)
             {
+                // A failed background service stops the host with exit code 0 unless told otherwise; a service manager must see a failure.
+                Environment.ExitCode = ConfigurationExitCode;
                 throw new InvalidOperationException("Invalid agent configuration:\n" + string.Join("\n", errors));
             }
             if (allowlist.Value.Actions.Count == 0)

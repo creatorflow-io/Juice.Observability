@@ -46,6 +46,27 @@ namespace Juice.Observability.Tests
             }
         }
 
+        /// <summary>
+        /// An agent that can't run must say so to whatever restarts it: a failed background service ends the process with code 0 unless told
+        /// otherwise, and a Windows service's recovery acts only on a failure.
+        /// </summary>
+        [Fact]
+        public async Task An_agent_with_invalid_configuration_ends_with_a_failure_code_Async()
+        {
+            var before = Environment.ExitCode;
+            try
+            {
+                var agent = new AgentService(Options.Create(new AgentOptions()), Options.Create(new LocalAllowlist()), TimeProvider.System, NullLogger<AgentService>.Instance);
+                await agent.StartAsync(Ct);
+                await Assert.ThrowsAsync<InvalidOperationException>(() => agent.ExecuteTask!);
+                Assert.Equal(AgentService.ConfigurationExitCode, Environment.ExitCode);
+            }
+            finally
+            {
+                Environment.ExitCode = before;
+            }
+        }
+
         [Fact]
         public async Task A_diagnostic_that_throws_is_reported_failed_and_the_agent_goes_on_Async()
         {

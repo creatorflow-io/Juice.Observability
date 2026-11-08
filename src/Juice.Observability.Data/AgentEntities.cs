@@ -48,6 +48,17 @@ namespace Juice.Observability.Data
         public Guid? AgentId { get; set; }
     }
 
+    /// <summary>
+    /// Failed enrollments from one address in the current window, shared by every replica, so the limit is one per deployment, not per replica.
+    /// Enrollment comes before any tenant is known, so this isn't a tenant's. A row whose window has passed is stale and is pruned.
+    /// </summary>
+    public sealed class AgentEnrollmentFailure
+    {
+        public required string Address { get; init; }
+        public DateTimeOffset WindowStart { get; set; }
+        public int Failures { get; set; }
+    }
+
     public enum AgentCommandState { Pending, Delivered, Succeeded, Failed, Rejected, Expired, Cancelled }
 
     /// <summary>

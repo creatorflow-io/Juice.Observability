@@ -280,6 +280,30 @@ namespace Juice.Observability.Data.Migrations
                     b.ToTable("agent_commands", (string)null);
                 });
 
+            modelBuilder.Entity("Juice.Observability.Data.AgentEnrollmentFailure", b =>
+                {
+                    b.Property<string>("Address")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("address");
+
+                    b.Property<int>("Failures")
+                        .HasColumnType("integer")
+                        .HasColumnName("failures");
+
+                    b.Property<DateTimeOffset>("WindowStart")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("window_start");
+
+                    b.HasKey("Address")
+                        .HasName("pk_agent_enrollment_failures");
+
+                    b.HasIndex("WindowStart")
+                        .HasDatabaseName("ix_agent_enrollment_failures_window_start");
+
+                    b.ToTable("agent_enrollment_failures", (string)null);
+                });
+
             modelBuilder.Entity("Juice.Observability.Data.AgentEnrollmentToken", b =>
                 {
                     b.Property<Guid>("Id")

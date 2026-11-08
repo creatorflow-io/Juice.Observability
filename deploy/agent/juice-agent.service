@@ -1,0 +1,53 @@
+# Juice Agent under its launcher, as a systemd service. Install (as root):
+#   useradd --system --no-create-home --shell /usr/sbin/nologin juice-agent
+#   dotnet publish src/Juice.Observability.Agent -c Release -o /opt/juice-agent/agent
+#   dotnet publish src/Juice.Observability.Agent.Launcher -c Release -o /opt/juice-agent/launcher
+#   install -d -m 755 /etc/juice-agent      # agent.json (allowlist, Agent:PlatformUrl, ...), the platform CA, release.pub, the enrollment token
+#   cp deploy/agent/juice-agent.service /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now juice-agent
+# The agent's identity and the launcher's versions live in /var/lib/juice-agent, readable by the service's user only.
+# Logs: journalctl -u juice-agent
+
+[Unit]
+Description=Juice Agent
+Documentation=https://github.com/creatorflow-io/Juice.Observability/blob/master/docs/deployment.md#juice-agents
+Wants=network-online.target
+After=network-online.target
+# A configuration error (exit 78) doesn't fix itself: after 20 starts in 10 minutes systemd gives up, and the journal says why.
+StartLimitIntervalSec=600
+StartLimitBurst=20
+
+[Service]
+# The launcher tells systemd when it's up.
+Type=notify
+User=juice-agent
+Group=juice-agent
+Environment=JUICE_AGENT_CONFIG=/etc/juice-agent/agent.json
+Environment=Agent__DataDirectory=/var/lib/juice-agent/data
+Environment=DOTNET_NOLOGO=true
+ExecStart=/usr/bin/dotnet /opt/juice-agent/launcher/juice-agent-launcher.dll --home /var/lib/juice-agent/home --seed /opt/juice-agent/agent
+# The launcher exits when the agent does, other than to update.
+Restart=always
+RestartSec=5
+# Stops both: SIGTERM to the launcher and the agent, as one control group.
+KillMode=control-group
+TimeoutStopSec=30
+
+# Read-only diagnostics need to read the host, not change it. The agent only connects out.
+StateDirectory=juice-agent
+StateDirectoryMode=0700
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+PrivateDevices=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

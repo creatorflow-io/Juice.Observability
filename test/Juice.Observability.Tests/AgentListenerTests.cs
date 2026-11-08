@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using Juice.Observability.Agent;
 using Juice.Observability.Agents;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 
 namespace Juice.Observability.Tests
@@ -54,8 +55,10 @@ namespace Juice.Observability.Tests
             using var sent = new X509Chain();
             sent.ChainPolicy.ExtraStore.Add(intermediate);
 
-            Assert.True(PlatformClient.IsPlatform(leaf, sent, SslPolicyErrors.None, root));
+            // First, before this process has seen the intermediate: Windows' chain engine caches intermediates it has met, so once a chain was built
+            // with it, a later build without it may still find it.
             Assert.False(PlatformClient.IsPlatform(leaf, null, SslPolicyErrors.None, root), "without the intermediate there's no chain");
+            Assert.True(PlatformClient.IsPlatform(leaf, sent, SslPolicyErrors.None, root));
             Assert.False(PlatformClient.IsPlatform(leaf, sent, SslPolicyErrors.None, other), "an intermediate sent doesn't make another root trusted");
         }
 
@@ -88,6 +91,45 @@ namespace Juice.Observability.Tests
             Assert.False(guard.IsBlocked("10.0.0.9"));
             guard.Fail("10.0.0.9");
             Assert.False(guard.IsBlocked("10.0.0.9"), "the count starts again in a new window");
+        }
+
+        /// <summary>
+        /// Phase 7's limit: each replica counted on its own, so N replicas allowed N times the failures. Now the count is shared: failures on two
+        /// replicas add up, and a new window starts again for both.
+        /// </summary>
+        [Fact]
+        public async Task Failed_enrollments_add_up_across_replicas_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var ct = TestContext.Current.CancellationToken;
+            var clock = new Clock(DateTimeOffset.UtcNow);
+            var (first, second) = (new EnrollmentGuard(clock), new EnrollmentGuard(clock));
+            await using var db = database.Context();
+
+            for (var i = 0; i < EnrollmentGuard.MaxFailures / 2; i++) await first.FailAsync(db, "10.0.0.9", ct);
+            for (var i = 0; i < EnrollmentGuard.MaxFailures / 2 - 1; i++) await second.FailAsync(db, "10.0.0.9", ct);
+            Assert.False(await first.IsBlockedAsync(db, "10.0.0.9", ct));
+            Assert.False(await second.IsBlockedAsync(db, "10.0.0.9", ct));
+
+            await second.FailAsync(db, "10.0.0.9", ct);
+            Assert.True(await first.IsBlockedAsync(db, "10.0.0.9", ct), "failures on another replica didn't count here");
+            Assert.True(await second.IsBlockedAsync(db, "10.0.0.9", ct));
+            Assert.False(await first.IsBlockedAsync(db, "10.0.0.10", ct), "another address is held back");
+
+            // Two replicas failing at the same moment both count.
+            await Task.WhenAll(Enumerable.Range(0, EnrollmentGuard.MaxFailures).Select(async i =>
+            {
+                await using var own = database.Context();
+                await (i % 2 == 0 ? first : second).FailAsync(own, "10.0.0.11", ct);
+            }));
+            Assert.Equal(EnrollmentGuard.MaxFailures, (await db.AgentEnrollmentFailures.AsNoTracking().SingleAsync(f => f.Address == "10.0.0.11", ct)).Failures);
+
+            clock.Now += EnrollmentGuard.Window;
+            Assert.False(await first.IsBlockedAsync(db, "10.0.0.9", ct));
+            await first.FailAsync(db, "10.0.0.9", ct);
+            Assert.False(await second.IsBlockedAsync(db, "10.0.0.9", ct), "the shared count didn't start again in a new window");
+            Assert.Equal(1, (await db.AgentEnrollmentFailures.AsNoTracking().SingleAsync(f => f.Address == "10.0.0.9", ct)).Failures);
         }
 
         [Fact]

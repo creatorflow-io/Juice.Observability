@@ -53,6 +53,7 @@ namespace Juice.Observability.Data
         public DbSet<EnrolledAgent> Agents => Set<EnrolledAgent>();
         public DbSet<AgentEnrollmentToken> AgentEnrollmentTokens => Set<AgentEnrollmentToken>();
         public DbSet<AgentCommand> AgentCommands => Set<AgentCommand>();
+        public DbSet<AgentEnrollmentFailure> AgentEnrollmentFailures => Set<AgentEnrollmentFailure>();
 
         /// <summary>Applies the snake_case naming used by every table. Call it when configuring the context.</summary>
         public static void Configure(DbContextOptionsBuilder options, string connectionString)
@@ -325,6 +326,15 @@ namespace Juice.Observability.Data
                 e.HasIndex(x => x.CertificateSerial).IsUnique();
                 e.HasIndex(x => new { x.TenantId, x.Status });
                 e.HasOne<Resource>().WithMany().HasForeignKey(x => x.ResourceId).OnDelete(DeleteBehavior.SetNull);
+            });
+
+            model.Entity<AgentEnrollmentFailure>(e =>
+            {
+                e.ToTable("agent_enrollment_failures");
+                e.HasKey(x => x.Address);
+                // An IPv6 address with a zone fits; anything longer isn't an address.
+                e.Property(x => x.Address).HasMaxLength(64);
+                e.HasIndex(x => x.WindowStart);
             });
 
             model.Entity<AgentEnrollmentToken>(e =>
