@@ -20,6 +20,9 @@ namespace Juice.Observability.Api.Endpoints
 
     public sealed record AgentCommandRequest(string? Action, JsonElement? Parameters, int? LifetimeSeconds);
 
+    /// <summary>A package an admin can update agents to. <c>SignedBy</c> is the id of the release key whose signature checked out.</summary>
+    public sealed record AgentPackageDto(string Version, string Sha256, long Size, string SignedBy, DateTimeOffset AddedAt);
+
     public sealed record AgentCommandDto(Guid Id, Guid AgentId, string Action, JsonElement Parameters, string State, string IssuedBy, DateTimeOffset IssuedAt,
         DateTimeOffset ExpiresAt, DateTimeOffset? DeliveredAt, int DeliveryCount, DateTimeOffset? CompletedAt, string? Reason, JsonElement? Result, int? DurationMs);
 
@@ -38,6 +41,7 @@ namespace Juice.Observability.Api.Endpoints
         {
             tenant.MapPost("/agents/enrollment-tokens", CreateTokenAsync);
             tenant.MapGet("/agents", ListAsync);
+            tenant.MapGet("/agents/packages", ListPackages);
             tenant.MapGet("/agents/{agentId:guid}", GetAsync);
             tenant.MapPost("/agents/{agentId:guid}/revocation", RevokeAsync);
             tenant.MapPost("/agents/{agentId:guid}/commands", IssueAsync);
@@ -133,15 +137,23 @@ namespace Juice.Observability.Api.Endpoints
             IServiceProvider services, IOptions<PlatformOptions> platform, TimeProvider clock, CancellationToken ct)
         {
             var mutation = new Mutation(http, db, tenantId, "agent.command.issue", "agent_command");
-            if (await mutation.RequireAsync(agentId.ToString(), ct, Roles.Operator, Roles.Admin) is { } denied) return denied;
+            // Changing the host is an admin's call; reading it, an operator's too.
+            var changing = request?.Action is { } requested && AgentActions.Changing.Contains(requested);
+            if (await mutation.RequireAsync(agentId.ToString(), ct, changing ? [Roles.Admin] : [Roles.Operator, Roles.Admin]) is { } denied) return denied;
             if (services.GetService<AgentAuthority>() is not { } authority) return NotEnabled();
             if (request is null) return Mutation.Invalid(["A body is required."]);
             if (await mutation.ReplayAsync($"POST agents/{agentId}/commands", request, ct) is { } replay) return replay;
             var action = request.Action ?? "";
             var parameters = request.Parameters ?? JsonSerializer.SerializeToElement(new { });
             if (!AgentActions.All.Contains(action)) return Mutation.Invalid([$"action is one of: {string.Join(", ", AgentActions.All)}."]);
+            if (action == AgentActions.AgentUpdate)
+            {
+                if (UpdateParameters(parameters, services.GetService<AgentPackageCatalog>(), out var problem) is not { } filled) return problem!;
+                parameters = filled;
+            }
             if (AgentActions.Parse(action, parameters, out var error) is null) return Mutation.Invalid([error!]);
-            var lifetime = TimeSpan.FromSeconds(request.LifetimeSeconds ?? (int)CommandLimits.DefaultLifetime.TotalSeconds);
+            // An update needs the time to download, restart and prove the new version before the agent answers.
+            var lifetime = TimeSpan.FromSeconds(request.LifetimeSeconds ?? (int)(changing ? CommandLimits.MaxLifetime : CommandLimits.DefaultLifetime).TotalSeconds);
             if (lifetime < TimeSpan.FromSeconds(MinLifetimeSeconds) || lifetime > CommandLimits.MaxLifetime)
             {
                 return Mutation.Invalid([$"lifetimeSeconds is {MinLifetimeSeconds} to {(int)CommandLimits.MaxLifetime.TotalSeconds}."]);
@@ -168,6 +180,42 @@ namespace Juice.Observability.Api.Endpoints
             services.GetService<AgentWakeups>()?.Wake(agentId);
             return result;
         }
+
+        /// <summary>
+        /// <c>agent.update</c> names a version; the platform adds the hash of the package it offers for it, so the agent installs exactly the bytes the
+        /// platform checked. A hash given with it must be that one.
+        /// </summary>
+        private static JsonElement? UpdateParameters(JsonElement parameters, AgentPackageCatalog? catalog, out IResult? problem)
+        {
+            problem = null;
+            if (catalog is not { Enabled: true })
+            {
+                problem = Mutation.Problem(StatusCodes.Status409Conflict, "Updates are not enabled", "This deployment offers no agent packages: set Agents:PackageDirectory and Agents:ReleaseKeyFiles.");
+                return null;
+            }
+            if (parameters.ValueKind != JsonValueKind.Object || !parameters.TryGetProperty("version", out var versionElement) || versionElement.ValueKind != JsonValueKind.String)
+            {
+                problem = Mutation.Invalid(["parameters.version is required: the agent version to install."]);
+                return null;
+            }
+            var version = versionElement.GetString()!;
+            if (catalog.Find(version) is not { } package)
+            {
+                problem = Mutation.Invalid([$"No signed package of version {version} is offered: see GET agents/packages."]);
+                return null;
+            }
+            if (parameters.TryGetProperty("sha256", out var given) && given.GetString() != package.Sha256)
+            {
+                problem = Mutation.Invalid([$"sha256 doesn't match the package of version {version} offered here."]);
+                return null;
+            }
+            return JsonSerializer.SerializeToElement(new AgentUpdateParameters(version, package.Sha256), CommandSignature.Json);
+        }
+
+        /// <summary>The packages an admin can update agents to: those whose release signature checks out here.</summary>
+        private static IResult ListPackages(IServiceProvider services)
+            => Results.Ok(new Page<AgentPackageDto>([.. (services.GetService<AgentPackageCatalog>()?.List() ?? [])
+                .Select(p => new AgentPackageDto(p.Version, p.Sha256, p.Size, p.SignedBy, p.AddedAt))], null));
 
         private static async Task<IResult> ListCommandsAsync(Guid tenantId, Guid agentId, int? limit, string? cursor, PlatformDbContext db, TimeProvider clock, CancellationToken ct)
         {

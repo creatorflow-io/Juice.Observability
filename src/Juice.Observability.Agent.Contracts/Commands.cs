@@ -97,6 +97,12 @@ namespace Juice.Observability.Agent.Contracts
             Converters = { new JsonStringEnumConverter() },
         };
 
+        /// <summary>
+        /// For the platform's other answers (enrollment, polls): members a newer platform adds are ignored, so it can grow without breaking agents
+        /// already deployed. Only what is signed is read strictly.
+        /// </summary>
+        public static readonly JsonSerializerOptions Tolerant = new(JsonSerializerDefaults.Web) { Converters = { new JsonStringEnumConverter() } };
+
         public static byte[] Serialize(CommandEnvelope envelope) => Encoding.UTF8.GetBytes(JsonSerializer.Serialize(envelope, Json));
     }
 

@@ -22,8 +22,10 @@ namespace Juice.Observability.Agent.Contracts
 
     public sealed record RenewResponse(string CertificatePem);
 
-    /// <summary>What a poll returns: the commands waiting for this agent, oldest first.</summary>
-    public sealed record PollResponse(IReadOnlyList<SignedCommand> Commands);
+    /// <summary>
+    /// What a poll returns: the commands waiting for this agent, oldest first, and any command key the agent should add, announced by one it trusts.
+    /// </summary>
+    public sealed record PollResponse(IReadOnlyList<SignedCommand> Commands, IReadOnlyList<SignedKey>? Keys = null);
 
     /// <summary>Paths of the agent API, on the platform's mTLS listener.</summary>
     public static class AgentRoutes
@@ -32,6 +34,11 @@ namespace Juice.Observability.Agent.Contracts
         public const string Certificate = "/agent/v1/certificate";
         public const string Commands = "/agent/v1/commands";
         public static string Result(Guid commandId) => $"/agent/v1/commands/{commandId}/result";
+        public static string Package(string version) => $"/agent/v1/packages/{version}";
+        /// <summary>The package's release signature, base64, sent with its bytes.</summary>
+        public const string PackageSignatureHeader = "Juice-Package-Signature";
+        /// <summary>The command keys the agent trusts, by id, comma-separated: the platform announces its current one when it's missing.</summary>
+        public const string KeysHeader = "Juice-Agent-Keys";
         /// <summary>Headers an agent sends on each poll, so the platform knows its version and host.</summary>
         public const string VersionHeader = "Juice-Agent-Version";
         public const string HostnameHeader = "Juice-Agent-Hostname";

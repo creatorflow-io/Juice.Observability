@@ -15,9 +15,25 @@ namespace Juice.Observability.Agent
     /// refusals included. Renews its certificate before it expires. Never listens on a port, and never stops on a failure: it logs it and tries again,
     /// later each time, so one bad answer or a platform outage doesn't take the agent down.
     /// </summary>
-    public sealed class AgentService(IOptions<AgentOptions> options, IOptions<LocalAllowlist> allowlist, TimeProvider clock, ILogger<AgentService> logger) : BackgroundService
+    public sealed class AgentService(IOptions<AgentOptions> options, IOptions<LocalAllowlist> allowlist, TimeProvider clock, ILogger<AgentService> logger,
+        IHostApplicationLifetime? lifetime = null) : BackgroundService
     {
-        public static readonly string Version = typeof(AgentService).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "0.0.0";
+        /// <summary>The version as packages name it: the build metadata after <c>+</c> left out.</summary>
+        public static readonly string Version = (typeof(AgentService).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "0.0.0").Split('+')[0];
+
+        /// <summary>How long a download, check and unpack may take.</summary>
+        internal static readonly TimeSpan UpdateTimeout = TimeSpan.FromMinutes(5);
+
+        private AgentUpdater? _updater;
+
+        internal AgentUpdater Updater
+        {
+            get => _updater ??= AgentUpdater.Create(options.Value);
+            set => _updater = value;
+        }
+
+        /// <summary>An update is unpacked and asked for: the agent stops for the launcher to start the new version.</summary>
+        internal bool RestartRequested { get; private set; }
 
         /// <summary>Renew when less than this share of the certificate's life is left.</summary>
         private const double RenewAt = 1.0 / 3;
@@ -51,6 +67,11 @@ namespace Juice.Observability.Agent
             {
                 logger.LogWarning("The local allowlist permits no action: every command will be refused. Set Allowlist:Actions.");
             }
+            if (allowlist.Value.Actions.ContainsKey(AgentActions.AgentUpdate))
+            {
+                if (!Updater.UnderLauncher) logger.LogWarning("The allowlist permits {Action}, but the agent wasn't started by its launcher: updates will fail.", AgentActions.AgentUpdate);
+                else if (options.Value.ReleaseKeyFiles.Count == 0) logger.LogWarning("The allowlist permits {Action}, but no Agent:ReleaseKeyFiles are set: updates will fail.", AgentActions.AgentUpdate);
+            }
             var diagnostics = new Diagnostics(options.Value.HostRoot, Version);
             var unsent = new Queue<CommandResult>();
             AgentIdentity? identity = null;
@@ -76,6 +97,16 @@ namespace Juice.Observability.Agent
                             identity = loaded;
                             logger.LogInformation("Agent {AgentId} of {Tenant} started, version {Version}", identity.AgentId, identity.Tenant, Version);
                         }
+                        if (Updater.ReadOutcome() is { } outcome)
+                        {
+                            // An update this host asked for ended, here or in the version before: its result goes to the platform now.
+                            var reported = AgentUpdater.Result(outcome);
+                            memory!.Complete(outcome.CommandId, reported);
+                            Keep(unsent, reported);
+                            Updater.ClearOutcome();
+                            logger.Log(outcome.Succeeded ? LogLevel.Information : LogLevel.Error, "Update from {From} to {To}: {Outcome}",
+                                outcome.From, outcome.To, outcome.Succeeded ? "succeeded" : $"rolled back ({outcome.Reason})");
+                        }
                         connection ??= Connect();
                         if (await RenewIfDueAsync(connection, stoppingToken))
                         {
@@ -83,15 +114,30 @@ namespace Juice.Observability.Agent
                             connection = Connect();
                         }
                         await SendAsync(connection.Client, unsent, stoppingToken);
-                        var poll = await connection.Client.PollAsync(options.Value.PollWaitSeconds, Version, Dns.GetHostName(), stoppingToken);
+                        var poll = await connection.Client.PollAsync(options.Value.PollWaitSeconds, Version, Dns.GetHostName(), stoppingToken, identity.CommandKeys.Keys);
+                        // It reached the platform with its certificate: a version on trial has proved itself.
+                        Updater.Confirm();
+                        identity = TrustAnnounced(poll.Keys, identity);
+                        var client = connection.Client;
                         foreach (var command in poll.Commands)
                         {
-                            if (await HandleAsync(command, identity, memory!, diagnostics, stoppingToken) is { } result)
+                            if (await HandleAsync(command, identity, memory!, diagnostics, stoppingToken, client.DownloadAsync) is { } result)
                             {
                                 Keep(unsent, result);
                             }
+                            if (RestartRequested)
+                            {
+                                break;   // the rest come again to the new version
+                            }
                         }
                         await SendAsync(connection.Client, unsent, stoppingToken);
+                        if (RestartRequested)
+                        {
+                            logger.LogInformation("Stopping for the launcher to start the new version");
+                            Environment.ExitCode = AgentHome.UpdateExitCode;
+                            lifetime?.StopApplication();
+                            return;
+                        }
                         delay = TimeSpan.FromSeconds(1);
                         continue;
                     }
@@ -125,6 +171,28 @@ namespace Juice.Observability.Agent
             {
                 connection?.Dispose();
             }
+        }
+
+        /// <summary>Adds the first announced key that a trusted key signed; ignores the rest. Returns the identity to use from now on.</summary>
+        internal AgentIdentity TrustAnnounced(IReadOnlyList<SignedKey>? announcements, AgentIdentity identity)
+        {
+            foreach (var announcement in announcements ?? [])
+            {
+                if (identity.CommandKeys.ContainsKey(announcement.KeyId))
+                {
+                    continue;
+                }
+                using var key = CommandVerifier.VerifyAnnouncement(announcement, identity);
+                if (key is null)
+                {
+                    logger.LogWarning("Ignored an announcement of command key {KeyId}: it isn't signed by a key this agent trusts", announcement.KeyId);
+                    continue;
+                }
+                Store.TrustKey(announcement.SignedBy, identity.CommandKeys[announcement.SignedBy], announcement.KeyId, key);
+                logger.LogInformation("Now trusting command key {KeyId}, announced by {SignedBy}", announcement.KeyId, announcement.SignedBy);
+                return Store.LoadIdentity();
+            }
+            return identity;
         }
 
         private static TimeSpan Longer(TimeSpan delay) => TimeSpan.FromSeconds(Math.Min(Math.Max(delay.TotalSeconds, 1) * 2, 60));
@@ -167,7 +235,8 @@ namespace Juice.Observability.Agent
         }
 
         /// <summary>One command, end to end. Returns what to report, or null when it can't even be attributed to a command.</summary>
-        internal async Task<CommandResult?> HandleAsync(SignedCommand command, AgentIdentity identity, CommandMemory memory, IDiagnostics diagnostics, CancellationToken cancellationToken)
+        internal async Task<CommandResult?> HandleAsync(SignedCommand command, AgentIdentity identity, CommandMemory memory, IDiagnostics diagnostics, CancellationToken cancellationToken,
+            Func<string, CancellationToken, Task<(byte[] Package, byte[] Signature)>>? download = null)
         {
             var now = clock.GetUtcNow();
             var verification = CommandVerifier.Verify(command, identity, allowlist.Value, now);
@@ -185,6 +254,9 @@ namespace Juice.Observability.Agent
                     return new CommandResult(envelope.CommandId, CommandOutcome.Rejected, RejectionReasons.Replayed, null, 0);
                 case Recall.Redelivered or Recall.AlreadyDone when earlier is not null:
                     return earlier with { CommandId = envelope.CommandId };
+                case Recall.Redelivered when envelope.CommandId == Updater.Trial:
+                    // The update that started this version, not finished: it's reported once the launcher keeps this version or goes back.
+                    return null;
                 case Recall.Redelivered:
                     // Started before and never finished: the agent stopped while running it. Not run again, so a command that brings the agent down
                     // can't do it on every restart.
@@ -196,6 +268,16 @@ namespace Juice.Observability.Agent
 
             memory.Record(envelope);
             var started = Stopwatch.GetTimestamp();
+            if (verified.Parameters is AgentUpdateParameters update)
+            {
+                if (await UpdateAsync(envelope, update, download, started, cancellationToken) is not { } updated)
+                {
+                    return null;   // the new version or, after a rollback, this one reports it
+                }
+                memory.Complete(envelope, updated);
+                logger.LogInformation("Command {CommandId} {Action}: {Outcome}", envelope.CommandId, envelope.Action, updated.Outcome);
+                return updated;
+            }
             CommandResult result;
             using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
             {
@@ -219,6 +301,43 @@ namespace Juice.Observability.Agent
             memory.Complete(envelope, result);
             logger.LogInformation("Command {CommandId} {Action}: {Outcome} in {DurationMs} ms", envelope.CommandId, envelope.Action, result.Outcome, result.DurationMs);
             return result;
+        }
+
+        /// <summary>
+        /// The result of an update that can't go ahead, or of one that has nothing to do; null when it's unpacked and the agent must stop for the
+        /// launcher (<see cref="RestartRequested"/>).
+        /// </summary>
+        private async Task<CommandResult?> UpdateAsync(CommandEnvelope envelope, AgentUpdateParameters update,
+            Func<string, CancellationToken, Task<(byte[] Package, byte[] Signature)>>? download, long started, CancellationToken cancellationToken)
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(UpdateTimeout);
+            try
+            {
+                var fetch = download ?? ((_, _) => throw new UpdateFailedException("updates_unavailable"));
+                if (!await Updater.PrepareAsync(envelope.CommandId, update, Version, fetch, timeout.Token))
+                {
+                    return new CommandResult(envelope.CommandId, CommandOutcome.Succeeded, null,
+                        System.Text.Json.JsonSerializer.SerializeToElement(new { from = Version, to = Version }), Elapsed(started));
+                }
+                logger.LogInformation("Command {CommandId}: version {Version} is unpacked and checked; restarting into it", envelope.CommandId, update.Version);
+                RestartRequested = true;
+                return null;
+            }
+            catch (UpdateFailedException e)
+            {
+                logger.LogWarning("Command {CommandId}: update to {Version} refused: {Reason}", envelope.CommandId, update.Version, e.Message);
+                return new CommandResult(envelope.CommandId, CommandOutcome.Failed, e.Message, null, Elapsed(started));
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                return new CommandResult(envelope.CommandId, CommandOutcome.Failed, "timeout", null, Elapsed(started));
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or HttpRequestException)
+            {
+                logger.LogWarning(e, "Command {CommandId}: update to {Version} failed", envelope.CommandId, update.Version);
+                return new CommandResult(envelope.CommandId, CommandOutcome.Failed, e.GetType().Name, null, Elapsed(started));
+            }
         }
 
         private static int Elapsed(long started) => (int)Stopwatch.GetElapsedTime(started).TotalMilliseconds;

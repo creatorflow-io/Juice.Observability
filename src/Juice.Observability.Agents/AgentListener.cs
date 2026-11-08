@@ -35,6 +35,7 @@ namespace Juice.Observability.Agents
             services.AddSingleton<EnrollmentGuard>();
             services.AddSingleton<AgentWakeups>();
             services.AddSingleton<HostLinks>();
+            services.AddSingleton<AgentPackageCatalog>();
             return services;
         }
 

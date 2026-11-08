@@ -16,8 +16,17 @@ namespace Juice.Observability.Agent.Contracts
         public const string DiskUsage = "disk.usage";
         /// <summary>Whether this host can open a TCP connection to a host and port, and how long it took.</summary>
         public const string TcpReachability = "tcp.reachability";
+        /// <summary>
+        /// Install a signed agent package and restart into it, going back to the version before if it doesn't come up healthy. The one action that
+        /// changes the host: admins only on the platform, and only where the host's allowlist lists it. The package must carry a signature from a
+        /// release key this host trusts, which the platform can't supply.
+        /// </summary>
+        public const string AgentUpdate = "agent.update";
 
-        public static readonly IReadOnlyList<string> All = [HostSummary, DiskUsage, TcpReachability];
+        public static readonly IReadOnlyList<string> All = [HostSummary, DiskUsage, TcpReachability, AgentUpdate];
+
+        /// <summary>Actions that change the host, rather than read it.</summary>
+        public static readonly IReadOnlyList<string> Changing = [AgentUpdate];
 
         /// <summary>
         /// Reads an action's parameters strictly: an unknown action, an unknown member, a missing value or a value out of bounds is an error.
@@ -50,6 +59,10 @@ namespace Juice.Observability.Agent.Contracts
                         var tcp = parameters.Deserialize<TcpReachabilityParameters>(CommandSignature.Json)!;
                         error = tcp.Validate();
                         return error is null ? tcp : null;
+                    case AgentUpdate:
+                        var update = parameters.Deserialize<AgentUpdateParameters>(CommandSignature.Json)!;
+                        error = update.Validate();
+                        return error is null ? update : null;
                     default:
                         error = $"unknown action '{action}'";
                         return null;
@@ -64,6 +77,24 @@ namespace Juice.Observability.Agent.Contracts
     }
 
     public sealed record HostSummaryParameters;
+
+    /// <param name="Version">The agent version to install, as its package names it.</param>
+    /// <param name="Sha256">The package's SHA-256, lowercase hex: the agent installs only those exact bytes.</param>
+    public sealed partial record AgentUpdateParameters(string Version, string Sha256)
+    {
+        public string? Validate()
+        {
+            if (string.IsNullOrEmpty(Version) || Version.Length > 64 || !SemanticVersion().IsMatch(Version)) return "version is a version like 1.2.0 or 1.2.0-alpha.3";
+            if (string.IsNullOrEmpty(Sha256) || !Hex64().IsMatch(Sha256)) return "sha256 is 64 lowercase hex characters";
+            return null;
+        }
+
+        [GeneratedRegex(@"^\d{1,9}\.\d{1,9}\.\d{1,9}(-[0-9A-Za-z.-]{1,40})?$")]
+        private static partial Regex SemanticVersion();
+
+        [GeneratedRegex("^[0-9a-f]{64}$")]
+        private static partial Regex Hex64();
+    }
 
     /// <param name="PathPrefix">Only filesystems mounted under this absolute path; null for all.</param>
     public sealed partial record DiskUsageParameters(string? PathPrefix)

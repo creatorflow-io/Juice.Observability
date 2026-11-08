@@ -5,8 +5,17 @@ using Juice.Observability.Agent.Contracts;
 
 namespace Juice.Observability.Agent
 {
-    /// <summary>Who this agent is, from its enrollment, and the key it trusts commands from.</summary>
-    public sealed record AgentIdentity(Guid AgentId, string Tenant, ECDsa CommandKey, string CommandKeyId);
+    /// <summary>
+    /// Who this agent is, from its enrollment, and the keys it trusts commands from by id: the one from enrollment, or after a rotation the newest
+    /// (<see cref="CommandKeyId"/>) and the one that announced it.
+    /// </summary>
+    public sealed record AgentIdentity(Guid AgentId, string Tenant, IReadOnlyDictionary<string, ECDsa> CommandKeys, string CommandKeyId)
+    {
+        public AgentIdentity(Guid agentId, string tenant, ECDsa commandKey, string commandKeyId)
+            : this(agentId, tenant, new Dictionary<string, ECDsa> { [commandKeyId] = commandKey }, commandKeyId)
+        {
+        }
+    }
 
     /// <summary>A command that passed every check, with its parameters typed.</summary>
     public sealed record VerifiedCommand(CommandEnvelope Envelope, object Parameters);
@@ -41,11 +50,11 @@ namespace Juice.Observability.Agent
             {
                 return Verification.Reject(RejectionReasons.Malformed);
             }
-            if (signed.KeyId != identity.CommandKeyId)
+            if (!identity.CommandKeys.TryGetValue(signed.KeyId, out var key))
             {
                 return Verification.Reject(RejectionReasons.UnknownKey, PeekId(payload));
             }
-            if (!CommandSignature.Verify(identity.CommandKey, payload, signed.Signature))
+            if (!CommandSignature.Verify(key, payload, signed.Signature))
             {
                 return Verification.Reject(RejectionReasons.InvalidSignature, PeekId(payload));
             }
@@ -78,6 +87,33 @@ namespace Juice.Observability.Agent
             if (allowlist.Check(envelope.Action, parameters) is { } refused) return Verification.Reject(refused, id);
 
             return new Verification(new VerifiedCommand(envelope, parameters), null, id);
+        }
+
+        /// <summary>
+        /// A new command key, if a key this agent trusts announced it: the announcement's signature verifies with that key, over the new key's id and
+        /// public key, and the id is that key's own. Null when any of it doesn't hold; the platform can't add a key any other way.
+        /// </summary>
+        public static ECDsa? VerifyAnnouncement(SignedKey announcement, AgentIdentity identity)
+        {
+            if (!identity.CommandKeys.TryGetValue(announcement.SignedBy, out var announcer)
+                || !CommandSignature.Verify(announcer, SignedKey.Content(announcement.KeyId, announcement.PublicKeyPem), announcement.Signature))
+            {
+                return null;
+            }
+            var key = ECDsa.Create();
+            try
+            {
+                key.ImportFromPem(announcement.PublicKeyPem);
+                if (key.KeySize == 256 && CommandSignature.KeyId(key) == announcement.KeyId)
+                {
+                    return key;
+                }
+            }
+            catch (Exception e) when (e is ArgumentException or CryptographicException)
+            {
+            }
+            key.Dispose();
+            return null;
         }
 
         /// <summary>The command id of a payload that failed its checks, so the refusal can be reported against it; null if even that doesn't read.</summary>

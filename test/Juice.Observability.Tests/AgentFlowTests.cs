@@ -39,13 +39,15 @@ namespace Juice.Observability.Tests
             private readonly ScratchDatabase _database;
             private readonly AgentPki _pki;
             private readonly bool _viaUrls;
+            private readonly IReadOnlyDictionary<string, string> _extra;
 
             /// <param name="database">The platform database for this host.</param>
             /// <param name="pki">The agent CA, command key and listener certificate.</param>
             /// <param name="viaUrls">The host's address as <c>URLS</c> (as ASPNETCORE_URLS or launchSettings set it) instead of <c>HTTP_PORTS</c>.</param>
-            public AgentHost(ScratchDatabase database, AgentPki pki, bool viaUrls = false)
+            /// <param name="extra">Further settings: packages, rotation.</param>
+            public AgentHost(ScratchDatabase database, AgentPki pki, bool viaUrls = false, IReadOnlyDictionary<string, string>? extra = null)
             {
-                (_database, _pki, _viaUrls) = (database, pki, viaUrls);
+                (_database, _pki, _viaUrls, _extra) = (database, pki, viaUrls, extra ?? new Dictionary<string, string>());
                 (AgentPort, HttpPort) = (AgentPki.FreePort(), AgentPki.FreePort());
                 UseKestrel();
                 StartServer();
@@ -65,7 +67,8 @@ namespace Juice.Observability.Tests
                     ["Auth:Audience"] = "juice-platform", ["Discovery:Enabled"] = "false", ["Health:Enabled"] = "false", ["Rules:Enabled"] = "false",
                     ["Webhooks:Enabled"] = "false", ["Database:Migrate"] = "true",
                 }.Concat(_pki.Settings(AgentPort, HttpPort).Where(s => !_viaUrls || s.Key != "HTTP_PORTS"))
-                 .Concat(_viaUrls ? [new KeyValuePair<string, string>("URLS", $"http://localhost:{HttpPort}")] : []))
+                 .Concat(_viaUrls ? [new KeyValuePair<string, string>("URLS", $"http://localhost:{HttpPort}")] : [])
+                 .Concat(_extra))
                 {
                     builder.UseSetting(key, value);
                 }
@@ -476,6 +479,127 @@ namespace Juice.Observability.Tests
             var (_, _, admin, tenant) = await Caller.AllAsync(client, database);
             Assert.Equal(HttpStatusCode.Conflict, (await admin.PostAsync($"/api/v1/tenants/{tenant}/agents/enrollment-tokens", new { })).StatusCode);
             Assert.Equal(HttpStatusCode.NotFound, (await client.PostAsJsonAsync(AgentRoutes.Enroll, new { token = "x", csr = "y" }, Ct)).StatusCode);
+        }
+
+        /// <summary>
+        /// Milestone 2's platform half: only packages a release key signed are offered; only an admin issues an update, and the platform puts in the hash
+        /// of the package it checked; the package is served to enrolled agents only, and the real agent downloads, checks and unpacks it.
+        /// </summary>
+        [Fact]
+        public async Task Only_admins_update_agents_and_only_to_signed_packages_the_platform_offers_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            using var pki = new AgentPki();
+            using var release = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            using var stranger = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            var packages = Path.Combine(pki.Directory, "packages");
+            var good = AgentPackageFiles.Zip("1.1.0");
+            AgentPackageFiles.Publish(packages, "1.1.0", good, release);
+            AgentPackageFiles.Publish(packages, "1.2.0", AgentPackageFiles.Zip("1.2.0"), stranger);        // signed, by no release key
+            AgentPackageFiles.Publish(packages, "1.3.0", AgentPackageFiles.Zip("1.3.0", "9.9.9"), release); // signed, but says it's another version
+            await using var host = new AgentHost(database, pki, extra: new Dictionary<string, string>
+            {
+                ["Agents:PackageDirectory"] = packages, ["Agents:ReleaseKeyFiles:0"] = AgentPackageFiles.WritePublicKey(pki.Directory, release),
+            });
+            using var users = host.Users();
+            var (viewer, @operator, admin, tenant) = await Caller.AllAsync(users, database);
+            var data = TempDirectory();
+            var (store, identity) = await EnrollAsync(host, pki, await TokenAsync(admin, tenant), data);
+            var agentPath = $"/api/v1/tenants/{tenant}/agents/{identity.AgentId}/commands";
+
+            var offered = (await Caller.JsonAsync(await viewer.GetAsync($"/api/v1/tenants/{tenant}/agents/packages"))).GetProperty("items");
+            var only = Assert.Single(offered.EnumerateArray());
+            Assert.Equal(("1.1.0", AgentPackages.Sha256(good)), (only.GetProperty("version").GetString(), only.GetProperty("sha256").GetString()));
+
+            Assert.Equal(HttpStatusCode.Forbidden, (await @operator.PostAsync(agentPath, new { action = AgentActions.AgentUpdate, parameters = new { version = "1.1.0" } })).StatusCode);
+            foreach (var parameters in new object[] { new { version = "1.2.0" }, new { version = "1.3.0" }, new { version = "1.1.0", sha256 = new string('a', 64) }, new { } })
+            {
+                Assert.Equal(HttpStatusCode.BadRequest, (await admin.PostAsync(agentPath, new { action = AgentActions.AgentUpdate, parameters })).StatusCode);
+            }
+            var issued = await Caller.JsonAsync(await admin.PostAsync(agentPath, new { action = AgentActions.AgentUpdate, parameters = new { version = "1.1.0" } }));
+            Assert.Equal(AgentPackages.Sha256(good), issued.GetProperty("parameters").GetProperty("sha256").GetString());
+            Assert.Equal(CommandLimits.MaxLifetime, issued.GetProperty("expiresAt").GetDateTimeOffset() - issued.GetProperty("issuedAt").GetDateTimeOffset());
+
+            using var client = new PlatformClient(Options(host, pki, data), store.LoadCertificate());
+            var (bytes, signature) = await client.DownloadAsync("1.1.0", Ct);
+            Assert.Equal(good, bytes);
+            Assert.True(AgentPackages.Verify(release, bytes, signature));
+            Assert.Equal("package_not_found", (await Assert.ThrowsAsync<UpdateFailedException>(() => client.DownloadAsync("1.2.0", Ct))).Message);
+            using (var anonymous = new PlatformClient(Options(host, pki, TempDirectory()), null))
+            {
+                await Assert.ThrowsAsync<AgentRefusedException>(() => anonymous.DownloadAsync("1.1.0", Ct));
+            }
+
+            // The real agent with that command: downloaded, checked against its own release key, unpacked, and handed to the launcher.
+            var home = Path.Combine(data, "home");
+            var agent = new AgentService(Microsoft.Extensions.Options.Options.Create(Options(host, pki, data)),
+                Microsoft.Extensions.Options.Options.Create(new LocalAllowlist { Actions = { [AgentActions.AgentUpdate] = new ActionPolicy() } }), TimeProvider.System, new TestLog<AgentService>())
+            { Updater = new AgentUpdater(home, [release], null) };
+            var command = Assert.Single((await client.PollAsync(1, "1.0.0", "test-host", Ct)).Commands);
+            Assert.Null(await agent.HandleAsync(command, identity, new CommandMemory(null), new Diagnostics("/", "1.0.0"), Ct, client.DownloadAsync));
+            Assert.True(agent.RestartRequested);
+            Assert.True(File.Exists(Path.Combine(home, AgentHome.VersionsDirectory, "1.1.0", "juice-agent.dll")));
+        }
+
+        /// <summary>
+        /// Rotation against a running platform: the platform moves to a new CA and command key; an agent enrolled before keeps its certificate, learns the
+        /// new key at its next poll, runs commands signed with it, and gets a certificate from the new CA when it renews.
+        /// </summary>
+        [Fact]
+        public async Task An_agent_enrolled_before_a_rotation_follows_it_without_enrolling_again_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            using var before = new AgentPki();
+            using var after = new AgentPki();
+            var data = TempDirectory();
+            AgentStore store;
+            AgentIdentity identity;
+            Guid tenant;
+            await using (var old = new AgentHost(database, before))
+            {
+                using var users = old.Users();
+                var (_, _, admin, t) = await Caller.AllAsync(users, database);
+                tenant = t;
+                (store, identity) = await EnrollAsync(old, before, await TokenAsync(admin, tenant), data);
+            }
+
+            await using var host = new AgentHost(database, after, extra: new Dictionary<string, string>
+            {
+                ["Agents:PreviousCaCertificateFiles:0"] = before.AgentCaCertificate, ["Agents:PreviousCommandKeyFiles:0"] = before.CommandKey,
+            });
+            using var platformUsers = host.Users();
+            var (_, @operator, _, _) = await Caller.AllAsync(platformUsers, database);
+            var agent = new AgentService(Microsoft.Extensions.Options.Options.Create(Options(host, after, data)),
+                Microsoft.Extensions.Options.Options.Create(Allowlist()), TimeProvider.System, new TestLog<AgentService>());
+
+            using (var client = new PlatformClient(Options(host, after, data), store.LoadCertificate()))
+            {
+                // Its certificate from the old CA still gets in; the poll hands over the new key, announced by the old one.
+                var poll = await client.PollAsync(1, "test", "test-host", Ct, identity.CommandKeys.Keys);
+                Assert.NotNull(poll.Keys);
+                identity = agent.TrustAnnounced(poll.Keys, identity);
+                Assert.Equal(2, identity.CommandKeys.Count);
+                // Once it has it, nothing more is announced.
+                var command = await IssueAsync(@operator, tenant, identity.AgentId, AgentActions.HostSummary, new { });
+                poll = await client.PollAsync(1, "test", "test-host", Ct, identity.CommandKeys.Keys);
+                Assert.Null(poll.Keys);
+                var signed = Assert.Single(poll.Commands);
+                Assert.Null(CommandVerifier.Verify(signed, identity, Allowlist(), DateTimeOffset.UtcNow).Rejection);
+
+                var (key, csr) = AgentStore.NewKey("test-host");
+                store.SaveRenewal(key, (await client.RenewAsync(new RenewRequest(csr), Ct)).CertificatePem);
+            }
+            using var renewed = store.LoadCertificate();
+            using var newCa = X509CertificateLoader.LoadCertificateFromFile(after.AgentCaCertificate);
+            using var chain = new X509Chain();
+            chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+            chain.ChainPolicy.CustomTrustStore.Add(newCa);
+            chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+            Assert.True(chain.Build(renewed), "the renewed certificate isn't from the new CA");
+            using var again = new PlatformClient(Options(host, after, data), renewed);
+            Assert.Null((await again.PollAsync(1, "test", "test-host", Ct, identity.CommandKeys.Keys)).Keys);
         }
     }
 }

@@ -92,6 +92,22 @@ namespace Juice.Observability.Agent
             }
         }
 
+        /// <summary>
+        /// The result of a command finished by another run of the agent: an update, whose outcome the version that runs after it reports. Nothing
+        /// when the command is no longer remembered.
+        /// </summary>
+        public void Complete(Guid commandId, CommandResult result)
+        {
+            lock (_gate)
+            {
+                if (_byNonce.Values.FirstOrDefault(e => e.CommandId == commandId) is { } entry)
+                {
+                    _byNonce[entry.Nonce] = entry with { Result = result };
+                    Save();
+                }
+            }
+        }
+
         private void Prune(DateTimeOffset now)
         {
             foreach (var expired in _byNonce.Values.Where(e => e.KeepUntil <= now).Select(e => e.Nonce).ToList())

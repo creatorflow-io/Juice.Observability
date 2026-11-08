@@ -66,12 +66,66 @@ namespace Juice.Observability.Agent
         public async Task<RenewResponse> RenewAsync(RenewRequest request, CancellationToken cancellationToken)
             => await ReadAsync<RenewResponse>(await _http.PostAsJsonAsync(AgentRoutes.Certificate, request, CommandSignature.Json, cancellationToken), cancellationToken);
 
-        public async Task<PollResponse> PollAsync(int waitSeconds, string version, string hostname, CancellationToken cancellationToken)
+        /// <summary>
+        /// Waits for commands. With <c>trustedKeys</c>, the command keys the agent trusts, the platform can announce its current one; without, no
+        /// header is sent, as an agent from before rotation did.
+        /// </summary>
+        public async Task<PollResponse> PollAsync(int waitSeconds, string version, string hostname, CancellationToken cancellationToken, IEnumerable<string>? trustedKeys = null)
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, $"{AgentRoutes.Commands}?wait={waitSeconds}");
             request.Headers.Add(AgentRoutes.VersionHeader, version);
             request.Headers.Add(AgentRoutes.HostnameHeader, hostname);
+            if (trustedKeys is not null)
+            {
+                request.Headers.Add(AgentRoutes.KeysHeader, string.Join(',', trustedKeys));
+            }
             return await ReadAsync<PollResponse>(await _http.SendAsync(request, cancellationToken), cancellationToken);
+        }
+
+        /// <summary>A package and its release signature. Larger than <see cref="AgentPackages.MaxBytes"/> is refused before or while it's read.</summary>
+        public async Task<(byte[] Package, byte[] Signature)> DownloadAsync(string version, CancellationToken cancellationToken)
+        {
+            using var response = await _http.GetAsync(AgentRoutes.Package(version), HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            if (response.StatusCode == HttpStatusCode.NotFound)
+            {
+                throw new UpdateFailedException("package_not_found");
+            }
+            await EnsureAsync(response, cancellationToken);
+            if (!response.Headers.TryGetValues(AgentRoutes.PackageSignatureHeader, out var values) || !TryBase64(values.First(), out var signature))
+            {
+                throw new UpdateFailedException("package_unsigned");
+            }
+            if (response.Content.Headers.ContentLength > AgentPackages.MaxBytes)
+            {
+                throw new UpdateFailedException("package_too_large");
+            }
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var buffer = new MemoryStream();
+            var chunk = new byte[81920];
+            int read;
+            while ((read = await stream.ReadAsync(chunk, cancellationToken)) > 0)
+            {
+                if (buffer.Length + read > AgentPackages.MaxBytes)
+                {
+                    throw new UpdateFailedException("package_too_large");
+                }
+                buffer.Write(chunk, 0, read);
+            }
+            return (buffer.ToArray(), signature);
+        }
+
+        private static bool TryBase64(string value, out byte[] bytes)
+        {
+            try
+            {
+                bytes = Convert.FromBase64String(value);
+                return bytes.Length is > 0 and < 1024;
+            }
+            catch (FormatException)
+            {
+                bytes = [];
+                return false;
+            }
         }
 
         public async Task ReportAsync(CommandResult result, CancellationToken cancellationToken)
@@ -90,7 +144,7 @@ namespace Juice.Observability.Agent
             using (response)
             {
                 await EnsureAsync(response, cancellationToken);
-                return (await response.Content.ReadFromJsonAsync<T>(CommandSignature.Json, cancellationToken))!;
+                return (await response.Content.ReadFromJsonAsync<T>(CommandSignature.Tolerant, cancellationToken))!;
             }
         }
 

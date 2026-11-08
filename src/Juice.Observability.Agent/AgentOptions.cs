@@ -25,6 +25,12 @@ namespace Juice.Observability.Agent
         /// <summary>Where the host's <c>/proc</c> is, when the agent runs in a container with the host mounted (<c>/hostfs</c>).</summary>
         public string HostRoot { get; set; } = "/";
 
+        /// <summary>
+        /// Release public keys, PEM, that this host trusts for <c>agent.update</c>: a package installs only with a signature from one of them. Set here,
+        /// on the host, and never by the platform. None: no update installs, whatever the allowlist says.
+        /// </summary>
+        public List<string> ReleaseKeyFiles { get; set; } = [];
+
         /// <summary>How long a poll waits for a command when none is waiting, 1 to 55 seconds.</summary>
         public int PollWaitSeconds { get; set; } = 25;
 

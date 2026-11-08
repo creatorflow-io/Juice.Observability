@@ -256,5 +256,32 @@ namespace Juice.Observability.Tests
                 .Select(x => $"{Path.GetFileName(x.file)}:{x.i + 1}: {x.line.Trim()}").ToList();
             Assert.True(offences.Count == 0, string.Join("\n", offences));
         }
+
+        /// <summary>
+        /// The launcher has to start a process: the agent version it runs. It may do that in one file only, with a fixed program and arguments, and
+        /// nothing in it may run a shell, load code or call native code. Everything else in the launcher is held to the agent's rule.
+        /// </summary>
+        [Fact]
+        public void The_launcher_starts_only_the_agent_and_only_in_one_place()
+        {
+            var root = AppContext.BaseDirectory;
+            while (!File.Exists(Path.Combine(root, "Juice.Observability.slnx"))) root = Path.GetDirectoryName(root) ?? throw new InvalidOperationException("no repository root");
+            const string allowedFile = "AgentProcess.cs";
+            string[] starts = ["Process.Start", "ProcessStartInfo", "new Process("];
+            string[] never = ["/bin/sh", "/bin/bash", "cmd.exe", "powershell", "Assembly.Load", "Activator.CreateInstance", "Type.GetType(", "AppDomain", "DllImport",
+                "LibraryImport", "NativeLibrary", "Marshal.GetDelegateForFunctionPointer", "UseShellExecute = true", "Arguments ="];
+            var lines = Directory.EnumerateFiles(Path.Combine(root, "src", "Juice.Observability.Agent.Launcher"), "*.cs", SearchOption.AllDirectories)
+                .SelectMany(file => File.ReadLines(file).Select((line, i) => (file, i, line))).ToList();
+            var offences = lines
+                .Where(x => never.Any(f => x.line.Contains(f, StringComparison.OrdinalIgnoreCase))
+                    || (Path.GetFileName(x.file) != allowedFile && starts.Any(f => x.line.Contains(f, StringComparison.OrdinalIgnoreCase))))
+                .Select(x => $"{Path.GetFileName(x.file)}:{x.i + 1}: {x.line.Trim()}").ToList();
+            Assert.True(offences.Count == 0, string.Join("\n", offences));
+            // The one place: a single start, no shell, the entry point as the only argument.
+            var allowed = lines.Where(x => Path.GetFileName(x.file) == allowedFile).Select(x => x.line).ToList();
+            Assert.Single(allowed, l => l.Contains("Process.Start(", StringComparison.Ordinal));
+            Assert.Contains(allowed, l => l.Contains("UseShellExecute = false", StringComparison.Ordinal));
+            Assert.Single(allowed, l => l.Contains("ArgumentList.Add(", StringComparison.Ordinal));
+        }
     }
 }

@@ -26,12 +26,44 @@ namespace Juice.Observability.Agents
         /// <summary>How long an agent certificate lasts. The agent renews it when a third is left.</summary>
         public TimeSpan CertificateLifetime { get; set; } = TimeSpan.FromDays(7);
 
+        /// <summary>
+        /// CA certificates this one replaced, PEM, without their keys: certificates they issued are still accepted, and an agent gets one from the
+        /// current CA at its next renewal. Keep one for a <see cref="CertificateLifetime"/> after the switch, then remove it.
+        /// </summary>
+        public List<string> PreviousCaCertificateFiles { get; set; } = [];
+
+        /// <summary>
+        /// Command keys the current one replaced, PEM, with their private keys: each signs an announcement of the current key, so agents that trust
+        /// it take the new one at their next poll without enrolling again. Nothing else is signed with them. Keep one until every agent polled.
+        /// </summary>
+        public List<string> PreviousCommandKeyFiles { get; set; } = [];
+
+        /// <summary>
+        /// Where agent packages are (<c>juice-agent-{version}.zip</c>, each with its <c>.sig</c>), for <c>agent.update</c>. None: no updates.
+        /// </summary>
+        public string? PackageDirectory { get; set; }
+
+        /// <summary>
+        /// Release public keys, PEM: a package is offered only when one of them signed it. Agents check the same signature against the keys in their
+        /// own configuration; these let the platform refuse a bad package before any agent sees it.
+        /// </summary>
+        public List<string> ReleaseKeyFiles { get; set; } = [];
+
         public IEnumerable<string> Validate()
         {
             foreach (var (name, file) in new[] { ("CaCertificateFile", CaCertificateFile), ("CaKeyFile", CaKeyFile), ("CommandKeyFile", CommandKeyFile),
                 ("ServerCertificateFile", ServerCertificateFile), ("ServerKeyFile", ServerKeyFile) })
             {
                 if (string.IsNullOrEmpty(file) || !File.Exists(file)) yield return $"Agents:{name} must name a readable file";
+            }
+            foreach (var (name, files) in new[] { ("PreviousCaCertificateFiles", PreviousCaCertificateFiles), ("PreviousCommandKeyFiles", PreviousCommandKeyFiles), ("ReleaseKeyFiles", ReleaseKeyFiles) })
+            {
+                foreach (var file in files.Where(f => !File.Exists(f))) yield return $"Agents:{name}: {file} isn't a readable file";
+            }
+            if (PackageDirectory is { Length: > 0 } packages)
+            {
+                if (!Directory.Exists(packages)) yield return "Agents:PackageDirectory must name a directory";
+                if (ReleaseKeyFiles.Count == 0) yield return "Agents:ReleaseKeyFiles is required with a PackageDirectory: only signed packages are offered";
             }
             if (Port is < 1 or > 65535) yield return "Agents:Port is 1 to 65535";
             if (CertificateLifetime < TimeSpan.FromHours(1) || CertificateLifetime > TimeSpan.FromDays(90)) yield return "Agents:CertificateLifetime is 1 hour to 90 days";
@@ -48,6 +80,8 @@ namespace Juice.Observability.Agents
         private static readonly Oid ClientAuth = new("1.3.6.1.5.5.7.3.2");
 
         private readonly X509Certificate2 _ca;
+        /// <summary>The current CA first, then those it replaced: certificates from any of them identify an agent.</summary>
+        private readonly IReadOnlyList<X509Certificate2> _accepted;
         private readonly ECDsa _commandKey;
         private readonly TimeSpan _lifetime;
 
@@ -55,20 +89,57 @@ namespace Juice.Observability.Agents
         {
             var settings = options.Value;
             _ca = X509Certificate2.CreateFromPemFile(settings.CaCertificateFile, settings.CaKeyFile);
-            _commandKey = ECDsa.Create();
-            _commandKey.ImportFromPem(File.ReadAllText(settings.CommandKeyFile));
-            if (_commandKey.KeySize != 256)
-            {
-                throw new InvalidOperationException("Agents:CommandKeyFile must be an ECDSA P-256 key");
-            }
+            _accepted = [_ca, .. settings.PreviousCaCertificateFiles.Select(X509CertificateLoader.LoadCertificateFromFile)];
+            _commandKey = LoadCommandKey(settings.CommandKeyFile, "Agents:CommandKeyFile");
             _lifetime = settings.CertificateLifetime;
             CommandKeyId = CommandSignature.KeyId(_commandKey);
             CommandKeyPem = _commandKey.ExportSubjectPublicKeyInfoPem();
+            var announcements = new List<SignedKey>();
+            foreach (var file in settings.PreviousCommandKeyFiles)
+            {
+                using var previous = LoadCommandKey(file, "Agents:PreviousCommandKeyFiles");
+                var previousId = CommandSignature.KeyId(previous);
+                if (previousId == CommandKeyId)
+                {
+                    throw new InvalidOperationException($"Agents:PreviousCommandKeyFiles: {file} is the current command key");
+                }
+                announcements.Add(new SignedKey(CommandKeyId, CommandKeyPem, previousId, CommandSignature.Sign(previous, SignedKey.Content(CommandKeyId, CommandKeyPem))));
+            }
+            Announcements = announcements;
+        }
+
+        private static ECDsa LoadCommandKey(string file, string setting)
+        {
+            var key = ECDsa.Create();
+            key.ImportFromPem(File.ReadAllText(file));
+            if (key.KeySize != 256)
+            {
+                key.Dispose();
+                throw new InvalidOperationException($"{setting} must be an ECDSA P-256 key");
+            }
+            return key;
         }
 
         public string CommandKeyId { get; }
         /// <summary>The public half, given to every agent at enrollment.</summary>
         public string CommandKeyPem { get; }
+
+        /// <summary>The current command key, announced by each key it replaced. Empty when nothing was rotated.</summary>
+        public IReadOnlyList<SignedKey> Announcements { get; }
+
+        /// <summary>
+        /// What an agent that trusts these keys needs to trust the current one: nothing when it already does, or when it didn't say which it trusts
+        /// (an agent from before rotation, which couldn't read an announcement anyway); otherwise the announcements signed by a key it trusts.
+        /// </summary>
+        public IReadOnlyList<SignedKey>? AnnouncementsFor(IReadOnlyCollection<string>? trusted)
+        {
+            if (trusted is null || trusted.Contains(CommandKeyId))
+            {
+                return null;
+            }
+            var usable = Announcements.Where(a => trusted.Contains(a.SignedBy)).ToList();
+            return usable.Count > 0 ? usable : null;
+        }
 
         /// <summary>
         /// A client certificate for the agent, from its CSR: the CSR's signature must verify, and its key must be ECDSA P-256 or P-384, or RSA of
@@ -109,26 +180,35 @@ namespace Juice.Observability.Agents
             return rsa is not null && rsa.KeySize >= 2048;
         }
 
-        /// <summary>The agent a client certificate belongs to, if this CA issued it for client authentication and it's in date; otherwise null.</summary>
+        /// <summary>
+        /// The agent a client certificate belongs to, if this CA (or one it replaced) issued it for client authentication and it's in date; otherwise
+        /// null.
+        /// </summary>
         public Guid? AgentOf(X509Certificate2? certificate, DateTimeOffset now)
         {
             if (certificate is null || now < certificate.NotBefore.ToUniversalTime() || now > certificate.NotAfter.ToUniversalTime())
             {
                 return null;
             }
-            using var chain = new X509Chain();
-            chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
-            chain.ChainPolicy.CustomTrustStore.Add(_ca);
-            chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
-            chain.ChainPolicy.ApplicationPolicy.Add(ClientAuth);
-            chain.ChainPolicy.VerificationTime = now.UtcDateTime;
-            if (!chain.Build(certificate) || chain.ChainElements.Count != 2 || !chain.ChainElements[^1].Certificate.RawData.AsSpan().SequenceEqual(_ca.RawData))
+            if (!_accepted.Any(ca => IssuedBy(certificate, ca, now)))
             {
                 return null;
             }
             return certificate.Extensions.OfType<X509SubjectAlternativeNameExtension>().FirstOrDefault() is { } san
                 && UriOf(san) is { } uri && uri.StartsWith(AgentUriPrefix, StringComparison.Ordinal) && Guid.TryParse(uri[AgentUriPrefix.Length..], out var id)
                 ? id : null;
+        }
+
+        /// <summary>Issued directly by this CA, for client authentication: one CA at a time, so each is checked as the only root.</summary>
+        private static bool IssuedBy(X509Certificate2 certificate, X509Certificate2 ca, DateTimeOffset now)
+        {
+            using var chain = new X509Chain();
+            chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+            chain.ChainPolicy.CustomTrustStore.Add(ca);
+            chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+            chain.ChainPolicy.ApplicationPolicy.Add(ClientAuth);
+            chain.ChainPolicy.VerificationTime = now.UtcDateTime;
+            return chain.Build(certificate) && chain.ChainElements.Count == 2 && chain.ChainElements[^1].Certificate.RawData.AsSpan().SequenceEqual(ca.RawData);
         }
 
         /// <summary>The first URI of a subject alternative name extension (tag 6, an IA5String).</summary>
@@ -168,7 +248,10 @@ namespace Juice.Observability.Agents
 
         public void Dispose()
         {
-            _ca.Dispose();
+            foreach (var ca in _accepted)
+            {
+                ca.Dispose();
+            }
             _commandKey.Dispose();
         }
     }

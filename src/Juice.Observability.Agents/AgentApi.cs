@@ -34,7 +34,22 @@ namespace Juice.Observability.Agents
             authenticated.MapPost(AgentRoutes.Certificate, RenewAsync);
             authenticated.MapGet(AgentRoutes.Commands, PollAsync);
             authenticated.MapPost("/agent/v1/commands/{commandId:guid}/result", ResultAsync);
+            authenticated.MapGet("/agent/v1/packages/{version}", Package);
             return app;
+        }
+
+        /// <summary>
+        /// A package the platform offers, with its release signature in a header. Only to an enrolled agent: the bytes aren't secret, but serving them
+        /// to anyone would make the listener a file server.
+        /// </summary>
+        private static IResult Package(string version, HttpContext http)
+        {
+            if (http.RequestServices.GetRequiredService<AgentPackageCatalog>().Find(version) is not { } package)
+            {
+                return Results.Problem(statusCode: StatusCodes.Status404NotFound, title: "No such package", detail: $"No signed package of version {version} is offered.");
+            }
+            http.Response.Headers[AgentRoutes.PackageSignatureHeader] = Convert.ToBase64String(package.Signature);
+            return Results.File(package.File, "application/zip", AgentPackages.FileName(version));
         }
 
         /// <summary>The agent API answers only on the agent listener, and the listener serves nothing else (<see cref="AgentListener"/>).</summary>
@@ -211,6 +226,15 @@ namespace Juice.Observability.Agents
                 agent.ResourceId = await HostAsync(db, agent.TenantId, agent.Hostname, ct);
             }
             await db.SaveChangesAsync(ct);
+
+            // The current command key, if the agent doesn't trust it yet: handed over before the commands it signs.
+            var keys = http.Request.Headers.TryGetValue(AgentRoutes.KeysHeader, out var header)
+                ? http.RequestServices.GetRequiredService<AgentAuthority>().AnnouncementsFor(header.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                : null;
+            if (keys is not null)
+            {
+                return Results.Ok(new PollResponse([], keys));
+            }
 
             var until = now + TimeSpan.FromSeconds(Math.Clamp(wait ?? 25, 0, 55));
             await db.AgentCommands.Where(c => c.AgentId == agent.Id && (c.State == AgentCommandState.Pending || c.State == AgentCommandState.Delivered) && c.ExpiresAt <= now)

@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Juice Agent launcher (roadmap Phase 7, milestone 2): starts the installed agent version, puts a new one on trial when the agent asks,
+       and goes back to the version before when the new one doesn't prove itself. It reads no commands and talks to nothing but the files in
+       its home directory and the agent process it starts. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <AssemblyName>juice-agent-launcher</AssemblyName>
+    <RootNamespace>Juice.Observability.Agent.Launcher</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Juice.Observability.Agent.Contracts\Juice.Observability.Agent.Contracts.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Juice.Observability.Tests" />
+  </ItemGroup>
+
+</Project>
