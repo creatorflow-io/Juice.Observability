@@ -4,7 +4,7 @@ Turns telemetry from Juice services into a resource model, health, rules, alerts
 
 | Path | Contents |
 |---|---|
-| [`docs/`](docs) | [Architecture diagram](docs/architecture.md), [requirements and architecture](docs/observability-platform-requirements.md), [phased roadmap](docs/observability-platform-roadmap.md), [Phase 0 decisions](docs/phase-0-decisions.md), [deployment guide](docs/deployment.md), [runbook](docs/runbook.md), [MVP acceptance](docs/mvp-acceptance.md), [Juice 10.8 telemetry baseline](docs/juice-opentelemetry-10.8-current-state.md) |
+| [`docs/`](docs) | [Architecture diagram](docs/architecture.md), [requirements and architecture](docs/observability-platform-requirements.md), [phased roadmap](docs/observability-platform-roadmap.md), [Phase 0 decisions](docs/phase-0-decisions.md), [deployment guide](docs/deployment.md), [runbook](docs/runbook.md), [load testing guide](docs/load-testing.md), [MVP acceptance](docs/mvp-acceptance.md), [Juice 10.8 telemetry baseline](docs/juice-opentelemetry-10.8-current-state.md) |
 | [`console/`](console) | **Juice Console**, the product UI (Angular 22, `juice-layout`): services, operations, traces, logs, metrics, topology, resources, alerts, rules. The pages are the `@juice-js/observability` library (`console/projects`); served by the API image; reads only the Juice API |
 | [`deploy/local/`](deploy/local/README.md) | Local single-tenant stack: OpenTelemetry Collector, ClickHouse, PostgreSQL, Keycloak, optional Grafana, with integration and load tests |
 | `src/Juice.Observability.Data` | PostgreSQL domain model (EF Core) and migrations |
@@ -303,7 +303,7 @@ This is a reading order, not a diagnosis. Being close in time is correlation, an
 
 The platform generates no load. A load test marks its window, and the Console's Load runs page reads each service's telemetry from it,
 compares runs, and shows where a service started to struggle, which everyday traffic can't reveal. Marking needs a token with the
-operator or admin role. With k6:
+operator or admin role. The [load testing guide](docs/load-testing.md) explains how to scope and write tests. With k6:
 
 ```javascript
 import http from 'k6/http';
