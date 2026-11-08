@@ -37,6 +37,53 @@ namespace Juice.Observability.Tests
             Assert.True(await second.TryHoldAsync(ct), "the lock goes with the holder's connection");
         }
 
+        /// <summary>
+        /// Phase 5's limit, seen for real: a host left on an older version held discovery and recorded no version changes. A newer replica now
+        /// takes a lease over from an older holder; replicas of the same version don't, and an older one still takes a free lease.
+        /// </summary>
+        [Fact]
+        public async Task A_newer_version_takes_a_lease_over_from_an_older_holder_and_only_then_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var ct = TestContext.Current.CancellationToken;
+            WorkerLease Lease(string version) => new(database.ConnectionString, $"discovery-{_run}", NullLogger.Instance, version);
+
+            await using var old = Lease("1.0.0");
+            await using var sameAsOld = Lease("1.0.0");
+            await using var newer = Lease("1.1.0-alpha.2");
+            await using var newest = Lease("1.1.0");
+
+            Assert.True(await old.TryHoldAsync(ct));
+            Assert.False(await sameAsOld.TryHoldAsync(ct), "the same version took the lease over");
+            Assert.True(await newer.TryHoldAsync(ct), "a newer version didn't take the lease over");
+            Assert.False(await old.TryHoldAsync(ct), "the older holder didn't notice it lost the lease");
+            Assert.True(await newer.TryHoldAsync(ct), "the new holder lost it again");
+            Assert.True(await newest.TryHoldAsync(ct), "the release didn't take over from its prerelease");
+            Assert.False(await newer.TryHoldAsync(ct));
+            Assert.False(await old.TryHoldAsync(ct), "an older version took a held lease");
+
+            await newest.DisposeAsync();
+            Assert.True(await old.TryHoldAsync(ct), "an older version can't take a free lease: going back a version would stop the worker");
+        }
+
+        [Theory]
+        [InlineData("1.0.0", "1.0.1", -1)]
+        [InlineData("1.10.0", "1.9.0", 1)]
+        [InlineData("1.1.0-alpha.3", "1.1.0", -1)]
+        [InlineData("1.1.0-alpha.10", "1.1.0-alpha.9", 1)]
+        [InlineData("1.1.0-alpha.3", "1.1.0-beta.1", -1)]
+        [InlineData("1.1.0-alpha", "1.1.0-alpha.1", -1)]
+        [InlineData("1.1.0-1", "1.1.0-alpha", -1)]
+        [InlineData("1.1.0+abc", "1.1.0+def", 0)]
+        [InlineData("1.1.0-local.20261108.1", "1.1.0-local.20261109.1", -1)]
+        [InlineData("not a version", "0.0.1", -1)]
+        public void Versions_are_ordered_as_semantic_versioning_orders_them(string a, string b, int expected)
+        {
+            Assert.Equal(expected, Math.Sign(PlatformVersion.Compare(a, b)));
+            Assert.Equal(-expected, Math.Sign(PlatformVersion.Compare(b, a)));
+        }
+
         [Fact]
         public async Task Replicas_starting_together_load_the_rules_once_Async()
         {

@@ -3,7 +3,7 @@ import { Injectable, inject } from '@angular/core';
 import { EMPTY, Observable, expand, map, reduce, shareReplay, switchMap } from 'rxjs';
 import { OBSERVABILITY_OPTIONS } from './options';
 import {
-  AlertDetail, AlertNotifications, Alert, AllowlistEntry, Application, Channel, Delivery, EscalationPolicy, IncidentDetail, IncidentEvent, IncidentSummary, Silence, DependencyEvidence, DependencyStatsPage, DeploymentEnvironment, LoadRun, LoadRunResults, Related, Timeline, Health, LogRecord, MetricInfo, Operation,
+  AlertDetail, AlertNotifications, Alert, AllowlistEntry, Application, Channel, ChannelTestResult, Delivery, EscalationPolicy, IncidentDetail, IncidentEvent, IncidentSummary, Silence, DependencyEvidence, DependencyStatsPage, DeploymentEnvironment, LoadRun, LoadRunResults, Related, Timeline, Health, LogRecord, MetricInfo, Operation,
   Page, ResourceDetail, ResourceSummary, Rule, SearchHit, Series, Capacity, ServiceStats, Tenant, TelemetryPage, Topology, Trace,
   TraceSummary,
 } from './models';
@@ -68,6 +68,8 @@ export class ApiService {
   createChannel(body: unknown) { return this.send<Channel>('POST', '/webhooks', body); }
   updateChannel(id: string, body: unknown) { return this.send<Channel>('PUT', `/webhooks/${id}`, body); }
   deliveries(id: string, query: Query = {}) { return this.get<Page<Delivery>>(`/webhooks/${id}/deliveries`, { limit: 50, ...query }); }
+  testChannel(id: string) { return this.send<ChannelTestResult>('POST', `/webhooks/${id}/test`); }
+  retryDelivery(channelId: string, deliveryId: string) { return this.send<Delivery>('POST', `/webhooks/${channelId}/deliveries/${deliveryId}/retry`); }
   allowlist() { return this.get<Page<AllowlistEntry>>('/webhooks/allowlist'); }
   putAllowlist(destination: string, ports: number[]) { return this.send<AllowlistEntry>('PUT', '/webhooks/allowlist', { destination, ports }); }
   removeAllowlist(destination: string) { return this.send<void>('DELETE', `/webhooks/allowlist?destination=${encodeURIComponent(destination)}`); }

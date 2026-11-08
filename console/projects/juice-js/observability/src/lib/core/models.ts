@@ -61,6 +61,8 @@ export interface Delivery {
   id: string; alertId: string; event: string; status: string; attempts: number; createdAt: string; firstAttemptAt: string | null; deliveredAt: string | null; nextAttemptAt: string | null;
   lastStatusCode: number | null; lastError: string | null; history: DeliveryAttempt[]; suppressedBy: string | null; groupedInto: string | null; escalationStep: number;
 }
+/** What a test send did; id is the webhook-id it carried. */
+export interface ChannelTestResult { id: string; delivered: boolean; statusCode: number | null; error: string | null; durationMs: number; }
 export interface AllowlistEntry { destination: string; ports: number[]; managedBy: string; loadedAt: string; }
 export interface EscalationStep { afterMinutes: number; endpointKeys: string[]; }
 export interface EscalationPolicy {

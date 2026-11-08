@@ -41,6 +41,8 @@ namespace Juice.Observability.Api.Endpoints
             tenant.MapPost("/webhooks", CreateAsync);
             tenant.MapPut("/webhooks/{endpointId:guid}", UpdateAsync);
             tenant.MapGet("/webhooks/{endpointId:guid}/deliveries", ListDeliveriesAsync);
+            tenant.MapPost("/webhooks/{endpointId:guid}/test", TestAsync);
+            tenant.MapPost("/webhooks/{endpointId:guid}/deliveries/{deliveryId:guid}/retry", RetryAsync);
             tenant.MapGet("/webhooks/allowlist", ListAllowlistAsync);
             tenant.MapPut("/webhooks/allowlist", PutAllowlistAsync);
             tenant.MapDelete("/webhooks/allowlist", RemoveAllowlistAsync);
@@ -167,6 +169,52 @@ namespace Juice.Observability.Api.Endpoints
             mutation.RecordChange($"webhook {endpoint.Key}: webhook.update", now);
             await db.SaveChangesAsync(ct);
             return Results.Ok(ToDto(endpoint, http));
+        }
+
+        /// <summary>
+        /// Sends a test notification now, through the same checks, signing and formatting as an alert's, and answers with what happened. Works on a
+        /// disabled endpoint too, to check a channel before turning it on. Admin only, audited; nothing is queued or retried.
+        /// </summary>
+        private static async Task<IResult> TestAsync(Guid tenantId, Guid endpointId, HttpContext http, PlatformDbContext db, IServiceProvider services, CancellationToken ct)
+        {
+            var mutation = new Mutation(http, db, tenantId, "webhook.test", "webhook");
+            if (await mutation.RequireAsync(endpointId.ToString(), ct, Roles.Admin) is { } denied) return denied;
+            var endpoint = await db.WebhookEndpoints.AsNoTracking().SingleOrDefaultAsync(e => e.TenantId == tenantId && e.Id == endpointId, ct);
+            if (endpoint is null) return Mutation.Problem(StatusCodes.Status404NotFound, "Webhook endpoint not found", "No such endpoint.");
+            if (services.GetService<WebhookDispatcher>() is not { } dispatcher)
+            {
+                return Mutation.Problem(StatusCodes.Status409Conflict, "Notifications are off", "This deployment doesn't send notifications (Webhooks:Enabled is false).");
+            }
+            var result = await dispatcher.TestAsync(endpoint, mutation.Actor, ct);
+            var metadata = new Dictionary<string, string> { ["delivered"] = result.Delivered ? "true" : "false", ["durationMs"] = result.DurationMs.ToString(System.Globalization.CultureInfo.InvariantCulture) };
+            if (result.StatusCode is { } code) metadata["status"] = code.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (result.Error is { } error) metadata["error"] = error;
+            mutation.Audit(result.Delivered ? AuditOutcome.Succeeded : AuditOutcome.Failed, endpoint.Key, metadata);
+            await db.SaveChangesAsync(ct);
+            return Results.Ok(result);
+        }
+
+        /// <summary>
+        /// Sends a failed delivery once more, now: what the runbook's SQL did, with the role check and an audit. The attempt is numbered after the
+        /// earlier ones; if it fails again the delivery is <c>Failed</c> again, with that attempt's error. Admin only; the endpoint must be enabled.
+        /// </summary>
+        private static async Task<IResult> RetryAsync(Guid tenantId, Guid endpointId, Guid deliveryId, HttpContext http, PlatformDbContext db, TimeProvider clock, CancellationToken ct)
+        {
+            var mutation = new Mutation(http, db, tenantId, "webhook.delivery.retry", "webhook_delivery");
+            if (await mutation.RequireAsync(deliveryId.ToString(), ct, Roles.Admin) is { } denied) return denied;
+            var endpoint = await db.WebhookEndpoints.AsNoTracking().SingleOrDefaultAsync(e => e.TenantId == tenantId && e.Id == endpointId, ct);
+            var delivery = endpoint is null ? null : await db.WebhookDeliveries.SingleOrDefaultAsync(d => d.TenantId == tenantId && d.EndpointId == endpointId && d.Id == deliveryId, ct);
+            if (delivery is null) return Mutation.Problem(StatusCodes.Status404NotFound, "Delivery not found", "No such delivery for this endpoint.");
+            if (!endpoint!.Enabled) return Mutation.Problem(StatusCodes.Status409Conflict, "Endpoint disabled", "Enable the endpoint before retrying its deliveries.");
+            if (delivery.Status != DeliveryStatus.Failed)
+            {
+                return Mutation.Problem(StatusCodes.Status409Conflict, "Not failed", $"Only a failed delivery can be retried; this one is {delivery.Status}.");
+            }
+            delivery.Status = DeliveryStatus.Pending;
+            delivery.NextAttemptAt = clock.GetUtcNow();
+            mutation.Audit(AuditOutcome.Succeeded, deliveryId.ToString(), new() { ["endpoint"] = endpoint.Key, ["attempts"] = delivery.Attempts.ToString(System.Globalization.CultureInfo.InvariantCulture), ["lastError"] = delivery.LastError ?? "" });
+            await db.SaveChangesAsync(ct);
+            return Results.Ok((await ToDeliveryDtosAsync(db, [delivery], ct))[0]);
         }
 
         /// <summary>Deliveries newest first, each with its attempts, filtered by <c>status</c>.</summary>

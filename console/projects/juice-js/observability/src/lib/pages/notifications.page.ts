@@ -82,7 +82,9 @@ const NEW_POLICY: PolicyForm = { editing: false, key: '', name: '', ruleKeys: ''
               <td>{{ c.waiting }}</td>
               <td class="jc-row-actions">
                 <button mat-button type="button" [attr.data-testid]="'channel-history-' + c.key" (click)="history.set(history() === c.id ? null : c.id)">History</button>
+                <button mat-button type="button" [attr.data-testid]="'channel-test-' + c.key" [disabled]="testing() === c.id" (click)="testChannel(c.id)">Test</button>
                 @if (c.managedBy !== 'config') { <button mat-button type="button" [attr.data-testid]="'channel-edit-' + c.key" (click)="editChannel(c)">Change</button> }
+                @if (tests()[c.id]; as t) { <div class="jc-small" [class.jc-error]="!t.ok" [attr.data-testid]="'channel-test-result-' + c.key">{{ t.text }}</div> }
               </td>
             </tr>
           } @empty { <tr><td colspan="7" class="jc-muted">No channels: alerts fire, but nobody is told.</td></tr> }
@@ -92,7 +94,7 @@ const NEW_POLICY: PolicyForm = { editing: false, key: '', name: '', ruleKeys: ''
         <h3>Delivery history</h3>
         @if (deliveries.error()) { <p class="jc-error">{{ deliveriesError() }}</p> }
         <table class="jc-table" data-testid="channel-history">
-          <thead><tr><th>Created</th><th>Event</th><th>Status</th><th>Attempts</th><th>Last result</th></tr></thead>
+          <thead><tr><th>Created</th><th>Event</th><th>Status</th><th>Attempts</th><th>Last result</th><th></th></tr></thead>
           <tbody>
             @for (d of deliveries.value()?.items ?? []; track d.id) {
               <tr>
@@ -101,10 +103,12 @@ const NEW_POLICY: PolicyForm = { editing: false, key: '', name: '', ruleKeys: ''
                 <td [class.jc-bad]="d.status === 'Failed'">{{ d.status }}</td>
                 <td>{{ d.attempts }}</td>
                 <td class="jc-small">{{ d.lastError ?? (d.lastStatusCode ? 'HTTP ' + d.lastStatusCode : '') }}</td>
+                <td class="jc-row-actions">@if (d.status === 'Failed') { <button mat-button type="button" [attr.data-testid]="'delivery-retry-' + d.id" [disabled]="saving()" (click)="retry(d.id)">Retry</button> }</td>
               </tr>
-            } @empty { <tr><td colspan="5" class="jc-muted">Nothing sent yet.</td></tr> }
+            } @empty { <tr><td colspan="6" class="jc-muted">Nothing sent yet.</td></tr> }
           </tbody>
         </table>
+        @if (retryError()) { <p class="jc-error" data-testid="delivery-retry-error">{{ retryError() }}</p> }
       }
     </section>
 
@@ -177,6 +181,9 @@ export class NotificationsPage {
   protected readonly channelError = signal('');
   protected readonly policyError = signal('');
   protected readonly allowError = signal('');
+  protected readonly retryError = signal('');
+  protected readonly testing = signal<string | null>(null);
+  protected readonly tests = signal<Record<string, { ok: boolean; text: string }>>({});
   protected destination = '';
   protected ports = '';
 
@@ -253,5 +260,24 @@ export class NotificationsPage {
 
   protected removeAllowed(destination: string) {
     this.run(this.api.removeAllowlist(destination), m => this.allowError.set(m), () => undefined);
+  }
+
+  /** Sends a test through the channel now and shows what happened beside it. Admins only; nothing is queued or retried. */
+  protected testChannel(id: string) {
+    this.testing.set(id);
+    const show = (ok: boolean, text: string) => { this.testing.set(null); this.tests.update(t => ({ ...t, [id]: { ok, text } })); };
+    this.api.testChannel(id).subscribe({
+      next: r => show(r.delivered, r.delivered
+        ? `Test delivered in ${r.durationMs} ms${r.statusCode ? ` (HTTP ${r.statusCode})` : ''}`
+        : `Test failed: ${r.error ?? 'unknown'}${r.statusCode ? ` (HTTP ${r.statusCode})` : ''}`),
+      error: e => show(false, (e as { status?: number }).status === 403 ? 'Testing a channel needs the admin role.' : problemText(e)),
+    });
+  }
+
+  /** Sends a failed delivery once more; its history shows the new attempt. */
+  protected retry(deliveryId: string) {
+    const channel = this.history();
+    if (!channel) return;
+    this.run(this.api.retryDelivery(channel, deliveryId), m => this.retryError.set(m), () => this.deliveries.reload());
   }
 }

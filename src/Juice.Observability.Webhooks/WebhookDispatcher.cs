@@ -202,6 +202,8 @@ namespace Juice.Observability.Webhooks
         public const string Resolved = "alert.resolved";
         /// <summary>Sent by an escalation policy, to the endpoints it names, whatever events they take otherwise.</summary>
         public const string Escalated = "alert.escalated";
+        /// <summary>A test an admin sent to check a channel; never planned for an alert.</summary>
+        public const string Test = "webhook.test";
 
         /// <returns>How many deliveries it added.</returns>
         public static int Plan(PlatformDbContext db, string tenantKey, Rule rule, Alert alert, AlertTransition transition, DateTimeOffset createdAt, DateTimeOffset now)
@@ -293,8 +295,11 @@ namespace Juice.Observability.Webhooks
         private static readonly Histogram<double> DispatchDelay = Meter.CreateHistogram<double>("juice.observability.webhooks.dispatch_delay", "s",
             "From the alert transition to the first attempt (requirements §9: p95 ≤ 30 s)");
 
-        /// <summary>The allowlist is a tenant's, and a pooled connection skips the connect check, so tenants never share a client.</summary>
-        private readonly ConcurrentDictionary<Guid, Lazy<HttpClient>> _clients = new();
+        /// <summary>
+        /// The allowlist is a tenant's, and a pooled connection skips the connect check, so tenants never share a client; each client is for the
+        /// allowlist it was made under (its fingerprint), and is replaced when that changes (<see cref="ClientAsync"/>).
+        /// </summary>
+        private readonly ConcurrentDictionary<Guid, (string Fingerprint, Lazy<HttpClient> Client)> _clients = new();
 
         private const int MaxGroup = 100;
 
@@ -362,50 +367,9 @@ namespace Juice.Observability.Webhooks
 
             var number = delivery.Attempts + 1;
             var started = Stopwatch.GetTimestamp();
-            int? status = null;
-            string? error = null;
-            var retry = false;
-            if (!endpoint.Enabled)
-            {
-                error = "endpoint_disabled";
-            }
-            else if (endpoint.Kind == ChannelKind.Email)
-            {
-                (error, retry) = await SendEmailAsync(endpoint, delivery, cancellationToken);
-            }
-            else
-            {
-                try
-                {
-                    using var request = BuildRequest(endpoint, delivery, now);
-                    using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                    timeout.CancelAfter(options.Value.RequestTimeout);
-                    var client = _clients.GetOrAdd(endpoint.TenantId, tenant => new Lazy<HttpClient>(() => CreateClient(scopes, options.Value, tenant))).Value;
-                    using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
-                    status = (int)response.StatusCode;
-                    await DrainAsync(response, options.Value.MaxResponseBytes, timeout.Token);
-                    retry = status is 408 or 429 or >= 500;
-                    if (!response.IsSuccessStatusCode) error = $"status_{status}";
-                }
-                catch (HttpRequestException ex) when (ex.InnerException is DestinationBlockedException blocked)
-                {
-                    error = blocked.Reason;
-                }
-                catch (ChatDestinationRefusedException)
-                {
-                    error = "chat_url_not_allowed";
-                }
-                catch (InvalidOperationException ex) when (ex.Message.StartsWith("Webhook secret", StringComparison.Ordinal))
-                {
-                    error = "secret_unavailable";
-                    retry = true;   // a secret mounted late should not lose the notification
-                }
-                catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or IOException && !cancellationToken.IsCancellationRequested)
-                {
-                    error = ex is OperationCanceledException ? "timeout" : "network_error";
-                    retry = true;
-                }
-            }
+            var (status, error, retry) = endpoint.Enabled
+                ? await AttemptAsync(db, endpoint, delivery.Id, delivery.Payload, now, cancellationToken)
+                : (null, "endpoint_disabled", false);
 
             delivery.Attempts = number;
             delivery.LastStatusCode = status;
@@ -441,6 +405,114 @@ namespace Juice.Observability.Webhooks
             await db.SaveChangesAsync(cancellationToken);
             Attempts.Add(1, new KeyValuePair<string, object?>("outcome", outcome));
         }
+
+        /// <summary>
+        /// One send of a payload to an endpoint, the way every delivery goes: signed or written for its channel, through the SSRF-checked client.
+        /// Returns the response status, the error if any, and whether the error is worth retrying.
+        /// </summary>
+        private async Task<(int? Status, string? Error, bool Retry)> AttemptAsync(PlatformDbContext db, WebhookEndpoint endpoint, Guid id, string payload, DateTimeOffset now,
+            CancellationToken cancellationToken)
+        {
+            if (endpoint.Kind == ChannelKind.Email)
+            {
+                var (mailError, mailRetry) = await SendEmailAsync(endpoint, payload, cancellationToken);
+                return (null, mailError, mailRetry);
+            }
+            try
+            {
+                using var request = BuildRequest(endpoint, id, payload, now);
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeout.CancelAfter(options.Value.RequestTimeout);
+                var client = await ClientAsync(db, endpoint.TenantId, cancellationToken);
+                using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+                var status = (int)response.StatusCode;
+                await DrainAsync(response, options.Value.MaxResponseBytes, timeout.Token);
+                return (status, response.IsSuccessStatusCode ? null : $"status_{status}", status is 408 or 429 or >= 500);
+            }
+            catch (HttpRequestException ex) when (ex.InnerException is DestinationBlockedException blocked)
+            {
+                return (null, blocked.Reason, false);
+            }
+            catch (ChatDestinationRefusedException)
+            {
+                return (null, "chat_url_not_allowed", false);
+            }
+            catch (InvalidOperationException ex) when (ex.Message.StartsWith("Webhook secret", StringComparison.Ordinal))
+            {
+                return (null, "secret_unavailable", true);   // a secret mounted late should not lose the notification
+            }
+            catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or IOException && !cancellationToken.IsCancellationRequested)
+            {
+                return (null, ex is OperationCanceledException ? "timeout" : "network_error", true);
+            }
+        }
+
+        /// <summary>
+        /// The tenant's client, made again whenever its allowlist changed: the allowlist is checked when a connection opens, so a pooled connection
+        /// to a destination just removed would otherwise keep working until it's recycled. The old client is disposed once its requests are done.
+        /// </summary>
+        private async Task<HttpClient> ClientAsync(PlatformDbContext db, Guid tenantId, CancellationToken cancellationToken)
+        {
+            var entries = await db.WebhookAllowlist.AsNoTracking().Where(a => a.TenantId == tenantId).OrderBy(a => a.Destination)
+                .Select(a => new { a.Destination, a.Ports }).ToListAsync(cancellationToken);
+            var fingerprint = string.Join(';', entries.Select(e => $"{e.Destination}:{string.Join(',', e.Ports)}"));
+            while (true)
+            {
+                var current = _clients.GetOrAdd(tenantId, tenant => (fingerprint, new Lazy<HttpClient>(() => CreateClient(scopes, options.Value, tenant))));
+                if (current.Fingerprint == fingerprint)
+                {
+                    return current.Client.Value;
+                }
+                var fresh = (fingerprint, new Lazy<HttpClient>(() => CreateClient(scopes, options.Value, tenantId)));
+                if (_clients.TryUpdate(tenantId, fresh, current))
+                {
+                    if (current.Client.IsValueCreated)
+                    {
+                        var old = current.Client.Value;
+                        _ = Task.Delay(options.Value.RequestTimeout + TimeSpan.FromSeconds(5), CancellationToken.None).ContinueWith(_ => old.Dispose(), TaskScheduler.Default);
+                    }
+                    return fresh.Item2.Value;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Sends a test notification to an endpoint now, through the same path as every delivery, and returns what happened. Nothing is stored
+        /// here and nothing retries: the caller records it.
+        /// </summary>
+        public async Task<WebhookTestResult> TestAsync(WebhookEndpoint endpoint, string requestedBy, CancellationToken cancellationToken)
+        {
+            await using var scope = scopes.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var now = clock.GetUtcNow();
+            var id = Guid.CreateVersion7();
+            var payload = TestPayload(id, endpoint, requestedBy, now);
+            var started = Stopwatch.GetTimestamp();
+            var (status, error, _) = await AttemptAsync(db, endpoint, id, payload, now, cancellationToken);
+            Attempts.Add(1, new KeyValuePair<string, object?>("outcome", error is null ? "test_delivered" : "test_failed"));
+            return new WebhookTestResult(id, error is null, status, error, (int)Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+        }
+
+        /// <summary>A notification of type <see cref="NotificationPlan.Test"/>, shaped like an alert's so every channel can show it.</summary>
+        internal static string TestPayload(Guid id, WebhookEndpoint endpoint, string requestedBy, DateTimeOffset now)
+            => JsonSerializer.Serialize(new
+            {
+                id,
+                type = NotificationPlan.Test,
+                occurredAt = now,
+                tenant = endpoint.TenantId,
+                alert = new
+                {
+                    id = Guid.Empty,
+                    rule = "test",
+                    ruleName = $"Test notification for {endpoint.Key}",
+                    severity = AlertSeverity.Info.ToString(),
+                    state = "Test",
+                    subject = endpoint.Key,
+                    value = (double?)null,
+                    reason = $"Sent by {requestedBy} to check this channel. No alert is behind it.",
+                },
+            }, JsonSerializerOptions.Web);
 
         private static async Task<Silence?> SilencingAsync(PlatformDbContext db, WebhookDelivery delivery, List<Silence> silences, DateTimeOffset now, CancellationToken cancellationToken)
         {
@@ -493,15 +565,15 @@ namespace Juice.Observability.Webhooks
         }
 
         /// <summary>A signed webhook sends the payload itself; chat channels get it written for people, at an address only their secret knows.</summary>
-        private HttpRequestMessage BuildRequest(WebhookEndpoint endpoint, WebhookDelivery delivery, DateTimeOffset now)
+        private HttpRequestMessage BuildRequest(WebhookEndpoint endpoint, Guid id, string payload, DateTimeOffset now)
         {
             if (endpoint.Kind == ChannelKind.Webhook)
             {
                 var timestamp = now.ToUnixTimeSeconds();
-                var signed = new HttpRequestMessage(HttpMethod.Post, endpoint.Url) { Content = new StringContent(delivery.Payload, Encoding.UTF8, "application/json") };
-                signed.Headers.Add(WebhookSigner.IdHeader, delivery.Id.ToString());
+                var signed = new HttpRequestMessage(HttpMethod.Post, endpoint.Url) { Content = new StringContent(payload, Encoding.UTF8, "application/json") };
+                signed.Headers.Add(WebhookSigner.IdHeader, id.ToString());
                 signed.Headers.Add(WebhookSigner.TimestampHeader, timestamp.ToString(CultureInfo.InvariantCulture));
-                signed.Headers.Add(WebhookSigner.SignatureHeader, WebhookSigner.Sign(SecretReference.Resolve(endpoint.SecretRef), delivery.Id.ToString(), timestamp, delivery.Payload));
+                signed.Headers.Add(WebhookSigner.SignatureHeader, WebhookSigner.Sign(SecretReference.Resolve(endpoint.SecretRef), id.ToString(), timestamp, payload));
                 return signed;
             }
             var url = SecretReference.Resolve(endpoint.SecretRef);
@@ -509,13 +581,13 @@ namespace Juice.Observability.Webhooks
             {
                 throw new ChatDestinationRefusedException();
             }
-            var view = NotificationView.Parse(delivery.Payload);
+            var view = NotificationView.Parse(payload);
             var body = endpoint.Kind == ChannelKind.Slack ? ChannelFormatter.SlackBody(view, options.Value.ConsoleUrl) : ChannelFormatter.TeamsBody(view, options.Value.ConsoleUrl);
             return new HttpRequestMessage(HttpMethod.Post, url) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
         }
 
         /// <summary>The error, if any, and whether it's worth retrying: a server's 4xx and a lost connection are, its 5xx says the mail will never be accepted.</summary>
-        private async Task<(string? Error, bool Retry)> SendEmailAsync(WebhookEndpoint endpoint, WebhookDelivery delivery, CancellationToken cancellationToken)
+        private async Task<(string? Error, bool Retry)> SendEmailAsync(WebhookEndpoint endpoint, string payload, CancellationToken cancellationToken)
         {
             var smtp = options.Value.Smtp;
             if (!smtp.IsConfigured)
@@ -524,7 +596,7 @@ namespace Juice.Observability.Webhooks
             }
             try
             {
-                var (subject, body) = ChannelFormatter.Email(NotificationView.Parse(delivery.Payload), options.Value.ConsoleUrl);
+                var (subject, body) = ChannelFormatter.Email(NotificationView.Parse(payload), options.Value.ConsoleUrl);
                 using var message = new MailMessage { From = new MailAddress(smtp.From), Subject = subject, Body = body, IsBodyHtml = false };
                 foreach (var recipient in endpoint.Recipients) message.To.Add(recipient);
                 using var client = new SmtpClient(smtp.Host, smtp.Port) { EnableSsl = smtp.UseTls, DeliveryMethod = SmtpDeliveryMethod.Network, UseDefaultCredentials = false };
@@ -614,6 +686,9 @@ namespace Juice.Observability.Webhooks
             return new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
         }
     }
+
+    /// <summary>What a test send did: <see cref="Id"/> is the <c>webhook-id</c> it carried.</summary>
+    public sealed record WebhookTestResult(Guid Id, bool Delivered, int? StatusCode, string? Error, int DurationMs);
 
     /// <summary>The URL behind a chat channel's secret isn't where such a channel may post.</summary>
     internal sealed class ChatDestinationRefusedException : Exception;

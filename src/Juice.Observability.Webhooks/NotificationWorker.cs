@@ -22,7 +22,7 @@ namespace Juice.Observability.Webhooks
         private static readonly Counter<long> Held = Meter.CreateCounter<long>("juice.observability.notifications.held", "{notification}",
             "Notifications a silence held, when the silence ended, by outcome (sent, dropped)");
         private static readonly Counter<long> Escalations = Meter.CreateCounter<long>("juice.observability.notifications.escalations", "{escalation}",
-            "Escalation steps and ends, by outcome (notified, resolved, acknowledged, policy_disabled, completed)");
+            "Escalation steps and ends, by outcome (notified, unreachable, resolved, acknowledged, policy_disabled, completed)");
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
@@ -192,11 +192,34 @@ namespace Juice.Observability.Webhooks
                         Payload = NotificationPlan.Payload(delivery, NotificationPlan.Escalated, platform.Value.TenantKey, rule, alert, transition, (policy.Key, number)),
                     });
                 }
+                escalation.NextStep = number;
+                if (endpoints.Count == 0)
+                {
+                    // Nobody was told: not a step taken. The next one is due now, rather than after a wait meant for people who never heard.
+                    logger.LogError("Escalation {Policy} step {Step} reached nobody: all its endpoints are disabled or gone", policy.Key, number);
+                    db.AuditRecords.Add(new AuditRecord
+                    {
+                        TenantId = alert.TenantId, Actor = "system", Operation = "escalation.step.unreachable", TargetType = "alert", TargetId = alert.Id.ToString(),
+                        Outcome = AuditOutcome.Failed,
+                        Metadata = new() { ["policy"] = policy.Key, ["step"] = number.ToString(System.Globalization.CultureInfo.InvariantCulture), ["endpoints"] = string.Join(",", step.EndpointKeys) },
+                    });
+                    Escalations.Add(1, new KeyValuePair<string, object?>("outcome", "unreachable"));
+                    if (escalation.NextStep >= policy.Steps.Count)
+                    {
+                        escalation.State = EscalationState.Stopped;
+                        escalation.StopReason = "unreachable";
+                        escalation.EndedAt = now;
+                    }
+                    else
+                    {
+                        escalation.NextAt = now;
+                    }
+                    return;
+                }
                 if (endpoints.Count < step.EndpointKeys.Count)
                 {
                     logger.LogWarning("Escalation {Policy} step {Step}: {Missing} of its endpoints are disabled or gone", policy.Key, number, step.EndpointKeys.Count - endpoints.Count);
                 }
-                escalation.NextStep = number;
                 Escalations.Add(1, new KeyValuePair<string, object?>("outcome", "notified"));
             }
             if (escalation.NextStep >= policy.Steps.Count)

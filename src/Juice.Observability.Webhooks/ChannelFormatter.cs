@@ -77,6 +77,7 @@ namespace Juice.Observability.Webhooks
                 NotificationPlan.Firing => "Firing",
                 NotificationPlan.Resolved => "Resolved",
                 NotificationPlan.Escalated => view.EscalationStep is { } step ? $"Escalated (step {step})" : "Escalated",
+                NotificationPlan.Test => "Test",
                 _ => view.Event,
             };
             return view.Alerts.Count == 1 ? $"{what}: {view.Alerts[0].RuleName}" : $"{what}: {view.Alerts.Count} alerts";
@@ -85,7 +86,7 @@ namespace Juice.Observability.Webhooks
         private static string Value(NotificationItem alert) => alert.Value is { } value ? value.ToString("G6", CultureInfo.InvariantCulture) : "no data";
 
         private static string? Link(string? consoleUrl, NotificationItem alert)
-            => string.IsNullOrEmpty(consoleUrl) ? null : $"{consoleUrl.TrimEnd('/')}/alerts/{alert.AlertId}";
+            => string.IsNullOrEmpty(consoleUrl) || alert.AlertId == Guid.Empty ? null : $"{consoleUrl.TrimEnd('/')}/alerts/{alert.AlertId}";
 
         private static IEnumerable<NotificationItem> Listed(NotificationView view) => view.Alerts.Take(MaxListed);
 

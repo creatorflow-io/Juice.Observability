@@ -597,6 +597,98 @@ namespace Juice.Observability.Tests
             return (first, second);
         }
 
+        /// <summary>
+        /// Phase 6's limit: a step whose endpoints were all disabled counted as sent. Now it's audited as unreachable and the next step is due at
+        /// once; when the last step reaches nobody, the escalation stops as unreachable instead of looking completed.
+        /// </summary>
+        [Fact]
+        public async Task A_step_that_reaches_nobody_isnt_counted_and_the_next_one_goes_at_once_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var (first, second) = await PagersAsync(database);
+            await using var _1 = first;
+            await using var _2 = second;
+            await using (var db = database.Context())
+            {
+                await db.WebhookEndpoints.Where(e => e.Key == "first").ExecuteUpdateAsync(s => s.SetProperty(e => e.Enabled, false), Ct);
+            }
+            await PolicyAsync(database);
+            var alert = await FireAsync(database);
+            var (dispatcher, worker) = (Dispatcher(database), Worker(database));
+
+            await AgeAsync(database, alert, 6);       // step 1 due; step 2 not for another 9 minutes
+            await worker.RunOnceAsync(Ct);
+            await worker.RunOnceAsync(Ct);
+            await dispatcher.DispatchOnceAsync(Ct);
+
+            Assert.Empty(first.Requests);
+            Assert.Contains("\"step\":2", Assert.Single(second.Requests).Body);
+            Assert.Equal((EscalationState.Completed, 2, (string?)null), await EscalationAsync(database, alert));
+            await using (var db = database.Context())
+            {
+                var audit = Assert.Single(await db.AuditRecords.AsNoTracking().Where(a => a.Operation == "escalation.step.unreachable").ToListAsync(Ct));
+                Assert.Equal(("1", AuditOutcome.Failed, alert.ToString()), (audit.Metadata["step"], audit.Outcome, audit.TargetId));
+                // The last step reaching nobody ends it as unreachable, not completed.
+                await db.WebhookEndpoints.Where(e => e.Key == "second").ExecuteUpdateAsync(s => s.SetProperty(e => e.Enabled, false), Ct);
+            }
+            await ResolveAsync(database, alert);
+            var again = await FireAsync(database, subject: "service:shop/payments@production");
+            await AgeAsync(database, again, 16);
+            await worker.RunOnceAsync(Ct);
+            await worker.RunOnceAsync(Ct);
+            Assert.Equal((EscalationState.Stopped, 2, "unreachable"), await EscalationAsync(database, again));
+        }
+
+        /// <summary>
+        /// Phase 6's limit: the lock between acknowledging and escalating was reasoned, not tested at the overlap. Here an acknowledgement is held
+        /// mid-transaction while a step falls due: the escalation must wait on the alert's row lock, and once the acknowledgement commits, see it and
+        /// stop, never notifying after it.
+        /// </summary>
+        [Fact(Timeout = 30_000)]
+        public async Task An_escalation_that_meets_an_acknowledgement_in_flight_waits_for_it_and_stops_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var (first, second) = await PagersAsync(database);
+            await using var _1 = first;
+            await using var _2 = second;
+            await PolicyAsync(database);
+            var alert = await FireAsync(database);
+            var worker = Worker(database);
+            await worker.RunOnceAsync(Ct);
+            await AgeAsync(database, alert, 6);   // step 1 is due
+
+            await using var acknowledging = new Npgsql.NpgsqlConnection(database.ConnectionString);
+            await acknowledging.OpenAsync(Ct);
+            await using var transaction = await acknowledging.BeginTransactionAsync(Ct);
+            await using (var update = new Npgsql.NpgsqlCommand("UPDATE alerts SET acknowledged_at = now(), acknowledged_by = 'erin' WHERE id = @id", acknowledging, transaction))
+            {
+                update.Parameters.AddWithValue("id", alert);
+                Assert.Equal(1, await update.ExecuteNonQueryAsync(Ct));
+            }
+
+            var escalating = Task.Run(() => worker.RunOnceAsync(Ct), Ct);
+            await using (var watcher = new Npgsql.NpgsqlConnection(database.ConnectionString))
+            {
+                await watcher.OpenAsync(Ct);
+                var waiting = false;
+                for (var i = 0; i < 100 && !waiting && !escalating.IsCompleted; i++)
+                {
+                    await using var look = new Npgsql.NpgsqlCommand("SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'", watcher);
+                    waiting = (long)(await look.ExecuteScalarAsync(Ct))! > 0;
+                    if (!waiting) await Task.Delay(50, Ct);
+                }
+                Assert.True(waiting, "the escalation didn't wait for the acknowledgement's row lock");
+            }
+            await transaction.CommitAsync(Ct);
+            await escalating;
+
+            await using var db = database.Context();
+            Assert.Empty(await db.WebhookDeliveries.AsNoTracking().Where(d => d.AlertId == alert && d.Event == NotificationPlan.Escalated).ToListAsync(Ct));
+            Assert.Equal((EscalationState.Stopped, 0, "acknowledged"), await EscalationAsync(database, alert));
+        }
+
         [Fact]
         public async Task Steps_notify_in_order_each_once_and_then_it_ends_Async()
         {
