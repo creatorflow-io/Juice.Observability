@@ -33,7 +33,7 @@ const tenant = (await api('viewer', 'GET', '/tenants')).body.items[0].id;
 const agentsPath = `/tenants/${tenant}/agents`;
 
 step('enroll');
-let agent = (await api('viewer', 'GET', agentsPath)).body.items.find(a => a.hostname === (process.env.AGENT_HOSTNAME ?? 'local-agent'));
+let agent = (await api('viewer', 'GET', agentsPath)).body.items.find(a => a.hostname === (process.env.JUICE_HOST_NAME ?? 'local-docker-host'));
 if (!agent) {
   const created = await api('admin', 'POST', `${agentsPath}/enrollment-tokens`, { purpose: 'local agent', expiresInMinutes: 15 });
   if (created.status !== 201) throw new Error(`enrollment token: ${created.status} ${JSON.stringify(created.body)}`);
@@ -42,7 +42,7 @@ if (!agent) {
   if (up.status !== 0) throw new Error(up.stderr);
   for (let i = 0; i < 60 && !agent; i++) {
     await sleep(1000);
-    agent = (await api('viewer', 'GET', agentsPath)).body.items.find(a => a.hostname === (process.env.AGENT_HOSTNAME ?? 'local-agent'));
+    agent = (await api('viewer', 'GET', agentsPath)).body.items.find(a => a.hostname === (process.env.JUICE_HOST_NAME ?? 'local-docker-host'));
   }
   if (!agent) throw new Error('the agent never enrolled: docker compose logs agent');
 }

@@ -9,7 +9,8 @@
       "tcp.reachability": {
         "Targets": [ "postgres:5432", "clickhouse:8123", "keycloak:8080", "platform-api:8080", "otel-collector:4317" ],
         "MaxTimeoutMs": 3000
-      }
+      },
+      "agent.update": {}
     }
   }
 }

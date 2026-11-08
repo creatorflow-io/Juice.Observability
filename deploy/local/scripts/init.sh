@@ -140,4 +140,15 @@ fi
 # The agent CA key mints agent identities and the command key signs commands every agent obeys: readable by their owner only. The platform
 # container runs as this same user (JUICE_UID in .env, docker-compose.yml), so it can still read them through its read-only mount.
 chmod 600 secrets/agents/*.key
+
+# A release key for agent packages (agent.update), kept apart from the agent CA and the command key. Only release.pub is mounted, into the
+# platform and the agent; release.key signs packages on this machine (console/e2e/agent-update.mjs). In production it stays offline.
+mkdir -p secrets/release
+if $force || [[ ! -f secrets/release/release.key ]]; then
+  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out secrets/release/release.key 2>/dev/null
+  openssl pkey -in secrets/release/release.key -pubout -out secrets/release/release.pub 2>/dev/null
+  chmod 600 secrets/release/release.key
+  echo "wrote the agent release key"
+fi
+mkdir -p packages
 ensure JUICE_UID "$(id -u)"

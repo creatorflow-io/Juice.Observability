@@ -188,10 +188,15 @@ services:
       Agents__CommandKeyFile: /secrets/agents/command.key
       Agents__ServerCertificateFile: /secrets/agents/listener.crt
       Agents__ServerKeyFile: /secrets/agents/listener.key
+      # agent.update: packages dropped into ./packages are offered once release.pub verifies their signature (console/e2e/agent-update.mjs).
+      Agents__PackageDirectory: /packages
+      Agents__ReleaseKeyFiles__0: /secrets/release.pub
     volumes:
       - ./rules.json:/config/rules.json:ro
       - ./webhooks.json:/config/webhooks.json:ro
       - ./secrets/agents:/secrets/agents:ro
+      - ./secrets/release/release.pub:/secrets/release.pub:ro
+      - ./packages:/packages:ro
     configs:
       - source: console-config
         target: /app/wwwroot/config.json
@@ -213,7 +218,13 @@ services:
     build:
       context: ../..
       dockerfile: Dockerfile.agent
-    hostname: ${AGENT_HOSTNAME:-local-agent}
+    # The host's name, as the Collector names it in host metrics: the platform links the agent to the host it discovered by that name.
+    hostname: ${JUICE_HOST_NAME:-local-docker-host}
+    # Under its launcher, so agent.update can be tried here: the image's agent is installed into /data/home once, and updates and rollbacks
+    # happen there. The image alone runs the agent without the launcher, and a new image is how a container is normally updated.
+    entrypoint: ["dotnet", "/launcher/juice-agent-launcher.dll", "--home", "/data/home", "--seed", "/app"]
+    # The launcher exits when the agent does (other than to update): restarted, as a service manager would.
+    restart: unless-stopped
     environment:
       JUICE_AGENT_CONFIG: /config/agent.json
       Agent__PlatformUrl: https://platform-api:8443
@@ -221,10 +232,12 @@ services:
       Agent__DataDirectory: /data
       Agent__EnrollmentTokenFile: /secrets/enrollment-token
       Agent__HostRoot: /hostfs
+      Agent__ReleaseKeyFiles__0: /secrets/release.pub
     volumes:
       - ./agent.json:/config/agent.json:ro
       - ./secrets/tls/ca.crt:/secrets/ca.crt:ro
       - ./secrets/agent-enrollment-token:/secrets/enrollment-token:ro
+      - ./secrets/release/release.pub:/secrets/release.pub:ro
       - agent-data:/data
       - /:/hostfs:ro
     depends_on:

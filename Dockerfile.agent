@@ -5,12 +5,16 @@ WORKDIR /src
 COPY Directory.Build.props Directory.Packages.props ./
 COPY src/Juice.Observability.Agent.Contracts/ src/Juice.Observability.Agent.Contracts/
 COPY src/Juice.Observability.Agent/ src/Juice.Observability.Agent/
-RUN dotnet publish src/Juice.Observability.Agent -c Release -o /app --no-self-contained
+COPY src/Juice.Observability.Agent.Launcher/ src/Juice.Observability.Agent.Launcher/
+RUN dotnet publish src/Juice.Observability.Agent -c Release -o /app --no-self-contained \
+ && dotnet publish src/Juice.Observability.Agent.Launcher -c Release -o /launcher --no-self-contained
 
 FROM mcr.microsoft.com/dotnet/runtime:10.0.9-alpine3.24
 ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=true
 WORKDIR /app
 COPY --from=build /app .
+# The launcher, for hosts that update the agent with agent.update (deploy/local runs it); the default entry point runs the agent alone.
+COPY --from=build /launcher /launcher
 # Its identity and the commands it has seen live in /data, written by the agent's own non-root user only.
 RUN mkdir /data && chown "$APP_UID" /data && chmod 700 /data
 USER $APP_UID
