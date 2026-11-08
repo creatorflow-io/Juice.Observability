@@ -23,5 +23,9 @@
 - **Direct dependencies only.** A change two hops away isn't listed.
 - **Ranking isn't validated against real incidents.** The points are reasoned, not tuned: there is no incident history to tune them on.
 - **A service must be discovered** before a pipeline can report a change to it, so a first deployment gets `422` until telemetry arrives.
-- **One platform version per database.** Hosts sharing a platform database share one discovery worker through a lease, so an older host can hold it and record no version changes. Seen for real: the demo on the released package did this until it was stopped. All hosts on a database need the same version.
+- **Hosts on one database, at different versions:** resolved on 8 November.
+  - Before, an older host could hold the shared worker lease and record no version changes. Seen for real: the demo on the released package did this until it was stopped.
+  - Now a newer host takes each worker's lease over from an older holder (discovery, health, rules, notifications) and logs a warning. The older host steps down at its next pass.
+  - Hosts of the same version never take a lease over from each other, and an older host still takes a free lease, so going back a version keeps the workers running.
+  - Evidence: `WorkerLeaseTests.A_newer_version_takes_a_lease_over_from_an_older_holder_and_only_then`.
 - **Configuration changes** cover the platform's own rules and webhooks. A customer's own configuration needs a pipeline to report it.

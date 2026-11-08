@@ -131,6 +131,11 @@ Agents are off unless `Agents:Enabled` is `true`, with:
   user (`JUICE_UID` in `.env`, written by `init.sh`).
 - **Behind a proxy or load balancer,** pass this port through as TCP: the client certificate is the agent's identity, and a proxy that
   ends TLS takes it away. Every replica can serve agents.
+- **Run an agent as a service** under its launcher:
+  - systemd: `deploy/agent/juice-agent.service`, which has the install steps at its top.
+  - Windows: `deploy/agent/install-windows-service.ps1` (Administrator). It creates the `JuiceAgent` service with its own virtual account and restart on failure.
+
+  Either way, an agent that can't start exits with a failure code, 78 for invalid configuration, so the service manager sees it.
 - **Run an agent** with `Dockerfile.agent` or `dotnet juice-agent.dll`. It reads `Agent:PlatformUrl`, `Agent:PlatformCaFile`,
   `Agent:DataDirectory` (its key and state: keep it private and persistent), `Agent:EnrollmentTokenFile`, `Agent:HostRoot` (`/hostfs`
   in a container with the host mounted) and its allowlist, `Allowlist:Actions` (see `deploy/local/agent.json`). An empty allowlist

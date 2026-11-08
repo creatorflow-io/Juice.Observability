@@ -116,7 +116,11 @@ Thirteen checks were each broken on purpose, one at a time, and a test failed ev
 - **The launcher stops the agent hard** (`Kill`), not with a signal. Everything the agent writes is replaced by rename, so a stop never leaves half a file. A command running at that moment is reported `interrupted`.
 - **No package retention.** Packages stay in `Agents:PackageDirectory` until someone removes them. On a host, the launcher keeps the current version and the one before.
 - **A command issued on another replica than the agent's poll** reaches it within 5 seconds, at the poll's next look; on the same replica, at once.
-- **The enrollment guard counts per replica,** so with several replicas an address gets 10 failures a minute from each.
 - **No approval step.** The envelope has a field for an approval reference, unused until Phase 8's actions need approval.
-- **The agent runs as a plain process or container.** No Windows service or systemd unit is provided yet; the launcher expects a service manager to restart it.
+- **The systemd unit and the Windows service script haven't run on a real host yet.** The launcher has run as a plain process and in a container. The unit file is unverified, and the install script was only parsed, not run, since that needs Administrator.
+
+Resolved on 8 November, each with a test that fails without the fix:
+- **The enrollment guard counts across replicas,** in `agent_enrollment_failures`, with one atomic upsert per failure. Each replica's own count is still checked first, so an address it already refuses costs no database work (`AgentListenerTests.Failed_enrollments_add_up_across_replicas`).
+- **The agent runs as a service:** `deploy/agent/juice-agent.service` for systemd (`Type=notify`, hardened) and `deploy/agent/install-windows-service.ps1` for Windows, with a virtual account, restart on failure and a private data directory. The launcher integrates with both.
+- **An agent with invalid configuration exits with code 78,** not 0. A Windows service's recovery acts only on a failure, so a broken agent used to stop without reporting one (`AgentResilienceTests.An_agent_with_invalid_configuration_ends_with_a_failure_code`).
 - **Diagnostics from a container see the container,** except what reads the host's `/proc` and mounts under `Agent:HostRoot`.

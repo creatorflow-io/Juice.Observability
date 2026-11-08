@@ -61,11 +61,17 @@ These weren't in the roadmap, so they're mine to justify and yours to overrule.
 
 - **Slack, Teams and TLS mail haven't met the real thing.** The formats follow those services' documentation and reached local receivers only, and the mail test server has no TLS. Try each with a real channel before relying on it.
 - **Implicit TLS on port 465 isn't supported:** `System.Net.Mail` does STARTTLS only.
-- **There is no test-send button.** A channel's first check is its first real alert.
-- **Delivery isn't retried by hand** from the API or Console: the runbook's SQL still applies.
-- **An escalation step whose channels are all disabled** counts as sent, with only a log warning.
-- **The escalation and acknowledgement lock has no race test.** It's reasoned from the row lock, and the tests cover each order, not the overlap.
-- **Removing an allowlist entry** can leave an open connection in use for up to a minute.
+- **A hand retry is one more attempt.** If it fails again for a transient reason, the delivery is `Failed` again rather than going back to the backoff schedule.
+
+Resolved on 8 November, each with a test that fails without the fix:
+- **A test send:** `POST /webhooks/{id}/test` and the Console's Test button send a `webhook.test` notification through the same checks, signing and formatting as an alert's. They work on a disabled channel too, and are audited (`WebhookOperationsTests`).
+- **A failed delivery retried by an admin:** `POST /webhooks/{id}/deliveries/{deliveryId}/retry` and the Console's Retry button, audited, in place of the runbook's SQL.
+- **An escalation step whose channels are all disabled** no longer counts as sent:
+  - It's audited (`escalation.step.unreachable`) and logged as an error, and the next step is due at once.
+  - If it was the last step, the escalation stops as `unreachable`.
+  - Evidence: `NotificationFlowTests.A_step_that_reaches_nobody_isnt_counted_and_the_next_one_goes_at_once`.
+- **The race between escalating and acknowledging is tested at the overlap.** An acknowledgement held mid-transaction makes the escalation wait on the alert's row lock, then stop without notifying (`…An_escalation_that_meets_an_acknowledgement_in_flight_waits_for_it_and_stops`).
+- **Removing an allowlist entry takes effect at the next send.** The client is replaced when the tenant's allowlist changes, instead of keeping a pooled connection for up to a minute (`WebhookOperationsTests.Removing_an_allowlist_entry_stops_the_next_send_though_a_connection_is_open`).
 - **Incidents have no assignee, don't notify anyone, and aren't on the Timeline.**
 - **The Console shows change buttons to everyone;** the API refuses and the page says which role is needed.
 - **Upgrading writes one `webhook.update` audit record and change event** per file-managed endpoint on first start, since the definition gained fields.

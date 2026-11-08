@@ -98,8 +98,16 @@ An invalid file keeps the API from starting, and the log names every error.
   attempts. Any other 4xx fails at once.
 - **Blocked destinations** show as `blocked_address:…`, `private_address_not_allowlisted:…` or `https_required`, and
   are never retried.
-- **Alert state.** A failed delivery never changes alert state. To resend, fix the receiver, then set the delivery
-  back to `Pending` in `webhook_deliveries`. Receivers deduplicate on `webhook-id`.
+- **Alert state.** A failed delivery never changes alert state. To resend, fix the receiver, then press Retry beside the
+  delivery in the Console's channel history, or `POST /webhooks/{id}/deliveries/{deliveryId}/retry` (admin, audited). It
+  gets one more attempt. Receivers deduplicate on `webhook-id`.
+- **Check a channel** before relying on it: the Test button, or `POST /webhooks/{id}/test` (admin, audited). It sends a
+  `webhook.test` notification now through the same checks and signing as an alert, and answers with the status or the error.
+  It works on a disabled channel too.
+- **`escalation.step.unreachable`** in the audit: an escalation step reached nobody, because all its channels are disabled or gone.
+  The next step went at once; if it was the last, the escalation stopped as `unreachable`. Enable or replace the channels.
+- **A host on an older version** logs nothing wrong itself. The newer host logs `took … over from an older version`: upgrade or
+  stop the older one.
 - **One alert.** `GET /alerts/{id}/notifications` and the alert page show every delivery, escalation, silence and incident for it.
 - **Other statuses.** `Suppressed` is held by a silence, `Dropped` was held and no longer mattered, and `Grouped` went out inside the delivery named by `groupedInto`.
 - **Other errors.** `chat_url_not_allowed`: the URL behind a Slack or Teams reference isn't that service's, and isn't in `Webhooks:AdditionalChatHosts`. `secret_unavailable`: the reference isn't set on the host; it retries. `smtp_not_configured`: no `Webhooks:Smtp`. `smtp_5xx`: the mail server refused for good. `smtp_4xx` and `smtp_unavailable` retry.
