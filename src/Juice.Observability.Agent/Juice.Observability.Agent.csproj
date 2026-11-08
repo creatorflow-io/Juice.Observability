@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+  <!-- Juice Agent (roadmap Phase 7): runs on a host, connects only outbound, over mTLS, and runs only the read-only actions its local
+       allowlist permits, after checking each signed command itself. Shipped as a program, not a package. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <AssemblyName>juice-agent</AssemblyName>
+    <RootNamespace>Juice.Observability.Agent</RootNamespace>
+    <UserSecretsId>juice-agent</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Juice.Observability.Agent.Contracts\Juice.Observability.Agent.Contracts.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Juice.Observability.Tests" />
+  </ItemGroup>
+
+</Project>

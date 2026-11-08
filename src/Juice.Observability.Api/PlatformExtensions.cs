@@ -1,6 +1,7 @@
 using Juice.MediatR;
 using Juice.Messaging.Outbox.Delivery.Internal;
 using Juice.Messaging.Policies;
+using Juice.Observability.Agents;
 using Juice.Observability.Api.Endpoints;
 using Juice.Observability.Data;
 using Juice.Observability.Discovery;
@@ -51,6 +52,7 @@ namespace Juice.Observability.Api
             services.AddPlatformHealth(configuration);
             services.AddPlatformRules(configuration);
             services.AddPlatformWebhooks(configuration);
+            services.AddPlatformAgents(configuration);
             services.Configure<IntegrationOptions>(configuration.GetSection(IntegrationOptions.Section));
             services.AddPlatformAuthentication(configuration);
             services.AddPlatformProblemDetails();
@@ -108,6 +110,8 @@ namespace Juice.Observability.Api
             app.MapHealthChecks("/health/live", new() { Predicate = _ => false }).AllowAnonymous();
             app.MapHealthChecks("/health/ready", new() { Predicate = check => check.Tags.Contains("ready") }).AllowAnonymous();
             app.MapInventoryEndpoints();
+            // Answers only on the agent listener, and only when agents are enabled (Agents:Enabled).
+            app.MapAgentApi();
             return app;
         }
     }

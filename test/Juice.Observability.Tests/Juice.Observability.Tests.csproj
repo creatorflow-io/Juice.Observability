@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Juice.Observability.Host\Juice.Observability.Host.csproj" />
+    <ProjectReference Include="..\..\src\Juice.Observability.Agent\Juice.Observability.Agent.csproj" />
   </ItemGroup>
 
   <ItemGroup>

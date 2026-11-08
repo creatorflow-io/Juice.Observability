@@ -50,6 +50,9 @@ namespace Juice.Observability.Data
         public DbSet<Incident> Incidents => Set<Incident>();
         public DbSet<IncidentAlert> IncidentAlerts => Set<IncidentAlert>();
         public DbSet<IncidentEvent> IncidentEvents => Set<IncidentEvent>();
+        public DbSet<EnrolledAgent> Agents => Set<EnrolledAgent>();
+        public DbSet<AgentEnrollmentToken> AgentEnrollmentTokens => Set<AgentEnrollmentToken>();
+        public DbSet<AgentCommand> AgentCommands => Set<AgentCommand>();
 
         /// <summary>Applies the snake_case naming used by every table. Call it when configuring the context.</summary>
         public static void Configure(DbContextOptionsBuilder options, string connectionString)
@@ -190,6 +193,7 @@ namespace Juice.Observability.Data
             ConfigureWebhooks(model);
             ConfigureNotifications(model);
             ConfigureIncidents(model);
+            ConfigureAgents(model);
 
             model.Entity<HealthSnapshot>(e =>
             {
@@ -300,6 +304,58 @@ namespace Juice.Observability.Data
                 e.Property(x => x.Text).HasMaxLength(2000);
                 e.HasIndex(x => new { x.IncidentId, x.At });
                 e.HasOne<Incident>().WithMany().HasForeignKey(x => x.IncidentId).OnDelete(DeleteBehavior.Cascade);
+            });
+        }
+
+        private static void ConfigureAgents(ModelBuilder model)
+        {
+            model.Entity<EnrolledAgent>(e =>
+            {
+                e.ToTable("agents");
+                Tenant(e);
+                e.Property(x => x.Hostname).HasMaxLength(253);
+                e.Property(x => x.OperatingSystem).HasMaxLength(200);
+                e.Property(x => x.Version).HasMaxLength(64);
+                e.Property(x => x.Status).HasConversion<string>().HasMaxLength(20);
+                e.Property(x => x.CertificateSerial).HasMaxLength(64);
+                e.Property(x => x.PreviousCertificateSerial).HasMaxLength(64);
+                e.Property(x => x.EnrolledBy).HasMaxLength(256);
+                e.Property(x => x.RevokedBy).HasMaxLength(256);
+                e.Property(x => x.RevokeReason).HasMaxLength(500);
+                e.HasIndex(x => x.CertificateSerial).IsUnique();
+                e.HasIndex(x => new { x.TenantId, x.Status });
+                e.HasOne<Resource>().WithMany().HasForeignKey(x => x.ResourceId).OnDelete(DeleteBehavior.SetNull);
+            });
+
+            model.Entity<AgentEnrollmentToken>(e =>
+            {
+                e.ToTable("agent_enrollment_tokens");
+                Tenant(e);
+                e.Property(x => x.TokenHash).HasMaxLength(64);
+                e.Property(x => x.Purpose).HasMaxLength(200);
+                e.Property(x => x.CreatedBy).HasMaxLength(256);
+                e.HasIndex(x => x.TokenHash).IsUnique();
+                // Only one agent can use a token: the update that marks it used is conditional on it not being used yet.
+                e.Property(x => x.UsedAt).IsConcurrencyToken();
+            });
+
+            model.Entity<AgentCommand>(e =>
+            {
+                e.ToTable("agent_commands");
+                Tenant(e);
+                e.Property(x => x.Action).HasMaxLength(64);
+                e.Property(x => x.Parameters).HasColumnType("jsonb");
+                e.Property(x => x.IssuedBy).HasMaxLength(256);
+                e.Property(x => x.Nonce).HasMaxLength(128);
+                e.Property(x => x.IdempotencyKey).HasMaxLength(128);
+                e.Property(x => x.KeyId).HasMaxLength(64);
+                e.Property(x => x.State).HasConversion<string>().HasMaxLength(20);
+                e.Property(x => x.Reason).HasMaxLength(200);
+                e.Property(x => x.Result).HasColumnType("jsonb");
+                e.HasIndex(x => x.Nonce).IsUnique();
+                e.HasIndex(x => new { x.AgentId, x.IdempotencyKey }).IsUnique();
+                e.HasIndex(x => new { x.AgentId, x.State, x.IssuedAt });
+                e.HasOne<EnrolledAgent>().WithMany().HasForeignKey(x => x.AgentId).OnDelete(DeleteBehavior.Cascade);
             });
         }
 

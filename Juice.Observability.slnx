@@ -1,5 +1,8 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/Juice.Observability.Agent.Contracts/Juice.Observability.Agent.Contracts.csproj" />
+    <Project Path="src/Juice.Observability.Agent/Juice.Observability.Agent.csproj" />
+    <Project Path="src/Juice.Observability.Agents/Juice.Observability.Agents.csproj" />
     <Project Path="src/Juice.Observability.Api/Juice.Observability.Api.csproj" />
     <Project Path="src/Juice.Observability.Data/Juice.Observability.Data.csproj" />
     <Project Path="src/Juice.Observability.Discovery/Juice.Observability.Discovery.csproj" />

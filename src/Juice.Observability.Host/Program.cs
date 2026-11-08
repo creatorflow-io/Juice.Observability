@@ -1,3 +1,4 @@
+using Juice.Observability.Agents;
 using Juice.Observability.Api;
 
 // The reference host: the platform packages plus Juice Console served from wwwroot on the same origin. A customer's own
@@ -5,9 +6,12 @@ using Juice.Observability.Api;
 var builder = WebApplication.CreateBuilder(args);
 builder.Configuration.AddJuiceObservabilityFiles();
 builder.Services.AddJuiceObservability(builder.Configuration);
+// The agent listener, when Agents:Enabled: its own port with TLS and client certificates. A customer's host behind its own TLS proxy passes it through.
+builder.WebHost.ConfigureKestrel((context, kestrel) => kestrel.ListenForAgents(context.Configuration));
 
 var app = builder.Build();
 
+app.UseAgentListener();
 app.UseCorrelationId();
 app.UseExceptionHandler();
 app.UseStatusCodePages();

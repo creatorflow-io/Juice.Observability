@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- What the platform and Juice Agent agree on (roadmap Phase 7): the signed command envelope, the typed actions with their
+       parameter bounds, results and enrollment messages. No behaviour that touches a host lives here. -->
+  <PropertyGroup>
+    <Description>Juice Observability agent contracts: signed command envelopes, typed read-only actions and their bounds.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Juice.Observability.Tests" />
+  </ItemGroup>
+
+</Project>
