@@ -151,6 +151,8 @@
 
 **Acceptance gate:** invalid signature, wrong target, expired/replayed command, disallowed action, and out-of-range parameters are rejected. Local allowlist wins over a valid platform signature. No shell execution interface exists.
 
+**Status:** see [Phase 7 acceptance](phase-7-acceptance.md).
+
 ## Phase 8 — Approved manual actions and verified remediation
 
 **Goal:** support narrowly scoped, human-authorized operational actions.

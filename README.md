@@ -14,6 +14,9 @@ Turns telemetry from Juice services into a resource model, health, rules, alerts
 | `src/Juice.Observability.Webhooks` | Notification of alert transitions, heard from the Juice outbox: SSRF-safe delivery to signed webhooks, Slack, Teams and email, retries, history, silences, grouping, escalation |
 | `src/Juice.Observability.Api` | `/api/v1` (OIDC, tenant-scoped) and the background workers, as a library (`AddJuiceObservability`, `MapJuiceObservability`) |
 | `src/Juice.Observability.Host` | The reference host (the image): the API library and the Console on one origin |
+| `src/Juice.Observability.Agents` | Juice Agent control plane: the agent CA, enrollment and revocation, the mTLS agent listener, signed read-only commands |
+| `src/Juice.Observability.Agent.Contracts` | What the platform and the agent agree on: the signed command envelope, the typed actions and their bounds |
+| `src/Juice.Observability.Agent` | Juice Agent (`juice-agent`, `Dockerfile.agent`): runs on a host, connects only outbound, and runs only what its local allowlist permits |
 | `test/Juice.Observability.Tests` | Unit tests, and integration tests against the running local stack |
 
 ## Build and test
@@ -128,6 +131,9 @@ page's `nextCursor`).
 | `GET /api/v1/tenants/{tenantId}/webhooks` | webhook endpoints (destination host only, never the secret) |
 | `GET /api/v1/tenants/{tenantId}/webhooks/{endpointId}/deliveries?status=` | delivery history, each with every attempt |
 | `POST /api/v1/tenants/{tenantId}/alerts/{alertId}/acknowledgement` | acknowledge an open alert: `operator` or `admin`; send `Idempotency-Key` to retry safely |
+| `POST …/agents/enrollment-tokens` | a one-time token to enroll one agent (admin), shown once, valid 5 minutes to 24 hours |
+| `GET …/agents?all=`, `GET …/agents/{id}`, `POST …/agents/{id}/revocation` | enrolled agents and whether they are online; revoking (admin, with a reason) refuses the agent from its next call |
+| `POST …/agents/{id}/commands`, `GET …/agents/{id}/commands`, `…/commands/{commandId}` | issue a read-only diagnostic (operator or admin) and read what the agent reported, refusals included |
 
 A resource's detail also carries its health per environment and each instance's state. With
 `Integrations:Grafana:BaseUrl` set, a service and an alert also carry a link to the optional Grafana overview; without
@@ -345,6 +351,12 @@ twice. The dispatcher sends every 2 s.
   fail at once. Every attempt is recorded.
 
 Configuration, secrets and receiver guidance are in [docs/deployment.md](docs/deployment.md).
+
+## Juice Agent
+
+A Juice Agent runs on a host and answers read-only diagnostics: `host.summary`, `disk.usage` and `tcp.reachability`. It connects only outbound, to the platform's agent listener (`Agents:Port`, 8443; 5181 on the local stack), over mTLS. It enrolls once with a one-time token from an admin, sending a CSR for a key it generates and keeps, and renews its 7-day certificate itself.
+
+Every command is signed by the platform's command key and checked again by the agent before it runs: the signature, that it names this agent and tenant, its time window and lifetime, its nonce (a replay is refused), the action and its parameter bounds, and this host's own allowlist, which wins over a valid signature. There is no action that runs a command, a script or an executable. See [Phase 7 acceptance](docs/phase-7-acceptance.md), the [runbook](docs/runbook.md#juice-agents) and [deployment](docs/deployment.md#juice-agents).
 
 ## License
 

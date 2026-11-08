@@ -105,8 +105,36 @@ The local profile cuts these corners on purpose. Each one changes for a producti
 | Keycloak dev mode, demo users, password grant client | the customer's IdP; no `juice-platform-cli` client |
 | secrets in `.env` | the platform's secret store |
 | backups on the host disk | scheduled `scripts/backup.sh` and `scripts/backup-telemetry.sh` copied off the host |
+| the agent CA and command key as files from `init.sh` | kept in the secret store, the CA key offline where the deployment allows it |
 
 The pinned versions, the rules and the webhook configuration stay the same.
+
+## Juice Agents
+
+Agents are off unless `Agents:Enabled` is `true`, with:
+
+| Setting | What |
+|---|---|
+| `Agents:CaCertificateFile`, `Agents:CaKeyFile` | the agent CA, PEM. It issues agent client certificates and nothing else: don't reuse another CA |
+| `Agents:CommandKeyFile` | an ECDSA P-256 key, PEM, that signs commands. Separate from the CA |
+| `Agents:ServerCertificateFile`, `Agents:ServerKeyFile` | the agent listener's server certificate, for the name agents use. When an intermediate issued it, put the intermediates after it in the same file: they're sent with it. Agents trust only the CA they're configured with |
+| `Agents:Port` | the agent listener, 8443 by default |
+| `Agents:CertificateLifetime` | agent certificates, 7 days by default. An agent renews when a third is left |
+
+- **The listener** serves only the agent API, and the agent API is on no other port. With agents on, Kestrel listens only on the
+  endpoints code names, so the host's own are named too, as Kestrel would have chosen them: `URLS` (or `ASPNETCORE_URLS`), otherwise
+  `HTTP_PORTS` and `HTTPS_PORTS`, otherwise 8080. Endpoints in `Kestrel:Endpoints` are left to Kestrel. A customer's own host calls
+  `ListenForAgents` and `UseAgentListener` as `Juice.Observability.Host` does.
+- **On the local stack** the agent CA and command keys are readable by their owner only, and the platform container runs as that
+  user (`JUICE_UID` in `.env`, written by `init.sh`).
+- **Behind a proxy or load balancer,** pass this port through as TCP: the client certificate is the agent's identity, and a proxy that
+  ends TLS takes it away. Every replica can serve agents.
+- **Run an agent** with `Dockerfile.agent` or `dotnet juice-agent.dll`. It reads `Agent:PlatformUrl`, `Agent:PlatformCaFile`,
+  `Agent:DataDirectory` (its key and state: keep it private and persistent), `Agent:EnrollmentTokenFile`, `Agent:HostRoot` (`/hostfs`
+  in a container with the host mounted) and its allowlist, `Allowlist:Actions` (see `deploy/local/agent.json`). An empty allowlist
+  permits nothing.
+- **Rotating the command key or the agent CA** needs agents to enroll again for now: an agent keeps the command key it was given
+  at enrollment, and renews against the CA. Rotation without re-enrollment is planned with signed updates (Phase 7, milestone 2).
 
 ## More than one API replica
 

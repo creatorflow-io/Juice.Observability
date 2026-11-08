@@ -131,6 +131,28 @@ Use `Open an incident` on an alert, or the Incidents page. Operators and admins 
 - **They don't touch alerts.** Resolving an incident leaves its alerts as they are, and the page says if some are still open.
 - **The record** is on the page, and `audit_records` holds `incident.*`. Notes are masked for common secret shapes, but write a summary rather than paste a terminal.
 
+## Juice Agents
+
+- **Enroll a host.** An admin creates a token with `POST …/agents/enrollment-tokens`. It is valid for an hour by default, works once,
+  and is shown once. Put it in the agent's `Agent:EnrollmentTokenFile` and start the agent. It appears in `GET …/agents`, linked to
+  the discovered host of the same name.
+- **Run a diagnostic.** `POST …/agents/{id}/commands` with `host.summary`, `disk.usage` (`pathPrefix`) or `tcp.reachability`
+  (`host`, `port`, `timeoutMs`), as an operator or admin. The command shows `Pending`, `Delivered`, then `Succeeded` with its data,
+  `Failed`, or `Rejected` with the agent's reason. One not answered before it expires, 2 minutes by default, shows `Expired`.
+- **`Rejected`** comes from the agent. `action_not_allowed` and `outside_local_bounds` mean this host's allowlist doesn't permit it,
+  and only the host's owner can change that. `invalid_signature`, `unknown_key`, `wrong_target`, `expired` and `replayed` mean the
+  command was altered, sent to the wrong agent, or the clocks are more than 2 minutes apart.
+- **`Failed` with `interrupted`** means the agent stopped while running it: it isn't run again, so issue it again if it's still needed.
+- **`Failed` with `timeout`, then `busy`,** on `disk.usage` or `host.summary`: a read on the host hung, often a network mount that stopped
+  answering. The agent keeps working; those two fail `busy` until the read returns or the agent restarts.
+- **Enrollment answers `429`:** more than 10 enrollments from that address failed in the last minute, usually a wrong or used token. Wait a
+  minute, and check the token.
+- **An agent offline.** `online` is false when it hasn't polled for 2 minutes. Its log says why: the platform is unreachable, or
+  `The platform refused this agent`, which means it was revoked or its certificate expired while it was down. To bring it back,
+  clear its data directory and enroll it again with a new token.
+- **Revoke.** `POST …/agents/{id}/revocation` with a reason (admin). The platform refuses the agent from its next call, and its waiting
+  commands are cancelled. Enrollment, renewal, revocation and every command and result are in `audit_records` (`agent.*`).
+
 ## Backup and restore
 
 | Task | Command |
