@@ -1,0 +1,15 @@
+{
+  "//": "The local agent's own settings. Its allowlist is the last word on this host: a command the platform signed is still refused if the action isn't listed here, or its parameters fall outside these bounds.",
+  "Allowlist": {
+    "Actions": {
+      "host.summary": {},
+      "disk.usage": {
+        "PathPrefixes": [ "/hostfs", "/data" ]
+      },
+      "tcp.reachability": {
+        "Targets": [ "postgres:5432", "clickhouse:8123", "keycloak:8080", "platform-api:8080", "otel-collector:4317" ],
+        "MaxTimeoutMs": 3000
+      }
+    }
+  }
+}

@@ -168,6 +168,8 @@ services:
     profiles: ["platform"]
     build:
       context: ../..
+    # The host user that owns secrets/agents (scripts/init.sh writes JUICE_UID), so keys readable by their owner only can be read here.
+    user: "${JUICE_UID:-1654}"
     environment:
       ConnectionStrings__Platform: Host=postgres;Port=5432;Database=juice_observability;Username=juice;Password=${POSTGRES_PASSWORD}
       ClickHouse__ConnectionString: Host=clickhouse;Port=8123;Username=platform_reader;Password=${CLICKHOUSE_PLATFORM_PASSWORD};Database=otel
@@ -179,14 +181,23 @@ services:
       Rules__File: /config/rules.json
       Webhooks__File: /config/webhooks.json
       Integrations__Grafana__BaseUrl: http://${PUBLIC_HOST:-localhost}:3000
+      # Juice Agent: the agent listener on 8443 (mTLS), with the keys scripts/init.sh writes.
+      Agents__Enabled: "true"
+      Agents__CaCertificateFile: /secrets/agents/ca.crt
+      Agents__CaKeyFile: /secrets/agents/ca.key
+      Agents__CommandKeyFile: /secrets/agents/command.key
+      Agents__ServerCertificateFile: /secrets/agents/listener.crt
+      Agents__ServerKeyFile: /secrets/agents/listener.key
     volumes:
       - ./rules.json:/config/rules.json:ro
       - ./webhooks.json:/config/webhooks.json:ro
+      - ./secrets/agents:/secrets/agents:ro
     configs:
       - source: console-config
         target: /app/wwwroot/config.json
     ports:
       - "5180:8080"
+      - "5181:8443"
     depends_on:
       postgres:
         condition: service_healthy
@@ -195,7 +206,33 @@ services:
       keycloak:
         condition: service_healthy
 
+  # A Juice Agent on this machine, to try Phase 7. console/e2e/agent.mjs creates its enrollment token and starts it:
+  #   docker compose --profile platform --profile agent up -d agent
+  agent:
+    profiles: ["agent"]
+    build:
+      context: ../..
+      dockerfile: Dockerfile.agent
+    hostname: ${AGENT_HOSTNAME:-local-agent}
+    environment:
+      JUICE_AGENT_CONFIG: /config/agent.json
+      Agent__PlatformUrl: https://platform-api:8443
+      Agent__PlatformCaFile: /secrets/ca.crt
+      Agent__DataDirectory: /data
+      Agent__EnrollmentTokenFile: /secrets/enrollment-token
+      Agent__HostRoot: /hostfs
+    volumes:
+      - ./agent.json:/config/agent.json:ro
+      - ./secrets/tls/ca.crt:/secrets/ca.crt:ro
+      - ./secrets/agent-enrollment-token:/secrets/enrollment-token:ro
+      - agent-data:/data
+      - /:/hostfs:ro
+    depends_on:
+      platform-api:
+        condition: service_healthy
+
 volumes:
+  agent-data:
   clickhouse-data:
   grafana-data:
   postgres-data:

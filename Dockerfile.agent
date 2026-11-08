@@ -1,0 +1,19 @@
+# Juice Agent (roadmap Phase 7). Build from the repository root:
+#   docker build -f Dockerfile.agent -t juice-agent .
+FROM mcr.microsoft.com/dotnet/sdk:10.0.402 AS build
+WORKDIR /src
+COPY Directory.Build.props Directory.Packages.props ./
+COPY src/Juice.Observability.Agent.Contracts/ src/Juice.Observability.Agent.Contracts/
+COPY src/Juice.Observability.Agent/ src/Juice.Observability.Agent/
+RUN dotnet publish src/Juice.Observability.Agent -c Release -o /app --no-self-contained
+
+FROM mcr.microsoft.com/dotnet/runtime:10.0.9-alpine3.24
+ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=true
+WORKDIR /app
+COPY --from=build /app .
+# Its identity and the commands it has seen live in /data, written by the agent's own non-root user only.
+RUN mkdir /data && chown "$APP_UID" /data && chmod 700 /data
+USER $APP_UID
+VOLUME /data
+# Listens on nothing: it only connects out, to the platform.
+ENTRYPOINT ["dotnet", "juice-agent.dll"]

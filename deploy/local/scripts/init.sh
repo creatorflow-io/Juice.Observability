@@ -110,3 +110,34 @@ elif $reissue; then
   issue_server_cert
   echo "restart the Collector to use it: docker compose restart otel-collector"
 fi
+
+# Juice Agent (roadmap Phase 7): a CA of its own for agent client certificates, the key that signs commands (kept apart from
+# it), and the platform's agent listener certificate from the local CA above, so an agent trusts secrets/tls/ca.crt for it.
+issue_agent_listener_cert() {
+  local host san=DNS:localhost,DNS:platform-api,IP:127.0.0.1
+  host=$(grep '^PUBLIC_HOST=' .env | cut -d= -f2- | tr -d '\r')
+  if [[ "$host" =~ ^[0-9.]+$ ]]; then san="$san,IP:$host"; elif [[ "$host" != localhost ]]; then san="$san,DNS:$host"; fi
+  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out secrets/agents/listener.key 2>/dev/null
+  openssl req -new -key secrets/agents/listener.key -subj "/CN=platform-api" -out secrets/agents/listener.csr 2>/dev/null
+  printf 'subjectAltName=%s\nextendedKeyUsage=serverAuth\n' "$san" > secrets/agents/listener.ext
+  openssl x509 -req -in secrets/agents/listener.csr -CA secrets/tls/ca.crt -CAkey secrets/tls/ca.key -CAcreateserial \
+    -days 825 -extfile secrets/agents/listener.ext -out secrets/agents/listener.crt 2>/dev/null
+  rm -f secrets/agents/listener.csr secrets/agents/listener.ext secrets/tls/ca.srl
+  echo "wrote the agent listener certificate for $san"
+}
+
+mkdir -p secrets/agents
+if $force || [[ ! -f secrets/agents/ca.crt ]]; then
+  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out secrets/agents/ca.key 2>/dev/null
+  openssl req -x509 -new -key secrets/agents/ca.key -days 825 -subj "/CN=Juice Observability local agent CA" \
+    -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign,cRLSign -out secrets/agents/ca.crt 2>/dev/null
+  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out secrets/agents/command.key 2>/dev/null
+  echo "wrote the agent CA and the command signing key"
+  issue_agent_listener_cert
+elif $reissue; then
+  issue_agent_listener_cert
+fi
+# The agent CA key mints agent identities and the command key signs commands every agent obeys: readable by their owner only. The platform
+# container runs as this same user (JUICE_UID in .env, docker-compose.yml), so it can still read them through its read-only mount.
+chmod 600 secrets/agents/*.key
+ensure JUICE_UID "$(id -u)"
