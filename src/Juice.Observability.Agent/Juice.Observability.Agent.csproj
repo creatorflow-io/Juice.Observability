@@ -1,13 +1,16 @@
 <Project Sdk="Microsoft.NET.Sdk.Worker">
 
-  <!-- Juice Agent (roadmap Phase 7): runs on a host, connects only outbound, over mTLS, and runs only the read-only actions its local
-       allowlist permits, after checking each signed command itself. Shipped as a program, not a package. -->
+  <!-- Juice Agent (roadmap Phase 7): runs on a host, connects only outbound, over mTLS, and runs only the actions its local allowlist permits,
+       after checking each signed command itself. A program, and a package for building your own agent with custom actions
+       (AgentAction<TParameters>, JuiceAgent.RunAsync). -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <IsPackable>false</IsPackable>
+    <IsPackable>true</IsPackable>
     <AssemblyName>juice-agent</AssemblyName>
+    <PackageId>Juice.Observability.Agent</PackageId>
     <RootNamespace>Juice.Observability.Agent</RootNamespace>
     <UserSecretsId>juice-agent</UserSecretsId>
+    <Description>Juice Agent: a host's outbound, mTLS agent for Juice Observability. Reference it from your own program to add custom actions.</Description>
   </PropertyGroup>
 
   <ItemGroup>
@@ -22,12 +25,10 @@
     <InternalsVisibleTo Include="Juice.Observability.Tests" />
   </ItemGroup>
 
-  <!-- manifest.json beside the program: its version, as packages and the launcher name it, and what to start. -->
-  <Target Name="AgentManifest" BeforeTargets="AssignTargetPaths">
-    <WriteLinesToFile File="$(IntermediateOutputPath)manifest.json" Lines="{&quot;version&quot;:&quot;$(Version)&quot;,&quot;entryPoint&quot;:&quot;$(AssemblyName).dll&quot;}" Overwrite="true" WriteOnlyWhenDifferent="true" />
-    <ItemGroup>
-      <None Include="$(IntermediateOutputPath)manifest.json" Link="manifest.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
-    </ItemGroup>
-  </Target>
+  <!-- The manifest step, for this program and, from the package, for a customer's own agent program. -->
+  <Import Project="msbuild\Juice.Observability.Agent.targets" />
+  <ItemGroup>
+    <None Include="msbuild\Juice.Observability.Agent.targets" Pack="true" PackagePath="build\;buildTransitive\" />
+  </ItemGroup>
 
 </Project>

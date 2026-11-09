@@ -23,6 +23,16 @@ namespace Juice.Observability.Api.Endpoints
     /// <summary>A package an admin can update agents to. <c>SignedBy</c> is the id of the release key whose signature checked out.</summary>
     public sealed record AgentPackageDto(string Version, string Sha256, long Size, string SignedBy, DateTimeOffset AddedAt);
 
+    /// <summary>
+    /// One action an agent can be asked for. <c>Permitted</c> is what its host's allowlist says, or null when the agent doesn't report it (an older
+    /// agent); <c>Parameters</c> are narrowed to the host's bounds where the agent reported them, and <c>Limits</c> says the rest in words.
+    /// </summary>
+    public sealed record AgentActionDto(string Name, string Description, bool Changing, bool Custom, IReadOnlyList<ActionParameter> Parameters, bool? Permitted,
+        IReadOnlyList<string> Limits);
+
+    /// <summary>An agent's actions, and when it last reported them; <c>ReportedAt</c> null means the built-in actions, as an older agent has.</summary>
+    public sealed record AgentActionsDto(DateTimeOffset? ReportedAt, IReadOnlyList<AgentActionDto> Items);
+
     public sealed record AgentCommandDto(Guid Id, Guid AgentId, string Action, JsonElement Parameters, string State, string IssuedBy, DateTimeOffset IssuedAt,
         DateTimeOffset ExpiresAt, DateTimeOffset? DeliveredAt, int DeliveryCount, DateTimeOffset? CompletedAt, string? Reason, JsonElement? Result, int? DurationMs);
 
@@ -42,6 +52,8 @@ namespace Juice.Observability.Api.Endpoints
             tenant.MapPost("/agents/enrollment-tokens", CreateTokenAsync);
             tenant.MapGet("/agents", ListAsync);
             tenant.MapGet("/agents/packages", ListPackages);
+            tenant.MapGet("/agents/actions", Catalog);
+            tenant.MapGet("/agents/{agentId:guid}/actions", ActionsAsync);
             tenant.MapGet("/agents/{agentId:guid}", GetAsync);
             tenant.MapPost("/agents/{agentId:guid}/revocation", RevokeAsync);
             tenant.MapPost("/agents/{agentId:guid}/commands", IssueAsync);
@@ -63,6 +75,35 @@ namespace Juice.Observability.Api.Endpoints
             (c.State is AgentCommandState.Pending or AgentCommandState.Delivered && c.ExpiresAt <= now ? AgentCommandState.Expired : c.State).ToString(),
             c.IssuedBy, c.IssuedAt, c.ExpiresAt, c.DeliveredAt, c.DeliveryCount, c.CompletedAt, c.Reason,
             c.Result is { } result ? AgentAuthority.Parameters(result) : null, c.DurationMs);
+
+        /// <summary>The agent's last action report, or null when it never sent one or it doesn't read.</summary>
+        internal static ActionsReport? ReportOf(EnrolledAgent agent)
+        {
+            if (agent.Actions is null) return null;
+            try
+            {
+                return JsonSerializer.Deserialize<ActionsReport>(agent.Actions, CommandSignature.Tolerant);
+            }
+            catch (JsonException)
+            {
+                return null;
+            }
+        }
+
+        /// <summary>The built-in actions every agent knows. An agent's own page lists what it reported instead, custom actions included.</summary>
+        private static IResult Catalog() => Results.Ok(new Page<ActionDescriptor>([.. AgentActions.Descriptors], null));
+
+        private static async Task<IResult> ActionsAsync(Guid tenantId, Guid agentId, PlatformDbContext db, CancellationToken ct)
+        {
+            var agent = await db.Agents.AsNoTracking().SingleOrDefaultAsync(a => a.TenantId == tenantId && a.Id == agentId, ct);
+            if (agent is null) return NotFound();
+            if (ReportOf(agent) is { } report)
+            {
+                return Results.Ok(new AgentActionsDto(agent.ActionsReportedAt, [.. report.Actions.Select(r =>
+                    new AgentActionDto(r.Action.Name, r.Action.Description, r.Action.Changing, r.Action.Custom, r.Action.Parameters, r.Permitted, r.Limits))]));
+            }
+            return Results.Ok(new AgentActionsDto(null, [.. AgentActions.Descriptors.Select(d => new AgentActionDto(d.Name, d.Description, d.Changing, false, d.Parameters, null, []))]));
+        }
 
         /// <summary>A one-time token for enrolling one agent, valid 5 minutes to 24 hours (an hour by default). Shown once.</summary>
         private static async Task<IResult> CreateTokenAsync(Guid tenantId, EnrollmentTokenRequest? request, HttpContext http, PlatformDbContext db, TimeProvider clock,
@@ -137,28 +178,38 @@ namespace Juice.Observability.Api.Endpoints
             IServiceProvider services, IOptions<PlatformOptions> platform, TimeProvider clock, CancellationToken ct)
         {
             var mutation = new Mutation(http, db, tenantId, "agent.command.issue", "agent_command");
+            var agent = await db.Agents.AsNoTracking().SingleOrDefaultAsync(a => a.TenantId == tenantId && a.Id == agentId, ct);
+            // A custom action exists only as the agent reported it: its schema says what it takes and whether it changes the host.
+            var custom = request?.Action is { } named && !AgentActions.All.Contains(named) && agent is not null
+                ? ReportOf(agent)?.Actions.FirstOrDefault(a => a.Action.Custom && a.Action.Name == named)?.Action
+                : null;
             // Changing the host is an admin's call; reading it, an operator's too.
-            var changing = request?.Action is { } requested && AgentActions.Changing.Contains(requested);
+            var changing = request?.Action is { } requested && (AgentActions.Changing.Contains(requested) || custom?.Changing == true);
             if (await mutation.RequireAsync(agentId.ToString(), ct, changing ? [Roles.Admin] : [Roles.Operator, Roles.Admin]) is { } denied) return denied;
             if (services.GetService<AgentAuthority>() is not { } authority) return NotEnabled();
             if (request is null) return Mutation.Invalid(["A body is required."]);
             if (await mutation.ReplayAsync($"POST agents/{agentId}/commands", request, ct) is { } replay) return replay;
             var action = request.Action ?? "";
             var parameters = request.Parameters ?? JsonSerializer.SerializeToElement(new { });
-            if (!AgentActions.All.Contains(action)) return Mutation.Invalid([$"action is one of: {string.Join(", ", AgentActions.All)}."]);
+            if (!AgentActions.All.Contains(action) && custom is null)
+            {
+                var known = AgentActions.All.Concat(agent is null ? [] : ReportOf(agent)?.Actions.Where(a => a.Action.Custom).Select(a => a.Action.Name) ?? []);
+                return Mutation.Invalid([$"action is one of: {string.Join(", ", known)}."]);
+            }
             if (action == AgentActions.AgentUpdate)
             {
                 if (UpdateParameters(parameters, services.GetService<AgentPackageCatalog>(), out var problem) is not { } filled) return problem!;
                 parameters = filled;
             }
-            if (AgentActions.Parse(action, parameters, out var error) is null) return Mutation.Invalid([error!]);
+            // Checked here as the agent will check it: a custom action against the schema it reported, narrowed to its host's bounds.
+            var error = custom is not null ? ActionSchema.Validate(custom.Parameters, parameters) : AgentActions.Parse(action, parameters, out var parseError) is null ? parseError : null;
+            if (error is not null) return Mutation.Invalid([error]);
             // An update needs the time to download, restart and prove the new version before the agent answers.
             var lifetime = TimeSpan.FromSeconds(request.LifetimeSeconds ?? (int)(changing ? CommandLimits.MaxLifetime : CommandLimits.DefaultLifetime).TotalSeconds);
             if (lifetime < TimeSpan.FromSeconds(MinLifetimeSeconds) || lifetime > CommandLimits.MaxLifetime)
             {
                 return Mutation.Invalid([$"lifetimeSeconds is {MinLifetimeSeconds} to {(int)CommandLimits.MaxLifetime.TotalSeconds}."]);
             }
-            var agent = await db.Agents.AsNoTracking().SingleOrDefaultAsync(a => a.TenantId == tenantId && a.Id == agentId, ct);
             if (agent is null) return NotFound();
             if (agent.Status != AgentStatus.Active) return Mutation.Problem(StatusCodes.Status409Conflict, "Agent revoked", "A revoked agent takes no commands.");
 

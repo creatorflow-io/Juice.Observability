@@ -1,5 +1,5 @@
 {
-  "//": "The local agent's own settings. Its allowlist is the last word on this host: a command the platform signed is still refused if the action isn't listed here, or its parameters fall outside these bounds.",
+  "//": "The local agent's own settings. Its allowlist is the last word on this host: a command the platform signed is still refused if the action isn't listed here, or its parameters fall outside these bounds. sample.file_info is a custom action of the sample agent build (samples/Juice.Observability.Agent.Sample, installed by e2e/agent-custom.mjs); an agent without it never offers it. Its Values name the only files it may look at.",
   "Allowlist": {
     "Actions": {
       "host.summary": {},
@@ -10,7 +10,10 @@
         "Targets": [ "postgres:5432", "clickhouse:8123", "keycloak:8080", "platform-api:8080", "otel-collector:4317" ],
         "MaxTimeoutMs": 3000
       },
-      "agent.update": {}
+      "agent.update": {},
+      "sample.file_info": {
+        "Values": { "path": [ "/hostfs/etc/os-release", "/hostfs/etc/hostname", "/hostfs/var/log/dpkg.log" ] }
+      }
     }
   }
 }

@@ -35,8 +35,14 @@ namespace Juice.Observability.Agent
     /// </summary>
     public static partial class CommandVerifier
     {
-        public static Verification Verify(SignedCommand signed, AgentIdentity identity, LocalAllowlist allowlist, DateTimeOffset now)
+        /// <param name="signed">The command as it came.</param>
+        /// <param name="identity">This agent and the keys it trusts.</param>
+        /// <param name="allowlist">What this host permits.</param>
+        /// <param name="now">The agent's clock.</param>
+        /// <param name="actions">The actions this agent can run; the built-in ones if null.</param>
+        public static Verification Verify(SignedCommand signed, AgentIdentity identity, LocalAllowlist allowlist, DateTimeOffset now, AgentActionCatalog? actions = null)
         {
+            actions ??= AgentActionCatalog.BuiltIn;
             byte[] payload;
             try
             {
@@ -81,8 +87,8 @@ namespace Juice.Observability.Agent
             }
             if (!Token().IsMatch(envelope.Nonce) || !Token().IsMatch(envelope.IdempotencyKey)) return Verification.Reject(RejectionReasons.Malformed, id);
 
-            if (!AgentActions.All.Contains(envelope.Action)) return Verification.Reject(RejectionReasons.UnknownAction, id);
-            if (AgentActions.Parse(envelope.Action, envelope.Parameters, out _) is not { } parameters) return Verification.Reject(RejectionReasons.InvalidParameters, id);
+            if (!actions.Knows(envelope.Action)) return Verification.Reject(RejectionReasons.UnknownAction, id);
+            if (actions.Parse(envelope.Action, envelope.Parameters, out _) is not { } parameters) return Verification.Reject(RejectionReasons.InvalidParameters, id);
             // The platform signed it, and it may still not run here.
             if (allowlist.Check(envelope.Action, parameters) is { } refused) return Verification.Reject(refused, id);
 

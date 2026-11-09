@@ -25,9 +25,24 @@ namespace Juice.Observability.Agent
             {
                 DiskUsageParameters disk => policy.AllowsPath(disk.PathPrefix) ? null : RejectionReasons.OutsideLocalBounds,
                 TcpReachabilityParameters tcp => policy.AllowsTarget(tcp) ? null : RejectionReasons.OutsideLocalBounds,
+                CustomInvocation custom => policy.AllowsValues(custom.Raw) ? null : RejectionReasons.OutsideLocalBounds,
                 _ => null,
             };
         }
+
+        /// <summary>
+        /// Every action the agent can run as it reports them: permitted or not, each with its parameters narrowed to this host's bounds where a form
+        /// can show them (allowed values, a lower maximum), and the rest of the bounds in words. <paramref name="notes"/> adds lines of the agent's own,
+        /// such as why an update can't work here.
+        /// </summary>
+        public ActionsReport Report(AgentActionCatalog catalog, IReadOnlyDictionary<string, IReadOnlyList<string>>? notes = null)
+            => new([.. catalog.Descriptors.Take(ActionsReport.MaxActions).Select(action =>
+            {
+                var permitted = Actions.TryGetValue(action.Name, out var policy);
+                var (narrowed, limits) = permitted ? policy!.Describe(action) : (action, new List<string>());
+                if (notes?.GetValueOrDefault(action.Name) is { } extra) limits.AddRange(extra);
+                return new ReportedAction(narrowed, permitted, [.. limits.Take(ActionsReport.MaxLimits).Select(l => l.Length > ActionsReport.MaxText ? l[..ActionsReport.MaxText] : l)]);
+            })]);
     }
 
     /// <summary>One allowed action and the bounds this host puts on it, on top of the action's own.</summary>
@@ -47,6 +62,75 @@ namespace Juice.Observability.Agent
 
         /// <summary><see cref="AgentActions.TcpReachability"/>: a lower ceiling on its timeout than the action's own.</summary>
         public int? MaxTimeoutMs { get; set; }
+
+        /// <summary>
+        /// A custom action: the values each named parameter may take here, as its JSON reads (<c>"orders"</c>, <c>5</c>, <c>true</c>). A parameter
+        /// named here must be given and be one of them; one not named is bounded only by the action itself.
+        /// </summary>
+        public Dictionary<string, List<string>> Values { get; set; } = [];
+
+        internal bool AllowsValues(System.Text.Json.JsonElement parameters)
+        {
+            foreach (var (name, allowed) in Values)
+            {
+                if (!parameters.TryGetProperty(name, out var value)) return false;
+                var text = value.ValueKind switch
+                {
+                    System.Text.Json.JsonValueKind.String => value.GetString(),
+                    System.Text.Json.JsonValueKind.Number or System.Text.Json.JsonValueKind.True or System.Text.Json.JsonValueKind.False => value.GetRawText(),
+                    _ => null,
+                };
+                if (text is null || !allowed.Contains(text, StringComparer.Ordinal)) return false;
+            }
+            return true;
+        }
+
+        /// <summary>The action with its parameters narrowed to these bounds where a form can use them, and every bound in words.</summary>
+        internal (ActionDescriptor Action, List<string> Limits) Describe(ActionDescriptor action)
+        {
+            var limits = new List<string>();
+            var parameters = action.Parameters.ToList();
+            ActionParameter? Find(string name) => parameters.FirstOrDefault(p => p.Name == name);
+            void Replace(ActionParameter p, ActionParameter with) => parameters[parameters.IndexOf(p)] = with;
+            switch (action.Name)
+            {
+                case AgentActions.DiskUsage:
+                    if (PathPrefixes.Count > 0)
+                    {
+                        limits.Add($"pathPrefix must be under {string.Join(", ", PathPrefixes)}");
+                        if (Find("pathPrefix") is { } path) Replace(path, path with { Required = true });
+                    }
+                    break;
+                case AgentActions.TcpReachability:
+                    limits.Add(Targets.Count == 0 ? "no target is allowed" : $"targets: {string.Join(", ", Targets)}");
+                    if (MaxTimeoutMs is { } max && Find("timeoutMs") is { } timeout && max < (timeout.Maximum ?? long.MaxValue))
+                    {
+                        var ceiling = Math.Max(timeout.Minimum ?? 0, max);
+                        Replace(timeout, timeout with
+                        {
+                            Maximum = ceiling,
+                            Default = long.TryParse(timeout.Default, out var d) && d > ceiling ? ceiling.ToString(System.Globalization.CultureInfo.InvariantCulture) : timeout.Default,
+                        });
+                        limits.Add($"timeoutMs at most {ceiling}");
+                    }
+                    break;
+            }
+            if (action.Custom)
+            {
+                foreach (var (name, allowed) in Values)
+                {
+                    if (Find(name) is not { } p)
+                    {
+                        limits.Add($"{name}: limited to values for a parameter the action doesn't have, so nothing is allowed");
+                        continue;
+                    }
+                    var values = p.Allowed is { Count: > 0 } own ? [.. own.Intersect(allowed, StringComparer.Ordinal)] : allowed.Take(ActionsReport.MaxAllowed).ToList();
+                    Replace(p, p with { Required = true, Allowed = values });
+                    limits.Add(values.Count == 0 ? $"{name}: no value is allowed" : $"{name}: one of {string.Join(", ", values)}");
+                }
+            }
+            return (action with { Parameters = parameters }, limits);
+        }
 
         internal bool AllowsPath(string? path)
         {

@@ -35,7 +35,74 @@ namespace Juice.Observability.Agents
             authenticated.MapGet(AgentRoutes.Commands, PollAsync);
             authenticated.MapPost("/agent/v1/commands/{commandId:guid}/result", ResultAsync);
             authenticated.MapGet("/agent/v1/packages/{version}", Package);
+            authenticated.MapPost(AgentRoutes.Actions, ReportActionsAsync);
             return app;
+        }
+
+        /// <summary>The largest action report taken, as JSON.</summary>
+        public const int MaxReportBytes = 128 * 1024;
+
+        /// <summary>
+        /// What the agent can run and what its host permits, as it reports when it starts. Kept on the agent for the Console and for checking a
+        /// custom action's parameters before signing it; audited when it changes. A report that doesn't hold (<see cref="ActionsReport.Validate"/>) is
+        /// refused whole.
+        /// </summary>
+        private static async Task<IResult> ReportActionsAsync(HttpContext http, PlatformDbContext db, TimeProvider clock, CancellationToken ct)
+        {
+            var agent = Agent(http);
+            if (http.Request.ContentLength > MaxReportBytes)
+            {
+                return Results.Problem(statusCode: StatusCodes.Status413PayloadTooLarge, title: "Report too large", detail: $"At most {MaxReportBytes} bytes.");
+            }
+            ActionsReport? report;
+            try
+            {
+                report = await JsonSerializer.DeserializeAsync<ActionsReport>(http.Request.Body, CommandSignature.Tolerant, ct);
+            }
+            catch (JsonException e)
+            {
+                return Results.Problem(statusCode: StatusCodes.Status400BadRequest, title: "Invalid report", detail: e.Message);
+            }
+            var problems = report is null ? ["a body is required"] : report.Validate().Take(20).ToList();
+            if (problems.Count > 0)
+            {
+                return Results.Problem(statusCode: StatusCodes.Status400BadRequest, title: "Invalid report", detail: string.Join("; ", problems));
+            }
+            // A built-in this platform doesn't know (a newer agent's) can't be issued from here: left out, not refused, so the rest still shows.
+            report = report! with { Actions = [.. report.Actions.Where(a => a.Action.Custom || AgentActions.All.Contains(a.Action.Name))] };
+            var json = JsonSerializer.Serialize(report, CommandSignature.Json);
+            if (System.Text.Encoding.UTF8.GetByteCount(json) > MaxReportBytes)
+            {
+                return Results.Problem(statusCode: StatusCodes.Status413PayloadTooLarge, title: "Report too large", detail: $"At most {MaxReportBytes} bytes.");
+            }
+            var changed = !JsonEquals(agent.Actions, json);
+            agent.Actions = json;
+            agent.ActionsReportedAt = clock.GetUtcNow();
+            if (changed)
+            {
+                var custom = report!.Actions.Where(a => a.Action.Custom).Select(a => a.Action.Name);
+                var permitted = report.Actions.Where(a => a.Permitted).Select(a => a.Action.Name);
+                db.AuditRecords.Add(Audit(agent.TenantId, $"agent:{agent.Id}", "agent.actions.report", agent.Id.ToString(), AuditOutcome.Succeeded, new()
+                {
+                    ["custom"] = string.Join(",", custom), ["permitted"] = string.Join(",", permitted),
+                }));
+            }
+            await db.SaveChangesAsync(ct);
+            return Results.NoContent();
+        }
+
+        /// <summary>The same report, whatever jsonb did to its spacing and key order.</summary>
+        private static bool JsonEquals(string? stored, string json)
+        {
+            if (stored is null) return false;
+            try
+            {
+                return JsonElement.DeepEquals(JsonDocument.Parse(stored).RootElement, JsonDocument.Parse(json).RootElement);
+            }
+            catch (JsonException)
+            {
+                return false;
+            }
         }
 
         /// <summary>

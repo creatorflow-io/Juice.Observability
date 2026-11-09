@@ -1,0 +1,17 @@
+<Project>
+  <!-- manifest.json beside an agent program: its version, as packages and the launcher name it, and what to start. Applies to the Juice Agent
+       itself and to a customer's own agent build that references this package, so either can be packed with deploy/agent/pack.cs and run by
+       the launcher. Executables only. Written straight into the output and publish folders, not as an item: an item would flow to a program
+       that references this one, and two manifests would claim the same file. -->
+  <PropertyGroup>
+    <_JuiceAgentManifest>{&quot;version&quot;:&quot;$(Version)&quot;,&quot;entryPoint&quot;:&quot;$(AssemblyName).dll&quot;}</_JuiceAgentManifest>
+  </PropertyGroup>
+
+  <Target Name="JuiceAgentManifest" AfterTargets="CopyFilesToOutputDirectory" Condition="'$(OutputType)' == 'Exe'">
+    <WriteLinesToFile File="$(OutDir)manifest.json" Lines="$(_JuiceAgentManifest)" Overwrite="true" WriteOnlyWhenDifferent="true" />
+  </Target>
+
+  <Target Name="JuiceAgentPublishManifest" AfterTargets="Publish" Condition="'$(OutputType)' == 'Exe'">
+    <WriteLinesToFile File="$(PublishDir)manifest.json" Lines="$(_JuiceAgentManifest)" Overwrite="true" WriteOnlyWhenDifferent="true" />
+  </Target>
+</Project>

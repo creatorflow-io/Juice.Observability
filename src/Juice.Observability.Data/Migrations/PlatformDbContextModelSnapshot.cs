@@ -938,6 +938,14 @@ namespace Juice.Observability.Data.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<string>("Actions")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("actions");
+
+                    b.Property<DateTimeOffset?>("ActionsReportedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("actions_reported_at");
+
                     b.Property<DateTimeOffset>("CertificateNotAfter")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("certificate_not_after");

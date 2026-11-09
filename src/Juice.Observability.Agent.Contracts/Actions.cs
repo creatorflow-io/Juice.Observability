@@ -29,6 +29,25 @@ namespace Juice.Observability.Agent.Contracts
         public static readonly IReadOnlyList<string> Changing = [AgentUpdate];
 
         /// <summary>
+        /// The built-in actions as descriptors, for forms and for agents to report. Their bounds are the ones <see cref="Parse"/> enforces; for
+        /// <see cref="AgentUpdate"/> only the version is asked for, since the platform adds the package's hash.
+        /// </summary>
+        public static readonly IReadOnlyList<ActionDescriptor> Descriptors =
+        [
+            new(HostSummary, "The OS, uptime, CPUs, load and memory of the host, and the agent version.", false, []),
+            new(DiskUsage, "Mounted filesystems with their size and free space.", false,
+                [new("pathPrefix", ParameterTypes.String, false, "Only filesystems at or under this absolute path; all if empty.", MaxLength: DiskUsageParameters.MaxPathLength)]),
+            new(TcpReachability, "Whether this host can open a TCP connection to a host and port, and how long it took.", false,
+            [
+                new("host", ParameterTypes.String, true, "A DNS name or an IP address.", MaxLength: 253),
+                new("port", ParameterTypes.Integer, true, null, 1, 65535),
+                new("timeoutMs", ParameterTypes.Integer, true, "How long to wait for the connection.", TcpReachabilityParameters.MinTimeoutMs, TcpReachabilityParameters.MaxTimeoutMs, Default: "2000"),
+            ]),
+            new(AgentUpdate, "Install a signed agent package and restart into it, going back to the version before if it doesn't come up healthy.", true,
+                [new("version", ParameterTypes.String, true, "A version the platform offers.", MaxLength: 64)]),
+        ];
+
+        /// <summary>
         /// Reads an action's parameters strictly: an unknown action, an unknown member, a missing value or a value out of bounds is an error.
         /// Returns the typed parameters, or null with the reason.
         /// </summary>

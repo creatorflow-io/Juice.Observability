@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- A customer's own Juice Agent: the agent plus one custom action. Built, packed with deploy/agent/pack.cs, signed with the customer's release
+       key and installed with agent.update, as any agent release is. A customer references the Juice.Observability.Agent package instead of the
+       project, and the package brings the manifest step with it; here, in the repository, it's imported directly. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>juice-agent-sample</AssemblyName>
+    <RootNamespace>Juice.Observability.Agent.Sample</RootNamespace>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Juice.Observability.Agent\Juice.Observability.Agent.csproj" />
+  </ItemGroup>
+
+  <Import Project="..\..\src\Juice.Observability.Agent\msbuild\Juice.Observability.Agent.targets" />
+
+</Project>

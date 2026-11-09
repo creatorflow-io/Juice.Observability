@@ -57,9 +57,20 @@ namespace Juice.Observability.Tests
 
             // First, before this process has seen the intermediate: Windows' chain engine caches intermediates it has met, so once a chain was built
             // with it, a later build without it may still find it.
-            Assert.False(PlatformClient.IsPlatform(leaf, null, SslPolicyErrors.None, root), "without the intermediate there's no chain");
-            Assert.True(PlatformClient.IsPlatform(leaf, sent, SslPolicyErrors.None, root));
-            Assert.False(PlatformClient.IsPlatform(leaf, sent, SslPolicyErrors.None, other), "an intermediate sent doesn't make another root trusted");
+            // It fails now and then in a full run (about 1 in 10 on Windows) for a reason not yet known: each message says what the chain engine saw.
+            static string Why(X509Certificate2 leaf, X509Certificate2? intermediate, X509Certificate2 trusted)
+            {
+                using var chain = new X509Chain();
+                chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+                chain.ChainPolicy.CustomTrustStore.Add(trusted);
+                chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+                if (intermediate is not null) chain.ChainPolicy.ExtraStore.Add(intermediate);
+                var built = chain.Build(leaf);
+                return $"built {built}, elements [{string.Join(" <- ", chain.ChainElements.Select(e => e.Certificate.Subject))}], status [{string.Join("; ", chain.ChainStatus.Select(s => $"{s.Status}: {s.StatusInformation.Trim()}"))}]";
+            }
+            Assert.False(PlatformClient.IsPlatform(leaf, null, SslPolicyErrors.None, root), $"without the intermediate there's no chain: {Why(leaf, null, root)}");
+            Assert.True(PlatformClient.IsPlatform(leaf, sent, SslPolicyErrors.None, root), $"with the intermediate sent, the chain builds: {Why(leaf, intermediate, root)}");
+            Assert.False(PlatformClient.IsPlatform(leaf, sent, SslPolicyErrors.None, other), $"an intermediate sent doesn't make another root trusted: {Why(leaf, intermediate, other)}");
         }
 
         [Fact]

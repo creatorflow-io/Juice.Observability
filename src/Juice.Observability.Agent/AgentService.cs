@@ -16,10 +16,18 @@ namespace Juice.Observability.Agent
     /// later each time, so one bad answer or a platform outage doesn't take the agent down.
     /// </summary>
     public sealed class AgentService(IOptions<AgentOptions> options, IOptions<LocalAllowlist> allowlist, TimeProvider clock, ILogger<AgentService> logger,
-        IHostApplicationLifetime? lifetime = null) : BackgroundService
+        IHostApplicationLifetime? lifetime = null, AgentActionCatalog? actions = null) : BackgroundService
     {
-        /// <summary>The version as packages name it: the build metadata after <c>+</c> left out.</summary>
-        public static readonly string Version = (typeof(AgentService).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "0.0.0").Split('+')[0];
+        /// <summary>
+        /// The version as packages name it: the build metadata after <c>+</c> left out. The program's own version (<see cref="JuiceAgent.RunAsync"/>
+        /// sets it), so a customer's build with custom actions is known by its own release, as its packages are.
+        /// </summary>
+        public static string Version { get; internal set; } = VersionOf(typeof(AgentService).Assembly);
+
+        internal static string VersionOf(Assembly assembly)
+            => (assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "0.0.0").Split('+')[0];
+
+        private AgentActionCatalog Actions => actions ?? AgentActionCatalog.BuiltIn;
 
         /// <summary>The exit code when the configuration is invalid (EX_CONFIG): nothing a restart alone fixes.</summary>
         public const int ConfigurationExitCode = 78;
@@ -79,6 +87,9 @@ namespace Juice.Observability.Agent
             }
             var diagnostics = new Diagnostics(options.Value.HostRoot, Version);
             var unsent = new Queue<CommandResult>();
+            var actionsReported = false;
+            // After a refusal: the token known not to help, until another appears.
+            string? waitingFor = null;
             AgentIdentity? identity = null;
             CommandMemory? memory = null;
             Connection? connection = null;
@@ -100,6 +111,11 @@ namespace Juice.Observability.Agent
                                 logger.LogError("The command memory didn't read: moved to {File}, starting with an empty one", setAside);
                             }
                             identity = loaded;
+                            if (Store.UsedTokenHash is null && await TokenAsync(stoppingToken) is { } present)
+                            {
+                                // Enrolled before tokens were recorded: the token there now is taken to be the one it used, so only a new one re-enrolls.
+                                Store.RecordToken(present);
+                            }
                             logger.LogInformation("Agent {AgentId} of {Tenant} started, version {Version}", identity.AgentId, identity.Tenant, Version);
                         }
                         if (Updater.ReadOutcome() is { } outcome)
@@ -119,6 +135,7 @@ namespace Juice.Observability.Agent
                             connection = Connect();
                         }
                         await SendAsync(connection.Client, unsent, stoppingToken);
+                        actionsReported = actionsReported || await ReportActionsAsync(connection.Client, stoppingToken);
                         var poll = await connection.Client.PollAsync(options.Value.PollWaitSeconds, Version, Dns.GetHostName(), stoppingToken, identity.CommandKeys.Keys);
                         // It reached the platform with its certificate: a version on trial has proved itself.
                         Updater.Confirm();
@@ -152,9 +169,25 @@ namespace Juice.Observability.Agent
                     }
                     catch (AgentRefusedException e)
                     {
-                        // Revoked, expired or no longer known, or an enrollment token that isn't valid: only a person can fix it. Say so, slowly.
-                        logger.LogError("The platform refused this agent ({Reason}). Enroll it again to restore it.", e.Message);
-                        delay = TimeSpan.FromMinutes(5);
+                        // Revoked, expired or no longer known, or an enrollment token that isn't valid: only a person can fix it, with a new token.
+                        var token = await TokenAsync(stoppingToken);
+                        if (identity is not null && token is not null && AgentStore.HashToken(token) != Store.UsedTokenHash)
+                        {
+                            // An admin's new token is here: this identity is done, and the agent enrolls again with a new key. The old files are kept aside.
+                            var aside = Store.SetAside(identity.AgentId, clock.GetUtcNow());
+                            logger.LogWarning("The platform refused agent {AgentId} ({Reason}), and a new enrollment token is here: enrolling again. The old identity is in {Folder}.",
+                                identity.AgentId, e.Message, aside);
+                            (identity, memory, actionsReported, waitingFor) = (null, null, false, null);
+                            unsent.Clear();
+                            delay = TimeSpan.FromSeconds(1);
+                        }
+                        else
+                        {
+                            logger.LogError("The platform refused this agent ({Reason}). An admin's new enrollment token in its token file brings it back.", e.Message);
+                            // Slowly, but at once when a token other than this one appears.
+                            waitingFor = token is null ? Store.UsedTokenHash ?? "" : AgentStore.HashToken(token);
+                            delay = TimeSpan.FromMinutes(5);
+                        }
                     }
                     catch (Exception e) when (e is HttpRequestException or TaskCanceledException or IOException)
                     {
@@ -169,6 +202,12 @@ namespace Juice.Observability.Agent
                     }
                     connection?.Dispose();
                     connection = null;
+                    if (waitingFor is not null)
+                    {
+                        await WaitForTokenAsync(waitingFor, delay, stoppingToken);
+                        waitingFor = null;
+                        continue;
+                    }
                     await Task.Delay(delay, clock, stoppingToken).ContinueWith(_ => { }, TaskScheduler.Default);
                 }
             }
@@ -198,6 +237,75 @@ namespace Juice.Observability.Agent
                 return Store.LoadIdentity();
             }
             return identity;
+        }
+
+        /// <summary>
+        /// What this agent can run and what this host permits, for the platform to offer (<see cref="LocalAllowlist.Report"/>). Says when an update
+        /// can't work here, so nobody has to find out from a failed command.
+        /// </summary>
+        internal ActionsReport Report()
+        {
+            var update = new List<string>();
+            if (!Updater.UnderLauncher) update.Add("won't work here: the agent wasn't started by its launcher");
+            if (options.Value.ReleaseKeyFiles.Count == 0) update.Add("won't work here: no release key is trusted (Agent:ReleaseKeyFiles)");
+            return allowlist.Value.Report(Actions, new Dictionary<string, IReadOnlyList<string>> { [AgentActions.AgentUpdate] = update });
+        }
+
+        /// <summary>
+        /// Sends the report once per start. True when it's done: sent, or the platform is older and has nowhere to take it. A failure is logged and
+        /// tried again on the next pass; it never holds up commands.
+        /// </summary>
+        internal async Task<bool> ReportActionsAsync(PlatformClient client, CancellationToken cancellationToken)
+        {
+            try
+            {
+                if (!await client.ReportActionsAsync(Report(), cancellationToken))
+                {
+                    logger.LogInformation("The platform doesn't take action reports (an older version): the Console will show the built-in actions only");
+                }
+                return true;
+            }
+            catch (ResultRefusedException e)
+            {
+                logger.LogError("The platform refused this agent's action report: {Detail}. Check the custom actions in this build.", e.Message);
+                return true;
+            }
+            catch (Exception e) when (e is HttpRequestException or TaskCanceledException or IOException && !cancellationToken.IsCancellationRequested)
+            {
+                logger.LogWarning("Couldn't report this agent's actions: {Error}. Trying again on the next pass.", e.Message);
+                return false;
+            }
+        }
+
+        /// <summary>How often a refused agent looks for a new enrollment token while it waits.</summary>
+        internal TimeSpan TokenCheck { get; set; } = TimeSpan.FromSeconds(5);
+
+        /// <summary>The enrollment token, from its file or the setting; null when there's none.</summary>
+        private async Task<string?> TokenAsync(CancellationToken cancellationToken)
+        {
+            if (options.Value.EnrollmentTokenFile is { Length: > 0 } file)
+            {
+                try
+                {
+                    return (await File.ReadAllTextAsync(file, cancellationToken)).Trim() is { Length: > 0 } token ? token : null;
+                }
+                catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException or UnauthorizedAccessException)
+                {
+                    return null;
+                }
+            }
+            return string.IsNullOrWhiteSpace(options.Value.EnrollmentToken) ? null : options.Value.EnrollmentToken.Trim();
+        }
+
+        /// <summary>Waits up to <paramref name="delay"/>, ending early when a token other than <paramref name="refused"/> appears.</summary>
+        private async Task WaitForTokenAsync(string refused, TimeSpan delay, CancellationToken cancellationToken)
+        {
+            var until = clock.GetUtcNow() + delay;
+            while (!cancellationToken.IsCancellationRequested && clock.GetUtcNow() < until)
+            {
+                await Task.Delay(TokenCheck, clock, cancellationToken).ContinueWith(_ => { }, TaskScheduler.Default);
+                if (await TokenAsync(cancellationToken) is { } token && AgentStore.HashToken(token) != refused) return;
+            }
         }
 
         private static TimeSpan Longer(TimeSpan delay) => TimeSpan.FromSeconds(Math.Min(Math.Max(delay.TotalSeconds, 1) * 2, 60));
@@ -244,7 +352,7 @@ namespace Juice.Observability.Agent
             Func<string, CancellationToken, Task<(byte[] Package, byte[] Signature)>>? download = null)
         {
             var now = clock.GetUtcNow();
-            var verification = CommandVerifier.Verify(command, identity, allowlist.Value, now);
+            var verification = CommandVerifier.Verify(command, identity, allowlist.Value, now, Actions);
             if (verification.Command is not { } verified)
             {
                 logger.LogWarning("Refused command {CommandId}: {Reason}", verification.CommandId, verification.Rejection);
@@ -286,15 +394,25 @@ namespace Juice.Observability.Agent
             CommandResult result;
             using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
             {
-                timeout.CancelAfter(Diagnostics.Timeout(verified.Parameters));
+                var custom = verified.Parameters as CustomInvocation;
+                timeout.CancelAfter(custom?.Action.Timeout ?? Diagnostics.Timeout(verified.Parameters));
                 try
                 {
-                    var data = await diagnostics.RunAsync(verified.Parameters, timeout.Token);
+                    // A custom action's own code: the agent stops waiting at its timeout even if it ignores the cancellation.
+                    var data = custom is null
+                        ? await diagnostics.RunAsync(verified.Parameters, timeout.Token)
+                        : System.Text.Json.JsonSerializer.SerializeToElement(await custom.Action.RunAsync(custom.Parameters, timeout.Token).WaitAsync(timeout.Token), CommandSignature.Json);
                     result = new CommandResult(envelope.CommandId, CommandOutcome.Succeeded, null, data, Elapsed(started));
                 }
                 catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
                 {
                     result = new CommandResult(envelope.CommandId, CommandOutcome.Failed, "timeout", null, Elapsed(started));
+                }
+                catch (ActionFailedException e)
+                {
+                    var reason = e.Message.Length > 100 ? e.Message[..100] : e.Message;
+                    logger.LogWarning("Command {CommandId} {Action} failed: {Reason}", envelope.CommandId, envelope.Action, reason);
+                    result = new CommandResult(envelope.CommandId, CommandOutcome.Failed, reason, null, Elapsed(started));
                 }
                 catch (Exception e) when (e is not OperationCanceledException)
                 {
@@ -353,16 +471,14 @@ namespace Juice.Observability.Agent
             {
                 return;
             }
-            var token = options.Value.EnrollmentTokenFile is { Length: > 0 } file ? (await File.ReadAllTextAsync(file, cancellationToken)).Trim() : options.Value.EnrollmentToken;
-            if (string.IsNullOrEmpty(token))
-            {
-                throw new AgentRefusedException("not enrolled, and no Agent:EnrollmentToken or Agent:EnrollmentTokenFile: ask an admin for an enrollment token");
-            }
+            var token = await TokenAsync(cancellationToken)
+                ?? throw new AgentRefusedException("not enrolled, and no Agent:EnrollmentToken or Agent:EnrollmentTokenFile: ask an admin for an enrollment token");
             var hostname = Dns.GetHostName();
             var (key, csr) = AgentStore.NewKey(hostname);
             using var client = new PlatformClient(options.Value, null);
             var response = await client.EnrollAsync(new EnrollRequest(token, csr, hostname, RuntimeInformation.OSDescription, Version), cancellationToken);
             Store.SaveEnrollment(key, response);
+            Store.RecordToken(token);
             logger.LogInformation("Enrolled as agent {AgentId}", response.AgentId);
         }
 

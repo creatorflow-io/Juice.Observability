@@ -139,6 +139,23 @@ namespace Juice.Observability.Agent
             await EnsureAsync(response, cancellationToken);
         }
 
+        /// <summary>
+        /// Reports the actions this agent can run. False when the platform has nowhere to take it (an older version answers 404); a report it refuses
+        /// as invalid throws <see cref="ResultRefusedException"/>, since sending it again can't help.
+        /// </summary>
+        public async Task<bool> ReportActionsAsync(ActionsReport report, CancellationToken cancellationToken)
+        {
+            using var response = await _http.PostAsJsonAsync(AgentRoutes.Actions, report, CommandSignature.Json, cancellationToken);
+            if (response.StatusCode == HttpStatusCode.NotFound) return false;
+            if (response.StatusCode == HttpStatusCode.BadRequest)
+            {
+                var detail = await response.Content.ReadAsStringAsync(cancellationToken);
+                throw new ResultRefusedException(detail[..Math.Min(detail.Length, 500)]);
+            }
+            await EnsureAsync(response, cancellationToken);
+            return true;
+        }
+
         private static async Task<T> ReadAsync<T>(HttpResponseMessage response, CancellationToken cancellationToken)
         {
             using (response)

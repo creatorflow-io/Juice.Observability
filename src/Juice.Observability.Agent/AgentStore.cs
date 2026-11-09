@@ -25,6 +25,30 @@ namespace Juice.Observability.Agent
 
         private sealed record TrustedKey(string KeyId, string PublicKeyPem);
 
+        /// <summary>The SHA-256 of the enrollment token this identity came from, so a new token can be told from the one already used.</summary>
+        private string TokenFile => Path.Combine(directory, "enrollment-token.sha256");
+
+        public string? UsedTokenHash => File.Exists(TokenFile) ? File.ReadAllText(TokenFile).Trim() : null;
+
+        public void RecordToken(string token) => Replace(TokenFile, HashToken(token));
+
+        public static string HashToken(string token) => Convert.ToHexStringLower(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(token.Trim())));
+
+        /// <summary>
+        /// Moves this identity's files (key and certificate, identity, trusted keys, command memory) into <c>revoked/{agent}-{time}</c>, so the agent
+        /// can enroll again; anything else in the directory, such as the launcher's home, stays. Returns where they went.
+        /// </summary>
+        public string SetAside(Guid agentId, DateTimeOffset now)
+        {
+            var to = Path.Combine(directory, "revoked", $"{agentId}-{now:yyyyMMddHHmmss}");
+            Directory.CreateDirectory(to);
+            foreach (var file in new[] { CredentialFile, LegacyKeyFile, LegacyCertificateFile, IdentityFile, KeysFile, MemoryFile, TokenFile })
+            {
+                if (File.Exists(file)) File.Move(file, Path.Combine(to, Path.GetFileName(file)));
+            }
+            return to;
+        }
+
         public bool IsEnrolled => File.Exists(IdentityFile) && (File.Exists(CredentialFile) || (File.Exists(LegacyKeyFile) && File.Exists(LegacyCertificateFile)));
 
         public AgentIdentity LoadIdentity()

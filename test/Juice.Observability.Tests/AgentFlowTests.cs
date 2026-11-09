@@ -601,5 +601,160 @@ namespace Juice.Observability.Tests
             using var again = new PlatformClient(Options(host, after, data), renewed);
             Assert.Null((await again.PollAsync(1, "test", "test-host", Ct, identity.CommandKeys.Keys)).Keys);
         }
+
+        /// <summary>
+        /// A revoked agent comes back only as a new one, with a new key, and only with an admin's new token: the old token in its file changes
+        /// nothing, and a new one there makes it set its old identity aside and enroll again, without anyone clearing its data directory.
+        /// </summary>
+        [Fact]
+        public async Task A_revoked_agent_enrolls_again_as_a_new_agent_once_a_new_token_is_in_its_file_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            using var pki = new AgentPki();
+            await using var host = new AgentHost(database, pki);
+            using var users = host.Users();
+            var (viewer, _, admin, tenant) = await Caller.AllAsync(users, database);
+            var data = TempDirectory();
+            Directory.CreateDirectory(data);
+            var tokenFile = Path.Combine(data, "..", $"{Guid.NewGuid():N}.token");
+            await File.WriteAllTextAsync(tokenFile, await TokenAsync(admin, tenant), Ct);
+            var options = Options(host, pki, data);
+            options.EnrollmentTokenFile = tokenFile;
+            var agent = new AgentService(Microsoft.Extensions.Options.Options.Create(options), Microsoft.Extensions.Options.Options.Create(Allowlist()),
+                TimeProvider.System, new TestLog<AgentService>()) { TokenCheck = TimeSpan.FromMilliseconds(100) };
+            async Task<List<JsonElement>> AgentsAsync()
+                => [.. (await Caller.JsonAsync(await viewer.GetAsync($"/api/v1/tenants/{tenant}/agents?all=true"))).GetProperty("items").EnumerateArray()];
+            await agent.StartAsync(Ct);
+            try
+            {
+                List<JsonElement> agents = [];
+                for (var i = 0; i < 100 && agents.Count == 0; i++)
+                {
+                    await Task.Delay(100, Ct);
+                    agents = await AgentsAsync();
+                }
+                var first = Assert.Single(agents).GetProperty("id").GetGuid();
+                await Caller.JsonAsync(await admin.PostAsync($"/api/v1/tenants/{tenant}/agents/{first}/revocation", new { reason = "key may have leaked" }));
+
+                // Refused, with only the used token in its file: it keeps its identity and waits.
+                await Task.Delay(TimeSpan.FromSeconds(4), Ct);
+                Assert.True(new AgentStore(data).IsEnrolled, "the agent set its identity aside without a new token");
+                Assert.Single(await AgentsAsync());
+
+                await File.WriteAllTextAsync(tokenFile, await TokenAsync(admin, tenant), Ct);
+                for (var i = 0; i < 100 && agents.Count < 2; i++)
+                {
+                    await Task.Delay(100, Ct);
+                    agents = await AgentsAsync();
+                }
+                Assert.Equal(2, agents.Count);
+                var second = agents.Single(a => a.GetProperty("id").GetGuid() != first);
+                Assert.Equal("Active", second.GetProperty("status").GetString());
+                Assert.Equal("Revoked", agents.Single(a => a.GetProperty("id").GetGuid() == first).GetProperty("status").GetString());
+                var aside = Assert.Single(Directory.GetDirectories(Path.Combine(data, "revoked")));
+                Assert.StartsWith(first.ToString(), Path.GetFileName(aside));
+                Assert.True(File.Exists(Path.Combine(aside, "identity.json")) && File.Exists(Path.Combine(aside, "agent.pem")));
+            }
+            finally
+            {
+                await agent.StopAsync(CancellationToken.None);
+                File.Delete(tokenFile);
+                Directory.Delete(data, recursive: true);
+            }
+        }
+
+        /// <summary>
+        /// Custom actions end to end: the agent reports what it can run and what its host permits; the platform offers exactly that, signs a custom
+        /// action only as the agent described it, keeps changing ones for admins, and the agent runs it. An agent that never reported shows the
+        /// built-in actions, permitted unknown.
+        /// </summary>
+        [Fact]
+        public async Task An_agent_reports_its_custom_actions_and_the_platform_offers_and_checks_them_as_reported_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            using var pki = new AgentPki();
+            await using var host = new AgentHost(database, pki);
+            using var users = host.Users();
+            var (viewer, @operator, admin, tenant) = await Caller.AllAsync(users, database);
+
+            // An agent from before reports: the built-ins, permitted unknown.
+            var olderData = TempDirectory();
+            var (olderStore, older) = await EnrollAsync(host, pki, await TokenAsync(admin, tenant), olderData);
+            var olderActions = await Caller.JsonAsync(await viewer.GetAsync($"/api/v1/tenants/{tenant}/agents/{older.AgentId}/actions"));
+            Assert.Equal(JsonValueKind.Null, olderActions.GetProperty("reportedAt").ValueKind);
+            Assert.Equal(AgentActions.All, olderActions.GetProperty("items").EnumerateArray().Select(a => a.GetProperty("name").GetString()!));
+            Assert.All(olderActions.GetProperty("items").EnumerateArray(), a => Assert.Equal(JsonValueKind.Null, a.GetProperty("permitted").ValueKind));
+            Assert.Equal(AgentActions.All, (await Caller.JsonAsync(await viewer.GetAsync($"/api/v1/tenants/{tenant}/agents/actions"))).GetProperty("items")
+                .EnumerateArray().Select(a => a.GetProperty("name").GetString()!));
+            Assert.Equal(HttpStatusCode.BadRequest, (await @operator.PostAsync($"/api/v1/tenants/{tenant}/agents/{older.AgentId}/commands",
+                new { action = "test.queue_depth", parameters = new { queue = "orders", top = 1 } })).StatusCode);
+
+            // A report that doesn't hold is refused whole and changes nothing: here a custom action passing itself off as a built-in.
+            using (var olderClient = new PlatformClient(Options(host, pki, olderData), olderStore.LoadCertificate()))
+            {
+                var impostor = new ReportedAction(new ActionDescriptor(AgentActions.HostSummary, "x", true, [], Custom: true), true, []);
+                await Assert.ThrowsAsync<ResultRefusedException>(() => olderClient.ReportActionsAsync(new ActionsReport([impostor]), Ct));
+                Assert.Equal(JsonValueKind.Null, (await Caller.JsonAsync(await viewer.GetAsync($"/api/v1/tenants/{tenant}/agents/{older.AgentId}/actions"))).GetProperty("reportedAt").ValueKind);
+            }
+
+            var allowlist = Allowlist();
+            allowlist.Actions["test.queue_depth"] = new ActionPolicy { Values = { ["queue"] = ["orders", "billing"] } };
+            allowlist.Actions["test.restart_worker"] = new ActionPolicy();
+            var data = TempDirectory();
+            var agent = new AgentService(Microsoft.Extensions.Options.Options.Create(Options(host, pki, data, await TokenAsync(admin, tenant))),
+                Microsoft.Extensions.Options.Options.Create(allowlist), TimeProvider.System, new TestLog<AgentService>(), actions: new AgentActionCatalog([new QueueDepth(), new Restart()]));
+            await agent.StartAsync(Ct);
+            try
+            {
+                Guid agentId = default;
+                JsonElement actions = default;
+                for (var i = 0; i < 100; i++)
+                {
+                    await Task.Delay(100, Ct);
+                    var list = (await Caller.JsonAsync(await admin.GetAsync($"/api/v1/tenants/{tenant}/agents"))).GetProperty("items").EnumerateArray().ToList();
+                    if (list.FirstOrDefault(a => a.GetProperty("id").GetGuid() != older.AgentId) is not { ValueKind: JsonValueKind.Object } found) continue;
+                    agentId = found.GetProperty("id").GetGuid();
+                    actions = await Caller.JsonAsync(await viewer.GetAsync($"/api/v1/tenants/{tenant}/agents/{agentId}/actions"));
+                    if (actions.GetProperty("reportedAt").ValueKind != JsonValueKind.Null) break;
+                }
+                Assert.NotEqual(JsonValueKind.Null, actions.GetProperty("reportedAt").ValueKind);
+                var reported = actions.GetProperty("items").EnumerateArray().ToDictionary(a => a.GetProperty("name").GetString()!);
+                Assert.Equal([.. AgentActions.All, "test.queue_depth", "test.restart_worker"], reported.Keys);
+                Assert.False(reported[AgentActions.DiskUsage].GetProperty("permitted").GetBoolean());
+                var queue = reported["test.queue_depth"];
+                Assert.True(queue.GetProperty("custom").GetBoolean() && queue.GetProperty("permitted").GetBoolean());
+                Assert.Equal(["orders", "billing"], queue.GetProperty("parameters")[0].GetProperty("allowed").EnumerateArray().Select(v => v.GetString()!));
+                Assert.Contains("timeoutMs at most 2000", reported[AgentActions.TcpReachability].GetProperty("limits").EnumerateArray().Select(l => l.GetString()));
+
+                // Run as reported.
+                var ran = await WaitForCommandAsync(@operator, tenant, agentId,
+                    await IssueAsync(@operator, tenant, agentId, "test.queue_depth", new { queue = "billing", top = 7 }), "Succeeded", "Failed", "Rejected");
+                Assert.Equal("Succeeded", ran.GetProperty("state").GetString());
+                Assert.Equal(42, ran.GetProperty("result").GetProperty("depth").GetInt32());
+
+                // The platform refuses what the agent would: a value its host doesn't allow, a member the action doesn't take, a name it never reported.
+                async Task<HttpStatusCode> Issue(Caller caller, string action, object parameters)
+                    => (await caller.PostAsync($"/api/v1/tenants/{tenant}/agents/{agentId}/commands", new { action, parameters })).StatusCode;
+                Assert.Equal(HttpStatusCode.BadRequest, await Issue(@operator, "test.queue_depth", new { queue = "audit", top = 7 }));
+                Assert.Equal(HttpStatusCode.BadRequest, await Issue(@operator, "test.queue_depth", new { queue = "orders", top = 7, command = "sh" }));
+                Assert.Equal(HttpStatusCode.BadRequest, await Issue(@operator, "test.unknown", new { }));
+
+                // A custom action that changes the host is an admin's.
+                Assert.Equal(HttpStatusCode.Forbidden, await Issue(@operator, "test.restart_worker", new { }));
+                var restarted = await WaitForCommandAsync(admin, tenant, agentId, await IssueAsync(admin, tenant, agentId, "test.restart_worker", new { }), "Succeeded", "Failed", "Rejected");
+                Assert.Equal("Succeeded", restarted.GetProperty("state").GetString());
+
+                await using var db = database.Context();
+                var report = await db.AuditRecords.AsNoTracking().SingleAsync(a => a.Operation == "agent.actions.report", Ct);
+                Assert.Equal("test.queue_depth,test.restart_worker", report.Metadata["custom"]);
+            }
+            finally
+            {
+                await agent.StopAsync(CancellationToken.None);
+                Directory.Delete(data, recursive: true);
+            }
+        }
     }
 }

@@ -35,6 +35,8 @@ namespace Juice.Observability.Agent.Contracts
         public const string Commands = "/agent/v1/commands";
         public static string Result(Guid commandId) => $"/agent/v1/commands/{commandId}/result";
         public static string Package(string version) => $"/agent/v1/packages/{version}";
+        /// <summary>Where an agent reports the actions it can run (<see cref="ActionsReport"/>), once each time it starts.</summary>
+        public const string Actions = "/agent/v1/actions";
         /// <summary>The package's release signature, base64, sent with its bytes.</summary>
         public const string PackageSignatureHeader = "Juice-Package-Signature";
         /// <summary>The command keys the agent trusts, by id, comma-separated: the platform announces its current one when it's missing.</summary>

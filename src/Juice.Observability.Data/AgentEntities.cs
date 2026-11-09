@@ -30,6 +30,12 @@ namespace Juice.Observability.Data
         public DateTimeOffset? RevokedAt { get; set; }
         public string? RevokedBy { get; set; }
         public string? RevokeReason { get; set; }
+        /// <summary>
+        /// What it reported it can run and what its host permits (an <c>ActionsReport</c>, JSON), each time it starts; null for an agent from before
+        /// reports. Information: the agent checks every command itself whatever this says.
+        /// </summary>
+        public string? Actions { get; set; }
+        public DateTimeOffset? ActionsReportedAt { get; set; }
     }
 
     /// <summary>A one-time token an admin creates for enrolling one agent. Only its SHA-256 is stored; the token itself is shown once.</summary>
