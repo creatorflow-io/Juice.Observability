@@ -111,13 +111,59 @@ Thirteen checks were each broken on purpose, one at a time, and a test failed ev
 
 ## Limits
 
-- **No Console page yet.** Agents are used through the API; the focused console is Phase 10.
 - **An agent that's offline through two command key rotations has to enroll again:** the key that could announce the newest one is gone.
 - **The launcher stops the agent hard** (`Kill`), not with a signal. Everything the agent writes is replaced by rename, so a stop never leaves half a file. A command running at that moment is reported `interrupted`.
 - **No package retention.** Packages stay in `Agents:PackageDirectory` until someone removes them. On a host, the launcher keeps the current version and the one before.
 - **A command issued on another replica than the agent's poll** reaches it within 5 seconds, at the poll's next look; on the same replica, at once.
-- **No approval step.** The envelope has a field for an approval reference, unused until Phase 8's actions need approval.
+- **No approval step.** The envelope has a field for an approval reference, unused until Phase 8's actions need approval. That now includes
+  a customer's custom actions marked `Changing`: until then, any one admin can issue them.
+- **A custom action's code is trusted as the customer's own release.** The agent bounds its parameters, its time and its result size, but
+  not what the code does: review it as you would any release you sign. One that ignores its cancellation keeps running after the agent
+  reports `timeout`.
 - **The systemd unit and the Windows service script haven't run on a real host yet.** The launcher has run as a plain process and in a container. The unit file is unverified, and the install script was only parsed, not run, since that needs Administrator.
+
+Resolved on 9 November:
+- **The Console has Agents pages.**
+  - The list shows each agent's state, version and certificate expiry, and an admin creates the enrollment token there.
+  - An agent's page runs each diagnostic and updates, and shows each answer as text rather than JSON.
+  - A whole-host disk report shows its fullest 8 filesystems first.
+  - Revoking needs a reason and a second click.
+  - Checked on the local stack by `console/e2e/agents-console.mjs`, 9 November, with no problems over both `localhost` and the machine's address on plain HTTP. The second run is what found that `crypto.randomUUID()` doesn't exist there: every Console action sending an `Idempotency-Key` (commands, silences, incidents, acknowledging) threw before sending. The key now comes from `crypto.getRandomValues`. The check covers:
+    - a viewer's list;
+    - an operator's three diagnostics;
+    - a refusal by the host's allowlist (`Rejected`, outside local bounds);
+    - an operator refused an update and a token, with the page naming the admin role;
+    - an admin's token and the update's package list;
+    - the revoke confirmation.
+
+  It doesn't revoke unless `REVOKE=1`.
+- **A revoked host comes back with a new token, not by clearing files by hand.**
+  - The agent records the hash of the token it enrolled with.
+  - When the platform refuses it and a different token is in its token file, the agent:
+    - sets its identity aside in `revoked/`;
+    - enrolls again with a new key, as a new agent.
+  - A revoked agent's page has **Bring this host back** to create that token, and links to the new agent once the host has enrolled
+    again.
+  - Revocation itself stays final.
+  - Evidence:
+    - `AgentFlowTests.A_revoked_agent_enrolls_again_as_a_new_agent_once_a_new_token_is_in_its_file`, which also checks that the used
+      token changes nothing.
+    - `console/e2e/agent-reenroll.mjs` on the local stack, 9 November: revoked from the browser, enrolled again 17 s after the token was in
+      place.
+- **Agents report their actions, and customers can add their own** (Phase 8 work, done early):
+  - **Custom actions** are typed `AgentAction<TParameters>` classes in the customer's own agent build, which is signed and installed like
+    any release. There are no scripts or commands.
+  - **Reports:** the agent reports each action's schema, narrowed to its host's allowlist, and whether the host permits it.
+  - **The Console** builds its menu and form from that report.
+  - **The platform** signs a custom action only as reported, and keeps changing ones for admins.
+  - **Tests:** `AgentCustomActionTests` covers schema, catalog, verification, running, timeout and the report.
+    `AgentFlowTests.An_agent_reports_its_custom_actions_and_the_platform_offers_and_checks_them_as_reported` covers the whole path over TLS.
+  - **Local stack, 9 November:**
+    - `console/e2e/agent-custom.mjs` installed the sample build with `sample.file_info`, ran it, and saw a file the host doesn't list
+      refused with `400`.
+    - `agents-console.mjs` ran the custom action from the browser, and showed an agent from before reports with its note.
+  - **The `Juice.Observability.Agent` package:** the agent project is now packable, so customers can reference it. CI publishes it with
+    the other packages.
 
 Resolved on 8 November, each with a test that fails without the fix:
 - **The enrollment guard counts across replicas,** in `agent_enrollment_failures`, with one atomic upsert per failure. Each replica's own count is still checked first, so an address it already refuses costs no database work (`AgentListenerTests.Failed_enrollments_add_up_across_replicas`).

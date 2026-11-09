@@ -141,6 +141,20 @@ Use `Open an incident` on an alert, or the Incidents page. Operators and admins 
 
 ## Juice Agents
 
+Everything below can be done on the Console's **Agents** page, with the same roles. The list shows each agent's state, version and
+certificate expiry. An agent's page runs diagnostics, custom actions and updates, shows each command's answer, and revokes. The API calls
+are given for scripts.
+
+**What an agent can be asked** comes from the agent itself. Each time it starts, it reports its actions, custom ones included, and what
+its host's allowlist permits (`GET …/agents/{id}/actions`). The page:
+- greys out what the host doesn't permit;
+- fills lists with the allowed values;
+- shows the host's other limits under the form.
+
+An agent older than the reports shows the built-in actions with a note. A custom action is refused with `400` until the agent has reported
+it. The agent's log says `The platform refused this agent's action report` when its build's custom actions don't hold: the reason follows.
+`agent.actions.report` in `audit_records` records each change in what an agent reports.
+
 - **Enroll a host.** An admin creates a token with `POST …/agents/enrollment-tokens`. It is valid for an hour by default, works once,
   and is shown once. Put it in the agent's `Agent:EnrollmentTokenFile` and start the agent. It appears in `GET …/agents`, linked to
   the discovered host of the same name.
@@ -156,8 +170,14 @@ Use `Open an incident` on an alert, or the Incidents page. Operators and admins 
 - **Enrollment answers `429`:** more than 10 enrollments from that address failed in the last minute, usually a wrong or used token. Wait a
   minute, and check the token.
 - **An agent offline.** `online` is false when it hasn't polled for 2 minutes. Its log says why: the platform is unreachable, or
-  `The platform refused this agent`, which means it was revoked or its certificate expired while it was down. To bring it back,
-  clear its data directory and enroll it again with a new token.
+  `The platform refused this agent`, which means it was revoked or its certificate expired while it was down. To bring it back, use
+  **Bring this host back** on its page (admin): it creates a token for the host. Replace the token in the agent's token file with it.
+  - The agent notices within seconds and moves its old identity to `revoked/{agent}-{time}` in its data directory.
+  - It enrolls again with a new key, as a new agent. The revoked page then links to it.
+  - The token it last used changes nothing, so a token left in the file can't bring a revoked agent back.
+  - An agent from before 9 November doesn't do this. For one of those, delete `agent.pem` (or `agent.key` and `agent.crt`),
+    `identity.json`, `keys.json` and `commands.json` from its data directory, then restart it with the new token. Keep the rest of the
+    directory: the launcher's home may be in it.
 - **Update an agent.** `GET …/agents/packages` lists the versions offered. As an admin, `POST …/agents/{id}/commands` with
   `agent.update` and `{ "version": "…" }`; the platform adds the package's hash. The command stays `Delivered` while the new version is
   on trial, up to about 2 minutes. It ends `Succeeded` (`{ from, to }`) once the new version has reached the platform, and the agent's
@@ -172,7 +192,8 @@ Use `Open an incident` on an alert, or the Incidents page. Operators and admins 
 - **After a rollback,** the launcher's log in the agent's output says why (`rolled back to version …`). The failed version is removed;
   the version before and the one before it are kept.
 - **Revoke.** `POST …/agents/{id}/revocation` with a reason (admin). The platform refuses the agent from its next call, and its waiting
-  commands are cancelled. Enrollment, renewal, revocation and every command and result are in `audit_records` (`agent.*`).
+  commands are cancelled. It's for good: the same key never gets back in. The host can return only as a new agent, with a new token (see
+  above). Enrollment, renewal, revocation and every command and result are in `audit_records` (`agent.*`).
 
 ## Backup and restore
 

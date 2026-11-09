@@ -150,6 +150,27 @@ Agents are off unless `Agents:Enabled` is `true`, with:
   `dotnet run deploy/agent/pack.cs -- --publish DIR --key release.key --out PACKAGES`. Copy the zip and its `.sig` into
   `Agents:PackageDirectory`. The signature is the one `openssl dgst -sha256 -sign` makes, so either tool can sign or check it. The
   platform offers only packages that `Agents:ReleaseKeyFiles` verifies, and whose manifest names the version in the file name.
+- **Custom actions.** A customer can add actions of their own to the agent, as code in their own agent build. There are no scripts or commands:
+  requirements §8 rules them out.
+  - Reference the `Juice.Observability.Agent` package from a console program and derive from `AgentAction<TParameters>`:
+    - a name with your own prefix (`acme.queue_depth`);
+    - a description;
+    - `Changing` if it alters the host (then admins only);
+    - a `Timeout`, 10 seconds by default and at most 5 minutes;
+    - a parameter record of `string`, `int`, `long` and `bool`, bounded with `[MaxLength]` (required on strings), `[Range]`,
+      `[RegularExpression]` and `[AllowedValues]`.
+
+    Start it with `return await JuiceAgent.RunAsync(args, a => a.Add<QueueDepth>());`. The package writes the `manifest.json` the
+    launcher needs. `samples/Juice.Observability.Agent.Sample` is a complete example.
+  - Ship it like any agent release: publish it, sign it with `pack.cs`, and install it with `agent.update`.
+  - List the action in the host's `Allowlist:Actions`. `"Values": { "param": ["a", "b"] }` limits a parameter to those values.
+  - An action with an invalid name or schema, or a name used twice or taken from a built-in, stops the agent with exit code 78.
+  - Each time it starts, the agent reports its actions and what the host permits (`POST /agent/v1/actions`). The platform:
+    - signs a custom action only as the agent described it, and checks its parameters against that description narrowed to the host's
+      bounds;
+    - lets only admins issue a changing one.
+
+    The agent checks everything again before running.
 - **Rotating the command key.** Generate a new key and set it as `Agents:CommandKeyFile`. Put the old one in
   `Agents:PreviousCommandKeyFiles`. The old key signs an announcement of the new one, and each agent takes it at its next poll; it then
   trusts the new key and the one that announced it, and no older ones. Remove the old key once every agent has polled. An agent offline
