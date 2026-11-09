@@ -15,9 +15,10 @@ namespace Juice.Observability.Api.Endpoints
 
     public sealed record WebhookAttemptDto(int Number, DateTimeOffset At, int? StatusCode, string? Error, int DurationMs);
 
-    public sealed record WebhookDeliveryDto(Guid Id, Guid AlertId, string Event, string Status, int Attempts, DateTimeOffset CreatedAt,
+    /// <summary>A delivery: of an alert's notification (<c>AlertId</c>) or an action request's (<c>ActionRequestId</c>).</summary>
+    public sealed record WebhookDeliveryDto(Guid Id, Guid? AlertId, string Event, string Status, int Attempts, DateTimeOffset CreatedAt,
         DateTimeOffset? FirstAttemptAt, DateTimeOffset? DeliveredAt, DateTimeOffset? NextAttemptAt, int? LastStatusCode, string? LastError,
-        IReadOnlyList<WebhookAttemptDto> History, Guid? SuppressedBy = null, Guid? GroupedInto = null, int EscalationStep = 0);
+        IReadOnlyList<WebhookAttemptDto> History, Guid? SuppressedBy = null, Guid? GroupedInto = null, int EscalationStep = 0, Guid? ActionRequestId = null);
 
     /// <summary><c>Url</c> is a signed webhook's. Left out on a change, it stays as it is, since reads never return it.</summary>
     public sealed record WebhookRequest(string? Key, string? Kind, string? Url, string? SecretRef, List<string>? Events, List<string>? RuleKeys, List<string>? Environments,
@@ -253,7 +254,7 @@ namespace Juice.Observability.Api.Endpoints
             return deliveries.Select(d => new WebhookDeliveryDto(d.Id, d.AlertId, d.Event, d.Status.ToString(), d.Attempts, d.CreatedAt,
                 d.FirstAttemptAt, d.DeliveredAt, d.Status is DeliveryStatus.Pending or DeliveryStatus.Retrying ? d.NextAttemptAt : null,
                 d.LastStatusCode, d.LastError, attempts[d.Id].Select(a => new WebhookAttemptDto(a.Number, a.At, a.StatusCode, a.Error, a.DurationMs)).ToList(),
-                d.SuppressedBy, d.GroupedInto, d.EscalationStep)).ToList();
+                d.SuppressedBy, d.GroupedInto, d.EscalationStep, d.ActionRequestId)).ToList();
         }
 
         private static async Task<IResult> ListAllowlistAsync(Guid tenantId, PlatformDbContext db, CancellationToken ct)

@@ -1,4 +1,5 @@
-import { EnvironmentProviders, Injectable, InjectionToken, Pipe, PipeTransform, inject, makeEnvironmentProviders } from '@angular/core';
+import { EnvironmentProviders, Injectable, InjectionToken, Pipe, PipeTransform, inject, makeEnvironmentProviders, provideEnvironmentInitializer } from '@angular/core';
+import { ApprovalMenuBadge } from './approval-count';
 
 /** How the host app mounts Juice Observability. */
 export interface ObservabilityOptions {
@@ -11,6 +12,8 @@ export interface ObservabilityOptions {
    * `id => ['/audit/traces', id]`. A string is an external URL. Without it, no link.
    */
   auditLink?: ((traceId: string) => unknown[] | string | null) | null;
+  /** Show on the Approvals menu entry how many action requests wait for the signed-in user. On unless false. */
+  approvalCount?: boolean;
 }
 
 export const OBSERVABILITY_OPTIONS = new InjectionToken<ObservabilityOptions>('OBSERVABILITY_OPTIONS', {
@@ -18,7 +21,10 @@ export const OBSERVABILITY_OPTIONS = new InjectionToken<ObservabilityOptions>('O
   factory: () => ({ apiBase: '', basePath: '/', auditLink: null }),
 });
 
-/** Configures the pages: where the API is, where the host mounted the routes, and where a trace's audit records open. */
+/**
+ * Configures the pages: where the API is, where the host mounted the routes, and where a trace's audit records open. Also shows the count
+ * of requests waiting for approval on the Approvals menu entry, unless `approvalCount: false`.
+ */
 export function provideJuiceObservability(options: Partial<ObservabilityOptions> = {}): EnvironmentProviders {
   return makeEnvironmentProviders([
     {
@@ -29,6 +35,7 @@ export function provideJuiceObservability(options: Partial<ObservabilityOptions>
         auditLink: options.auditLink ?? null,
       } satisfies ObservabilityOptions,
     },
+    ...(options.approvalCount === false ? [] : [provideEnvironmentInitializer(() => { inject(ApprovalMenuBadge); })]),
   ]);
 }
 

@@ -69,7 +69,7 @@ namespace Juice.Observability.Agent
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            var errors = options.Value.Validate().ToList();
+            var errors = options.Value.Validate().Concat(allowlist.Value.Validate()).ToList();
             if (errors.Count > 0)
             {
                 // A failed background service stops the host with exit code 0 unless told otherwise; a service manager must see a failure.
@@ -280,6 +280,14 @@ namespace Juice.Observability.Agent
         /// <summary>How often a refused agent looks for a new enrollment token while it waits.</summary>
         internal TimeSpan TokenCheck { get; set; } = TimeSpan.FromSeconds(5);
 
+        /// <summary>Runs <c>service.restart</c> and <c>files.cleanup</c>; a test may stand in its own service control.</summary>
+        internal Remediation Remedies
+        {
+            get => _remedies ??= new Remediation(allowlist.Value, clock);
+            set => _remedies = value;
+        }
+        private Remediation? _remedies;
+
         /// <summary>The enrollment token, from its file or the setting; null when there's none.</summary>
         private async Task<string?> TokenAsync(CancellationToken cancellationToken)
         {
@@ -395,13 +403,16 @@ namespace Juice.Observability.Agent
             using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
             {
                 var custom = verified.Parameters as CustomInvocation;
-                timeout.CancelAfter(custom?.Action.Timeout ?? Diagnostics.Timeout(verified.Parameters));
+                var remedial = Remediation.Handles(verified.Parameters);
+                timeout.CancelAfter(custom?.Action.Timeout ?? (remedial ? Remediation.Timeout(verified.Parameters) : Diagnostics.Timeout(verified.Parameters)));
                 try
                 {
                     // A custom action's own code: the agent stops waiting at its timeout even if it ignores the cancellation.
-                    var data = custom is null
-                        ? await diagnostics.RunAsync(verified.Parameters, timeout.Token)
-                        : System.Text.Json.JsonSerializer.SerializeToElement(await custom.Action.RunAsync(custom.Parameters, timeout.Token).WaitAsync(timeout.Token), CommandSignature.Json);
+                    var data = custom is not null
+                        ? System.Text.Json.JsonSerializer.SerializeToElement(await custom.Action.RunAsync(custom.Parameters, timeout.Token).WaitAsync(timeout.Token), CommandSignature.Json)
+                        : remedial
+                            ? await Remedies.RunAsync(verified.Parameters, timeout.Token)
+                            : await diagnostics.RunAsync(verified.Parameters, timeout.Token);
                     result = new CommandResult(envelope.CommandId, CommandOutcome.Succeeded, null, data, Elapsed(started));
                 }
                 catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)

@@ -5,8 +5,9 @@ using System.Text.RegularExpressions;
 namespace Juice.Observability.Agent.Contracts
 {
     /// <summary>
-    /// The actions an agent can be asked for: read-only diagnostics, each with typed, bounded parameters. There is no action that runs a command,
-    /// a script or an executable: nothing here takes one, and the agent has no code that could.
+    /// The actions an agent can be asked for, each with typed, bounded parameters: read-only diagnostics, the agent's own update, and two
+    /// remediations (roadmap Phase 8). There is no action that runs a command, a script or an executable named by the platform: nothing here
+    /// takes one. The only program the agent ever starts is systemctl, at a fixed path, for <see cref="ServiceRestart"/> on Linux.
     /// </summary>
     public static partial class AgentActions
     {
@@ -23,10 +24,30 @@ namespace Juice.Observability.Agent.Contracts
         /// </summary>
         public const string AgentUpdate = "agent.update";
 
-        public static readonly IReadOnlyList<string> All = [HostSummary, DiskUsage, TcpReachability, AgentUpdate];
+        /// <summary>
+        /// Restart one service the host lists (<c>Services</c> in its allowlist): a systemd unit on Linux, a Windows service on Windows. The command
+        /// names the service and nothing else. High risk.
+        /// </summary>
+        public const string ServiceRestart = "service.restart";
+        /// <summary>
+        /// Delete old files from one folder the host lists (<c>Folders</c> in its allowlist), for services that don't rotate their own logs: only
+        /// regular files matching the folder's pattern, last written longer ago than its keep time, never a link or anything outside it. At most
+        /// <see cref="FilesCleanupParameters.MaxFilesPerRun"/> per run. Medium risk; a dry run only reports, and is Low.
+        /// </summary>
+        public const string FilesCleanup = "files.cleanup";
+
+        public static readonly IReadOnlyList<string> All = [HostSummary, DiskUsage, TcpReachability, AgentUpdate, ServiceRestart, FilesCleanup];
 
         /// <summary>Actions that change the host, rather than read it.</summary>
-        public static readonly IReadOnlyList<string> Changing = [AgentUpdate];
+        public static readonly IReadOnlyList<string> Changing = [AgentUpdate, ServiceRestart, FilesCleanup];
+
+        /// <summary>
+        /// An action's risk for these parameters: its descriptor's, except that a <see cref="FilesCleanup"/> dry run, which changes nothing, is Low.
+        /// </summary>
+        public static string RiskOf(ActionDescriptor action, JsonElement parameters)
+            => action.Name == FilesCleanup && parameters.ValueKind == JsonValueKind.Object && parameters.TryGetProperty("dryRun", out var dry) && dry.ValueKind == JsonValueKind.True
+                ? ActionRisks.Low
+                : action.RiskOf();
 
         /// <summary>
         /// The built-in actions as descriptors, for forms and for agents to report. Their bounds are the ones <see cref="Parse"/> enforces; for
@@ -45,6 +66,15 @@ namespace Juice.Observability.Agent.Contracts
             ]),
             new(AgentUpdate, "Install a signed agent package and restart into it, going back to the version before if it doesn't come up healthy.", true,
                 [new("version", ParameterTypes.String, true, "A version the platform offers.", MaxLength: 64)], Risk: ActionRisks.Medium),
+            new(ServiceRestart, "Restart a service the host lists, and report whether it came back running.", true,
+                [new("service", ParameterTypes.String, true, "A systemd unit or Windows service the host lists.", MaxLength: ServiceRestartParameters.MaxNameLength,
+                    Pattern: ServiceRestartParameters.NamePattern)], Risk: ActionRisks.High),
+            new(FilesCleanup, "Delete old files from a folder the host lists: only those matching its pattern and older than its keep time.", true,
+            [
+                new("folder", ParameterTypes.String, true, "A folder the host lists for cleanup.", MaxLength: DiskUsageParameters.MaxPathLength),
+                new("keepHours", ParameterTypes.Integer, false, "Keep files written in this many hours; never fewer than the host's own.", 1, FilesCleanupParameters.MaxKeepHours),
+                new("dryRun", ParameterTypes.Boolean, false, "Only report what would be deleted.", Default: "false"),
+            ], Risk: ActionRisks.Medium),
         ];
 
         /// <summary>
@@ -82,6 +112,14 @@ namespace Juice.Observability.Agent.Contracts
                         var update = parameters.Deserialize<AgentUpdateParameters>(CommandSignature.Json)!;
                         error = update.Validate();
                         return error is null ? update : null;
+                    case ServiceRestart:
+                        var restart = parameters.Deserialize<ServiceRestartParameters>(CommandSignature.Json)!;
+                        error = restart.Validate();
+                        return error is null ? restart : null;
+                    case FilesCleanup:
+                        var cleanup = parameters.Deserialize<FilesCleanupParameters>(CommandSignature.Json)!;
+                        error = cleanup.Validate();
+                        return error is null ? cleanup : null;
                     default:
                         error = $"unknown action '{action}'";
                         return null;
@@ -134,6 +172,41 @@ namespace Juice.Observability.Agent.Contracts
 
         [GeneratedRegex(@"^(/|[A-Za-z]:\\)[A-Za-z0-9._\-/\\:]*$")]
         private static partial Regex AbsolutePath();
+    }
+
+    /// <param name="Service">A systemd unit (<c>orders.service</c>, <c>worker@2.service</c>) or a Windows service name, which the host must list.</param>
+    public sealed partial record ServiceRestartParameters(string Service)
+    {
+        public const int MaxNameLength = 128;
+        /// <summary>Letters, digits and <c>@ . _ : -</c>, not starting with <c>-</c>: never an option, a path or anything a shell would read.</summary>
+        public const string NamePattern = "^[A-Za-z0-9@._:][A-Za-z0-9@._:-]{0,127}$";
+
+        public string? Validate()
+        {
+            if (string.IsNullOrEmpty(Service) || Service.Length > MaxNameLength) return $"service is 1 to {MaxNameLength} characters";
+            if (!Name().IsMatch(Service) || Service.Contains("..", StringComparison.Ordinal)) return "service is letters, digits and @ . _ : -, not starting with -";
+            return null;
+        }
+
+        [GeneratedRegex(NamePattern)]
+        private static partial Regex Name();
+    }
+
+    /// <param name="Folder">One of the folders the host lists for cleanup, exactly as it lists it.</param>
+    /// <param name="KeepHours">Keep files written within this many hours; null for the host's own keep time, and never fewer.</param>
+    /// <param name="DryRun">Only report what would be deleted.</param>
+    public sealed record FilesCleanupParameters(string Folder, int? KeepHours, bool DryRun)
+    {
+        public const int MaxKeepHours = 24 * 365 * 10;
+        public const int MaxFilesPerRun = 10_000;
+
+        public string? Validate()
+        {
+            if (new DiskUsageParameters(Folder).Validate() is { } path) return path.Replace("pathPrefix", "folder", StringComparison.Ordinal);
+            if (string.IsNullOrEmpty(Folder)) return "folder is required";
+            if (KeepHours is < 1 or > MaxKeepHours) return $"keepHours is 1 to {MaxKeepHours}";
+            return null;
+        }
     }
 
     /// <param name="Host">A DNS name or an IP address.</param>

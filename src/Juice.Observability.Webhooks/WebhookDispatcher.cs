@@ -360,7 +360,7 @@ namespace Juice.Observability.Webhooks
                 await db.SaveChangesAsync(cancellationToken);
                 return;
             }
-            if (endpoint.GroupWindowSeconds > 0 && delivery.Attempts == 0 && !await GatherGroupAsync(db, delivery, endpoint, silences, now, cancellationToken))
+            if (endpoint.GroupWindowSeconds > 0 && delivery.AlertId is not null && delivery.Attempts == 0 && !await GatherGroupAsync(db, delivery, endpoint, silences, now, cancellationToken))
             {
                 return;
             }
@@ -516,8 +516,9 @@ namespace Juice.Observability.Webhooks
 
         private static async Task<Silence?> SilencingAsync(PlatformDbContext db, WebhookDelivery delivery, List<Silence> silences, DateTimeOffset now, CancellationToken cancellationToken)
         {
+            // Silences are for alerts: an action request waiting on someone is never held.
             var mine = silences.Where(s => s.TenantId == delivery.TenantId).ToList();
-            if (mine.Count == 0)
+            if (mine.Count == 0 || delivery.AlertId is null)
             {
                 return null;
             }
@@ -540,7 +541,7 @@ namespace Juice.Observability.Webhooks
                 return false;
             }
             var waiting = await db.WebhookDeliveries
-                .Where(d => d.EndpointId == endpoint.Id && d.Event == delivery.Event && d.Id != delivery.Id && d.Status == DeliveryStatus.Pending && d.Attempts == 0)
+                .Where(d => d.EndpointId == endpoint.Id && d.Event == delivery.Event && d.Id != delivery.Id && d.AlertId != null && d.Status == DeliveryStatus.Pending && d.Attempts == 0)
                 .OrderBy(d => d.Id).Take(MaxGroup - 1).ToListAsync(cancellationToken);
             var taken = new List<WebhookDelivery>();
             foreach (var other in waiting)
@@ -581,8 +582,16 @@ namespace Juice.Observability.Webhooks
             {
                 throw new ChatDestinationRefusedException();
             }
-            var view = NotificationView.Parse(payload);
-            var body = endpoint.Kind == ChannelKind.Slack ? ChannelFormatter.SlackBody(view, options.Value.ConsoleUrl) : ChannelFormatter.TeamsBody(view, options.Value.ConsoleUrl);
+            string body;
+            if (RequestNotice.TryParse(payload) is { } notice)
+            {
+                body = endpoint.Kind == ChannelKind.Slack ? ChannelFormatter.SlackBody(notice, options.Value.ConsoleUrl) : ChannelFormatter.TeamsBody(notice, options.Value.ConsoleUrl);
+            }
+            else
+            {
+                var view = NotificationView.Parse(payload);
+                body = endpoint.Kind == ChannelKind.Slack ? ChannelFormatter.SlackBody(view, options.Value.ConsoleUrl) : ChannelFormatter.TeamsBody(view, options.Value.ConsoleUrl);
+            }
             return new HttpRequestMessage(HttpMethod.Post, url) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
         }
 
@@ -596,7 +605,9 @@ namespace Juice.Observability.Webhooks
             }
             try
             {
-                var (subject, body) = ChannelFormatter.Email(NotificationView.Parse(payload), options.Value.ConsoleUrl);
+                var (subject, body) = RequestNotice.TryParse(payload) is { } notice
+                    ? ChannelFormatter.Email(notice, options.Value.ConsoleUrl)
+                    : ChannelFormatter.Email(NotificationView.Parse(payload), options.Value.ConsoleUrl);
                 using var message = new MailMessage { From = new MailAddress(smtp.From), Subject = subject, Body = body, IsBodyHtml = false };
                 foreach (var recipient in endpoint.Recipients) message.To.Add(recipient);
                 using var client = new SmtpClient(smtp.Host, smtp.Port) { EnableSsl = smtp.UseTls, DeliveryMethod = SmtpDeliveryMethod.Network, UseDefaultCredentials = false };

@@ -239,22 +239,35 @@ namespace Juice.Observability.Tests
         // ─── No shell ───────────────────────────────────────────────────────────
 
         /// <summary>
-        /// Nothing in the agent or its contracts can start a process, run a shell, or load code a command names. Checked on the source, so a
-        /// change that adds one fails here and has to be argued for.
+        /// Nothing in the agent or its contracts can run a shell, load code a command names, or start a process, but for one: <c>service.restart</c>
+        /// starts systemctl (roadmap Phase 8, decision P7), in <c>Systemctl.cs</c> only, from a fixed path, with no shell and each argument added on
+        /// its own, so a service name can never become a command line. Checked on the source, so a change that adds another fails here and has to
+        /// be argued for.
         /// </summary>
         [Fact]
         public void The_agent_has_no_way_to_run_a_command()
         {
             var root = AppContext.BaseDirectory;
             while (!File.Exists(Path.Combine(root, "Juice.Observability.slnx"))) root = Path.GetDirectoryName(root) ?? throw new InvalidOperationException("no repository root");
-            string[] forbidden = ["Process.Start", "ProcessStartInfo", "new Process(", "/bin/sh", "/bin/bash", "cmd.exe", "powershell", "Assembly.Load",
-                "Activator.CreateInstance", "Type.GetType(", "AppDomain", "DllImport", "LibraryImport", "NativeLibrary", "Marshal.GetDelegateForFunctionPointer"];
-            var offences = new[] { "Juice.Observability.Agent", "Juice.Observability.Agent.Contracts" }
+            const string allowedFile = "Systemctl.cs";
+            string[] starts = ["Process.Start", "ProcessStartInfo", "new Process("];
+            string[] never = ["/bin/sh", "/bin/bash", "cmd.exe", "powershell", "Assembly.Load", "Activator.CreateInstance", "Type.GetType(", "AppDomain", "DllImport",
+                "LibraryImport", "NativeLibrary", "Marshal.GetDelegateForFunctionPointer", "UseShellExecute = true", "Arguments =", "Environment.GetEnvironmentVariable(\"PATH"];
+            var lines = new[] { "Juice.Observability.Agent", "Juice.Observability.Agent.Contracts" }
                 .SelectMany(project => Directory.EnumerateFiles(Path.Combine(root, "src", project), "*.cs", SearchOption.AllDirectories))
-                .SelectMany(file => File.ReadLines(file).Select((line, i) => (file, i, line)))
-                .Where(x => forbidden.Any(f => x.line.Contains(f, StringComparison.OrdinalIgnoreCase)))
+                .SelectMany(file => File.ReadLines(file).Select((line, i) => (file, i, line))).ToList();
+            var offences = lines
+                .Where(x => never.Any(f => x.line.Contains(f, StringComparison.OrdinalIgnoreCase))
+                    || (Path.GetFileName(x.file) != allowedFile && starts.Any(f => x.line.Contains(f, StringComparison.OrdinalIgnoreCase))))
                 .Select(x => $"{Path.GetFileName(x.file)}:{x.i + 1}: {x.line.Trim()}").ToList();
             Assert.True(offences.Count == 0, string.Join("\n", offences));
+            // The one place: a single start, no shell, the program from the fixed paths, every argument on its own.
+            var allowed = lines.Where(x => Path.GetFileName(x.file) == allowedFile).Select(x => x.line).ToList();
+            Assert.Single(allowed, l => l.Contains("Process.Start(", StringComparison.Ordinal));
+            Assert.Contains(allowed, l => l.Contains("UseShellExecute = false", StringComparison.Ordinal));
+            Assert.Single(allowed, l => l.Contains("ArgumentList.Add(", StringComparison.Ordinal));
+            Assert.Contains(allowed, l => l.Contains("Paths.FirstOrDefault(File.Exists)", StringComparison.Ordinal));
+            Assert.Contains(allowed, l => l.Contains("[\"/usr/bin/systemctl\", \"/bin/systemctl\"]", StringComparison.Ordinal));
         }
 
         /// <summary>

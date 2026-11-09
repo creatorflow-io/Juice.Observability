@@ -239,6 +239,52 @@ namespace Juice.Observability.Tests
             Assert.Contains("service:shop/orders@production: 0.25", body);
         }
 
+        private static string RequestPayload(string type, string hostname = "web-01", string reason = "disk full", string? comment = null)
+            => Juice.Observability.Agents.ActionRequestNotices.Payload(Guid.NewGuid(), type, "local", new ActionRequest
+            {
+                TenantId = Guid.NewGuid(), AgentId = Guid.NewGuid(), Action = "service.restart", Parameters = """{"service":"orders"}""", Risk = "High",
+                Policy = "SecondPerson", Reason = reason, RequestedBy = "olivia", RequestedAt = DateTimeOffset.UtcNow,
+                ExpiresAt = new DateTimeOffset(2026, 11, 9, 10, 30, 0, TimeSpan.Zero), State = ActionRequestState.Rejected, DecidedBy = comment is null ? null : "adam", Comment = comment,
+            }, hostname, DateTimeOffset.UtcNow);
+
+        [Fact]
+        public void An_alert_payload_isnt_read_as_a_request() => Assert.Null(RequestNotice.TryParse(Payload()));
+
+        [Fact]
+        public void A_waiting_request_says_who_asked_why_and_until_when_with_a_link_to_approvals()
+        {
+            var notice = RequestNotice.TryParse(RequestPayload(ActionRequestEvents.Created))!;
+            var (subject, body) = ChannelFormatter.Email(notice, "https://console.example/");
+            Assert.Equal("[Juice] Approval needed: service.restart on web-01", subject);
+            Assert.Contains("Requested by: olivia: disk full", body);
+            Assert.Contains("an admin other than the requester", body);
+            Assert.Contains("""{"service":"orders"}""", body);
+            Assert.Contains("Expires: 2026-11-09 10:30 UTC", body);
+            Assert.Contains("https://console.example/approvals", body);
+            Assert.Contains("Open Approvals", ChannelFormatter.TeamsBody(notice, "https://console.example"));
+        }
+
+        [Fact]
+        public void A_decided_request_says_who_decided_and_why()
+            => Assert.Contains("Decided by: adam: not now", ChannelFormatter.Email(RequestNotice.TryParse(RequestPayload(ActionRequestEvents.Rejected, comment: "not now"))!, null).Body);
+
+        [Fact]
+        public void A_hostname_or_reason_cant_page_a_slack_channel_add_a_link_or_a_mail_header()
+        {
+            var notice = RequestNotice.TryParse(RequestPayload(ActionRequestEvents.Created, hostname: "<!channel>", reason: "[click](http://evil.example) <http://evil.example|x>\r\nBcc: x@example.com"))!;
+            var slack = JsonDocument.Parse(ChannelFormatter.SlackBody(notice, null)).RootElement;
+            var blocks = slack.GetProperty("blocks");
+            foreach (var text in new[] { slack.GetProperty("text").GetString()!, blocks[0].GetProperty("text").GetProperty("text").GetString()!, blocks[1].GetProperty("text").GetProperty("text").GetString()! })
+            {
+                Assert.DoesNotContain("<!channel>", text);
+                Assert.DoesNotContain("<http://evil.example", text);
+            }
+            Assert.DoesNotContain("[click]", ChannelFormatter.TeamsBody(notice, null));
+            var (subject, body) = ChannelFormatter.Email(notice, null);
+            Assert.DoesNotContain('\n', subject);
+            Assert.DoesNotContain("\nBcc:", body);
+        }
+
         [Fact]
         public void A_notification_says_no_data_instead_of_zero()
             => Assert.Contains("no data", ChannelFormatter.Email(NotificationView.Parse(Payload(value: null)), null).Body);

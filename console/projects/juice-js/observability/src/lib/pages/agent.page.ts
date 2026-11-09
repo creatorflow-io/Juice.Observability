@@ -9,6 +9,7 @@ import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSelectModule } from '@angular/material/select';
 import { RouterLink } from '@angular/router';
 import { ApiService } from '../core/api.service';
+import { ApprovalCount } from '../core/approval-count';
 import { ContextService } from '../core/context.service';
 import { ActionParameter, AgentAction, AgentCommand, EnrollmentToken } from '../core/models';
 import { MatCheckboxModule } from '@angular/material/checkbox';
@@ -29,8 +30,12 @@ interface TcpReachability { host: string; port: number; reachable: boolean; addr
 const WAITING = ['Pending', 'Delivered'];
 const LABELS: Record<string, string> = {
   'host.summary': 'Host summary', 'disk.usage': 'Disk usage', 'tcp.reachability': 'TCP reachability', 'agent.update': 'Update the agent',
+  'service.restart': 'Restart a service', 'files.cleanup': 'Clean up old files',
 };
-const PARAMETER_LABELS: Record<string, string> = { pathPrefix: 'Only under this path', host: 'Host', port: 'Port', timeoutMs: 'Wait (ms)' };
+const PARAMETER_LABELS: Record<string, string> = {
+  pathPrefix: 'Only under this path', host: 'Host', port: 'Port', timeoutMs: 'Wait (ms)', service: 'Service', folder: 'Folder',
+  keepHours: 'Keep files from the last (hours)', dryRun: 'Dry run: only report what would go',
+};
 
 function formatBytes(bytes: number | null | undefined): string {
   if (bytes === null || bytes === undefined) return '—';
@@ -134,6 +139,9 @@ function formatUptime(seconds: number): string {
               <mat-form-field subscriptSizing="dynamic" class="jc-field-wide"><mat-label>Why (for whoever approves it)</mat-label>
                 <input matInput name="requestReason" data-testid="request-reason" maxlength="500" [(ngModel)]="requestReason">
               </mat-form-field>
+              @if (selected()?.changing && agent.value()?.resourceId) {
+                <mat-checkbox name="watchHost" data-testid="request-watch-host" [(ngModel)]="watchHost">Fix this host's health: run only while it's unhealthy, and confirm recovery after</mat-checkbox>
+              }
             }
             <div class="jc-form-actions">
               <button mat-flat-button type="submit" data-testid="command-issue" [disabled]="issuing() || selected()?.permitted === false">{{ needsApproval() ? 'Request' : action() === 'agent.update' ? 'Update' : 'Run' }}</button>
@@ -170,7 +178,10 @@ function formatUptime(seconds: number): string {
                   <td>{{ r.requestedBy }}<div class="jc-small">{{ r.reason }}</div></td>
                   <td class="jc-nowrap"><span class="jc-badge" [class.jc-health-degraded]="r.state === 'Pending'" [class.jc-health-healthy]="r.state === 'Issued'"
                       [class.jc-health-none]="r.state !== 'Pending' && r.state !== 'Issued'" data-testid="request-state">{{ r.state === 'Pending' ? 'Waiting for approval' : r.state }}</span>
-                    @if (r.state === 'Pending') { <div class="jc-muted jc-small">until {{ r.expiresAt | date: 'HH:mm' }}</div> }</td>
+                    @if (r.state === 'Pending') { <div class="jc-muted jc-small">until {{ r.expiresAt | date: 'HH:mm' }}</div> }
+                    @if (r.verification && r.verification !== 'None') {
+                      <div class="jc-small" data-testid="request-verification" [class.jc-error]="r.verification === 'NotVerified'" [title]="r.verificationNote ?? ''">{{ verificationText(r.verification) }}</div>
+                    }</td>
                   <td class="jc-small">@if (r.decidedBy) { {{ r.decidedBy }}, {{ r.decidedAt | date: 'HH:mm' }} }@if (r.comment) { <div>{{ r.comment }}</div> }</td>
                   <td class="jc-row-actions">@if (r.state === 'Pending') { <button mat-button type="button" [attr.data-testid]="'request-cancel-' + r.id" (click)="cancelRequest(r.id)">Cancel</button> }</td>
                 </tr>
@@ -265,6 +276,7 @@ function formatUptime(seconds: number): string {
 export class AgentPage {
   protected readonly ctx = inject(ContextService);
   private readonly api = inject(ApiService);
+  private readonly approvalCount = inject(ApprovalCount);
   readonly id = input.required<string>();
   protected readonly action = signal('host.summary');
   /** The form's values for the chosen action, by parameter name. */
@@ -277,6 +289,8 @@ export class AgentPage {
   protected version = '';
   protected reason = '';
   protected requestReason = '';
+  /** Aim the request at this agent's host: checked unhealthy before it runs, and watched for recovery after. */
+  protected watchHost = false;
   /** What happened to the last request, when it didn't simply run. */
   protected readonly issued = signal('');
   protected readonly needsApproval = computed(() => (this.selected()?.approval ?? 'None') !== 'None');
@@ -407,6 +421,16 @@ export class AgentPage {
     return out;
   }
 
+  /** Whether it fixed what it was for: only health from telemetry after the action says so, never the agent. */
+  protected verificationText(verification: string): string {
+    switch (verification) {
+      case 'Verifying': return 'Watching health for recovery';
+      case 'Verified': return 'Recovery confirmed by health';
+      case 'NotVerified': return 'Recovery not confirmed';
+      default: return verification;
+    }
+  }
+
   protected approvalText(policy: string): string {
     switch (policy) {
       case 'None': return 'runs when asked';
@@ -429,20 +453,22 @@ export class AgentPage {
       this.api.issueCommand(this.id(), action, this.parameters()).subscribe({ next: () => { this.issuing.set(false); this.commands.reload(); }, error: failed });
       return;
     }
-    this.api.requestAction(this.id(), action, this.parameters(), this.requestReason.trim()).subscribe({
+    const host = this.watchHost && this.selected()?.changing ? this.agent.value()?.resourceId : null;
+    this.api.requestAction(this.id(), action, this.parameters(), this.requestReason.trim(), host ? { type: 'Host', id: host } : null).subscribe({
       next: r => {
         this.issuing.set(false);
         this.requestReason = '';
-        this.issued.set(r.state === 'Issued' ? 'Approved by your role: running.' : 'Requested: it runs once approved, on the Approvals page.');
+        this.issued.set(r.state !== 'Issued' ? 'Requested: it runs once approved, on the Approvals page.' : r.policy === 'None' ? 'Needs no approval as asked: running.' : 'Approved by your role: running.');
         this.requests.reload();
         this.commands.reload();
+        this.approvalCount.refresh();
       },
       error: failed,
     });
   }
 
   protected cancelRequest(id: string) {
-    this.api.cancelRequest(id).subscribe({ next: () => this.requests.reload(), error: e => this.issueError.set(problemText(e)) });
+    this.api.cancelRequest(id).subscribe({ next: () => { this.requests.reload(); this.approvalCount.refresh(); }, error: e => this.issueError.set(problemText(e)) });
   }
 
   protected loadOlder() {

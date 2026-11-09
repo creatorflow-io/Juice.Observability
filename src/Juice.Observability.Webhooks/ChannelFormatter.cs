@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Juice.Observability.Data;
 
 namespace Juice.Observability.Webhooks
 {
@@ -45,6 +46,24 @@ namespace Juice.Observability.Webhooks
                 ["count"] = nodes.Count,
                 ["alerts"] = new JsonArray(nodes.Select(n => n["alert"]!.DeepClone()).ToArray()),
             }.ToJsonString(JsonSerializerOptions.Web);
+        }
+    }
+
+    /// <summary>A request notification's payload (<see cref="ActionRequestEvents"/>), as the chat and email channels read it.</summary>
+    public sealed record RequestNotice(string Event, string Hostname, string Action, string Parameters, string Risk, string Policy, string Reason, string RequestedBy,
+        DateTimeOffset ExpiresAt, string? DecidedBy, string? Comment)
+    {
+        /// <summary>The notice, or null when the payload is an alert's.</summary>
+        public static RequestNotice? TryParse(string payload)
+        {
+            using var document = JsonDocument.Parse(payload);
+            var root = document.RootElement;
+            if (!ActionRequestEvents.IsRequestEvent(root.GetProperty("type").GetString() ?? "")) return null;
+            var r = root.GetProperty("request");
+            static string? Text(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+            return new RequestNotice(root.GetProperty("type").GetString()!, r.GetProperty("agent").GetProperty("hostname").GetString() ?? "", Text(r, "action") ?? "",
+                r.GetProperty("parameters").GetRawText(), Text(r, "risk") ?? "", Text(r, "policy") ?? "", Text(r, "reason") ?? "", Text(r, "requestedBy") ?? "",
+                r.GetProperty("expiresAt").GetDateTimeOffset(), Text(r, "decidedBy"), Text(r, "comment"));
         }
     }
 
@@ -151,6 +170,79 @@ namespace Juice.Observability.Webhooks
             }
             if (More(view) is { } more) body.AppendLine(more);
             return ($"[Juice] {Plain(Title(view))}", body.ToString());
+        }
+
+        public static string Title(RequestNotice notice)
+        {
+            var what = notice.Event switch
+            {
+                ActionRequestEvents.Created => "Approval needed",
+                ActionRequestEvents.Approved => "Approved",
+                ActionRequestEvents.Rejected => "Rejected",
+                ActionRequestEvents.Cancelled => "Cancelled",
+                ActionRequestEvents.Expired => "Expired without a decision",
+                _ => notice.Event,
+            };
+            return $"{what}: {notice.Action} on {notice.Hostname}";
+        }
+
+        /// <summary>The facts, one per line, unescaped: each channel escapes them its own way.</summary>
+        private static List<(string Label, string Text)> Facts(RequestNotice notice)
+        {
+            var facts = new List<(string, string)>
+            {
+                ("Requested by", $"{notice.RequestedBy}: {notice.Reason}"),
+                ("Risk", $"{notice.Risk}, needs {notice.Policy switch { "Admin" => "an admin's approval", "SecondPerson" => "an admin other than the requester", _ => notice.Policy }}"),
+                ("Parameters", notice.Parameters),
+            };
+            if (notice.Event == ActionRequestEvents.Created)
+                facts.Add(("Expires", notice.ExpiresAt.UtcDateTime.ToString("yyyy-MM-dd HH:mm 'UTC'", CultureInfo.InvariantCulture)));
+            else if (notice.DecidedBy is { } by)
+                facts.Add(("Decided by", notice.Comment is { Length: > 0 } comment ? $"{by}: {comment}" : by));
+            return facts;
+        }
+
+        private static string? Link(string? consoleUrl) => string.IsNullOrEmpty(consoleUrl) ? null : $"{consoleUrl.TrimEnd('/')}/approvals";
+
+        public static string SlackBody(RequestNotice notice, string? consoleUrl)
+        {
+            var lines = Facts(notice).Select(f => $"*{f.Label}:* {Slack(f.Text)}").ToList();
+            if (Link(consoleUrl) is { } link) lines.Add($"<{link}|Open Approvals>");
+            return new JsonObject
+            {
+                ["text"] = Slack(Title(notice)),
+                ["blocks"] = new JsonArray(
+                    // A host names itself: no angle brackets, so it can't write a mention even where Slack would read one.
+                    new JsonObject { ["type"] = "header", ["text"] = new JsonObject { ["type"] = "plain_text", ["text"] = Plain(Title(notice)).Replace('<', '‹').Replace('>', '›') } },
+                    new JsonObject { ["type"] = "section", ["text"] = new JsonObject { ["type"] = "mrkdwn", ["text"] = string.Join('\n', lines) } }),
+            }.ToJsonString();
+        }
+
+        public static string TeamsBody(RequestNotice notice, string? consoleUrl)
+        {
+            var body = new JsonArray(new JsonObject { ["type"] = "TextBlock", ["text"] = Teams(Title(notice)), ["weight"] = "Bolder", ["size"] = "Medium", ["wrap"] = true });
+            foreach (var (label, text) in Facts(notice))
+            {
+                body.Add(new JsonObject { ["type"] = "TextBlock", ["wrap"] = true, ["text"] = $"{label}: {Teams(text)}" });
+            }
+            var card = new JsonObject { ["type"] = "AdaptiveCard", ["$schema"] = "http://adaptivecards.io/schemas/adaptive-card.json", ["version"] = "1.4", ["body"] = body };
+            if (Link(consoleUrl) is { } link)
+            {
+                card["actions"] = new JsonArray(new JsonObject { ["type"] = "Action.OpenUrl", ["title"] = "Open Approvals", ["url"] = link });
+            }
+            return new JsonObject
+            {
+                ["type"] = "message",
+                ["attachments"] = new JsonArray(new JsonObject { ["contentType"] = "application/vnd.microsoft.card.adaptive", ["content"] = card }),
+            }.ToJsonString();
+        }
+
+        public static (string Subject, string Body) Email(RequestNotice notice, string? consoleUrl)
+        {
+            var body = new StringBuilder();
+            foreach (var (label, text) in Facts(notice)) body.Append(label).Append(": ").AppendLine(Plain(text));
+            if (Link(consoleUrl) is { } link) body.AppendLine().AppendLine(link);
+            return ($"[Juice] {Plain(Title(notice))}", body.ToString());
         }
     }
 }

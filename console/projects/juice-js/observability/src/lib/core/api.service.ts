@@ -1,9 +1,9 @@
 import { HttpClient, HttpParams } from '@angular/common/http';
-import { Injectable, inject } from '@angular/core';
-import { EMPTY, Observable, expand, map, reduce, shareReplay, switchMap } from 'rxjs';
+import { Injectable, inject, signal } from '@angular/core';
+import { EMPTY, Observable, expand, map, reduce, shareReplay, switchMap, tap } from 'rxjs';
 import { OBSERVABILITY_OPTIONS } from './options';
 import {
-  ActionRequest, Agent, AgentActions, AgentCommand, AgentPackage, EnrollmentToken, AlertDetail, AlertNotifications, Alert, AllowlistEntry, Application, Channel, ChannelTestResult, Delivery, EscalationPolicy, IncidentDetail, IncidentEvent, IncidentSummary, Silence, DependencyEvidence, DependencyStatsPage, DeploymentEnvironment, LoadRun, LoadRunResults, Related, Timeline, Health, LogRecord, MetricInfo, Operation,
+  ActionRequest, ActionRequestsWaiting, ActionTarget, Agent, AgentActions, AgentCommand, AgentPackage, EnrollmentToken, AlertDetail, AlertNotifications, Alert, AllowlistEntry, Application, Channel, ChannelTestResult, Delivery, EscalationPolicy, IncidentDetail, IncidentEvent, IncidentSummary, Silence, DependencyEvidence, DependencyStatsPage, DeploymentEnvironment, LoadRun, LoadRunResults, Related, Timeline, Health, LogRecord, MetricInfo, Operation,
   Page, ResourceDetail, ResourceSummary, Rule, SearchHit, Series, Capacity, ServiceStats, Tenant, TelemetryPage, Topology, Trace,
   TraceSummary,
 } from './models';
@@ -31,12 +31,16 @@ export class ApiService {
   private readonly http = inject(HttpClient);
   private readonly base = `${inject(OBSERVABILITY_OPTIONS).apiBase}/api/v1`;
 
+  /** Set once a page has fetched the caller's tenant: the user is signed in, so background calls such as {@link ApprovalCount}'s may start. */
+  readonly tenantKnown = signal(false);
+
   /** The caller's tenant, fetched once. */
   readonly tenant$: Observable<Tenant> = this.http.get<Page<Tenant>>(`${this.base}/tenants`).pipe(
     map(page => {
       if (page.items.length === 0) throw new Error('No tenant is authorized for this user.');
       return page.items[0];
     }),
+    tap(() => this.tenantKnown.set(true)),
     shareReplay(1),
   );
 
@@ -111,10 +115,12 @@ export class ApiService {
   /** Idempotent: a repeated click or a lost response signs one command, not two. */
   issueCommand(id: string, action: string, parameters: Record<string, unknown>) { return this.once<AgentCommand>(`/agents/${id}/commands`, { action, parameters }); }
   /** Asks for an action under its approval policy: issued at once when nobody else needs to approve, otherwise waiting. */
-  requestAction(agentId: string, action: string, parameters: Record<string, unknown>, reason: string) {
-    return this.once<ActionRequest>(`/agents/${agentId}/action-requests`, { action, parameters, reason });
+  requestAction(agentId: string, action: string, parameters: Record<string, unknown>, reason: string, target: ActionTarget | null = null) {
+    return this.once<ActionRequest>(`/agents/${agentId}/action-requests`, { action, parameters, reason, target });
   }
   actionRequests(query: Query = {}) { return this.get<Page<ActionRequest>>('/action-requests', { limit: 100, ...query }); }
+  /** How many requests wait, and how many of them the signed-in user can decide. */
+  waitingRequests() { return this.get<ActionRequestsWaiting>('/action-requests/waiting'); }
   approveRequest(id: string, comment: string) { return this.send<ActionRequest>('POST', `/action-requests/${id}/approval`, { comment }); }
   rejectRequest(id: string, comment: string) { return this.send<ActionRequest>('POST', `/action-requests/${id}/rejection`, { comment }); }
   cancelRequest(id: string) { return this.send<ActionRequest>('POST', `/action-requests/${id}/cancellation`, {}); }

@@ -77,10 +77,20 @@ export interface AgentAction {
   /** What the platform's policy needs before it runs: None, Admin or SecondPerson. */
   approval: string;
 }
+/** A health subject an action should make healthy: Service or Application (with environmentId), Instance or Host. */
+export interface ActionTarget { type: string; id: string; environmentId?: string | null; }
+
+/** Requests waiting for a decision: all of them, and those the signed-in user can decide. */
+export interface ActionRequestsWaiting { total: number; forYou: number; }
+
 /** A request to run an action, under the approval policy for its risk. `state` is Pending, Issued, Rejected, Cancelled or Expired. */
 export interface ActionRequest {
   id: string; agentId: string; hostname: string; action: string; parameters: Record<string, unknown>; risk: string; policy: string; reason: string;
   requestedBy: string; requestedAt: string; expiresAt: string; state: string; decidedBy: string | null; decidedAt: string | null; comment: string | null;
+  /** The alert that prompted it, and what it should make healthy: checked before it runs, watched for recovery after. */
+  alertId?: string | null; target?: ActionTarget | null;
+  /** None without a target; Verifying until health from telemetry newer than the action says Verified, or NotVerified. */
+  verification?: string; verificationNote?: string | null; verifiedAt?: string | null;
   command: AgentCommand | null;
 }
 export interface AgentActions { reportedAt: string | null; items: AgentAction[]; }
@@ -91,7 +101,7 @@ export interface AgentCommand {
 }
 
 export interface Delivery {
-  id: string; alertId: string; event: string; status: string; attempts: number; createdAt: string; firstAttemptAt: string | null; deliveredAt: string | null; nextAttemptAt: string | null;
+  id: string; alertId: string | null; actionRequestId?: string | null; event: string; status: string; attempts: number; createdAt: string; firstAttemptAt: string | null; deliveredAt: string | null; nextAttemptAt: string | null;
   lastStatusCode: number | null; lastError: string | null; history: DeliveryAttempt[]; suppressedBy: string | null; groupedInto: string | null; escalationStep: number;
 }
 /** What a test send did; id is the webhook-id it carried. */

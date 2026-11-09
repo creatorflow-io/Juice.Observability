@@ -384,7 +384,11 @@ namespace Juice.Observability.Data
                 e.Property(x => x.DecidedBy).HasMaxLength(256);
                 e.Property(x => x.Comment).HasMaxLength(500);
                 e.Property(x => x.State).HasConversion<string>().HasMaxLength(20);
+                e.Property(x => x.TargetType).HasConversion<string>().HasMaxLength(20);
+                e.Property(x => x.Verification).HasConversion<string>().HasMaxLength(20);
+                e.Property(x => x.VerificationNote).HasMaxLength(500);
                 e.HasIndex(x => new { x.TenantId, x.State, x.RequestedAt });
+                e.HasIndex(x => x.Verification);
                 e.HasIndex(x => new { x.AgentId, x.Action, x.State });
                 e.HasIndex(x => x.CommandId);
                 e.HasOne<EnrolledAgent>().WithMany().HasForeignKey(x => x.AgentId).OnDelete(DeleteBehavior.Cascade);
@@ -531,8 +535,11 @@ namespace Juice.Observability.Data
                 // One delivery per transition, endpoint and escalation step, so a replayed evaluation or escalation cannot notify twice.
                 e.HasIndex(x => new { x.TransitionId, x.EndpointId, x.EscalationStep }).IsUnique();
                 e.HasIndex(x => new { x.TenantId, x.AlertId });
+                // One per request, endpoint and event: a decision retried can't notify twice.
+                e.HasIndex(x => new { x.ActionRequestId, x.EndpointId, x.Event }).IsUnique();
                 e.HasOne<WebhookEndpoint>().WithMany().HasForeignKey(x => x.EndpointId).OnDelete(DeleteBehavior.Restrict);
                 e.HasOne<Alert>().WithMany().HasForeignKey(x => x.AlertId).OnDelete(DeleteBehavior.Cascade);
+                e.HasOne<ActionRequest>().WithMany().HasForeignKey(x => x.ActionRequestId).OnDelete(DeleteBehavior.Cascade);
             });
 
             model.Entity<WebhookAttempt>(e =>

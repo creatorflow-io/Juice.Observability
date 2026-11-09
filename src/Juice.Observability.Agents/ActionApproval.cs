@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Juice.Observability.Agent.Contracts;
 
 namespace Juice.Observability.Agents
@@ -19,7 +20,7 @@ namespace Juice.Observability.Agents
     /// Configuration section <c>Actions</c>: what each risk needs before a command is signed, with per-action overrides, and how long a request may
     /// wait for approval. Read at start; invalid settings stop the host. Defaults: Low runs on request, Medium needs an admin, High needs a second admin.
     /// </summary>
-    public sealed class ActionApprovalOptions
+    public sealed partial class ActionApprovalOptions
     {
         public const string Section = "Actions";
 
@@ -31,6 +32,21 @@ namespace Juice.Observability.Agents
 
         /// <summary>How long a request waits for approval before it expires.</summary>
         public TimeSpan ApprovalLifetime { get; set; } = TimeSpan.FromMinutes(30);
+
+        /// <summary>
+        /// Webhook endpoints (by key) told when a request waits for approval, and when it's approved, rejected, cancelled or expires. Whatever events
+        /// they take for alerts. An endpoint missing or disabled is skipped.
+        /// </summary>
+        public List<string> NotifyEndpoints { get; set; } = [];
+
+        /// <summary>How often pending requests past their expiry are closed, and issued ones checked for recovery.</summary>
+        public TimeSpan SweepInterval { get; set; } = TimeSpan.FromSeconds(30);
+
+        /// <summary>A request's alert or target health older than this is stale: it's neither approved nor issued on it.</summary>
+        public TimeSpan StaleEvidence { get; set; } = TimeSpan.FromMinutes(10);
+
+        /// <summary>How long after a remediation succeeds its target may take to be seen healthy before it's <c>NotVerified</c>.</summary>
+        public TimeSpan VerificationWindow { get; set; } = TimeSpan.FromMinutes(10);
 
         private static readonly Dictionary<string, string> Defaults = new()
         {
@@ -50,6 +66,10 @@ namespace Juice.Observability.Agents
                 if (!ApprovalPolicies.All.Contains(policy)) yield return $"Actions:Overrides:{action}: policy is one of {string.Join(", ", ApprovalPolicies.All)}";
             }
             if (ApprovalLifetime < TimeSpan.FromSeconds(1) || ApprovalLifetime > TimeSpan.FromDays(1)) yield return "Actions:ApprovalLifetime is 1 second to 1 day";
+            foreach (var key in NotifyEndpoints.Where(k => !EndpointKey().IsMatch(k))) yield return $"Actions:NotifyEndpoints: '{key}' isn't a webhook endpoint key";
+            if (SweepInterval < TimeSpan.FromMilliseconds(100) || SweepInterval > TimeSpan.FromMinutes(10)) yield return "Actions:SweepInterval is 100 ms to 10 minutes";
+            if (StaleEvidence < TimeSpan.FromSeconds(10) || StaleEvidence > TimeSpan.FromHours(6)) yield return "Actions:StaleEvidence is 10 seconds to 6 hours";
+            if (VerificationWindow < TimeSpan.FromSeconds(1) || VerificationWindow > TimeSpan.FromHours(24)) yield return "Actions:VerificationWindow is 1 second to 24 hours";
         }
 
         /// <summary>What this action needs: its override, else its risk's policy, else that risk's default.</summary>
@@ -57,5 +77,8 @@ namespace Juice.Observability.Agents
             => Overrides.TryGetValue(action, out var overridden) ? overridden
                 : Approval.TryGetValue(risk, out var configured) ? configured
                 : Defaults.GetValueOrDefault(risk, ApprovalPolicies.SecondPerson);
+
+        [GeneratedRegex("^[a-z0-9][a-z0-9-]{1,62}$")]
+        private static partial Regex EndpointKey();
     }
 }

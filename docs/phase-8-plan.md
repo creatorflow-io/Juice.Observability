@@ -81,5 +81,55 @@ Each milestone ends with its tests, a mutation check, the local-stack demos and 
 | Through the browser | `console/e2e/approvals.mjs`, 9 November: an operator's update waited, an admin couldn't reject it without a reason, approved it, and it ran. A second request was rejected. `agents-console.mjs` passes on both addresses. |
 | Mutation check | 7 of 7 caught: the second-person rule, a command skipping its policy, duplicates, expiry, an operator approving, the host's `RequireApproval`, and per-action overrides |
 
-Not yet: preconditions, stale health evidence and verified recovery (milestone 2), and an approval's notifications. Nobody is told a request is
-waiting, except through the Approvals page.
+Not yet: preconditions, stale health evidence and verified recovery (milestone 2).
+
+### Added after milestone 1: telling approvers, 9 November
+
+- **The menu count:** the Approvals entry shows how many requests wait for the signed-in user (`GET action-requests/waiting`): none for an
+  operator, and not an admin's own second-person request. It refreshes every 30 seconds on any page, and at once after a page makes or
+  decides a request. juice-layout's menu has no badge field, so the library adds one to that entry; a `badge` on juice-layout's `Menu`
+  would be the cleaner home.
+- **Messages:** the endpoints in `Actions:NotifyEndpoints` are told when a request waits, and when it's approved, rejected, cancelled or
+  expires. The deliveries are written with the change, then sent, signed and retried like an alert's.
+- **Expiry:** a sweeper closes requests past their deadline, audits each as `action.request.expire`, and notifies it.
+
+| Case | Evidence |
+|---|---|
+| Notices for every outcome, signed, to a real receiver; none for a request issued at once; the expiry swept and audited; the count per caller | `AgentFlowTests.Approvers_are_told_when_a_request_waits_and_how_it_ends` |
+| Chat and email text, escaped against mentions, links and mail headers | `NotificationLogicTests` (four request-notice tests) |
+| Through the browser | `approvals.mjs`: the admin sees the count, the operator doesn't, and it goes once approved |
+| Mutation check | 3 of 3 caught: no notice when a request waits, an admin's own second-person request counted, the sweeper not closing |
+
+## Milestone 2: done, 9 November
+
+- **On the host:** `service.restart` (High) and `files.cleanup` (Medium; a dry run is Low) act only on what the allowlist lists: `Services`
+  by exact name, and `Folders` with their pattern and minimum keep time. An invalid entry stops the agent (exit code 78).
+  - A restart uses systemctl at `/usr/bin/systemctl` or `/bin/systemctl`, with the unit after `--` as its own argument, or the Windows
+    Service Control Manager. That is the one process the agent may start: `AgentVerifierTests` holds `Systemctl.cs` to one start, no
+    shell, the fixed paths, and arguments added one by one. It was argued for by P7; D-Bus would have needed a new library and still no
+    systemd in a container.
+  - A cleanup skips links and anything outside its folder, keeps at least the host's keep time, stops at 10,000 files, and reports what
+    it removed and kept.
+- **Preconditions (P9):** a request can name the alert that prompted it, a health target, or both (the target defaults to the alert's
+  subject). They're optional: an action without them runs on approval alone. With them, the request is refused when created and again
+  when approved if the alert isn't firing or the target is healthy (`precondition_failed`), or the evidence is older than
+  `Actions:StaleEvidence` (`stale_evidence`). One whose target recovered before approval is closed as `Cancelled` by `platform`.
+- **Verified recovery (P10):** an aimed request reads `Verifying` once issued. The sweeper calls it `Verified` only when the target's
+  health is `Healthy` from telemetry newer than the action's end. It's `NotVerified` when the action fails, or the window
+  (`Actions:VerificationWindow`) passes, with the reason. Both are audited (`action.request.verify`) and notified.
+- **Console:** the actions under their own names, a host-health checkbox for a changing action that needs approval, the verification on
+  the agent's requests and the Approvals page.
+
+| Gate case | Evidence |
+|---|---|
+| Stale evidence | `AgentFlowTests.A_remediation_needs_fresh_evidence_and_counts_as_recovered_only_by_newer_health`: health 20 minutes old is refused, audited `stale_evidence` |
+| Precondition | the same test: a healthy target is refused; one that recovers before approval is closed by the platform and never runs |
+| Recovered only by independent evidence | the same test: after the agent's success the request stays `Verifying` until newer healthy evidence arrives; unhealthy past the window, `NotVerified`. `RemediationTests.Recovery_is_verified_only_by_healthy_evidence_newer_than_the_action` covers the rule case by case |
+| Failure and timeout | a failed action is `NotVerified` with its reason (unit test); the browser check's restart fails with `systemctl not found`; a restart times out after 90 seconds and a cleanup after 60 |
+| Bounded cleanup | `RemediationTests`: only old matching files go, a longer keep time keeps more, `Recursive` reaches subfolders, a dry run deletes nothing, the run stops at its limit, a link (or a junction on Windows) is never followed |
+| The host decides | `RemediationTests`: unlisted services and folders, a shorter keep time, and invalid allowlist entries are refused; service names can't be options, paths or shell |
+| Through the browser | `console/e2e/remediation.mjs`, 9 November: a dry run ran without approval and deleted nothing; the real cleanup waited for an admin and deleted only the old file; a restart aimed at the healthy host was refused; unaimed, it was approved and failed without systemd |
+| Mutation check | 11 of 11 caught: old evidence counted as recovery, stale and healthy targets accepted, no recheck at approval, an approved remediation not watched, any service allowed, a shorter keep time allowed, links followed, a dry run deleting, a dry run keeping the action's risk, the service name pattern loosened |
+
+Not yet: milestone 3, diagnostic bundles. The Console aims a request only at the agent's own host; aiming at a service or an alert is
+through the API for now.

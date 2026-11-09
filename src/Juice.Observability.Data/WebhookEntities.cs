@@ -58,16 +58,18 @@ namespace Juice.Observability.Data
     }
 
     /// <summary>
-    /// One notification to one endpoint, written with the alert transition (an outbox) and sent at least once by the
-    /// dispatcher. <see cref="Id"/> is the stable <c>webhook-id</c> receivers deduplicate on.
+    /// One notification to one endpoint, written with the alert transition or action request it tells of (an outbox) and sent at least once by the
+    /// dispatcher. <see cref="Id"/> is the stable <c>webhook-id</c> receivers deduplicate on. Either <see cref="AlertId"/> or <see cref="ActionRequestId"/> is set.
     /// </summary>
     public sealed class WebhookDelivery
     {
         public Guid Id { get; init; } = Guid.CreateVersion7();
         public Guid TenantId { get; init; }
         public Guid EndpointId { get; init; }
-        public Guid AlertId { get; init; }
-        public Guid TransitionId { get; init; }
+        public Guid? AlertId { get; init; }
+        public Guid? TransitionId { get; init; }
+        /// <summary>The action request this tells of (<see cref="ActionRequestEvents"/>); such a delivery is never silenced or grouped.</summary>
+        public Guid? ActionRequestId { get; init; }
         public required string Event { get; init; }
         /// <summary>Which step of an escalation; 0 for a plain notification.</summary>
         public int EscalationStep { get; init; }

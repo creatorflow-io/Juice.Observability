@@ -43,6 +43,8 @@ namespace Juice.Observability.Agents
             services.AddSingleton<AgentWakeups>();
             services.AddSingleton<HostLinks>();
             services.AddSingleton<AgentPackageCatalog>();
+            services.AddSingleton<ActionRequestSweeper>();
+            services.AddHostedService(sp => sp.GetRequiredService<ActionRequestSweeper>());
             return services;
         }
 

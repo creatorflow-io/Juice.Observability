@@ -1,6 +1,7 @@
 // Phase 8, milestone 1 through the browser: an operator asks for a Medium-risk action (an update to the version the agent already runs, which
 // changes nothing on the host), it waits for an admin; the admin finds it on Approvals, can't reject it without saying why, and approves it;
-// the agent runs it. A second request is rejected, with the reason.
+// the agent runs it. A second request is rejected, with the reason. The Approvals menu entry counts what waits for the admin, never for the
+// operator, and the count goes once it's decided.
 //   node e2e/approvals.mjs
 // Needs the stack with the platform and agent profiles up, the local agent online, and a package of the version it runs on offer
 // (e2e/agent-custom.mjs leaves one). Screenshots land in e2e/shots/.
@@ -60,6 +61,20 @@ await step(operator, 'request', async () => {
   await request('approvals e2e: reinstall the running version');
   await operator.locator('[data-testid=requests] tbody tr').first().locator('[data-testid=request-state] >> text=Waiting for approval').waitFor();
 });
+let waitingBefore = 0;
+await step(admin, 'menu-count', async () => {
+  await admin.goto(`${base}/agents`);
+  const badge = admin.locator('juice-nav-menu [data-testid=approvals-badge]');
+  await badge.waitFor({ timeout: 15000 });
+  waitingBefore = Number(await badge.textContent());
+  expect(waitingBefore >= 1, `the count: ${await badge.textContent()}`);
+});
+await step(operator, 'no-count-for-operator', async () => {
+  await operator.goto(`${base}/agents`);
+  await operator.waitForSelector('juice-nav-menu mat-icon >> text=approval');
+  await operator.waitForTimeout(1500);
+  expect(await operator.locator('[data-testid=approvals-badge]').count() === 0, "an operator sees a count of requests they can't decide");
+});
 let id;
 await step(admin, 'waiting', async () => {
   await admin.goto(`${base}/approvals`);
@@ -77,9 +92,13 @@ await step(admin, 'approve', async () => {
   await admin.click(`[data-testid=approve-${id}]`);
   await admin.locator(`[data-testid=approval-${id}]`).waitFor({ state: 'detached', timeout: 15000 });
   await admin.locator('[data-testid=approvals-decided]', { hasText: 'Issued by alice' }).waitFor();
+  const badge = admin.locator('juice-nav-menu [data-testid=approvals-badge]');
+  if (waitingBefore === 1) await badge.waitFor({ state: 'detached', timeout: 5000 });
+  else await admin.waitForFunction(n => Number(document.querySelector('[data-testid=approvals-badge]')?.textContent ?? 0) < n, waitingBefore, { timeout: 5000 });
 });
 await step(operator, 'ran', async () => {
-  await operator.reload();
+  await operator.goto(`${base}/agents`);
+  await operator.click(`[data-testid=agent-${hostname}]`);
   const command = operator.locator('[data-testid=commands] tbody tr', { hasText: 'agent.update' }).first();
   await command.locator('[data-testid=command-state]').filter({ hasText: /Succeeded|Failed|Rejected/ }).waitFor({ timeout: 120000 });
   const text = await command.textContent();

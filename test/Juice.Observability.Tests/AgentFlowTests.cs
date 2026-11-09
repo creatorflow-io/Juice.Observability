@@ -8,6 +8,7 @@ using Juice.Observability.Agent;
 using Juice.Observability.Agent.Contracts;
 using Juice.Observability.Data;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
@@ -727,6 +728,257 @@ namespace Juice.Observability.Tests
             await RequestAsync(@operator, tenant, identity.AgentId, "test.restart_worker", new { });
             await using var db = database.Context();
             Assert.Empty(await db.AgentCommands.AsNoTracking().ToListAsync(Ct));
+        }
+
+        /// <summary>
+        /// Approvers hear of requests: the endpoints in <c>Actions:NotifyEndpoints</c> get a signed notice when one waits and when it's rejected,
+        /// cancelled, expired (closed by the sweeper, audited as the platform) or approved, and nothing for one issued at once. The menu's count
+        /// is what the caller can decide: an operator none, and an admin not their own second-person request.
+        /// </summary>
+        [Fact]
+        public async Task Approvers_are_told_when_a_request_waits_and_how_it_ends_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var receiver = await WebhookTests.Receiver.StartAsync();
+            const string secretVariable = "JUICE_TEST_APPROVALS_SECRET";
+            Environment.SetEnvironmentVariable(secretVariable, "approvals-test-secret");
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            using var pki = new AgentPki();
+            await using var host = new AgentHost(database, pki, extra: new Dictionary<string, string>
+            {
+                ["Actions:Overrides:test.restart_worker"] = "SecondPerson", ["Actions:Overrides:test.queue_depth"] = "None",
+                ["Actions:NotifyEndpoints:0"] = "approvers", ["Actions:SweepInterval"] = "00:00:00.200",
+                ["Webhooks:AllowHttpToAllowlisted"] = "true", ["Webhooks:Endpoints:0:Key"] = "approvers", ["Webhooks:Endpoints:0:Url"] = receiver.Url,
+                ["Webhooks:Endpoints:0:SecretRef"] = $"env:{secretVariable}", ["Webhooks:Allowlist:0:Destination"] = $"{receiver.Address}/32",
+                ["Webhooks:Allowlist:0:Ports:0"] = receiver.Port.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            });
+            using var users = host.Users();
+            var (viewer, @operator, admin, tenant) = await Caller.AllAsync(users, database);
+            var adam = new Caller(users, await LocalStack.TokenAsync("adam"));
+            var (store, identity) = await EnrollAsync(host, pki, await TokenAsync(admin, tenant), TempDirectory());
+            using (var client = new PlatformClient(Options(host, pki, TempDirectory()), store.LoadCertificate()))
+            {
+                var allowlist = Allowlist();
+                allowlist.Actions["test.queue_depth"] = new ActionPolicy();
+                allowlist.Actions["test.restart_worker"] = new ActionPolicy();
+                await client.ReportActionsAsync(allowlist.Report(new AgentActionCatalog([new QueueDepth(), new Restart()])), Ct);
+            }
+            async Task<(int Total, int ForYou)> WaitingAsync(Caller caller)
+            {
+                var waiting = await Caller.JsonAsync(await caller.GetAsync($"/api/v1/tenants/{tenant}/action-requests/waiting"));
+                return (waiting.GetProperty("total").GetInt32(), waiting.GetProperty("forYou").GetInt32());
+            }
+            const string restart = "test.restart_worker";
+            var agentId = identity.AgentId;
+
+            // Issued at once: nobody to tell.
+            await RequestAsync(@operator, tenant, agentId, "test.queue_depth", new { queue = "orders", top = 1 });
+            Assert.Equal((0, 0), await WaitingAsync(admin));
+
+            var rejected = (await RequestAsync(@operator, tenant, agentId, restart, new { })).GetProperty("id").GetGuid();
+            Assert.Equal((1, 1), await WaitingAsync(admin));
+            Assert.Equal((1, 0), await WaitingAsync(@operator));
+            Assert.Equal(HttpStatusCode.OK, await DecideAsync(adam, tenant, rejected, "rejection", "not now"));
+
+            var cancelled = (await RequestAsync(@operator, tenant, agentId, restart, new { })).GetProperty("id").GetGuid();
+            Assert.Equal(HttpStatusCode.OK, await DecideAsync(@operator, tenant, cancelled, "cancellation", null));
+
+            var lapsed = (await RequestAsync(@operator, tenant, agentId, restart, new { })).GetProperty("id").GetGuid();
+            await using (var db = database.Context())
+            {
+                await db.ActionRequests.Where(r => r.Id == lapsed).ExecuteUpdateAsync(s => s.SetProperty(r => r.ExpiresAt, DateTimeOffset.UtcNow.AddSeconds(-1)), Ct);
+                for (var i = 0; i < 50 && await db.ActionRequests.AsNoTracking().Where(r => r.Id == lapsed).Select(r => r.State).SingleAsync(Ct) != ActionRequestState.Expired; i++)
+                {
+                    await Task.Delay(100, Ct);
+                }
+                Assert.Equal(ActionRequestState.Expired, await db.ActionRequests.AsNoTracking().Where(r => r.Id == lapsed).Select(r => r.State).SingleAsync(Ct));
+                Assert.Single(await db.AuditRecords.AsNoTracking().Where(a => a.Operation == "action.request.expire" && a.TargetId == lapsed.ToString() && a.Actor == "platform").ToListAsync(Ct));
+            }
+
+            var own = (await RequestAsync(admin, tenant, agentId, restart, new { })).GetProperty("id").GetGuid();
+            Assert.Equal((1, 0), await WaitingAsync(admin));
+            Assert.Equal((1, 1), await WaitingAsync(adam));
+            Assert.Equal(HttpStatusCode.OK, await DecideAsync(adam, tenant, own, "approval", "go"));
+
+            string[] expected =
+            [
+                ActionRequestEvents.Created, ActionRequestEvents.Rejected, ActionRequestEvents.Created, ActionRequestEvents.Cancelled,
+                ActionRequestEvents.Created, ActionRequestEvents.Expired, ActionRequestEvents.Created, ActionRequestEvents.Approved,
+            ];
+            await using (var db = database.Context())
+            {
+                var events = await db.WebhookDeliveries.AsNoTracking().OrderBy(d => d.Id).Select(d => d.Event).ToListAsync(Ct);
+                Assert.Equal(expected, events);
+            }
+
+            // Sent like any notification: signed, to the allowlisted receiver.
+            var dispatcher = new Juice.Observability.Webhooks.WebhookDispatcher(
+                new ServiceCollection().AddDbContext<PlatformDbContext>(o => PlatformDbContext.Configure(o, database.ConnectionString))
+                    .BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
+                Microsoft.Extensions.Options.Options.Create(new Juice.Observability.Webhooks.WebhookOptions { AllowHttpToAllowlisted = true }), TimeProvider.System,
+                NullLogger<Juice.Observability.Webhooks.WebhookDispatcher>.Instance);
+            for (var i = 0; i < 10 && receiver.Requests.Count < expected.Length; i++) await dispatcher.DispatchOnceAsync(Ct);
+            var received = receiver.Requests.ToList();
+            Assert.Equal(expected.Length, received.Count);
+            Assert.All(received, r => Assert.True(Juice.Observability.Webhooks.WebhookSigner.Verify("approvals-test-secret", r.Id, r.Timestamp, r.Signature, r.Body,
+                DateTimeOffset.UtcNow, TimeSpan.FromMinutes(5)), "unsigned notice"));
+            var bodies = received.Select(r => JsonDocument.Parse(r.Body).RootElement).ToList();
+            Assert.Equal(expected.Order(), bodies.Select(b => b.GetProperty("type").GetString()!).Order());
+            var waited = bodies.First(b => b.GetProperty("type").GetString() == ActionRequestEvents.Created && b.GetProperty("request").GetProperty("id").GetGuid() == own);
+            Assert.Equal((restart, "SecondPerson", "e2e test"), (waited.GetProperty("request").GetProperty("action").GetString(),
+                waited.GetProperty("request").GetProperty("policy").GetString(), waited.GetProperty("request").GetProperty("reason").GetString()));
+            var turnedDown = bodies.Single(b => b.GetProperty("type").GetString() == ActionRequestEvents.Rejected).GetProperty("request");
+            Assert.Equal(("not now", "Rejected"), (turnedDown.GetProperty("comment").GetString(), turnedDown.GetProperty("state").GetString()));
+        }
+
+        /// <summary>Stands in for systemd or the Windows service manager: restarts nothing, says the service runs.</summary>
+        private sealed class FakeServices : IServiceControl
+        {
+            public List<string> Restarted { get; } = [];
+
+            public Task<ServiceRestartResult> RestartAsync(string service, CancellationToken cancellationToken)
+            {
+                Restarted.Add(service);
+                return Task.FromResult(new ServiceRestartResult(service, "active", true));
+            }
+        }
+
+        /// <summary>
+        /// Phase 8's remediation gate, with a real agent: a restart is refused on stale evidence and on a target already healthy, closed if its target
+        /// recovers before it's approved, and once it ran, counts as recovered only when health from telemetry newer than the action says so;
+        /// otherwise it ends not verified when the window passes. A cleanup's dry run runs on request and deletes nothing; the real one deletes.
+        /// </summary>
+        [Fact]
+        public async Task A_remediation_needs_fresh_evidence_and_counts_as_recovered_only_by_newer_health_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            using var pki = new AgentPki();
+            await using var host = new AgentHost(database, pki, extra: new Dictionary<string, string>
+            {
+                ["Actions:VerificationWindow"] = "00:00:03", ["Actions:SweepInterval"] = "00:00:00.200",
+            });
+            using var users = host.Users();
+            var (viewer, @operator, admin, tenant) = await Caller.AllAsync(users, database);
+            var adam = new Caller(users, await LocalStack.TokenAsync("adam"));
+            var folder = TempDirectory();
+            Directory.CreateDirectory(folder);
+            var allowlist = Allowlist();
+            allowlist.Actions[AgentActions.ServiceRestart] = new ActionPolicy { Services = ["orders.service"], RequireApproval = true };
+            allowlist.Actions[AgentActions.FilesCleanup] = new ActionPolicy { Folders = [new CleanupFolder { Path = folder, Pattern = "*.log", KeepHours = 24 }] };
+            var services = new FakeServices();
+            var agent = new AgentService(Microsoft.Extensions.Options.Options.Create(Options(host, pki, TempDirectory(), await TokenAsync(admin, tenant))),
+                Microsoft.Extensions.Options.Options.Create(allowlist), TimeProvider.System, new TestLog<AgentService>())
+            { Remedies = new Remediation(allowlist, TimeProvider.System, services) };
+            await agent.StartAsync(Ct);
+            try
+            {
+                Guid agentId = default;
+                for (var i = 0; i < 100 && agentId == default; i++)
+                {
+                    await Task.Delay(100, Ct);
+                    var list = (await Caller.JsonAsync(await viewer.GetAsync($"/api/v1/tenants/{tenant}/agents"))).GetProperty("items");
+                    if (list.GetArrayLength() > 0 && (await Caller.JsonAsync(await viewer.GetAsync($"/api/v1/tenants/{tenant}/agents/{list[0].GetProperty("id").GetGuid()}/actions")))
+                        .GetProperty("reportedAt").ValueKind != JsonValueKind.Null) agentId = list[0].GetProperty("id").GetGuid();
+                }
+                var target = Guid.NewGuid();
+                Guid platformTenant;
+                await using (var db = database.Context()) platformTenant = (await db.Tenants.SingleAsync(Ct)).Id;
+                async Task HealthAsync(HealthState state, TimeSpan evaluatedAgo)
+                {
+                    await using var db = database.Context();
+                    var at = DateTimeOffset.UtcNow - evaluatedAgo;
+                    var snapshot = await db.HealthSnapshots.SingleOrDefaultAsync(s => s.SubjectId == target, Ct);
+                    if (snapshot is null)
+                    {
+                        db.HealthSnapshots.Add(snapshot = new HealthSnapshot { TenantId = platformTenant, SubjectType = HealthSubject.Host, SubjectId = target, PolicyVersion = "test" });
+                    }
+                    (snapshot.State, snapshot.EvaluatedAt, snapshot.LastEvidenceAt, snapshot.EvidenceFrom, snapshot.EvidenceTo, snapshot.Since) = (state, at, at, at.AddMinutes(-5), at, at);
+                    await db.SaveChangesAsync(Ct);
+                }
+                async Task<HttpResponseMessage> AskAsync(Caller caller, string action, object parameters, bool aimed = true)
+                    => await caller.PostAsync($"/api/v1/tenants/{tenant}/agents/{agentId}/action-requests",
+                        new { action, parameters, reason = "orders is down", target = aimed ? new { type = "Host", id = target } : null });
+                async Task<JsonElement> RequestOf(Guid id) => await Caller.JsonAsync(await viewer.GetAsync($"/api/v1/tenants/{tenant}/action-requests/{id}"));
+                async Task<JsonElement> VerifiedAsync(Guid id)
+                {
+                    for (var i = 0; i < 100; i++)
+                    {
+                        var r = await RequestOf(id);
+                        if (r.GetProperty("verification").GetString() is "Verified" or "NotVerified") return r;
+                        await Task.Delay(100, Ct);
+                    }
+                    throw new TimeoutException($"request {id} never finished verifying");
+                }
+                var restart = new { service = "orders.service" };
+
+                // Stale: health evaluated 20 minutes ago says nothing about now.
+                await HealthAsync(HealthState.Unhealthy, TimeSpan.FromMinutes(20));
+                var stale = await AskAsync(@operator, AgentActions.ServiceRestart, restart);
+                Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+                Assert.Contains("stale_evidence", await stale.Content.ReadAsStringAsync(Ct));
+                // Healthy: nothing to fix.
+                await HealthAsync(HealthState.Healthy, TimeSpan.Zero);
+                var healthy = await AskAsync(@operator, AgentActions.ServiceRestart, restart);
+                Assert.Equal(HttpStatusCode.Conflict, healthy.StatusCode);
+                Assert.Contains("precondition_failed", await healthy.Content.ReadAsStringAsync(Ct));
+
+                // Asked while unhealthy, recovered before anyone approved: closed by the platform, never run.
+                await HealthAsync(HealthState.Unhealthy, TimeSpan.Zero);
+                var recovered = (await Caller.JsonAsync(await AskAsync(@operator, AgentActions.ServiceRestart, restart))).GetProperty("id").GetGuid();
+                Assert.Equal(("High", "SecondPerson"), ((await RequestOf(recovered)).GetProperty("risk").GetString(), (await RequestOf(recovered)).GetProperty("policy").GetString()));
+                await HealthAsync(HealthState.Healthy, TimeSpan.Zero);
+                Assert.Equal(HttpStatusCode.Conflict, await DecideAsync(adam, tenant, recovered, "approval"));
+                var closed = await RequestOf(recovered);
+                Assert.Equal(("Cancelled", "platform"), (closed.GetProperty("state").GetString(), closed.GetProperty("decidedBy").GetString()));
+
+                // Approved, run, and recovered by newer health.
+                await HealthAsync(HealthState.Unhealthy, TimeSpan.Zero);
+                var fixedIt = (await Caller.JsonAsync(await AskAsync(@operator, AgentActions.ServiceRestart, restart))).GetProperty("id").GetGuid();
+                Assert.Equal(HttpStatusCode.OK, await DecideAsync(adam, tenant, fixedIt, "approval", "orders is down for everyone"));
+                var ran = await WaitForCommandAsync(viewer, tenant, agentId, (await RequestOf(fixedIt)).GetProperty("command").GetProperty("id").GetGuid(), "Succeeded", "Failed", "Rejected");
+                Assert.Equal("Succeeded", ran.GetProperty("state").GetString());
+                Assert.True(ran.GetProperty("result").GetProperty("running").GetBoolean());
+                Assert.Equal(["orders.service"], services.Restarted);
+                // The agent's "done" isn't recovery: still verifying while health hasn't seen newer telemetry.
+                await Task.Delay(600, Ct);
+                Assert.Equal("Verifying", (await RequestOf(fixedIt)).GetProperty("verification").GetString());
+                await HealthAsync(HealthState.Healthy, TimeSpan.Zero);
+                var verified = await VerifiedAsync(fixedIt);
+                Assert.Equal("Verified", verified.GetProperty("verification").GetString());
+
+                // Run, but never seen healthy within the window: not verified.
+                await HealthAsync(HealthState.Unhealthy, TimeSpan.Zero);
+                var notFixed = (await Caller.JsonAsync(await AskAsync(@operator, AgentActions.ServiceRestart, restart))).GetProperty("id").GetGuid();
+                Assert.Equal(HttpStatusCode.OK, await DecideAsync(adam, tenant, notFixed, "approval"));
+                var unverified = await VerifiedAsync(notFixed);
+                Assert.Equal("NotVerified", unverified.GetProperty("verification").GetString());
+                Assert.Contains("unhealthy", unverified.GetProperty("verificationNote").GetString());
+
+                // A cleanup's dry run is Low: it runs on request and deletes nothing. The real one, Medium, runs when an admin asks.
+                var old = Path.Combine(folder, "app-1.log");
+                await File.WriteAllTextAsync(old, "old", Ct);
+                File.SetLastWriteTimeUtc(old, DateTime.UtcNow.AddDays(-3));
+                var dry = await Caller.JsonAsync(await AskAsync(@operator, AgentActions.FilesCleanup, new { folder, dryRun = true }, aimed: false));
+                Assert.Equal(("Low", "Issued"), (dry.GetProperty("risk").GetString(), dry.GetProperty("state").GetString()));
+                var dryRun = await WaitForCommandAsync(viewer, tenant, agentId, dry.GetProperty("command").GetProperty("id").GetGuid(), "Succeeded", "Failed", "Rejected");
+                Assert.Equal(1, dryRun.GetProperty("result").GetProperty("filesRemoved").GetInt32());
+                Assert.True(File.Exists(old));
+                var real = await Caller.JsonAsync(await AskAsync(admin, AgentActions.FilesCleanup, new { folder }, aimed: false));
+                Assert.Equal(("Medium", "Issued", "None"), (real.GetProperty("risk").GetString(), real.GetProperty("state").GetString(), real.GetProperty("verification").GetString()));
+                await WaitForCommandAsync(viewer, tenant, agentId, real.GetProperty("command").GetProperty("id").GetGuid(), "Succeeded");
+                Assert.False(File.Exists(old));
+
+                await using var audit = database.Context();
+                var records = await audit.AuditRecords.AsNoTracking().Where(a => a.Operation.StartsWith("action.request.")).Select(a => new { a.Operation, a.Outcome, a.Metadata }).ToListAsync(Ct);
+                Assert.Contains(records, r => r.Operation == "action.request.create" && r.Outcome == AuditOutcome.Failed && r.Metadata["reason"] == "stale_evidence");
+                Assert.Contains(records, r => r.Operation == "action.request.approve" && r.Outcome == AuditOutcome.Failed && r.Metadata["reason"] == "precondition_failed");
+                Assert.Equal(2, records.Count(r => r.Operation == "action.request.verify"));
+            }
+            finally
+            {
+                await agent.StopAsync(CancellationToken.None);
+            }
         }
 
         /// <summary>

@@ -26,8 +26,24 @@ namespace Juice.Observability.Agent
                 DiskUsageParameters disk => policy.AllowsPath(disk.PathPrefix) ? null : RejectionReasons.OutsideLocalBounds,
                 TcpReachabilityParameters tcp => policy.AllowsTarget(tcp) ? null : RejectionReasons.OutsideLocalBounds,
                 CustomInvocation custom => policy.AllowsValues(custom.Raw) ? null : RejectionReasons.OutsideLocalBounds,
+                ServiceRestartParameters restart => policy.AllowsService(restart.Service) ? null : RejectionReasons.OutsideLocalBounds,
+                FilesCleanupParameters cleanup => policy.FolderFor(cleanup) is not null ? null : RejectionReasons.OutsideLocalBounds,
                 _ => null,
             };
+        }
+
+        /// <summary>What's wrong with this allowlist, if anything: the agent won't start on an invalid one.</summary>
+        public IEnumerable<string> Validate()
+        {
+            foreach (var (action, policy) in Actions)
+            {
+                foreach (var service in policy.Services.Where(s => new ServiceRestartParameters(s).Validate() is not null))
+                    yield return $"Allowlist:Actions:{action}:Services: '{service}' isn't a service name";
+                foreach (var folder in policy.Folders)
+                {
+                    if (folder.Validate() is { } error) yield return $"Allowlist:Actions:{action}:Folders: {error}";
+                }
+            }
         }
 
         /// <summary>
@@ -75,6 +91,20 @@ namespace Juice.Observability.Agent
         /// </summary>
         public bool RequireApproval { get; set; }
 
+        /// <summary><see cref="AgentActions.ServiceRestart"/>: the services it may restart, by exact name. Empty allows none.</summary>
+        public List<string> Services { get; set; } = [];
+
+        /// <summary><see cref="AgentActions.FilesCleanup"/>: the folders it may clean, each with what may go. Empty allows none.</summary>
+        public List<CleanupFolder> Folders { get; set; } = [];
+
+        internal bool AllowsService(string service)
+            => Services.Contains(service, OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+
+        /// <summary>The listed folder a cleanup names, if it's listed and keeps files at least as long as the host says; otherwise null.</summary>
+        internal CleanupFolder? FolderFor(FilesCleanupParameters cleanup)
+            => Folders.FirstOrDefault(f => f.Validate() is null && AgentPaths.Normalize(f.Path).Equals(AgentPaths.Normalize(cleanup.Folder), AgentPaths.Comparison)
+                && (cleanup.KeepHours is null || cleanup.KeepHours >= f.KeepHours));
+
         internal bool AllowsValues(System.Text.Json.JsonElement parameters)
         {
             foreach (var (name, allowed) in Values)
@@ -105,6 +135,18 @@ namespace Juice.Observability.Agent
                     {
                         limits.Add($"pathPrefix must be under {string.Join(", ", PathPrefixes)}");
                         if (Find("pathPrefix") is { } path) Replace(path, path with { Required = true });
+                    }
+                    break;
+                case AgentActions.ServiceRestart:
+                    if (Find("service") is { } service) Replace(service, service with { Allowed = [.. Services.Take(ActionsReport.MaxAllowed)] });
+                    limits.Add(Services.Count == 0 ? "no service is listed" : $"services: {string.Join(", ", Services)}");
+                    break;
+                case AgentActions.FilesCleanup:
+                    if (Find("folder") is { } folder) Replace(folder, folder with { Allowed = [.. Folders.Select(f => f.Path).Take(ActionsReport.MaxAllowed)] });
+                    if (Folders.Count == 0) limits.Add("no folder is listed");
+                    foreach (var f in Folders.Take(ActionsReport.MaxLimits - 2))
+                    {
+                        limits.Add($"{f.Path}: {f.Pattern}{(f.Recursive ? " and in subfolders" : "")}, kept {f.KeepHours} h at least");
                     }
                     break;
                 case AgentActions.TcpReachability:
@@ -176,6 +218,30 @@ namespace Juice.Observability.Agent
             return allowedHost.StartsWith("*.", StringComparison.Ordinal)
                 ? host.EndsWith(allowedHost[1..], StringComparison.OrdinalIgnoreCase) && host.Length > allowedHost.Length - 1
                 : string.Equals(allowedHost, host, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    /// <summary>A folder <see cref="AgentActions.FilesCleanup"/> may clean, and what may go from it.</summary>
+    public sealed class CleanupFolder
+    {
+        /// <summary>The folder, absolute.</summary>
+        public string Path { get; set; } = "";
+        /// <summary>Which files, by name: <c>*.log</c>. Wildcards only, no folders.</summary>
+        public string Pattern { get; set; } = "*";
+        /// <summary>Files written within this many hours stay. A command may ask to keep more, never fewer.</summary>
+        public int KeepHours { get; set; }
+        /// <summary>Also clean the folders under it.</summary>
+        public bool Recursive { get; set; }
+
+        public string? Validate()
+        {
+            if (new FilesCleanupParameters(Path, null, false).Validate() is { } path) return $"'{Path}': {path}";
+            var normalized = AgentPaths.Normalize(Path);
+            if (normalized == "/" || (normalized.Length == 2 && normalized[1] == ':')) return $"'{Path}': a whole drive or the root can't be cleaned";
+            if (string.IsNullOrEmpty(Pattern) || Pattern.Length > 64 || Pattern.IndexOfAny(['/', '\\', ':']) >= 0 || Pattern.Contains("..", StringComparison.Ordinal))
+                return $"'{Path}': Pattern is a file name with * or ?, up to 64 characters";
+            if (KeepHours is < 1 or > FilesCleanupParameters.MaxKeepHours) return $"'{Path}': KeepHours is 1 to {FilesCleanupParameters.MaxKeepHours}";
+            return null;
         }
     }
 }

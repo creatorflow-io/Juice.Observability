@@ -80,6 +80,11 @@ an audit record for each. What the API creates lives in the platform database in
   - verify the signature with a constant-time comparison (reference: `WebhookSigner.Verify`);
   - reject timestamps more than 5 minutes off;
   - deduplicate on `webhook-id`, since delivery is at least once.
+- **Action requests.** An endpoint listed in `Actions:NotifyEndpoints` also gets `action.request.created` (waiting for approval),
+  `.approved`, `.rejected`, `.cancelled` and `.expired`, signed the same way. They are never silenced or grouped. The body has `type`,
+  `occurredAt`, `tenant`, and `request`: `id`, `agent` (`id`, `hostname`), `action`, `parameters`, `risk`, `policy`, `reason`,
+  `requestedBy`, `requestedAt`, `expiresAt`, `state`, `decidedBy`, `decidedAt` and `comment`. Slack, Teams and email get it written for
+  people, with a link to the Console's Approvals page when `Webhooks:ConsoleUrl` is set.
 
 ## Connecting a Juice service
 
@@ -125,6 +130,10 @@ Agents are off unless `Agents:Enabled` is `true`, with:
 | `Actions:Approval:{Low,Medium,High}` | what each risk needs before a command is signed: `None`, `Admin` or `SecondPerson`. Defaults: `None`, `Admin`, `SecondPerson` |
 | `Actions:Overrides:{action}` | the same, for one action over its risk's policy, e.g. `Actions__Overrides__agent.update=SecondPerson` |
 | `Actions:ApprovalLifetime` | how long a request waits for a decision, 30 minutes by default |
+| `Actions:NotifyEndpoints:{n}` | webhook endpoint keys (from `Webhooks:Endpoints` or the API) told when a request waits for approval and how it ends, whatever alert events they take. None by default: then only the Console's Approvals count tells anyone |
+| `Actions:SweepInterval` | how often requests past their deadline are closed as expired, and issued remediations checked for recovery, 30 seconds by default |
+| `Actions:StaleEvidence` | a request's alert or target health older than this is stale, and it's neither created nor approved on it (`stale_evidence`), 10 minutes by default |
+| `Actions:VerificationWindow` | how long after a remediation succeeds its target may take to be seen healthy, from telemetry newer than the action, before it's `NotVerified`, 10 minutes by default |
 
 - **The listener** serves only the agent API, and the agent API is on no other port. With agents on, Kestrel listens only on the
   endpoints code names, so the host's own are named too, as Kestrel would have chosen them: `URLS` (or `ASPNETCORE_URLS`), otherwise
@@ -143,6 +152,25 @@ Agents are off unless `Agents:Enabled` is `true`, with:
   `Agent:DataDirectory` (its key and state: keep it private and persistent), `Agent:EnrollmentTokenFile`, `Agent:HostRoot` (`/hostfs`
   in a container with the host mounted) and its allowlist, `Allowlist:Actions` (see `deploy/local/agent.json`). An empty allowlist
   permits nothing.
+- **Remediation on a host.** Two built-in actions change the host, each only within what its allowlist lists:
+
+  ```json
+  "Allowlist": { "Actions": {
+    "service.restart": { "Services": [ "orders.service" ], "RequireApproval": true },
+    "files.cleanup": { "Folders": [ { "Path": "/var/log/legacy-app", "Pattern": "*.log", "KeepHours": 72, "Recursive": false } ] }
+  } }
+  ```
+
+  - `service.restart` restarts one service the host lists, by exact name. On Linux the agent runs `/usr/bin/systemctl` (or `/bin/systemctl`)
+    with the unit as its own argument after `--`, never through a shell or `PATH`. The agent's account needs the right to restart that
+    unit, and only that: a polkit rule allowing `org.freedesktop.systemd1.manage-units` for that unit and that account. On Windows it uses the Service Control Manager, so the
+    agent's account needs start and stop rights on that service. A host without systemd (such as a container) fails the command with
+    `systemctl not found`.
+  - `files.cleanup` deletes regular files matching `Pattern` and last written more than `KeepHours` ago, in `Path` (and below it with
+    `Recursive`). It never follows or deletes a link, never leaves the folder, and stops at 10,000 files per run. A command may ask to
+    keep files longer, never shorter. `dryRun: true` only reports what would go.
+  - An invalid entry (a root folder, a pattern with a folder in it, no keep time, a service name with anything but letters, digits and
+    `@ . _ : -`) stops the agent with exit code 78.
 - **Updating agents.** An agent updates itself only when it runs under its launcher, `juice-agent-launcher --home DIR --seed DIR`,
   started by a service manager that restarts it (systemd, a container restart policy). `--seed` installs the published agent it
   names when that version isn't installed yet. The host must also list `agent.update` in its allowlist and trust a release key in
@@ -171,7 +199,7 @@ Agents are off unless `Agents:Enabled` is `true`, with:
   - Each time it starts, the agent reports its actions and what the host permits (`POST /agent/v1/actions`). The platform:
     - signs a custom action only as the agent described it, and checks its parameters against that description narrowed to the host's
       bounds;
-    - lets only admins issue a changing one.
+    - issues it under the approval policy for its risk: a changing one is Medium unless it declares more, so it needs an admin.
 
     The agent checks everything again before running.
 - **Rotating the command key.** Generate a new key and set it as `Agents:CommandKeyFile`. Put the old one in

@@ -178,6 +178,10 @@ namespace Juice.Observability.Data.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("agent_id");
 
+                    b.Property<Guid?>("AlertId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("alert_id");
+
                     b.Property<Guid?>("CommandId")
                         .HasColumnType("uuid")
                         .HasColumnName("command_id");
@@ -240,15 +244,46 @@ namespace Juice.Observability.Data.Migrations
                         .HasColumnType("character varying(20)")
                         .HasColumnName("state");
 
+                    b.Property<Guid?>("TargetEnvironmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("target_environment_id");
+
+                    b.Property<Guid?>("TargetId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("target_id");
+
+                    b.Property<string>("TargetType")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("target_type");
+
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
+
+                    b.Property<string>("Verification")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("verification");
+
+                    b.Property<string>("VerificationNote")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("verification_note");
+
+                    b.Property<DateTimeOffset?>("VerifiedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("verified_at");
 
                     b.HasKey("Id")
                         .HasName("pk_action_requests");
 
                     b.HasIndex("CommandId")
                         .HasDatabaseName("ix_action_requests_command_id");
+
+                    b.HasIndex("Verification")
+                        .HasDatabaseName("ix_action_requests_verification");
 
                     b.HasIndex("AgentId", "Action", "State")
                         .HasDatabaseName("ix_action_requests_agent_id_action_state");
@@ -2141,7 +2176,11 @@ namespace Juice.Observability.Data.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
-                    b.Property<Guid>("AlertId")
+                    b.Property<Guid?>("ActionRequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("action_request_id");
+
+                    b.Property<Guid?>("AlertId")
                         .HasColumnType("uuid")
                         .HasColumnName("alert_id");
 
@@ -2211,7 +2250,7 @@ namespace Juice.Observability.Data.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
-                    b.Property<Guid>("TransitionId")
+                    b.Property<Guid?>("TransitionId")
                         .HasColumnType("uuid")
                         .HasColumnName("transition_id");
 
@@ -2229,6 +2268,10 @@ namespace Juice.Observability.Data.Migrations
 
                     b.HasIndex("TenantId", "AlertId")
                         .HasDatabaseName("ix_webhook_deliveries_tenant_id_alert_id");
+
+                    b.HasIndex("ActionRequestId", "EndpointId", "Event")
+                        .IsUnique()
+                        .HasDatabaseName("ix_webhook_deliveries_action_request_id_endpoint_id_event");
 
                     b.HasIndex("TenantId", "EndpointId", "CreatedAt")
                         .HasDatabaseName("ix_webhook_deliveries_tenant_id_endpoint_id_created_at");
@@ -2809,11 +2852,16 @@ namespace Juice.Observability.Data.Migrations
 
             modelBuilder.Entity("Juice.Observability.Data.WebhookDelivery", b =>
                 {
+                    b.HasOne("Juice.Observability.Data.ActionRequest", null)
+                        .WithMany()
+                        .HasForeignKey("ActionRequestId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .HasConstraintName("fk_webhook_deliveries_action_requests_action_request_id");
+
                     b.HasOne("Juice.Observability.Data.Alert", null)
                         .WithMany()
                         .HasForeignKey("AlertId")
                         .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired()
                         .HasConstraintName("fk_webhook_deliveries_alerts_alert_id");
 
                     b.HasOne("Juice.Observability.Data.WebhookEndpoint", null)

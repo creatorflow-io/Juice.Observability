@@ -163,7 +163,24 @@ it. The agent's log says `The platform refused this agent's action report` when 
   - **The same request again** while one is open is refused as a duplicate. Wait for it, or cancel it from the agent's page.
   - **A host's allowlist** can add `"RequireApproval": true` to an action. The host then refuses any command for it that didn't come from an
     approved request (`approval_required`).
+  - **Finding out:** the **Approvals** menu entry shows how many requests wait for you (an admin's own second-person requests don't count;
+    operators see none). The endpoints in `Actions:NotifyEndpoints` get a message when a request waits, and when it's approved, rejected,
+    cancelled or expires. A webhook delivery of a request has `actionRequestId` set instead of `alertId`, and shows in that channel's
+    deliveries like any other.
+  - **Expiry:** a request nobody decided is closed as `Expired` within `Actions:SweepInterval` (30 seconds) of its deadline, recorded as
+    `action.request.expire` by `platform`.
   - **Audit:** `action.request.*` records who asked, who decided, and every refusal.
+- **Remediation.** `service.restart` (High risk) and `files.cleanup` (Medium; a dry run is Low) act only on what the host's allowlist lists.
+  - **Aim it.** A request can name the alert that prompted it (`alertId`) or a health target (`target`; the Console offers the agent's
+    own host). It's refused, when asked and again when approved, if the alert isn't firing or the target is healthy
+    (`precondition_failed`), or their evidence is older than `Actions:StaleEvidence` (`stale_evidence`). A request whose target recovered
+    before approval is closed as `Cancelled` by `platform`.
+  - **Recovery.** Once it ran, an aimed request reads `Verifying` until health from telemetry newer than the action says the target is
+    healthy (`Verified`). If the action fails, or the target isn't seen healthy within `Actions:VerificationWindow`, it's `NotVerified`
+    with the reason. The agent reporting success is never taken as recovery. `action.request.verify` records each outcome, and the
+    notify endpoints get `action.request.verified` or `.not_verified`.
+  - **A restart that fails** says why in the command's answer: `systemctl not found` (no systemd here), `systemctl restart failed (…)`
+    (the unit, or the agent's rights), or a timeout after 90 seconds.
 - **Enroll a host.** An admin creates a token with `POST …/agents/enrollment-tokens`. It is valid for an hour by default, works once,
   and is shown once. Put it in the agent's `Agent:EnrollmentTokenFile` and start the agent. It appears in `GET …/agents`, linked to
   the discovered host of the same name.

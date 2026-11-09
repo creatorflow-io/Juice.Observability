@@ -183,10 +183,9 @@ namespace Juice.Observability.Api.Endpoints
         }
 
         /// <summary>An action checked against one agent: what it is (as built in, or as the agent reported it), its parameters canonical, and what it needs.</summary>
-        internal sealed record ResolvedAction(ActionDescriptor Descriptor, JsonElement Parameters, string Policy)
+        internal sealed record ResolvedAction(ActionDescriptor Descriptor, JsonElement Parameters, string Policy, string Risk)
         {
             public string Name => Descriptor.Name;
-            public string Risk => Descriptor.RiskOf();
         }
 
         /// <summary>
@@ -218,7 +217,9 @@ namespace Juice.Observability.Api.Endpoints
                 problem = Mutation.Invalid([error]);
                 return null;
             }
-            return new ResolvedAction(descriptor, Canonical(parameters), approval.PolicyFor(name, descriptor.RiskOf()));
+            // For these parameters: a cleanup's dry run is Low, whatever the action's own risk.
+            var risk = AgentActions.RiskOf(descriptor, parameters);
+            return new ResolvedAction(descriptor, Canonical(parameters), approval.PolicyFor(name, risk), risk);
         }
 
         /// <summary>Parameters with their members in name order, so the same request reads the same however it was written.</summary>

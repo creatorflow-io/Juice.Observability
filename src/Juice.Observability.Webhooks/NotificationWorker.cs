@@ -82,7 +82,13 @@ namespace Juice.Observability.Webhooks
                 .ToDictionaryAsync(p => (p.TenantId, p.Key), p => p.StopOnAcknowledge, cancellationToken);
             foreach (var delivery in held)
             {
-                var alert = alerts[delivery.AlertId];
+                // Only an alert's notification is ever held.
+                if (delivery.AlertId is not { } alertId || !alerts.TryGetValue(alertId, out var alert))
+                {
+                    delivery.Status = DeliveryStatus.Pending;
+                    delivery.NextAttemptAt = now;
+                    continue;
+                }
                 var context = new AlertContext(rules[alert.RuleId], alert.SubjectKey, alert.Severity);
                 // Another silence may cover it too: it stays held, under that one.
                 if (SilenceMatcher.Find(active.Where(s => s.TenantId == delivery.TenantId), context, now) is { } other)

@@ -9,6 +9,7 @@ import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { RouterLink } from '@angular/router';
 import { Observable } from 'rxjs';
 import { ApiService } from '../core/api.service';
+import { ApprovalCount } from '../core/approval-count';
 import { ContextService } from '../core/context.service';
 import { ActionRequest } from '../core/models';
 import { AgoPipe } from '../shared/format';
@@ -37,6 +38,7 @@ import { ContextBar } from '../shared/ui';
             <span class="jc-badge" [class.jc-health-unhealthy]="r.risk === 'High'" [class.jc-health-degraded]="r.risk !== 'High'">{{ r.risk }} risk</span>
             @if (describe(r); as d) { <div class="jc-mono jc-small">{{ d }}</div> }
             <div class="jc-small">{{ r.requestedBy }}, {{ r.requestedAt | ago }}: {{ r.reason }}</div>
+            @if (r.target || r.alertId) { <div class="jc-small" data-testid="approval-target">For {{ r.alertId ? 'a firing alert' : '' }}{{ r.alertId && r.target ? ' on ' : '' }}{{ r.target ? r.target.type.toLowerCase() + ' health' : '' }}: approving checks, on fresh evidence, that it's still broken, and recovery is confirmed from health after.</div> }
             <div class="jc-muted jc-small">{{ r.policy === 'SecondPerson' ? 'Needs an admin other than ' + r.requestedBy : 'Needs an admin' }}. Expires {{ r.expiresAt | date: 'HH:mm' }}.</div>
           </div>
           <form class="jc-form" (ngSubmit)="approve(r)">
@@ -61,7 +63,7 @@ import { ContextBar } from '../shared/ui';
               <td class="jc-nowrap">{{ r.requestedAt | date: 'MMM d, HH:mm' }}</td>
               <td><strong>{{ r.action }}</strong> on <a [routerLink]="['agents', r.agentId] | jcLink" [queryParams]="ctx.keep()">{{ r.hostname }}</a></td>
               <td>{{ r.requestedBy }}</td>
-              <td>{{ r.state }}@if (r.decidedBy) { by {{ r.decidedBy }} }@if (r.command) { · command {{ r.command.state }} }@if (r.comment) { <div class="jc-small">{{ r.comment }}</div> }</td>
+              <td>{{ r.state }}@if (r.decidedBy) { by {{ r.decidedBy }} }@if (r.command) { · command {{ r.command.state }} }@if (r.verification === 'Verified') { · recovery confirmed }@if (r.verification === 'NotVerified') { · <span class="jc-error">recovery not confirmed</span> }@if (r.verification === 'Verifying') { · watching health }@if (r.comment) { <div class="jc-small">{{ r.comment }}</div> }</td>
             </tr>
           } @empty { <tr><td colspan="4" class="jc-muted">None yet.</td></tr> }
         </tbody>
@@ -71,6 +73,7 @@ import { ContextBar } from '../shared/ui';
 export class ApprovalsPage {
   protected readonly ctx = inject(ContextService);
   private readonly api = inject(ApiService);
+  private readonly approvalCount = inject(ApprovalCount);
   protected readonly busy = signal<string | null>(null);
   protected readonly comments = signal<Record<string, string>>({});
   protected readonly errors = signal<Record<string, string>>({});
@@ -99,7 +102,7 @@ export class ApprovalsPage {
     this.busy.set(r.id);
     this.errors.update(e => ({ ...e, [r.id]: '' }));
     call.subscribe({
-      next: () => { this.busy.set(null); this.pending.reload(); this.recent.reload(); },
+      next: () => { this.busy.set(null); this.pending.reload(); this.recent.reload(); this.approvalCount.refresh(); },
       error: e => {
         this.busy.set(null);
         const status = (e as { status?: number }).status;
