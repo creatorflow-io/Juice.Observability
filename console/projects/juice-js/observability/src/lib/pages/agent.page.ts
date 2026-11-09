@@ -11,7 +11,7 @@ import { RouterLink } from '@angular/router';
 import { ApiService } from '../core/api.service';
 import { ApprovalCount } from '../core/approval-count';
 import { ContextService } from '../core/context.service';
-import { ActionParameter, AgentAction, AgentCommand, EnrollmentToken } from '../core/models';
+import { ActionParameter, AgentAction, AgentCommand, BundleSummary, EnrollmentToken } from '../core/models';
 import { MatCheckboxModule } from '@angular/material/checkbox';
 import { AgoPipe, ReasonPipe, copyText } from '../shared/format';
 import { apiResource } from '../shared/resource';
@@ -30,11 +30,11 @@ interface TcpReachability { host: string; port: number; reachable: boolean; addr
 const WAITING = ['Pending', 'Delivered'];
 const LABELS: Record<string, string> = {
   'host.summary': 'Host summary', 'disk.usage': 'Disk usage', 'tcp.reachability': 'TCP reachability', 'agent.update': 'Update the agent',
-  'service.restart': 'Restart a service', 'files.cleanup': 'Clean up old files',
+  'service.restart': 'Restart a service', 'files.cleanup': 'Clean up old files', 'diagnostics.bundle': 'Diagnostic bundle',
 };
 const PARAMETER_LABELS: Record<string, string> = {
   pathPrefix: 'Only under this path', host: 'Host', port: 'Port', timeoutMs: 'Wait (ms)', service: 'Service', folder: 'Folder',
-  keepHours: 'Keep files from the last (hours)', dryRun: 'Dry run: only report what would go',
+  keepHours: 'Keep files from the last (hours)', dryRun: 'Dry run: only report what would go', logLines: 'Lines from each log',
 };
 
 function formatBytes(bytes: number | null | undefined): string {
@@ -239,6 +239,15 @@ function formatUptime(seconds: number): string {
                           @else { <div class="jc-bad">Not reachable after {{ t.elapsedMs }} ms: {{ t.error }}</div> }
                         }
                       }
+                      @case ('diagnostics.bundle') {
+                        @if (bundle(c); as b) {
+                          <div data-testid="bundle-result">{{ bytes(b.sizeBytes) }} zip: {{ b.entries.length }} files@if (b.redacted) { · {{ b.redacted }} {{ b.redacted === 1 ? 'value' : 'values' }} redacted }
+                            <button mat-button type="button" [attr.data-testid]="'bundle-download-' + c.id" [disabled]="downloading() === b.bundleId" (click)="download(b)">Download</button>
+                          </div>
+                          @for (s of b.skipped; track s) { <div class="jc-muted">Left out: {{ s }}</div> }
+                          @if (downloadErrors()[b.bundleId]; as e) { <div class="jc-error" [attr.data-testid]="'bundle-error-' + c.id">{{ e }}</div> }
+                        }
+                      }
                       @default {
                         @if (flat(c.result); as rows) {
                           <table class="jc-kv" data-testid="custom-result">@for (r of rows; track r[0]) { <tr><td>{{ r[0] }}</td><td class="jc-mono">{{ r[1] }}</td></tr> }</table>
@@ -389,6 +398,34 @@ export class AgentPage {
   }
 
   protected summary(c: AgentCommand) { return c.result as unknown as HostSummary; }
+  protected bundle(c: AgentCommand) { return c.result as unknown as BundleSummary; }
+  protected readonly downloading = signal<string | null>(null);
+  /** A failed download's reason, by bundle: shown under that bundle only. */
+  protected readonly downloadErrors = signal<Record<string, string>>({});
+
+  /** Fetches the zip with the user's token and hands it to the browser as a file. */
+  protected download(b: BundleSummary) {
+    this.downloading.set(b.bundleId);
+    this.downloadErrors.update(e => ({ ...e, [b.bundleId]: '' }));
+    this.api.downloadBundle(this.id(), b.bundleId).subscribe({
+      next: response => {
+        this.downloading.set(null);
+        const name = /filename="?([^";]+)"?/.exec(response.headers.get('content-disposition') ?? '')?.[1] ?? `juice-bundle-${b.bundleId}.zip`;
+        const url = URL.createObjectURL(response.body!);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = name;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      },
+      error: e => {
+        this.downloading.set(null);
+        const reason = e?.status === 404 ? 'The bundle is gone: bundles are kept 14 days by default.'
+          : e?.status === 403 ? 'Downloading a bundle takes an operator or an admin: its log excerpts can say more than the rest of the Console.' : problemText(e);
+        this.downloadErrors.update(errors => ({ ...errors, [b.bundleId]: reason }));
+      },
+    });
+  }
   protected disk(c: AgentCommand) { return c.result as unknown as DiskUsage; }
   protected tcp(c: AgentCommand) { return c.result as unknown as TcpReachability; }
   /** A whole host can have dozens of mounts: the fullest come first, and the rest on request. */

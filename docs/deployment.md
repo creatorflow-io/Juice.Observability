@@ -133,6 +133,7 @@ Agents are off unless `Agents:Enabled` is `true`, with:
 | `Actions:NotifyEndpoints:{n}` | webhook endpoint keys (from `Webhooks:Endpoints` or the API) told when a request waits for approval and how it ends, whatever alert events they take. None by default: then only the Console's Approvals count tells anyone |
 | `Actions:SweepInterval` | how often requests past their deadline are closed as expired, and issued remediations checked for recovery, 30 seconds by default |
 | `Actions:StaleEvidence` | a request's alert or target health older than this is stale, and it's neither created nor approved on it (`stale_evidence`), 10 minutes by default |
+| `Actions:BundleRetention` | how long diagnostic bundles are kept in PostgreSQL before they're deleted, 14 days by default (each is at most 5 MB) |
 | `Actions:VerificationWindow` | how long after a remediation succeeds its target may take to be seen healthy, from telemetry newer than the action, before it's `NotVerified`, 10 minutes by default |
 
 - **The listener** serves only the agent API, and the agent API is on no other port. With agents on, Kestrel listens only on the
@@ -171,6 +172,15 @@ Agents are off unless `Agents:Enabled` is `true`, with:
     keep files longer, never shorter. `dryRun: true` only reports what would go.
   - An invalid entry (a root folder, a pattern with a folder in it, no keep time, a service name with anything but letters, digits and
     `@ . _ : -`) stops the agent with exit code 78.
+- **Diagnostic bundles.** `diagnostics.bundle` (read-only, Low risk) zips the host summary and disk usage (each only if the host allows
+  `host.summary`, and `disk.usage` within its `PathPrefixes`), the agent's version and allowlist, and the last lines (200 by default, at
+  most 5,000) of each log the host lists:
+  `"diagnostics.bundle": { "LogFiles": [ "/var/log/orders/app.log" ] }`, up to 20 files, each by exact path. A log is read from at most its
+  last 512 KB, never through a link. Values that look like credentials (`password=`, `token:`, `api_key=`, `AccountKey=`,
+  `SharedAccessKey=`, a `Bearer` token, the password in `scheme://user:password@host`) are replaced with `[redacted]`. That's a safety net, not a guarantee: list only logs you'd hand to an operator. The zip is at most 5 MB; a
+  log that doesn't fit is left out and named in the answer. The agent uploads it to the platform, which keeps it for
+  `Actions:BundleRetention`. Anyone who sees the agent sees it exists; only operators and admins download it, audited as
+  `agent.bundle.download`.
 - **Updating agents.** An agent updates itself only when it runs under its launcher, `juice-agent-launcher --home DIR --seed DIR`,
   started by a service manager that restarts it (systemd, a container restart policy). `--seed` installs the published agent it
   names when that version isn't installed yet. The host must also list `agent.update` in its allowlist and trust a release key in

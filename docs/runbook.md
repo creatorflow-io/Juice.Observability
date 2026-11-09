@@ -179,6 +179,10 @@ it. The agent's log says `The platform refused this agent's action report` when 
     healthy (`Verified`). If the action fails, or the target isn't seen healthy within `Actions:VerificationWindow`, it's `NotVerified`
     with the reason. The agent reporting success is never taken as recovery. `action.request.verify` records each outcome, and the
     notify endpoints get `action.request.verified` or `.not_verified`.
+  - **A diagnostic bundle** runs on request from the agent's page and answers with its size, what's in it, how many values were redacted,
+    and which listed logs were left out and why (missing, a link, unreadable, no room). **Download** saves the zip (operators and admins).
+    It's deleted after `Actions:BundleRetention` (14 days); a download after that says it's gone. `agent.bundle.upload` and
+    `agent.bundle.download` are audited.
   - **A restart that fails** says why in the command's answer: `systemctl not found` (no systemd here), `systemctl restart failed (…)`
     (the unit, or the agent's rights), or a timeout after 90 seconds.
 - **Enroll a host.** An admin creates a token with `POST …/agents/enrollment-tokens`. It is valid for an hour by default, works once,

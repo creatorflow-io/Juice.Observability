@@ -294,6 +294,67 @@ namespace Juice.Observability.Data.Migrations
                     b.ToTable("action_requests", (string)null);
                 });
 
+            modelBuilder.Entity("Juice.Observability.Data.AgentBundle", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("agent_id");
+
+                    b.Property<Guid>("CommandId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("command_id");
+
+                    b.Property<byte[]>("Content")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("content");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<string>("Sha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("sha256");
+
+                    b.Property<long>("SizeBytes")
+                        .HasColumnType("bigint")
+                        .HasColumnName("size_bytes");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_agent_bundles");
+
+                    b.HasIndex("CommandId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_agent_bundles_command_id");
+
+                    b.HasIndex("ExpiresAt")
+                        .HasDatabaseName("ix_agent_bundles_expires_at");
+
+                    b.HasIndex("TenantId")
+                        .HasDatabaseName("ix_agent_bundles_tenant_id");
+
+                    b.HasIndex("AgentId", "CreatedAt")
+                        .HasDatabaseName("ix_agent_bundles_agent_id_created_at");
+
+                    b.ToTable("agent_bundles", (string)null);
+                });
+
             modelBuilder.Entity("Juice.Observability.Data.AgentCommand", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2409,6 +2470,30 @@ namespace Juice.Observability.Data.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_action_requests_platform_tenants_tenant_id");
+                });
+
+            modelBuilder.Entity("Juice.Observability.Data.AgentBundle", b =>
+                {
+                    b.HasOne("Juice.Observability.Data.EnrolledAgent", null)
+                        .WithMany()
+                        .HasForeignKey("AgentId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_agent_bundles_agents_agent_id");
+
+                    b.HasOne("Juice.Observability.Data.AgentCommand", null)
+                        .WithMany()
+                        .HasForeignKey("CommandId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_agent_bundles_agent_commands_command_id");
+
+                    b.HasOne("Juice.Observability.Data.PlatformTenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_agent_bundles_platform_tenants_tenant_id");
                 });
 
             modelBuilder.Entity("Juice.Observability.Data.AgentCommand", b =>

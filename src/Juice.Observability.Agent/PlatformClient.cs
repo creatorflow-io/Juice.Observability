@@ -139,6 +139,27 @@ namespace Juice.Observability.Agent
             await EnsureAsync(response, cancellationToken);
         }
 
+        /// <summary>Uploads the bundle a command made; returns its id on the platform. A refusal (too large, not this command's) isn't retried.</summary>
+        public async Task<Guid> UploadBundleAsync(Guid commandId, byte[] bundle, CancellationToken cancellationToken)
+        {
+            using var content = new ByteArrayContent(bundle);
+            return await UploadBundleAsync(commandId, content, cancellationToken);
+        }
+
+        /// <summary>The upload with any body: a test sends one of no declared length, as a chunked request.</summary>
+        internal async Task<Guid> UploadBundleAsync(Guid commandId, HttpContent content, CancellationToken cancellationToken)
+        {
+            content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/zip");
+            using var response = await _http.PostAsync(AgentRoutes.Bundle(commandId), content, cancellationToken);
+            if ((int)response.StatusCode is >= 400 and < 500 and not (401 or 403 or 408 or 429))
+            {
+                var detail = await response.Content.ReadAsStringAsync(cancellationToken);
+                throw new ResultRefusedException($"{(int)response.StatusCode}: {detail[..Math.Min(detail.Length, 200)]}");
+            }
+            var uploaded = await ReadAsync<BundleUploaded>(response, cancellationToken);
+            return uploaded.Id;
+        }
+
         /// <summary>
         /// Reports the actions this agent can run. False when the platform has nowhere to take it (an older version answers 404); a report it refuses
         /// as invalid throws <see cref="ResultRefusedException"/>, since sending it again can't help.

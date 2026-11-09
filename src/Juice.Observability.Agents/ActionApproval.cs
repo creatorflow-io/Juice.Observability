@@ -48,6 +48,9 @@ namespace Juice.Observability.Agents
         /// <summary>How long after a remediation succeeds its target may take to be seen healthy before it's <c>NotVerified</c>.</summary>
         public TimeSpan VerificationWindow { get; set; } = TimeSpan.FromMinutes(10);
 
+        /// <summary>How long a diagnostic bundle is kept before it's deleted.</summary>
+        public TimeSpan BundleRetention { get; set; } = TimeSpan.FromDays(14);
+
         private static readonly Dictionary<string, string> Defaults = new()
         {
             [ActionRisks.Low] = ApprovalPolicies.None, [ActionRisks.Medium] = ApprovalPolicies.Admin, [ActionRisks.High] = ApprovalPolicies.SecondPerson,
@@ -70,6 +73,7 @@ namespace Juice.Observability.Agents
             if (SweepInterval < TimeSpan.FromMilliseconds(100) || SweepInterval > TimeSpan.FromMinutes(10)) yield return "Actions:SweepInterval is 100 ms to 10 minutes";
             if (StaleEvidence < TimeSpan.FromSeconds(10) || StaleEvidence > TimeSpan.FromHours(6)) yield return "Actions:StaleEvidence is 10 seconds to 6 hours";
             if (VerificationWindow < TimeSpan.FromSeconds(1) || VerificationWindow > TimeSpan.FromHours(24)) yield return "Actions:VerificationWindow is 1 second to 24 hours";
+            if (BundleRetention < TimeSpan.FromSeconds(1) || BundleRetention > TimeSpan.FromDays(90)) yield return "Actions:BundleRetention is 1 second to 90 days";
         }
 
         /// <summary>What this action needs: its override, else its risk's policy, else that risk's default.</summary>

@@ -135,6 +135,24 @@ namespace Juice.Observability.Data
     }
 
     /// <summary>
+    /// A diagnostic bundle an agent made for a <c>diagnostics.bundle</c> command (roadmap Phase 8): a zip of at most 5 MB, one per command, kept until
+    /// <see cref="ExpiresAt"/> and then deleted.
+    /// </summary>
+    public sealed class AgentBundle
+    {
+        public Guid Id { get; init; } = Guid.CreateVersion7();
+        public Guid TenantId { get; init; }
+        public Guid AgentId { get; init; }
+        public Guid CommandId { get; init; }
+        public DateTimeOffset CreatedAt { get; init; }
+        public DateTimeOffset ExpiresAt { get; init; }
+        public long SizeBytes { get; init; }
+        /// <summary>The zip's SHA-256, lowercase hex.</summary>
+        public required string Sha256 { get; init; }
+        public required byte[] Content { get; init; }
+    }
+
+    /// <summary>
     /// A command issued to one agent, with the exact bytes the platform signed. Its state follows it: waiting, handed to the agent, and what the agent
     /// reported, its refusals included.
     /// </summary>

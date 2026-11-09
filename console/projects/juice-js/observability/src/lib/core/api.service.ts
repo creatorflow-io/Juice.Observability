@@ -119,6 +119,10 @@ export class ApiService {
     return this.once<ActionRequest>(`/agents/${agentId}/action-requests`, { action, parameters, reason, target });
   }
   actionRequests(query: Query = {}) { return this.get<Page<ActionRequest>>('/action-requests', { limit: 100, ...query }); }
+  /** A diagnostic bundle's zip (operators and admins; audited). */
+  downloadBundle(agentId: string, bundleId: string) {
+    return this.tenant$.pipe(switchMap(t => this.http.get(`${this.base}/tenants/${t.id}/agents/${agentId}/bundles/${bundleId}`, { responseType: 'blob', observe: 'response' })));
+  }
   /** How many requests wait, and how many of them the signed-in user can decide. */
   waitingRequests() { return this.get<ActionRequestsWaiting>('/action-requests/waiting'); }
   approveRequest(id: string, comment: string) { return this.send<ActionRequest>('POST', `/action-requests/${id}/approval`, { comment }); }

@@ -43,6 +43,9 @@ namespace Juice.Observability.Agent
                 {
                     if (folder.Validate() is { } error) yield return $"Allowlist:Actions:{action}:Folders: {error}";
                 }
+                foreach (var log in policy.LogFiles.Where(l => new DiskUsageParameters(l).Validate() is not null || AgentPaths.Normalize(l) == "/"))
+                    yield return $"Allowlist:Actions:{action}:LogFiles: '{log}' isn't an absolute file path";
+                if (policy.LogFiles.Count > BundleLimits.MaxLogFiles) yield return $"Allowlist:Actions:{action}:LogFiles: at most {BundleLimits.MaxLogFiles}";
             }
         }
 
@@ -97,6 +100,12 @@ namespace Juice.Observability.Agent
         /// <summary><see cref="AgentActions.FilesCleanup"/>: the folders it may clean, each with what may go. Empty allows none.</summary>
         public List<CleanupFolder> Folders { get; set; } = [];
 
+        /// <summary>
+        /// <see cref="AgentActions.DiagnosticsBundle"/>: the log files whose last lines it includes, by exact path. Empty for none: the bundle then
+        /// holds only the host's facts and the agent's settings.
+        /// </summary>
+        public List<string> LogFiles { get; set; } = [];
+
         internal bool AllowsService(string service)
             => Services.Contains(service, OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
 
@@ -148,6 +157,9 @@ namespace Juice.Observability.Agent
                     {
                         limits.Add($"{f.Path}: {f.Pattern}{(f.Recursive ? " and in subfolders" : "")}, kept {f.KeepHours} h at least");
                     }
+                    break;
+                case AgentActions.DiagnosticsBundle:
+                    limits.Add(LogFiles.Count == 0 ? "no log files are listed: host facts and agent settings only" : $"log excerpts from: {string.Join(", ", LogFiles)}");
                     break;
                 case AgentActions.TcpReachability:
                     limits.Add(Targets.Count == 0 ? "no target is allowed" : $"targets: {string.Join(", ", Targets)}");

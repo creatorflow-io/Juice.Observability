@@ -36,6 +36,7 @@ namespace Juice.Observability.Agents
             authenticated.MapPost("/agent/v1/commands/{commandId:guid}/result", ResultAsync);
             authenticated.MapGet("/agent/v1/packages/{version}", Package);
             authenticated.MapPost(AgentRoutes.Actions, ReportActionsAsync);
+            authenticated.MapPost("/agent/v1/commands/{commandId:guid}/bundle", UploadBundleAsync);
             return app;
         }
 
@@ -377,6 +378,63 @@ namespace Juice.Observability.Agents
             });
             await db.SaveChangesAsync(ct);
             return Results.NoContent();
+        }
+
+        /// <summary>
+        /// The bundle a <c>diagnostics.bundle</c> command made, before its result: only for a command of this agent's that's running, at most
+        /// <see cref="BundleLimits.MaxBytes"/>, and once (the same bytes again get the same id; different bytes are refused). Kept for
+        /// <c>Actions:BundleRetention</c>.
+        /// </summary>
+        private static async Task<IResult> UploadBundleAsync(Guid commandId, HttpContext http, PlatformDbContext db, TimeProvider clock,
+            Microsoft.Extensions.Options.IOptions<ActionApprovalOptions> options, CancellationToken ct)
+        {
+            var agent = Agent(http);
+            var tooLarge = Results.Problem(statusCode: StatusCodes.Status413PayloadTooLarge, title: "Bundle too large", detail: $"At most {BundleLimits.MaxBytes} bytes.");
+            if (http.Request.ContentLength > BundleLimits.MaxBytes) return tooLarge;
+            var command = await db.AgentCommands.AsNoTracking().SingleOrDefaultAsync(c => c.Id == commandId && c.AgentId == agent.Id, ct);
+            if (command is null || command.Action != AgentActions.DiagnosticsBundle) return Results.NotFound();
+            if (command.State is not (AgentCommandState.Pending or AgentCommandState.Delivered))
+            {
+                return Results.Problem(statusCode: StatusCodes.Status409Conflict, title: "Command finished", detail: "A bundle is taken only while its command runs.");
+            }
+            // Read no more than the limit, whatever the headers said.
+            using var buffer = new MemoryStream();
+            var chunk = new byte[81920];
+            int read;
+            while ((read = await http.Request.Body.ReadAsync(chunk, ct)) > 0)
+            {
+                if (buffer.Length + read > BundleLimits.MaxBytes) return tooLarge;
+                buffer.Write(chunk, 0, read);
+            }
+            var bytes = buffer.ToArray();
+            if (bytes.Length < 4 || bytes[0] != 0x50 || bytes[1] != 0x4B)
+            {
+                return Results.Problem(statusCode: StatusCodes.Status400BadRequest, title: "Invalid bundle", detail: "A bundle is a zip.");
+            }
+            var sha = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(bytes));
+            // Two uploads of one command at once meet here: the second waits, then finds the first's bundle.
+            await using var transaction = await db.Database.BeginTransactionAsync(ct);
+            await db.Database.ExecuteSqlAsync($"SELECT pg_advisory_xact_lock({WorkerLease.KeyOf($"agent-bundle:{commandId}")})", ct);
+            if (await db.AgentBundles.AsNoTracking().Where(b => b.CommandId == commandId).Select(b => new { b.Id, b.Sha256 }).SingleOrDefaultAsync(ct) is { } earlier)
+            {
+                return earlier.Sha256 == sha ? Results.Ok(new BundleUploaded(earlier.Id))
+                    : Results.Problem(statusCode: StatusCodes.Status409Conflict, title: "Bundle already taken", detail: "This command has a different bundle.");
+            }
+            var now = clock.GetUtcNow();
+            var bundle = new AgentBundle
+            {
+                TenantId = agent.TenantId, AgentId = agent.Id, CommandId = commandId, CreatedAt = now, ExpiresAt = now + options.Value.BundleRetention,
+                SizeBytes = bytes.Length, Sha256 = sha, Content = bytes,
+            };
+            db.AgentBundles.Add(bundle);
+            db.AuditRecords.Add(new AuditRecord
+            {
+                TenantId = agent.TenantId, Actor = $"agent:{agent.Id}", Operation = "agent.bundle.upload", TargetType = "agent_bundle", TargetId = bundle.Id.ToString(),
+                Outcome = AuditOutcome.Succeeded, Metadata = new() { ["command"] = commandId.ToString(), ["bytes"] = bytes.Length.ToString(System.Globalization.CultureInfo.InvariantCulture), ["sha256"] = sha },
+            });
+            await db.SaveChangesAsync(ct);
+            await transaction.CommitAsync(ct);
+            return Results.Ok(new BundleUploaded(bundle.Id));
         }
 
         /// <summary>The host discovery knows by this name, if any: that's the resource the agent belongs to.</summary>

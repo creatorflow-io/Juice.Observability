@@ -1,5 +1,5 @@
 {
-  "//": "The local agent's own settings. Its allowlist is the last word on this host: a command the platform signed is still refused if the action isn't listed here, or its parameters fall outside these bounds. sample.file_info is a custom action of the sample agent build (samples/Juice.Observability.Agent.Sample, installed by e2e/agent-custom.mjs); an agent without it never offers it. Its Values name the only files it may look at. service.restart and files.cleanup are here to try in the Console: the agent's container has no systemd, so a restart fails with 'systemctl not found', and the cleanup only touches /tmp/juice-demo-*.log files older than a day.",
+  "//": "The local agent's own settings. Its allowlist is the last word on this host: a command the platform signed is still refused if the action isn't listed here, or its parameters fall outside these bounds. sample.file_info is a custom action of the sample agent build (samples/Juice.Observability.Agent.Sample, installed by e2e/agent-custom.mjs); an agent without it never offers it. Its Values name the only files it may look at. service.restart and files.cleanup are here to try in the Console: the agent's container has no systemd, so a restart fails with 'systemctl not found', and the cleanup only touches /tmp/juice-demo-*.log files older than a day. diagnostics.bundle takes the end of /tmp/juice-demo-app.log (e2e/bundle.mjs writes it) and says syslog is missing, as it is in this container.",
   "Allowlist": {
     "Actions": {
       "host.summary": {},
@@ -16,6 +16,9 @@
       },
       "files.cleanup": {
         "Folders": [ { "Path": "/tmp", "Pattern": "juice-demo-*.log", "KeepHours": 24 } ]
+      },
+      "diagnostics.bundle": {
+        "LogFiles": [ "/tmp/juice-demo-app.log", "/hostfs/var/log/syslog" ]
       },
       "sample.file_info": {
         "Values": { "path": [ "/hostfs/etc/os-release", "/hostfs/etc/hostname", "/hostfs/var/log/dpkg.log" ] }

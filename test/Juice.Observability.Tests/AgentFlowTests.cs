@@ -981,6 +981,157 @@ namespace Juice.Observability.Tests
             }
         }
 
+        /// <summary>A body that doesn't say how long it is, so it goes chunked.</summary>
+        private sealed class UnknownLength(byte[] bytes) : HttpContent
+        {
+            protected override Task SerializeToStreamAsync(Stream stream, System.Net.TransportContext? context) => stream.WriteAsync(bytes).AsTask();
+
+            protected override bool TryComputeLength(out long length)
+            {
+                length = 0;
+                return false;
+            }
+        }
+
+        private static byte[] Zip(string name, string text)
+        {
+            using var buffer = new MemoryStream();
+            using (var archive = new System.IO.Compression.ZipArchive(buffer, System.IO.Compression.ZipArchiveMode.Create, leaveOpen: true))
+            {
+                using var writer = new StreamWriter(archive.CreateEntry(name).Open());
+                writer.Write(text);
+            }
+            return buffer.ToArray();
+        }
+
+        /// <summary>
+        /// Phase 8's diagnostic bundle end to end: a real agent makes it from the log its host lists, redacted, and uploads it; anyone sees it's
+        /// there, only an operator or admin downloads it (audited), and it's deleted once its retention has passed.
+        /// </summary>
+        [Fact]
+        public async Task A_bundle_is_made_on_the_host_downloaded_by_operators_only_and_dropped_after_its_retention_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            using var pki = new AgentPki();
+            await using var host = new AgentHost(database, pki, extra: new Dictionary<string, string> { ["Actions:SweepInterval"] = "00:00:00.200" });
+            using var users = host.Users();
+            var (viewer, @operator, admin, tenant) = await Caller.AllAsync(users, database);
+            var logs = TempDirectory();
+            Directory.CreateDirectory(logs);
+            var log = Path.Combine(logs, "orders.log");
+            await File.WriteAllLinesAsync(log, ["boot", "Server=pg;Password=hunter2;Database=orders", "listening on 8080"], Ct);
+            var allowlist = Allowlist();
+            allowlist.Actions[AgentActions.DiagnosticsBundle] = new ActionPolicy { LogFiles = [log] };
+            allowlist.Actions[AgentActions.DiskUsage] = new ActionPolicy();
+            var agent = new AgentService(Microsoft.Extensions.Options.Options.Create(Options(host, pki, TempDirectory(), await TokenAsync(admin, tenant))),
+                Microsoft.Extensions.Options.Options.Create(allowlist), TimeProvider.System, new TestLog<AgentService>());
+            await agent.StartAsync(Ct);
+            try
+            {
+                Guid agentId = default;
+                for (var i = 0; i < 100 && agentId == default; i++)
+                {
+                    await Task.Delay(100, Ct);
+                    var list = (await Caller.JsonAsync(await viewer.GetAsync($"/api/v1/tenants/{tenant}/agents"))).GetProperty("items");
+                    if (list.GetArrayLength() > 0) agentId = list[0].GetProperty("id").GetGuid();
+                }
+                // Low risk: an operator runs it straight away.
+                var command = await IssueAsync(@operator, tenant, agentId, AgentActions.DiagnosticsBundle, new { logLines = 50 });
+                var done = await WaitForCommandAsync(viewer, tenant, agentId, command, "Succeeded", "Failed", "Rejected");
+                Assert.True(done.GetProperty("state").GetString() == "Succeeded", done.GetRawText());
+                var summary = done.GetProperty("result");
+                var bundleId = summary.GetProperty("bundleId").GetGuid();
+                Assert.Equal(1, summary.GetProperty("redacted").GetInt32());
+
+                var listed = (await Caller.JsonAsync(await viewer.GetAsync($"/api/v1/tenants/{tenant}/agents/{agentId}/bundles"))).GetProperty("items");
+                Assert.Equal(bundleId, Assert.Single(listed.EnumerateArray()).GetProperty("id").GetGuid());
+                var url = $"/api/v1/tenants/{tenant}/agents/{agentId}/bundles/{bundleId}";
+                Assert.Equal(HttpStatusCode.Forbidden, (await viewer.GetAsync(url)).StatusCode);
+                var download = await @operator.GetAsync(url);
+                Assert.Equal(HttpStatusCode.OK, download.StatusCode);
+                Assert.Equal("application/zip", download.Content.Headers.ContentType?.MediaType);
+                var bytes = await download.Content.ReadAsByteArrayAsync(Ct);
+                Assert.Equal(summary.GetProperty("sha256").GetString(), Convert.ToHexStringLower(SHA256.HashData(bytes)));
+                using (var archive = new System.IO.Compression.ZipArchive(new MemoryStream(bytes)))
+                {
+                    using var reader = new StreamReader(archive.GetEntry("logs/01-orders.log")!.Open());
+                    var text = await reader.ReadToEndAsync(Ct);
+                    Assert.Contains("Password=[redacted]", text);
+                    Assert.DoesNotContain("hunter2", text);
+                }
+
+                await using (var db = database.Context())
+                {
+                    var audit = await db.AuditRecords.AsNoTracking().Where(a => a.Operation.StartsWith("agent.bundle.")).Select(a => new { a.Operation, a.Outcome }).ToListAsync(Ct);
+                    Assert.Contains(audit, a => a.Operation == "agent.bundle.upload" && a.Outcome == AuditOutcome.Succeeded);
+                    Assert.Contains(audit, a => a.Operation == "agent.bundle.download" && a.Outcome == AuditOutcome.Succeeded);
+                    Assert.Contains(audit, a => a.Operation == "agent.bundle.download" && a.Outcome == AuditOutcome.Denied);
+                    // Past its retention: gone, not just hidden.
+                    await db.AgentBundles.Where(b => b.Id == bundleId).ExecuteUpdateAsync(s => s.SetProperty(b => b.ExpiresAt, DateTimeOffset.UtcNow.AddSeconds(-1)), Ct);
+                    for (var i = 0; i < 50 && await db.AgentBundles.AnyAsync(b => b.Id == bundleId, Ct); i++) await Task.Delay(100, Ct);
+                    Assert.False(await db.AgentBundles.AnyAsync(b => b.Id == bundleId, Ct));
+                }
+                Assert.Equal(HttpStatusCode.NotFound, (await @operator.GetAsync(url)).StatusCode);
+            }
+            finally
+            {
+                await agent.StopAsync(CancellationToken.None);
+            }
+        }
+
+        /// <summary>
+        /// The upload takes a bundle only for a running <c>diagnostics.bundle</c> command of the agent's own, as a zip, within its limit, and once:
+        /// the same bytes again are the same bundle, different ones are refused, and so is anything after the command finished.
+        /// </summary>
+        [Fact]
+        public async Task A_bundle_upload_is_bounded_and_belongs_to_one_running_command_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            using var pki = new AgentPki();
+            await using var host = new AgentHost(database, pki);
+            using var users = host.Users();
+            var (_, @operator, admin, tenant) = await Caller.AllAsync(users, database);
+            var data = TempDirectory();
+            var (store, identity) = await EnrollAsync(host, pki, await TokenAsync(admin, tenant), data);
+            using var client = new PlatformClient(Options(host, pki, data), store.LoadCertificate());
+            var summaryCommand = await IssueAsync(@operator, tenant, identity.AgentId, AgentActions.HostSummary, new { });
+            var bundleCommand = await IssueAsync(@operator, tenant, identity.AgentId, AgentActions.DiagnosticsBundle, new { });
+            var failedCommand = await IssueAsync(@operator, tenant, identity.AgentId, AgentActions.DiagnosticsBundle, new { logLines = 20 });
+            Assert.Equal(3, (await client.PollAsync(1, "test", "test-host", Ct, identity.CommandKeys.Keys)).Commands.Count);
+            // Finished without a bundle: too late to send one.
+            await client.ReportAsync(new CommandResult(failedCommand, CommandOutcome.Failed, "timeout", null, 1), Ct);
+            Assert.StartsWith("409", (await Assert.ThrowsAsync<ResultRefusedException>(() => client.UploadBundleAsync(failedCommand, Zip("x", "y"), Ct))).Message);
+
+            var zip = Zip("host.json", "{}");
+            await Assert.ThrowsAsync<ResultRefusedException>(() => client.UploadBundleAsync(summaryCommand, zip, Ct));
+            await Assert.ThrowsAsync<ResultRefusedException>(() => client.UploadBundleAsync(bundleCommand, "not a zip"u8.ToArray(), Ct));
+            var oversized = new byte[BundleLimits.MaxBytes + 1];
+            (oversized[0], oversized[1]) = ((byte)'P', (byte)'K');
+            var tooBig = await Assert.ThrowsAsync<ResultRefusedException>(() => client.UploadBundleAsync(bundleCommand, oversized, Ct));
+            Assert.StartsWith("413", tooBig.Message);
+            // No length declared (chunked): the platform still stops reading at the limit.
+            using (var chunked = new UnknownLength(oversized))
+            {
+                Assert.StartsWith("413", (await Assert.ThrowsAsync<ResultRefusedException>(() => client.UploadBundleAsync(bundleCommand, chunked, Ct))).Message);
+            }
+
+            // The same upload several times at once (retries racing the first): one bundle, the same answer to all. The connections are opened first,
+            // so the uploads arrive together rather than one TLS handshake apart.
+            await Task.WhenAll(Enumerable.Range(0, 8).Select(async _ => await Assert.ThrowsAsync<ResultRefusedException>(() => client.UploadBundleAsync(summaryCommand, zip, Ct))));
+            var all = await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => client.UploadBundleAsync(bundleCommand, zip, Ct)));
+            var id = all[0];
+            Assert.All(all, each => Assert.Equal(id, each));
+            Assert.Equal(id, await client.UploadBundleAsync(bundleCommand, zip, Ct));
+            await Assert.ThrowsAsync<ResultRefusedException>(() => client.UploadBundleAsync(bundleCommand, Zip("host.json", "{\"other\":1}"), Ct));
+            await client.ReportAsync(new CommandResult(bundleCommand, CommandOutcome.Succeeded, null, JsonSerializer.SerializeToElement(new { bundleId = id }), 1), Ct);
+            var finished = await Assert.ThrowsAsync<ResultRefusedException>(() => client.UploadBundleAsync(bundleCommand, Zip("x", "y"), Ct));
+            Assert.StartsWith("409", finished.Message);
+            await using var db = database.Context();
+            Assert.Equal(1, await db.AgentBundles.CountAsync(Ct));
+        }
+
         /// <summary>
         /// A revoked agent comes back only as a new one, with a new key, and only with an admin's new token: the old token in its file changes
         /// nothing, and a new one there makes it set its old identity aside and enroll again, without anyone clearing its data directory.

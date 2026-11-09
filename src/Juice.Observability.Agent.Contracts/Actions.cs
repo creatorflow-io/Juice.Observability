@@ -35,8 +35,14 @@ namespace Juice.Observability.Agent.Contracts
         /// <see cref="FilesCleanupParameters.MaxFilesPerRun"/> per run. Medium risk; a dry run only reports, and is Low.
         /// </summary>
         public const string FilesCleanup = "files.cleanup";
+        /// <summary>
+        /// A zip of the host's facts, its disk usage, the agent's version and allowlist, and the last lines of the log files the host lists
+        /// (<c>LogFiles</c> in its allowlist), with what looks like a credential redacted. At most <see cref="BundleLimits.MaxBytes"/>; uploaded to the
+        /// platform, which keeps it for a while (roadmap Phase 8). Read-only, Low risk.
+        /// </summary>
+        public const string DiagnosticsBundle = "diagnostics.bundle";
 
-        public static readonly IReadOnlyList<string> All = [HostSummary, DiskUsage, TcpReachability, AgentUpdate, ServiceRestart, FilesCleanup];
+        public static readonly IReadOnlyList<string> All = [HostSummary, DiskUsage, TcpReachability, AgentUpdate, ServiceRestart, FilesCleanup, DiagnosticsBundle];
 
         /// <summary>Actions that change the host, rather than read it.</summary>
         public static readonly IReadOnlyList<string> Changing = [AgentUpdate, ServiceRestart, FilesCleanup];
@@ -75,6 +81,8 @@ namespace Juice.Observability.Agent.Contracts
                 new("keepHours", ParameterTypes.Integer, false, "Keep files written in this many hours; never fewer than the host's own.", 1, FilesCleanupParameters.MaxKeepHours),
                 new("dryRun", ParameterTypes.Boolean, false, "Only report what would be deleted.", Default: "false"),
             ], Risk: ActionRisks.Medium),
+            new(DiagnosticsBundle, "A zip of the host's facts, disk usage, the agent's settings and the last lines of the logs the host lists, kept by the platform to download.", false,
+                [new("logLines", ParameterTypes.Integer, false, "Lines from the end of each log.", DiagnosticsBundleParameters.MinLines, DiagnosticsBundleParameters.MaxLines, Default: "200")]),
         ];
 
         /// <summary>
@@ -120,6 +128,10 @@ namespace Juice.Observability.Agent.Contracts
                         var cleanup = parameters.Deserialize<FilesCleanupParameters>(CommandSignature.Json)!;
                         error = cleanup.Validate();
                         return error is null ? cleanup : null;
+                    case DiagnosticsBundle:
+                        var bundle = parameters.Deserialize<DiagnosticsBundleParameters>(CommandSignature.Json)!;
+                        error = bundle.Validate();
+                        return error is null ? bundle : null;
                     default:
                         error = $"unknown action '{action}'";
                         return null;
@@ -207,6 +219,25 @@ namespace Juice.Observability.Agent.Contracts
             if (KeepHours is < 1 or > MaxKeepHours) return $"keepHours is 1 to {MaxKeepHours}";
             return null;
         }
+    }
+
+    /// <param name="LogLines">Lines from the end of each listed log; null for 200.</param>
+    public sealed record DiagnosticsBundleParameters(int? LogLines)
+    {
+        public const int MinLines = 10;
+        public const int MaxLines = 5000;
+        public int Lines => LogLines ?? 200;
+
+        public string? Validate() => LogLines is < MinLines or > MaxLines ? $"logLines is {MinLines} to {MaxLines}" : null;
+    }
+
+    /// <summary>How big a diagnostic bundle may get. The platform refuses a larger upload.</summary>
+    public static class BundleLimits
+    {
+        public const int MaxBytes = 5 * 1024 * 1024;
+        public const int MaxLogFiles = 20;
+        /// <summary>Read from the end of each log; the lines asked for come from within this.</summary>
+        public const int MaxBytesPerLog = 512 * 1024;
     }
 
     /// <param name="Host">A DNS name or an IP address.</param>

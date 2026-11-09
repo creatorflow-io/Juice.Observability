@@ -143,7 +143,7 @@ namespace Juice.Observability.Agent
                         var client = connection.Client;
                         foreach (var command in poll.Commands)
                         {
-                            if (await HandleAsync(command, identity, memory!, diagnostics, stoppingToken, client.DownloadAsync) is { } result)
+                            if (await HandleAsync(command, identity, memory!, diagnostics, stoppingToken, client.DownloadAsync, client.UploadBundleAsync) is { } result)
                             {
                                 Keep(unsent, result);
                             }
@@ -280,6 +280,24 @@ namespace Juice.Observability.Agent
         /// <summary>How often a refused agent looks for a new enrollment token while it waits.</summary>
         internal TimeSpan TokenCheck { get; set; } = TimeSpan.FromSeconds(5);
 
+        /// <summary>Makes the bundle, uploads it, and answers with what's in it and where the platform keeps it.</summary>
+        private async Task<System.Text.Json.JsonElement> BundleAsync(Guid commandId, DiagnosticsBundleParameters parameters, IDiagnostics diagnostics,
+            Func<Guid, byte[], CancellationToken, Task<Guid>>? upload, CancellationToken cancellationToken)
+        {
+            if (upload is null) throw new ActionFailedException("no platform to upload the bundle to");
+            var made = await new DiagnosticBundle(diagnostics, Version, allowlist.Value, clock).MakeAsync(parameters, cancellationToken);
+            Guid id;
+            try
+            {
+                id = await upload(commandId, made.Zip, cancellationToken);
+            }
+            catch (ResultRefusedException e)
+            {
+                throw new ActionFailedException($"the platform refused the bundle: {e.Message}");
+            }
+            return System.Text.Json.JsonSerializer.SerializeToElement(made.Summary with { BundleId = id }, CommandSignature.Json);
+        }
+
         /// <summary>Runs <c>service.restart</c> and <c>files.cleanup</c>; a test may stand in its own service control.</summary>
         internal Remediation Remedies
         {
@@ -357,7 +375,8 @@ namespace Juice.Observability.Agent
 
         /// <summary>One command, end to end. Returns what to report, or null when it can't even be attributed to a command.</summary>
         internal async Task<CommandResult?> HandleAsync(SignedCommand command, AgentIdentity identity, CommandMemory memory, IDiagnostics diagnostics, CancellationToken cancellationToken,
-            Func<string, CancellationToken, Task<(byte[] Package, byte[] Signature)>>? download = null)
+            Func<string, CancellationToken, Task<(byte[] Package, byte[] Signature)>>? download = null,
+            Func<Guid, byte[], CancellationToken, Task<Guid>>? upload = null)
         {
             var now = clock.GetUtcNow();
             var verification = CommandVerifier.Verify(command, identity, allowlist.Value, now, Actions);
@@ -404,12 +423,15 @@ namespace Juice.Observability.Agent
             {
                 var custom = verified.Parameters as CustomInvocation;
                 var remedial = Remediation.Handles(verified.Parameters);
-                timeout.CancelAfter(custom?.Action.Timeout ?? (remedial ? Remediation.Timeout(verified.Parameters) : Diagnostics.Timeout(verified.Parameters)));
+                var bundle = verified.Parameters as DiagnosticsBundleParameters;
+                timeout.CancelAfter(custom?.Action.Timeout ?? (remedial ? Remediation.Timeout(verified.Parameters) : bundle is not null ? DiagnosticBundle.Timeout : Diagnostics.Timeout(verified.Parameters)));
                 try
                 {
                     // A custom action's own code: the agent stops waiting at its timeout even if it ignores the cancellation.
                     var data = custom is not null
                         ? System.Text.Json.JsonSerializer.SerializeToElement(await custom.Action.RunAsync(custom.Parameters, timeout.Token).WaitAsync(timeout.Token), CommandSignature.Json)
+                        : bundle is not null
+                            ? await BundleAsync(envelope.CommandId, bundle, diagnostics, upload, timeout.Token)
                         : remedial
                             ? await Remedies.RunAsync(verified.Parameters, timeout.Token)
                             : await diagnostics.RunAsync(verified.Parameters, timeout.Token);

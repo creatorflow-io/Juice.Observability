@@ -95,6 +95,7 @@ namespace Juice.Observability.Agents
                         while (await SweepOnceAsync(stoppingToken) == Batch) { }
                         // Once a pass: most of what's watched is still waiting for its evidence.
                         await VerifyOnceAsync(stoppingToken);
+                        await DropExpiredBundlesAsync(stoppingToken);
                     }
                 }
                 catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
@@ -139,6 +140,15 @@ namespace Juice.Observability.Agents
             await db.SaveChangesAsync(ct);
             await transaction.CommitAsync(ct);
             return watched.Count;
+        }
+
+        /// <summary>Deletes diagnostic bundles past their retention; returns how many.</summary>
+        public async Task<int> DropExpiredBundlesAsync(CancellationToken ct)
+        {
+            await using var scope = scopes.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var now = clock.GetUtcNow();
+            return await db.AgentBundles.Where(b => b.ExpiresAt <= now).ExecuteDeleteAsync(ct);
         }
 
         /// <summary>Expires up to one batch; returns how many.</summary>

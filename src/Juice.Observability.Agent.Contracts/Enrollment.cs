@@ -27,6 +27,10 @@ namespace Juice.Observability.Agent.Contracts
     /// </summary>
     public sealed record PollResponse(IReadOnlyList<SignedCommand> Commands, IReadOnlyList<SignedKey>? Keys = null);
 
+    /// <summary>The platform took a bundle: where it keeps it.</summary>
+    /// <param name="Id">The bundle's id, for the command's result.</param>
+    public sealed record BundleUploaded(Guid Id);
+
     /// <summary>Paths of the agent API, on the platform's mTLS listener.</summary>
     public static class AgentRoutes
     {
@@ -35,6 +39,8 @@ namespace Juice.Observability.Agent.Contracts
         public const string Commands = "/agent/v1/commands";
         public static string Result(Guid commandId) => $"/agent/v1/commands/{commandId}/result";
         public static string Package(string version) => $"/agent/v1/packages/{version}";
+        /// <summary>Where the agent uploads the bundle a <c>diagnostics.bundle</c> command made, as <c>application/zip</c>, before its result.</summary>
+        public static string Bundle(Guid commandId) => $"/agent/v1/commands/{commandId}/bundle";
         /// <summary>Where an agent reports the actions it can run (<see cref="ActionsReport"/>), once each time it starts.</summary>
         public const string Actions = "/agent/v1/actions";
         /// <summary>The package's release signature, base64, sent with its bytes.</summary>

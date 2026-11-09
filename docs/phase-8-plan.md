@@ -1,6 +1,6 @@
 # Phase 8 plan: approved manual actions and verified remediation
 
-**Status:** in progress. Owner's decisions from 9 November are in the first table; the rest are mine, for review.
+**Status:** done, 9 November. The owner's decisions are marked in the first table; the rest are mine, for review.
 
 **Roadmap gate:**
 - failure, timeout, duplicate, stale-evidence and approval cases are tested;
@@ -131,5 +131,31 @@ Not yet: preconditions, stale health evidence and verified recovery (milestone 2
 | Through the browser | `console/e2e/remediation.mjs`, 9 November: a dry run ran without approval and deleted nothing; the real cleanup waited for an admin and deleted only the old file; a restart aimed at the healthy host was refused; unaimed, it was approved and failed without systemd |
 | Mutation check | 11 of 11 caught: old evidence counted as recovery, stale and healthy targets accepted, no recheck at approval, an approved remediation not watched, any service allowed, a shorter keep time allowed, links followed, a dry run deleting, a dry run keeping the action's risk, the service name pattern loosened |
 
-Not yet: milestone 3, diagnostic bundles. The Console aims a request only at the agent's own host; aiming at a service or an alert is
-through the API for now.
+The Console aims a request only at the agent's own host; aiming at a service or an alert is through the API for now.
+
+## Milestone 3: done, 9 November
+
+- **On the host:** `diagnostics.bundle` (read-only, Low) zips the host summary and disk usage (only as far as the host lets `host.summary`
+  and `disk.usage` read, through the agent's own diagnostics), the agent's version and allowlist, and the
+  last lines (200 by default, 10 to 5,000) of each log in the allowlist's `LogFiles` (up to 20, by exact path). A log is read from at
+  most its last 512 KB and never through a link. Values that look like credentials are redacted. The zip stays under 5 MB; a log that
+  doesn't fit is left out and named.
+- **Upload:** `POST /agent/v1/commands/{id}/bundle`, before the result: only for a running `diagnostics.bundle` command of the agent's
+  own, a zip, at most 5 MB whether or not it declares its length, once per command (the same bytes again are the same bundle). Audited
+  as `agent.bundle.upload`.
+- **Kept (P3):** in PostgreSQL (`agent_bundles`), deleted after `Actions:BundleRetention` (14 days) by the request sweeper.
+- **Download:** `GET agents/{id}/bundles` lists them for anyone who sees the agent; `GET agents/{id}/bundles/{bundleId}` returns the zip
+  to operators and admins only, audited as `agent.bundle.download` (refusals too).
+- **Console:** the command's answer shows the size, entries, redactions and what was left out, with **Download**.
+
+| Case | Evidence |
+|---|---|
+| Bounded content | `DiagnosticBundleTests`: only listed logs, from their end, a cut first line dropped; credentials redacted case by case; under 5 MB with 14 incompressible logs, the rest left out and named; invalid `LogFiles` refused |
+| End to end | `AgentFlowTests.A_bundle_is_made_on_the_host_downloaded_by_operators_only_and_dropped_after_its_retention`: a real agent's bundle, its hash, the redacted log, a viewer refused, downloads audited, deleted past retention |
+| Upload refusals | `AgentFlowTests.A_bundle_upload_is_bounded_and_belongs_to_one_running_command`: another action's command, not a zip, too large (declared or chunked), a second different bundle, a finished command |
+| Through the browser | `console/e2e/bundle.mjs`, 9 November: an operator's bundle ran without approval, said syslog was missing and one value was redacted; the downloaded zip had the password redacted; a viewer couldn't download it |
+| Review before commit | Five fixes, each with a test: the bundle no longer reads past `host.summary` and `disk.usage`'s bounds; it reads through the agent's shared diagnostics, so a stuck read isn't stacked; concurrent uploads of one command are serialized (one bundle, the same id to all); a download error shows under its own bundle only; redaction also covers `AccountKey`, `SharedAccessKey`, a bare `Bearer` token and a URL's password. 7 of 7 mutants of those fixes caught, after two tests were strengthened |
+| Mutation check | 10 of 10 caught: no redaction, no size budget, the whole log read, unlisted logs included, upload size unchecked while reading (caught once the test sent a chunked body), any action's upload, an upload after the command finished, a second bundle replacing the first, viewers downloading, bundles kept forever |
+
+Not covered by a test: a log file that is a symbolic link. The agent skips it, but this Windows machine can't create file links without
+Developer Mode, and a junction is only for folders.

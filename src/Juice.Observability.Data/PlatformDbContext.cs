@@ -54,6 +54,7 @@ namespace Juice.Observability.Data
         public DbSet<AgentEnrollmentToken> AgentEnrollmentTokens => Set<AgentEnrollmentToken>();
         public DbSet<AgentCommand> AgentCommands => Set<AgentCommand>();
         public DbSet<ActionRequest> ActionRequests => Set<ActionRequest>();
+        public DbSet<AgentBundle> AgentBundles => Set<AgentBundle>();
         public DbSet<AgentEnrollmentFailure> AgentEnrollmentFailures => Set<AgentEnrollmentFailure>();
 
         /// <summary>Applies the snake_case naming used by every table. Call it when configuring the context.</summary>
@@ -368,6 +369,19 @@ namespace Juice.Observability.Data
                 e.HasIndex(x => new { x.AgentId, x.IdempotencyKey }).IsUnique();
                 e.HasIndex(x => new { x.AgentId, x.State, x.IssuedAt });
                 e.HasOne<EnrolledAgent>().WithMany().HasForeignKey(x => x.AgentId).OnDelete(DeleteBehavior.Cascade);
+            });
+
+            model.Entity<AgentBundle>(e =>
+            {
+                e.ToTable("agent_bundles");
+                Tenant(e);
+                e.Property(x => x.Sha256).HasMaxLength(64);
+                e.Property(x => x.Content).HasColumnType("bytea");
+                e.HasIndex(x => x.CommandId).IsUnique();
+                e.HasIndex(x => new { x.AgentId, x.CreatedAt });
+                e.HasIndex(x => x.ExpiresAt);
+                e.HasOne<EnrolledAgent>().WithMany().HasForeignKey(x => x.AgentId).OnDelete(DeleteBehavior.Cascade);
+                e.HasOne<AgentCommand>().WithMany().HasForeignKey(x => x.CommandId).OnDelete(DeleteBehavior.Cascade);
             });
 
             model.Entity<ActionRequest>(e =>

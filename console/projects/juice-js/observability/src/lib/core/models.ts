@@ -80,6 +80,12 @@ export interface AgentAction {
 /** A health subject an action should make healthy: Service or Application (with environmentId), Instance or Host. */
 export interface ActionTarget { type: string; id: string; environmentId?: string | null; }
 
+/** What a diagnostics.bundle command answered: where the platform keeps the zip, and what's in it. */
+export interface BundleSummary {
+  bundleId: string; sizeBytes: number; sha256: string; entries: { name: string; source: string | null; bytes: number; lines: number | null }[];
+  skipped: string[]; redacted: number;
+}
+
 /** Requests waiting for a decision: all of them, and those the signed-in user can decide. */
 export interface ActionRequestsWaiting { total: number; forYou: number; }
 

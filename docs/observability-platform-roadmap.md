@@ -161,7 +161,7 @@
 
 **Acceptance gate:** failure/timeout/duplicate/stale evidence/approval cases are tested; a resource is not marked recovered until independent health evidence confirms it.
 
-**Status:** in progress, milestones 1 and 2 of 3 done (requests and approvals; remediation and verified recovery). See the [Phase 8 plan](phase-8-plan.md).
+**Status:** done, 9 November: all three milestones (requests and approvals; remediation and verified recovery; diagnostic bundles). See the [Phase 8 plan](phase-8-plan.md).
 
 ## Phase 9 — Advanced correlation, SLOs, and selective streaming
 
