@@ -44,7 +44,7 @@ namespace Juice.Observability.Agent.Contracts
                 new("timeoutMs", ParameterTypes.Integer, true, "How long to wait for the connection.", TcpReachabilityParameters.MinTimeoutMs, TcpReachabilityParameters.MaxTimeoutMs, Default: "2000"),
             ]),
             new(AgentUpdate, "Install a signed agent package and restart into it, going back to the version before if it doesn't come up healthy.", true,
-                [new("version", ParameterTypes.String, true, "A version the platform offers.", MaxLength: 64)]),
+                [new("version", ParameterTypes.String, true, "A version the platform offers.", MaxLength: 64)], Risk: ActionRisks.Medium),
         ];
 
         /// <summary>

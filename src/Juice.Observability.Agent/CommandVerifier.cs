@@ -91,6 +91,8 @@ namespace Juice.Observability.Agent
             if (actions.Parse(envelope.Action, envelope.Parameters, out _) is not { } parameters) return Verification.Reject(RejectionReasons.InvalidParameters, id);
             // The platform signed it, and it may still not run here.
             if (allowlist.Check(envelope.Action, parameters) is { } refused) return Verification.Reject(refused, id);
+            // Where the host demands it, only a command from an approved request runs, whatever the platform's own policy says.
+            if (allowlist.Actions[envelope.Action].RequireApproval && string.IsNullOrWhiteSpace(envelope.ApprovalReference)) return Verification.Reject(RejectionReasons.ApprovalRequired, id);
 
             return new Verification(new VerifiedCommand(envelope, parameters), null, id);
         }

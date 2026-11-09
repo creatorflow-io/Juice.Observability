@@ -61,7 +61,13 @@ namespace Juice.Observability.Agent
         /// <summary>10 seconds unless overridden; at most <see cref="AgentActionCatalog.MaxTimeout"/>.</summary>
         public virtual TimeSpan Timeout => TimeSpan.FromSeconds(10);
 
-        public ActionDescriptor Descriptor => _descriptor ??= new(Name, Description, Changing, ParameterSchema.Describe(typeof(TParameters)), Custom: true);
+        /// <summary>
+        /// <see cref="ActionRisks"/>: what the platform's approval policy goes by. Low for a read-only action and Medium for a changing one unless
+        /// overridden; a changing action can't be Low.
+        /// </summary>
+        public virtual string Risk => Changing ? ActionRisks.Medium : ActionRisks.Low;
+
+        public ActionDescriptor Descriptor => _descriptor ??= new(Name, Description, Changing, ParameterSchema.Describe(typeof(TParameters)), Custom: true, Risk: Risk);
 
         /// <summary>
         /// Does the work and returns what to report: anything that serializes to JSON, kept under 64 KB. Throw <see cref="ActionFailedException"/>

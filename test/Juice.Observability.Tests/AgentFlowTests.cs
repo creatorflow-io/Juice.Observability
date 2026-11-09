@@ -512,7 +512,8 @@ namespace Juice.Observability.Tests
             var only = Assert.Single(offered.EnumerateArray());
             Assert.Equal(("1.1.0", AgentPackages.Sha256(good)), (only.GetProperty("version").GetString(), only.GetProperty("sha256").GetString()));
 
-            Assert.Equal(HttpStatusCode.Forbidden, (await @operator.PostAsync(agentPath, new { action = AgentActions.AgentUpdate, parameters = new { version = "1.1.0" } })).StatusCode);
+            // An update is Medium risk: an admin's runs at once; an operator's isn't signed, it has to be requested and approved (ActionRequestTests).
+            Assert.Equal(HttpStatusCode.Conflict, (await @operator.PostAsync(agentPath, new { action = AgentActions.AgentUpdate, parameters = new { version = "1.1.0" } })).StatusCode);
             foreach (var parameters in new object[] { new { version = "1.2.0" }, new { version = "1.3.0" }, new { version = "1.1.0", sha256 = new string('a', 64) }, new { } })
             {
                 Assert.Equal(HttpStatusCode.BadRequest, (await admin.PostAsync(agentPath, new { action = AgentActions.AgentUpdate, parameters })).StatusCode);
@@ -600,6 +601,132 @@ namespace Juice.Observability.Tests
             Assert.True(chain.Build(renewed), "the renewed certificate isn't from the new CA");
             using var again = new PlatformClient(Options(host, after, data), renewed);
             Assert.Null((await again.PollAsync(1, "test", "test-host", Ct, identity.CommandKeys.Keys)).Keys);
+        }
+
+        private static async Task<JsonElement> RequestAsync(Caller caller, Guid tenant, Guid agent, string action, object parameters, HttpStatusCode expected = HttpStatusCode.Created)
+        {
+            var response = await caller.PostAsync($"/api/v1/tenants/{tenant}/agents/{agent}/action-requests", new { action, parameters, reason = "e2e test" });
+            Assert.True(response.StatusCode == expected, $"{action}: {(int)response.StatusCode} {await response.Content.ReadAsStringAsync()}");
+            return expected == HttpStatusCode.Created ? await Caller.JsonAsync(response) : default;
+        }
+
+        private static async Task<HttpStatusCode> DecideAsync(Caller caller, Guid tenant, Guid request, string decision, string? comment = "ok")
+            => (await caller.PostAsync($"/api/v1/tenants/{tenant}/action-requests/{request}/{decision}", new { comment })).StatusCode;
+
+        /// <summary>
+        /// Phase 8's approval gate end to end, with a real agent: what each risk's policy needs, the second-person rule, duplicates, rejection and
+        /// cancellation, every step audited; and the host's own <c>RequireApproval</c>, met by the approval reference the signed command carries.
+        /// </summary>
+        [Fact]
+        public async Task Actions_run_as_their_risks_approval_policy_says_and_a_second_person_approves_their_own_kind_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            using var pki = new AgentPki();
+            await using var host = new AgentHost(database, pki, extra: new Dictionary<string, string> { ["Actions:Overrides:test.restart_worker"] = "SecondPerson" });
+            using var users = host.Users();
+            var (viewer, @operator, admin, tenant) = await Caller.AllAsync(users, database);
+            var adam = new Caller(users, await LocalStack.TokenAsync("adam"));
+            var allowlist = Allowlist();
+            allowlist.Actions["test.queue_depth"] = new ActionPolicy();
+            allowlist.Actions["test.restart_worker"] = new ActionPolicy { RequireApproval = true };
+            var data = TempDirectory();
+            var agent = new AgentService(Microsoft.Extensions.Options.Options.Create(Options(host, pki, data, await TokenAsync(admin, tenant))),
+                Microsoft.Extensions.Options.Options.Create(allowlist), TimeProvider.System, new TestLog<AgentService>(), actions: new AgentActionCatalog([new QueueDepth(), new Restart()]));
+            await agent.StartAsync(Ct);
+            try
+            {
+                Guid agentId = default;
+                for (var i = 0; i < 100; i++)
+                {
+                    await Task.Delay(100, Ct);
+                    var list = (await Caller.JsonAsync(await viewer.GetAsync($"/api/v1/tenants/{tenant}/agents"))).GetProperty("items");
+                    if (list.GetArrayLength() == 0) continue;
+                    agentId = list[0].GetProperty("id").GetGuid();
+                    var actions = await Caller.JsonAsync(await viewer.GetAsync($"/api/v1/tenants/{tenant}/agents/{agentId}/actions"));
+                    if (actions.GetProperty("reportedAt").ValueKind != JsonValueKind.Null) break;
+                }
+                var reported = (await Caller.JsonAsync(await viewer.GetAsync($"/api/v1/tenants/{tenant}/agents/{agentId}/actions"))).GetProperty("items").EnumerateArray()
+                    .ToDictionary(a => a.GetProperty("name").GetString()!, a => (a.GetProperty("risk").GetString(), a.GetProperty("approval").GetString()));
+                Assert.Equal(("Low", "None"), reported["test.queue_depth"]);
+                Assert.Equal(("Medium", "SecondPerson"), reported["test.restart_worker"]);
+                Assert.Equal(("Medium", "Admin"), reported[AgentActions.AgentUpdate]);
+
+                // Low: runs on request, the request issued at once.
+                var low = await RequestAsync(@operator, tenant, agentId, "test.queue_depth", new { queue = "orders", top = 1 });
+                Assert.Equal("Issued", low.GetProperty("state").GetString());
+                var lowRun = await WaitForCommandAsync(viewer, tenant, agentId, low.GetProperty("command").GetProperty("id").GetGuid(), "Succeeded", "Failed", "Rejected");
+                Assert.Equal("Succeeded", lowRun.GetProperty("state").GetString());
+
+                // Second person: not straight to a command, not approved by the one who asked, nor by an operator; a duplicate waits its turn.
+                Assert.Equal(HttpStatusCode.Conflict, (await admin.PostAsync($"/api/v1/tenants/{tenant}/agents/{agentId}/commands", new { action = "test.restart_worker" })).StatusCode);
+                var asked = await RequestAsync(admin, tenant, agentId, "test.restart_worker", new { });
+                var id = asked.GetProperty("id").GetGuid();
+                Assert.Equal(("Pending", "SecondPerson"), (asked.GetProperty("state").GetString(), asked.GetProperty("policy").GetString()));
+                await RequestAsync(@operator, tenant, agentId, "test.restart_worker", new { }, HttpStatusCode.Conflict);
+                Assert.Equal(HttpStatusCode.Forbidden, await DecideAsync(admin, tenant, id, "approval"));
+                Assert.Equal(HttpStatusCode.Forbidden, await DecideAsync(@operator, tenant, id, "approval"));
+                Assert.Equal(HttpStatusCode.OK, await DecideAsync(adam, tenant, id, "approval", "seen the alert"));
+                Assert.Equal(HttpStatusCode.Conflict, await DecideAsync(adam, tenant, id, "approval"));
+                var approved = await Caller.JsonAsync(await viewer.GetAsync($"/api/v1/tenants/{tenant}/action-requests/{id}"));
+                // The host requires an approval reference for it: that it ran shows the signed command carried one.
+                var ran = await WaitForCommandAsync(viewer, tenant, agentId, approved.GetProperty("command").GetProperty("id").GetGuid(), "Succeeded", "Failed", "Rejected");
+                Assert.Equal("Succeeded", ran.GetProperty("state").GetString());
+
+                // Rejected: final, with the reason; cancelled by the one who asked.
+                var rejected = (await RequestAsync(@operator, tenant, agentId, "test.restart_worker", new { })).GetProperty("id").GetGuid();
+                Assert.Equal(HttpStatusCode.BadRequest, await DecideAsync(adam, tenant, rejected, "rejection", null));
+                Assert.Equal(HttpStatusCode.OK, await DecideAsync(adam, tenant, rejected, "rejection", "not during business hours"));
+                Assert.Equal(HttpStatusCode.Conflict, await DecideAsync(admin, tenant, rejected, "approval"));
+                var cancelled = (await RequestAsync(@operator, tenant, agentId, "test.restart_worker", new { })).GetProperty("id").GetGuid();
+                Assert.Equal(HttpStatusCode.OK, await DecideAsync(@operator, tenant, cancelled, "cancellation", null));
+
+                var pending = await Caller.JsonAsync(await viewer.GetAsync($"/api/v1/tenants/{tenant}/action-requests?state=Pending"));
+                Assert.Equal(0, pending.GetProperty("items").GetArrayLength());
+                var all = (await Caller.JsonAsync(await viewer.GetAsync($"/api/v1/tenants/{tenant}/action-requests"))).GetProperty("items").EnumerateArray()
+                    .Select(r => r.GetProperty("state").GetString()).ToList();
+                Assert.Equal(["Cancelled", "Rejected", "Issued", "Issued"], all);
+
+                await using var db = database.Context();
+                var audit = await db.AuditRecords.AsNoTracking().Where(a => a.Operation.StartsWith("action.request.")).Select(a => new { a.Operation, a.Outcome }).ToListAsync(Ct);
+                Assert.Contains(audit, a => a.Operation == "action.request.approve" && a.Outcome == AuditOutcome.Denied);
+                Assert.Contains(audit, a => a.Operation == "action.request.approve" && a.Outcome == AuditOutcome.Succeeded);
+                Assert.Contains(audit, a => a.Operation == "action.request.create" && a.Outcome == AuditOutcome.Failed);   // the duplicate
+                Assert.Contains(audit, a => a.Operation == "action.request.reject" && a.Outcome == AuditOutcome.Succeeded);
+                Assert.Contains(audit, a => a.Operation == "action.request.cancel" && a.Outcome == AuditOutcome.Succeeded);
+            }
+            finally
+            {
+                await agent.StopAsync(CancellationToken.None);
+                Directory.Delete(data, recursive: true);
+            }
+        }
+
+        /// <summary>A request nobody decides expires: it can't be approved after, it no longer counts as pending, and the same action can be asked again.</summary>
+        [Fact]
+        public async Task An_undecided_request_expires_and_cant_be_approved_after_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            using var pki = new AgentPki();
+            await using var host = new AgentHost(database, pki, extra: new Dictionary<string, string> { ["Actions:ApprovalLifetime"] = "00:00:01" });
+            using var users = host.Users();
+            var (viewer, @operator, admin, tenant) = await Caller.AllAsync(users, database);
+            var data = TempDirectory();
+            var (store, identity) = await EnrollAsync(host, pki, await TokenAsync(admin, tenant), data);
+            using (var client = new PlatformClient(Options(host, pki, data), store.LoadCertificate()))
+            {
+                await client.ReportActionsAsync(Allowlist().Report(new AgentActionCatalog([new Restart()])), Ct);
+            }
+            var id = (await RequestAsync(@operator, tenant, identity.AgentId, "test.restart_worker", new { })).GetProperty("id").GetGuid();
+            await Task.Delay(1500, Ct);
+            Assert.Equal("Expired", (await Caller.JsonAsync(await viewer.GetAsync($"/api/v1/tenants/{tenant}/action-requests/{id}"))).GetProperty("state").GetString());
+            Assert.Equal(0, (await Caller.JsonAsync(await viewer.GetAsync($"/api/v1/tenants/{tenant}/action-requests?state=Pending"))).GetProperty("items").GetArrayLength());
+            Assert.Equal(HttpStatusCode.Conflict, await DecideAsync(admin, tenant, id, "approval"));
+            Assert.Equal(1, (await Caller.JsonAsync(await viewer.GetAsync($"/api/v1/tenants/{tenant}/action-requests?state=Expired"))).GetProperty("items").GetArrayLength());
+            await RequestAsync(@operator, tenant, identity.AgentId, "test.restart_worker", new { });
+            await using var db = database.Context();
+            Assert.Empty(await db.AgentCommands.AsNoTracking().ToListAsync(Ct));
         }
 
         /// <summary>
@@ -741,8 +868,8 @@ namespace Juice.Observability.Tests
                 Assert.Equal(HttpStatusCode.BadRequest, await Issue(@operator, "test.queue_depth", new { queue = "orders", top = 7, command = "sh" }));
                 Assert.Equal(HttpStatusCode.BadRequest, await Issue(@operator, "test.unknown", new { }));
 
-                // A custom action that changes the host is an admin's.
-                Assert.Equal(HttpStatusCode.Forbidden, await Issue(@operator, "test.restart_worker", new { }));
+                // A custom action that changes the host is Medium risk unless it says more: an operator's needs an admin's approval, an admin's runs.
+                Assert.Equal(HttpStatusCode.Conflict, await Issue(@operator, "test.restart_worker", new { }));
                 var restarted = await WaitForCommandAsync(admin, tenant, agentId, await IssueAsync(admin, tenant, agentId, "test.restart_worker", new { }), "Succeeded", "Failed", "Rejected");
                 Assert.Equal("Succeeded", restarted.GetProperty("state").GetString());
 

@@ -21,6 +21,13 @@ namespace Juice.Observability.Agents
         {
             var section = configuration.GetSection(AgentPlatformOptions.Section);
             services.Configure<AgentPlatformOptions>(section);
+            var approval = configuration.GetSection(ActionApprovalOptions.Section);
+            var approvalErrors = (approval.Get<ActionApprovalOptions>() ?? new ActionApprovalOptions()).Validate().ToList();
+            if (approvalErrors.Count > 0)
+            {
+                throw new InvalidOperationException("Invalid action approval configuration:\n" + string.Join("\n", approvalErrors));
+            }
+            services.Configure<ActionApprovalOptions>(approval);
             var options = section.Get<AgentPlatformOptions>() ?? new AgentPlatformOptions();
             if (!options.Enabled)
             {

@@ -53,6 +53,7 @@ namespace Juice.Observability.Data
         public DbSet<EnrolledAgent> Agents => Set<EnrolledAgent>();
         public DbSet<AgentEnrollmentToken> AgentEnrollmentTokens => Set<AgentEnrollmentToken>();
         public DbSet<AgentCommand> AgentCommands => Set<AgentCommand>();
+        public DbSet<ActionRequest> ActionRequests => Set<ActionRequest>();
         public DbSet<AgentEnrollmentFailure> AgentEnrollmentFailures => Set<AgentEnrollmentFailure>();
 
         /// <summary>Applies the snake_case naming used by every table. Call it when configuring the context.</summary>
@@ -368,7 +369,30 @@ namespace Juice.Observability.Data
                 e.HasIndex(x => new { x.AgentId, x.State, x.IssuedAt });
                 e.HasOne<EnrolledAgent>().WithMany().HasForeignKey(x => x.AgentId).OnDelete(DeleteBehavior.Cascade);
             });
+
+            model.Entity<ActionRequest>(e =>
+            {
+                e.ToTable("action_requests");
+                Tenant(e);
+                e.Property(x => x.Action).HasMaxLength(64);
+                // Text, not jsonb: kept in the canonical form duplicates are compared by.
+                e.Property(x => x.Parameters).HasMaxLength(CommandLimitsBytes);
+                e.Property(x => x.Risk).HasMaxLength(10);
+                e.Property(x => x.Policy).HasMaxLength(20);
+                e.Property(x => x.Reason).HasMaxLength(500);
+                e.Property(x => x.RequestedBy).HasMaxLength(256);
+                e.Property(x => x.DecidedBy).HasMaxLength(256);
+                e.Property(x => x.Comment).HasMaxLength(500);
+                e.Property(x => x.State).HasConversion<string>().HasMaxLength(20);
+                e.HasIndex(x => new { x.TenantId, x.State, x.RequestedAt });
+                e.HasIndex(x => new { x.AgentId, x.Action, x.State });
+                e.HasIndex(x => x.CommandId);
+                e.HasOne<EnrolledAgent>().WithMany().HasForeignKey(x => x.AgentId).OnDelete(DeleteBehavior.Cascade);
+            });
         }
+
+        /// <summary>The most a command's signed payload holds, and so the most its parameters can be.</summary>
+        private const int CommandLimitsBytes = 16 * 1024;
 
         private static void ConfigureChanges(ModelBuilder model)
         {

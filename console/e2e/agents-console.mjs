@@ -126,11 +126,19 @@ await step(operator, 'custom-action', async () => {
   expect(text.includes('Succeeded') && /exists\s*true/.test(text) && /sizeBytes/.test(text), `custom: ${text}`);
   expect((await operator.locator('[data-testid=command-limits]').textContent()).includes('path: one of'), 'the host\'s limits aren\'t shown');
 });
-await step(operator, 'update-needs-admin', async () => {
-  expected.push({ user: 'erin', status: 403, path: '/commands' });
+// An update is Medium risk: an operator's is a request that waits for an admin (e2e/approvals.mjs approves one). Requested, then withdrawn.
+await step(operator, 'update-is-requested', async () => {
   await select(operator, 'action', 'Update the agent');
+  await operator.locator('[data-testid=command-approval] >> text=needs an admin').waitFor({ timeout: 5000 });
+  await operator.click('mat-select[name=version]');
+  await operator.locator('mat-option').first().click();
+  await operator.fill('[data-testid=request-reason]', 'agents-console e2e, withdrawn at once');
   await operator.click('[data-testid=command-issue]');
-  await operator.waitForSelector('[data-testid=command-error] >> text=needs the admin role');
+  await operator.waitForSelector('[data-testid=command-issued] >> text=runs once approved');
+  const row = operator.locator('[data-testid=requests] tbody tr').first();
+  await row.locator('[data-testid=request-state] >> text=Waiting for approval').waitFor();
+  await row.locator('[data-testid^=request-cancel-]').click();
+  await row.locator('[data-testid=request-state] >> text=Cancelled').waitFor();
 });
 await step(operator, 'token-needs-admin', async () => {
   expected.push({ user: 'erin', status: 403, path: '/enrollment-tokens' });

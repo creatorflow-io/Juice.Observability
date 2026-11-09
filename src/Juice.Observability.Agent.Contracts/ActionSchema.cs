@@ -30,11 +30,30 @@ namespace Juice.Observability.Agent.Contracts
     public sealed record ActionParameter(string Name, string Type, bool Required, string? Description = null, long? Minimum = null, long? Maximum = null,
         int? MaxLength = null, string? Pattern = null, IReadOnlyList<string>? Allowed = null, string? Default = null);
 
+    /// <summary>How much an action can hurt if it's wrong: the platform's approval policy is set per risk (roadmap Phase 8).</summary>
+    public static class ActionRisks
+    {
+        public const string Low = "Low";
+        public const string Medium = "Medium";
+        public const string High = "High";
+
+        public static readonly IReadOnlyList<string> All = [Low, Medium, High];
+    }
+
     /// <summary>
-    /// What an action is: its name, what it does, whether it changes the host (admins only) or only reads it, and its parameters. The built-in
-    /// actions have one each (<see cref="AgentActions.Descriptors"/>); an agent describes its own custom ones the same way.
+    /// What an action is: its name, what it does, whether it changes the host or only reads it, its parameters, and its risk. The built-in actions
+    /// have one each (<see cref="AgentActions.Descriptors"/>); an agent describes its own custom ones the same way.
     /// </summary>
-    public sealed record ActionDescriptor(string Name, string Description, bool Changing, IReadOnlyList<ActionParameter> Parameters, bool Custom = false);
+    /// <param name="Name">Lowercase words joined by dots (<see cref="ActionSchema.IsValidName"/>).</param>
+    /// <param name="Description">What it does, in a sentence.</param>
+    /// <param name="Changing">True when it changes the host rather than reading it.</param>
+    /// <param name="Parameters">What it takes, each bounded.</param>
+    /// <param name="Custom">An agent build's own action, not a built-in.</param>
+    /// <param name="Risk">One of <see cref="ActionRisks.All"/>; when null, Medium for a changing action and Low otherwise (<see cref="RiskOf"/>).</param>
+    public sealed record ActionDescriptor(string Name, string Description, bool Changing, IReadOnlyList<ActionParameter> Parameters, bool Custom = false, string? Risk = null)
+    {
+        public string RiskOf() => Risk ?? (Changing ? ActionRisks.Medium : ActionRisks.Low);
+    }
 
     /// <summary>
     /// One action as an agent reports it: what it is, with its parameters narrowed to what this host's allowlist accepts, whether the allowlist
@@ -93,6 +112,9 @@ namespace Juice.Observability.Agent.Contracts
         {
             if (!IsValidName(action.Name)) yield return "name is lowercase words joined by dots, like vendor.check, at most 64 characters";
             if (string.IsNullOrWhiteSpace(action.Description) || action.Description.Length > ActionsReport.MaxText) yield return $"description is 1 to {ActionsReport.MaxText} characters";
+            if (action.Risk is { } risk && !ActionRisks.All.Contains(risk)) yield return $"risk is one of {string.Join(", ", ActionRisks.All)}";
+            // A changing action can't call itself harmless: Low is for reading only.
+            if (action.Changing && action.Risk == ActionRisks.Low) yield return "a changing action's risk is Medium or High";
             if (action.Parameters is null)
             {
                 yield return "parameters is required";

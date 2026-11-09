@@ -165,6 +165,23 @@ namespace Juice.Observability.Tests
             Assert.Equal(RejectionReasons.OutsideLocalBounds, Verify("test.queue_depth", new { queue = "billing", top = 5 }, Allowlist("orders")).Rejection);
         }
 
+        [Fact]
+        public void A_host_that_requires_approval_refuses_a_command_without_an_approval_reference()
+        {
+            var allowlist = Allowlist();
+            allowlist.Actions["test.restart_worker"] = new ActionPolicy { RequireApproval = true };
+            Assert.Equal(RejectionReasons.ApprovalRequired, Verify("test.restart_worker", new { }, allowlist).Rejection);
+
+            var envelope = new CommandEnvelope(CommandEnvelope.CurrentVersion, Guid.CreateVersion7(), "acme", Me, "test.restart_worker", JsonSerializer.SerializeToElement(new { }),
+                Now, Now + TimeSpan.FromMinutes(2), Token(), Token(), "action-request:01;approved-by:adam");
+            var bytes = CommandSignature.Serialize(envelope);
+            var signed = new SignedCommand(Convert.ToBase64String(bytes), CommandSignature.Sign(PlatformKey, bytes), CommandSignature.KeyId(PlatformKey));
+            Assert.Null(CommandVerifier.Verify(signed, Identity, allowlist, Now, Catalog).Rejection);
+            Assert.Contains("runs only from an approved request", allowlist.Report(Catalog).Actions.Single(a => a.Action.Name == "test.restart_worker").Limits);
+            Assert.Contains(new ActionsReport([allowlist.Report(Catalog).Actions.Single(a => a.Action.Name == "test.restart_worker") is var r
+                ? r with { Action = r.Action with { Risk = ActionRisks.Low } } : null!]).Validate(), p => p.Contains("Medium or High"));
+        }
+
         private static AgentService Service() => new(Options.Create(new AgentOptions()), Options.Create(Allowlist()), TimeProvider.System, NullLogger<AgentService>.Instance,
             actions: Catalog);
 

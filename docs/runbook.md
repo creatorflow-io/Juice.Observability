@@ -155,6 +155,15 @@ An agent older than the reports shows the built-in actions with a note. A custom
 it. The agent's log says `The platform refused this agent's action report` when its build's custom actions don't hold: the reason follows.
 `agent.actions.report` in `audit_records` records each change in what an agent reports.
 
+- **Approvals.** Every action has a risk, and the platform's `Actions:Approval` says what each risk needs (see the deployment guide).
+  - **Needing no one else:** the action runs when asked.
+  - **Needing approval:** it becomes a request, with a reason, and waits on the **Approvals** page for 30 minutes. Admins approve or reject
+    it there. A rejection needs a reason, and a request needing a second person can't be approved by whoever asked.
+  - **Once approved,** the command is signed and the agent runs it at its next poll.
+  - **The same request again** while one is open is refused as a duplicate. Wait for it, or cancel it from the agent's page.
+  - **A host's allowlist** can add `"RequireApproval": true` to an action. The host then refuses any command for it that didn't come from an
+    approved request (`approval_required`).
+  - **Audit:** `action.request.*` records who asked, who decided, and every refusal.
 - **Enroll a host.** An admin creates a token with `POST …/agents/enrollment-tokens`. It is valid for an hour by default, works once,
   and is shown once. Put it in the agent's `Agent:EnrollmentTokenFile` and start the agent. It appears in `GET …/agents`, linked to
   the discovered host of the same name.

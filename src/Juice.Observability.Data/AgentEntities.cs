@@ -67,6 +67,36 @@ namespace Juice.Observability.Data
 
     public enum AgentCommandState { Pending, Delivered, Succeeded, Failed, Rejected, Expired, Cancelled }
 
+    /// <summary>Pending until decided or past its expiry; Issued once approved and signed into a command; the rest are final.</summary>
+    public enum ActionRequestState { Pending, Issued, Rejected, Cancelled, Expired }
+
+    /// <summary>
+    /// A request to run an action on one agent, under the approval policy for its risk (roadmap Phase 8). The command is signed only once it's approved,
+    /// and carries the request as its approval reference. Kept with who asked, who decided and why.
+    /// </summary>
+    public sealed class ActionRequest
+    {
+        public Guid Id { get; init; } = Guid.CreateVersion7();
+        public Guid TenantId { get; init; }
+        public Guid AgentId { get; init; }
+        public required string Action { get; init; }
+        /// <summary>The typed parameters, JSON, as they will be signed.</summary>
+        public required string Parameters { get; init; }
+        public required string Risk { get; init; }
+        /// <summary>What it needed when it was asked for: an <c>ApprovalPolicies</c> value.</summary>
+        public required string Policy { get; init; }
+        public required string Reason { get; init; }
+        public required string RequestedBy { get; init; }
+        public DateTimeOffset RequestedAt { get; init; }
+        public DateTimeOffset ExpiresAt { get; init; }
+        public ActionRequestState State { get; set; }
+        public string? DecidedBy { get; set; }
+        public DateTimeOffset? DecidedAt { get; set; }
+        public string? Comment { get; set; }
+        /// <summary>The command it became, once issued.</summary>
+        public Guid? CommandId { get; set; }
+    }
+
     /// <summary>
     /// A command issued to one agent, with the exact bytes the platform signed. Its state follows it: waiting, handed to the agent, and what the agent
     /// reported, its refusals included.

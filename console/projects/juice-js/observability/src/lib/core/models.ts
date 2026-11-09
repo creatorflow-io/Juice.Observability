@@ -72,6 +72,16 @@ export interface ActionParameter {
 /** An action an agent can be asked for. `permitted` is null when the agent doesn't report what its host allows (an older agent). */
 export interface AgentAction {
   name: string; description: string; changing: boolean; custom: boolean; parameters: ActionParameter[]; permitted: boolean | null; limits: string[];
+  /** Low, Medium or High. */
+  risk: string;
+  /** What the platform's policy needs before it runs: None, Admin or SecondPerson. */
+  approval: string;
+}
+/** A request to run an action, under the approval policy for its risk. `state` is Pending, Issued, Rejected, Cancelled or Expired. */
+export interface ActionRequest {
+  id: string; agentId: string; hostname: string; action: string; parameters: Record<string, unknown>; risk: string; policy: string; reason: string;
+  requestedBy: string; requestedAt: string; expiresAt: string; state: string; decidedBy: string | null; decidedAt: string | null; comment: string | null;
+  command: AgentCommand | null;
 }
 export interface AgentActions { reportedAt: string | null; items: AgentAction[]; }
 export interface AgentPackage { version: string; sha256: string; size: number; signedBy: string; addedAt: string; }

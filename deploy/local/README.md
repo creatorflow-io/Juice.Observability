@@ -145,6 +145,7 @@ username/password form is hidden. Grafana roles come from the `grafana` client r
 | `erin` | `editor` | Editor |
 | `victor` | `viewer` | Viewer |
 | `nora` | none | refused (`role_attribute_strict`) |
+| `adam` | none (platform `admin` only) | refused; a second platform admin, for approvals that need a second person |
 
 All demo users share the password `KEYCLOAK_DEMO_PASSWORD` from `.env`. To add a person, create the user in the
 Keycloak admin console and assign a `grafana` client role.

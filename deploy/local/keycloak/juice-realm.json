@@ -330,6 +330,27 @@
       }
     },
     {
+      "id": "5f1c2a10-0000-4000-8000-00000000ada3",
+      "username": "adam",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "adam@juice.local",
+      "firstName": "Adam",
+      "lastName": "Demo",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${KEYCLOAK_DEMO_PASSWORD}",
+          "temporary": false
+        }
+      ],
+      "clientRoles": {
+        "juice-platform": [
+          "admin"
+        ]
+      }
+    },
+    {
       "id": "5f1c2a10-0000-4000-8000-0000000e5140",
       "username": "erin",
       "enabled": true,

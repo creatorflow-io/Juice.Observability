@@ -3,7 +3,7 @@ import { Injectable, inject } from '@angular/core';
 import { EMPTY, Observable, expand, map, reduce, shareReplay, switchMap } from 'rxjs';
 import { OBSERVABILITY_OPTIONS } from './options';
 import {
-  Agent, AgentActions, AgentCommand, AgentPackage, EnrollmentToken, AlertDetail, AlertNotifications, Alert, AllowlistEntry, Application, Channel, ChannelTestResult, Delivery, EscalationPolicy, IncidentDetail, IncidentEvent, IncidentSummary, Silence, DependencyEvidence, DependencyStatsPage, DeploymentEnvironment, LoadRun, LoadRunResults, Related, Timeline, Health, LogRecord, MetricInfo, Operation,
+  ActionRequest, Agent, AgentActions, AgentCommand, AgentPackage, EnrollmentToken, AlertDetail, AlertNotifications, Alert, AllowlistEntry, Application, Channel, ChannelTestResult, Delivery, EscalationPolicy, IncidentDetail, IncidentEvent, IncidentSummary, Silence, DependencyEvidence, DependencyStatsPage, DeploymentEnvironment, LoadRun, LoadRunResults, Related, Timeline, Health, LogRecord, MetricInfo, Operation,
   Page, ResourceDetail, ResourceSummary, Rule, SearchHit, Series, Capacity, ServiceStats, Tenant, TelemetryPage, Topology, Trace,
   TraceSummary,
 } from './models';
@@ -110,6 +110,14 @@ export class ApiService {
   agentPackages() { return this.get<Page<AgentPackage>>('/agents/packages'); }
   /** Idempotent: a repeated click or a lost response signs one command, not two. */
   issueCommand(id: string, action: string, parameters: Record<string, unknown>) { return this.once<AgentCommand>(`/agents/${id}/commands`, { action, parameters }); }
+  /** Asks for an action under its approval policy: issued at once when nobody else needs to approve, otherwise waiting. */
+  requestAction(agentId: string, action: string, parameters: Record<string, unknown>, reason: string) {
+    return this.once<ActionRequest>(`/agents/${agentId}/action-requests`, { action, parameters, reason });
+  }
+  actionRequests(query: Query = {}) { return this.get<Page<ActionRequest>>('/action-requests', { limit: 100, ...query }); }
+  approveRequest(id: string, comment: string) { return this.send<ActionRequest>('POST', `/action-requests/${id}/approval`, { comment }); }
+  rejectRequest(id: string, comment: string) { return this.send<ActionRequest>('POST', `/action-requests/${id}/rejection`, { comment }); }
+  cancelRequest(id: string) { return this.send<ActionRequest>('POST', `/action-requests/${id}/cancellation`, {}); }
   agentCommands(id: string, cursor?: string | null) { return this.get<Page<AgentCommand>>(`/agents/${id}/commands`, { limit: 25, cursor }); }
 
   alertNotifications(id: string) { return this.get<AlertNotifications>(`/alerts/${id}/notifications`); }

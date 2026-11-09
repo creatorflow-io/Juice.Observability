@@ -69,6 +69,12 @@ namespace Juice.Observability.Agent
         /// </summary>
         public Dictionary<string, List<string>> Values { get; set; } = [];
 
+        /// <summary>
+        /// Run it only from a request the platform approved: a command without an approval reference is refused (<see cref="RejectionReasons.ApprovalRequired"/>),
+        /// so a platform whose approval policy was loosened, or skipped, still can't make this host act.
+        /// </summary>
+        public bool RequireApproval { get; set; }
+
         internal bool AllowsValues(System.Text.Json.JsonElement parameters)
         {
             foreach (var (name, allowed) in Values)
@@ -129,6 +135,7 @@ namespace Juice.Observability.Agent
                     limits.Add(values.Count == 0 ? $"{name}: no value is allowed" : $"{name}: one of {string.Join(", ", values)}");
                 }
             }
+            if (RequireApproval) limits.Add("runs only from an approved request");
             return (action with { Parameters = parameters }, limits);
         }
 

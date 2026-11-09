@@ -130,13 +130,19 @@ function formatUptime(seconds: number): string {
                 }
               }
             }
+            @if (needsApproval()) {
+              <mat-form-field subscriptSizing="dynamic" class="jc-field-wide"><mat-label>Why (for whoever approves it)</mat-label>
+                <input matInput name="requestReason" data-testid="request-reason" maxlength="500" [(ngModel)]="requestReason">
+              </mat-form-field>
+            }
             <div class="jc-form-actions">
-              <button mat-flat-button type="submit" data-testid="command-issue" [disabled]="issuing() || selected()?.permitted === false">{{ action() === 'agent.update' ? 'Update' : 'Run' }}</button>
+              <button mat-flat-button type="submit" data-testid="command-issue" [disabled]="issuing() || selected()?.permitted === false">{{ needsApproval() ? 'Request' : action() === 'agent.update' ? 'Update' : 'Run' }}</button>
               @if (issueError()) { <span class="jc-error" data-testid="command-error">{{ issueError() }}</span> }
+              @if (issued()) { <span class="jc-muted" data-testid="command-issued">{{ issued() }}</span> }
             </div>
             @if (selected(); as s) {
               <div class="jc-muted jc-small jc-form-actions" data-testid="command-hint">
-                <div>{{ s.description }}@if (s.changing) { Admins only. }</div>
+                <div>{{ s.description }} <span data-testid="command-approval">{{ s.risk }} risk: {{ approvalText(s.approval) }}.</span></div>
                 @if (s.limits.length) { <div data-testid="command-limits">On this host: {{ s.limits.join('; ') }}.</div> }
               </div>
             }
@@ -148,6 +154,29 @@ function formatUptime(seconds: number): string {
               <p class="jc-muted jc-small">As the agent reported {{ list.reportedAt | ago }}, when it started. Its host still checks every command.</p>
             }
           }
+        </section>
+      }
+
+      @if (requestList().length) {
+        <section class="jc-card" data-testid="requests">
+          <h2>Requests</h2>
+          <table class="jc-table">
+            <thead><tr><th>Asked</th><th>Action</th><th>By, and why</th><th>State</th><th>Decided</th><th></th></tr></thead>
+            <tbody>
+              @for (r of requestList(); track r.id) {
+                <tr [attr.data-testid]="'request-' + r.id">
+                  <td class="jc-nowrap">{{ r.requestedAt | date: 'MMM d, HH:mm:ss' }}</td>
+                  <td><strong>{{ r.action }}</strong><div class="jc-muted jc-small">{{ r.risk }} risk</div></td>
+                  <td>{{ r.requestedBy }}<div class="jc-small">{{ r.reason }}</div></td>
+                  <td class="jc-nowrap"><span class="jc-badge" [class.jc-health-degraded]="r.state === 'Pending'" [class.jc-health-healthy]="r.state === 'Issued'"
+                      [class.jc-health-none]="r.state !== 'Pending' && r.state !== 'Issued'" data-testid="request-state">{{ r.state === 'Pending' ? 'Waiting for approval' : r.state }}</span>
+                    @if (r.state === 'Pending') { <div class="jc-muted jc-small">until {{ r.expiresAt | date: 'HH:mm' }}</div> }</td>
+                  <td class="jc-small">@if (r.decidedBy) { {{ r.decidedBy }}, {{ r.decidedAt | date: 'HH:mm' }} }@if (r.comment) { <div>{{ r.comment }}</div> }</td>
+                  <td class="jc-row-actions">@if (r.state === 'Pending') { <button mat-button type="button" [attr.data-testid]="'request-cancel-' + r.id" (click)="cancelRequest(r.id)">Cancel</button> }</td>
+                </tr>
+              }
+            </tbody>
+          </table>
         </section>
       }
 
@@ -247,6 +276,12 @@ export class AgentPage {
   protected readonly revokeError = signal('');
   protected version = '';
   protected reason = '';
+  protected requestReason = '';
+  /** What happened to the last request, when it didn't simply run. */
+  protected readonly issued = signal('');
+  protected readonly needsApproval = computed(() => (this.selected()?.approval ?? 'None') !== 'None');
+  protected readonly requests = apiResource({ params: () => this.id(), stream: ({ params }) => this.api.actionRequests({ agentId: params, limit: 20 }) });
+  protected readonly requestList = computed(() => this.requests.value()?.items ?? []);
   protected readonly creating = signal(false);
   protected readonly reenrollError = signal('');
   protected readonly token = signal<EnrollmentToken | null>(null);
@@ -288,10 +323,13 @@ export class AgentPage {
       if (!current || current.permitted === false) this.choose((list.find(a => a.permitted !== false) ?? list[0]).name);
       else if (Object.keys(untracked(this.values)).length === 0) this.choose(current.name);
     });
-    // While a command waits, look again every 2 seconds, and at the agent too, since an update changes its version.
+    // While a command waits, look again every 2 seconds, and at the agent too, since an update changes its version. While a request waits for
+    // approval, every 5: someone else decides it.
     effect(onCleanup => {
-      if (!this.allCommands().some(c => this.waiting(c))) return;
-      const timer = setTimeout(() => { this.commands.reload(); this.agent.reload(); }, 2000);
+      const running = this.allCommands().some(c => this.waiting(c));
+      const deciding = this.requestList().some(r => r.state === 'Pending');
+      if (!running && !deciding) return;
+      const timer = setTimeout(() => { this.commands.reload(); this.agent.reload(); this.requests.reload(); }, running ? 2000 : 5000);
       onCleanup(() => clearTimeout(timer));
     });
   }
@@ -369,19 +407,42 @@ export class AgentPage {
     return out;
   }
 
+  protected approvalText(policy: string): string {
+    switch (policy) {
+      case 'None': return 'runs when asked';
+      case 'Admin': return 'needs an admin: an admin\'s request runs at once, an operator\'s waits for an admin to approve it';
+      default: return 'needs a second person: an admin other than whoever asks approves it';
+    }
+  }
+
+  /** What needs no one else runs; what needs approval becomes a request, which runs once approved. */
   protected issue() {
     const action = this.action();
     this.issuing.set(true);
     this.issueError.set('');
-    this.api.issueCommand(this.id(), action, this.parameters()).subscribe({
-      next: () => { this.issuing.set(false); this.commands.reload(); },
-      error: e => {
+    this.issued.set('');
+    const failed = (e: unknown) => {
+      this.issuing.set(false);
+      this.issueError.set((e as { status?: number }).status === 403 ? 'Asking an agent needs the operator or admin role.' : problemText(e));
+    };
+    if (!this.needsApproval()) {
+      this.api.issueCommand(this.id(), action, this.parameters()).subscribe({ next: () => { this.issuing.set(false); this.commands.reload(); }, error: failed });
+      return;
+    }
+    this.api.requestAction(this.id(), action, this.parameters(), this.requestReason.trim()).subscribe({
+      next: r => {
         this.issuing.set(false);
-        this.issueError.set((e as { status?: number }).status === 403
-          ? action === 'agent.update' ? 'Updating an agent needs the admin role.' : 'Asking an agent needs the operator or admin role.'
-          : problemText(e));
+        this.requestReason = '';
+        this.issued.set(r.state === 'Issued' ? 'Approved by your role: running.' : 'Requested: it runs once approved, on the Approvals page.');
+        this.requests.reload();
+        this.commands.reload();
       },
+      error: failed,
     });
+  }
+
+  protected cancelRequest(id: string) {
+    this.api.cancelRequest(id).subscribe({ next: () => this.requests.reload(), error: e => this.issueError.set(problemText(e)) });
   }
 
   protected loadOlder() {

@@ -65,6 +65,8 @@ namespace Juice.Observability.Agent.Contracts
         public const string InvalidParameters = "invalid_parameters";
         /// <summary>The parameters are valid for the action, but outside this host's local bounds.</summary>
         public const string OutsideLocalBounds = "outside_local_bounds";
+        /// <summary>This host's allowlist requires the action to be approved, and the command carries no approval reference.</summary>
+        public const string ApprovalRequired = "approval_required";
     }
 
     /// <summary>Signing and verifying command bytes. The algorithm is fixed: no field of a command can choose it.</summary>

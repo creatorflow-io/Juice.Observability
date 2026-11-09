@@ -122,6 +122,9 @@ Agents are off unless `Agents:Enabled` is `true`, with:
 | `Agents:CertificateLifetime` | agent certificates, 7 days by default. An agent renews when a third is left |
 | `Agents:PackageDirectory`, `Agents:ReleaseKeyFiles` | for `agent.update`: where signed agent packages are, and the release public keys, PEM, that must have signed them. Without a directory there are no updates |
 | `Agents:PreviousCaCertificateFiles`, `Agents:PreviousCommandKeyFiles` | for rotation: CAs and command keys the current ones replaced (see below) |
+| `Actions:Approval:{Low,Medium,High}` | what each risk needs before a command is signed: `None`, `Admin` or `SecondPerson`. Defaults: `None`, `Admin`, `SecondPerson` |
+| `Actions:Overrides:{action}` | the same, for one action over its risk's policy, e.g. `Actions__Overrides__agent.update=SecondPerson` |
+| `Actions:ApprovalLifetime` | how long a request waits for a decision, 30 minutes by default |
 
 - **The listener** serves only the agent API, and the agent API is on no other port. With agents on, Kestrel listens only on the
   endpoints code names, so the host's own are named too, as Kestrel would have chosen them: `URLS` (or `ASPNETCORE_URLS`), otherwise
