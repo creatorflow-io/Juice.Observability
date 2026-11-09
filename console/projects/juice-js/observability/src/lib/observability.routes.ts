@@ -29,6 +29,8 @@ export const OBSERVABILITY_ROUTES: Routes = [
   page('silences', 'Silences', () => import('./pages/silences.page').then(m => m.SilencesPage)),
   page('incidents', 'Incidents', () => import('./pages/incidents.page').then(m => m.IncidentsPage)),
   page('incidents/:id', 'Incident', () => import('./pages/incident.page').then(m => m.IncidentPage)),
+  page('agents', 'Agents', () => import('./pages/agents.page').then(m => m.AgentsPage)),
+  page('agents/:id', 'Agent', () => import('./pages/agent.page').then(m => m.AgentPage)),
   page('timeline', 'Timeline', () => import('./pages/timeline.page').then(m => m.TimelinePage)),
   page('load-runs', 'Load runs', () => import('./pages/load-runs.page').then(m => m.LoadRunsPage)),
 ];
@@ -50,6 +52,7 @@ export function observabilityMenus(basePath = '/', order = 1): Menus {
     { id: 'rules', label: 'Rules', icon: 'rule', routerLink: link('rules') },
     { id: 'silences', label: 'Silences', icon: 'notifications_paused', routerLink: link('silences') },
     { id: 'notifications', label: 'Notifications', icon: 'campaign', routerLink: link('notifications') },
+    { id: 'agents', label: 'Agents', icon: 'smart_toy', routerLink: link('agents') },
     { id: 'timeline', label: 'Timeline', icon: 'history', routerLink: link('timeline') },
     { id: 'load-runs', label: 'Load runs', icon: 'speed', routerLink: link('load-runs') },
   ].map((menu, index) => ({ ...menu, order: order + index }));

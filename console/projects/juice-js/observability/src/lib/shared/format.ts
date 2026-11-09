@@ -37,6 +37,18 @@ export function formatAgo(iso: string | null | undefined): string {
   return `${Math.round(s / 86_400)} d ago`;
 }
 
+/**
+ * Copies text to the clipboard. Over plain HTTP at an address the browser has no clipboard API: the element showing the text is selected instead,
+ * ready for Ctrl+C. Says which happened.
+ */
+export async function copyText(text: string, shownIn: Element | null): Promise<'copied' | 'selected'> {
+  try {
+    if (navigator.clipboard) { await navigator.clipboard.writeText(text); return 'copied'; }
+  } catch { /* refused: select it instead */ }
+  if (shownIn) window.getSelection()?.selectAllChildren(shownIn);
+  return 'selected';
+}
+
 @Pipe({ name: 'duration' })
 export class DurationPipe implements PipeTransform {
   transform(ms: number | null | undefined) { return formatDuration(ms); }

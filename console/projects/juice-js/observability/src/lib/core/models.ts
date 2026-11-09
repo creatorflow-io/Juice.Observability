@@ -57,6 +57,29 @@ export interface Channel {
   groupWindowSeconds: number; minimumSeverity: string; enabled: boolean; managedBy: string; loadedAt: string; recentFailures: number; waiting: number;
 }
 export interface DeliveryAttempt { number: number; at: string; statusCode: number | null; error: string | null; durationMs: number; }
+/** A Juice Agent. `online` means it called in within the last 2 minutes; a revoked agent is never online. */
+export interface Agent {
+  id: string; hostname: string; operatingSystem: string; version: string; status: string; resourceId: string | null; online: boolean; lastSeenAt: string | null;
+  certificateNotAfter: string; enrolledBy: string; enrolledAt: string; revokedAt: string | null; revokedBy: string | null; revokeReason: string | null;
+}
+/** The token is in this response only: the platform keeps its hash. */
+export interface EnrollmentToken { id: string; token: string; purpose: string | null; expiresAt: string; }
+/** One parameter of an action, with its bounds (already narrowed to the host's where the agent reported them). */
+export interface ActionParameter {
+  name: string; type: 'string' | 'integer' | 'boolean'; required: boolean; description: string | null; minimum: number | null; maximum: number | null;
+  maxLength: number | null; pattern: string | null; allowed: string[] | null; default: string | null;
+}
+/** An action an agent can be asked for. `permitted` is null when the agent doesn't report what its host allows (an older agent). */
+export interface AgentAction {
+  name: string; description: string; changing: boolean; custom: boolean; parameters: ActionParameter[]; permitted: boolean | null; limits: string[];
+}
+export interface AgentActions { reportedAt: string | null; items: AgentAction[]; }
+export interface AgentPackage { version: string; sha256: string; size: number; signedBy: string; addedAt: string; }
+export interface AgentCommand {
+  id: string; agentId: string; action: string; parameters: Record<string, unknown>; state: string; issuedBy: string; issuedAt: string; expiresAt: string;
+  deliveredAt: string | null; deliveryCount: number; completedAt: string | null; reason: string | null; result: Record<string, unknown> | null; durationMs: number | null;
+}
+
 export interface Delivery {
   id: string; alertId: string; event: string; status: string; attempts: number; createdAt: string; firstAttemptAt: string | null; deliveredAt: string | null; nextAttemptAt: string | null;
   lastStatusCode: number | null; lastError: string | null; history: DeliveryAttempt[]; suppressedBy: string | null; groupedInto: string | null; escalationStep: number;
