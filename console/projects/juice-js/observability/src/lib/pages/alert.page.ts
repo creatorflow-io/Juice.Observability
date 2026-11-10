@@ -13,6 +13,8 @@ import { ContextService } from '../core/context.service';
 import { AgoPipe, ReasonPipe } from '../shared/format';
 import { ContextBar, HealthBadge, KeyValueTable } from '../shared/ui';
 import { problemText } from '../shared/telemetry';
+import { SuggestionsCard } from '../shared/suggestions';
+import { CorrelationDecision } from '../core/models';
 
 /**
  * One alert (Console requirements §14): evidence, lifecycle history, the subject's health and reasons, the way into
@@ -21,7 +23,7 @@ import { problemText } from '../shared/telemetry';
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [LinkPipe, RouterLink, DatePipe, LowerCasePipe, FormsModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatProgressBarModule,
-    ContextBar, HealthBadge, KeyValueTable, AgoPipe, ReasonPipe],
+    ContextBar, HealthBadge, KeyValueTable, AgoPipe, ReasonPipe, SuggestionsCard],
   template: `
     <jc-context-bar>
       <a [routerLink]="['alerts'] | jcLink" [queryParams]="ctx.keep()" class="jc-crumb">Alerts</a><span class="jc-crumb-sep">›</span>
@@ -82,6 +84,14 @@ import { problemText } from '../shared/telemetry';
         }
         @if (related.error()) { <p class="jc-error">{{ relatedError() }}</p> }
       </section>
+      @if (d.alert.state === 'Firing' || merged()) {
+        <section class="jc-card" data-testid="alert-suggestions">
+          <h2>Suggested with this alert</h2>
+          @if (merged(); as m) { <p data-testid="alert-suggestion-merged">Merged into <a [routerLink]="['incidents', m] | jcLink" [queryParams]="ctx.keep()">the incident</a>.</p> }
+          <jc-suggestions [suggestions]="suggestions.value()" (decided)="decided($event)" />
+          @if (suggestions.error()) { <p class="jc-error">{{ suggestionsError() }}</p> }
+        </section>
+      }
       <section class="jc-card" data-testid="alert-notifications">
         <h2>Notifications</h2>
         @if (notifications.value(); as n) {
@@ -142,6 +152,22 @@ export class AlertPage {
   protected readonly relatedError = computed(() => problemText(this.related.error()));
   protected readonly notifications = apiResource({ params: () => this.id(), stream: ({ params }) => this.api.alertNotifications(params) });
   protected readonly notificationsError = computed(() => problemText(this.notifications.error()));
+  /** Only a firing alert is suggested with others, so only its page asks. */
+  protected readonly suggestions = apiResource({
+    params: () => (this.detail.value()?.alert.state === 'Firing' ? this.id() : undefined),
+    stream: ({ params }) => this.api.alertSuggestions(params),
+  });
+  protected readonly suggestionsError = computed(() => problemText(this.suggestions.error()));
+  /** The incident a suggestion on this page was merged into. Keyed by alert: the page is reused when a suggestion's link opens another alert. */
+  private readonly mergedInto = signal<{ alert: string; incident: string } | null>(null);
+  protected readonly merged = computed(() => (this.mergedInto()?.alert === this.id() ? this.mergedInto()!.incident : null));
+
+  /** A decision, or null when one was refused because the list was stale: either way, read it again. */
+  protected decided(d: CorrelationDecision | null) {
+    if (d?.incidentId) this.mergedInto.set({ alert: this.id(), incident: d.incidentId });
+    this.suggestions.reload();
+    this.notifications.reload();
+  }
 
   incidentLink(alert: string, rule: string, subject: string) { return this.ctx.keep({ alert, title: `${rule} on ${subject}` }); }
 

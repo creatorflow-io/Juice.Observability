@@ -276,7 +276,7 @@ namespace Juice.Observability.Api.Endpoints
                 }
             }
             // A dependency that got worse before this alert. The subject's own health follows from the same evidence, so it isn't listed.
-            var unhealthy = new[] { HealthState.Degraded, HealthState.Unhealthy, HealthState.Critical, HealthState.Offline };
+            var unhealthy = CorrelationRanker.Unhealthy;
             var dependencyList = dependencyServices.ToList();
             var health = await db.HealthTransitions.AsNoTracking()
                 .Where(h => h.TenantId == tenantId && h.SubjectType == HealthSubject.Service && dependencyList.Contains(h.SubjectId) && h.EvaluatedAt >= start && h.EvaluatedAt <= end

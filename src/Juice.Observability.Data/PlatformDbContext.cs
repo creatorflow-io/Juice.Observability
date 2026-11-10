@@ -50,6 +50,7 @@ namespace Juice.Observability.Data
         public DbSet<Incident> Incidents => Set<Incident>();
         public DbSet<IncidentAlert> IncidentAlerts => Set<IncidentAlert>();
         public DbSet<IncidentEvent> IncidentEvents => Set<IncidentEvent>();
+        public DbSet<CorrelationDecision> CorrelationDecisions => Set<CorrelationDecision>();
         public DbSet<EnrolledAgent> Agents => Set<EnrolledAgent>();
         public DbSet<AgentEnrollmentToken> AgentEnrollmentTokens => Set<AgentEnrollmentToken>();
         public DbSet<AgentCommand> AgentCommands => Set<AgentCommand>();
@@ -310,6 +311,29 @@ namespace Juice.Observability.Data
                 e.Property(x => x.Text).HasMaxLength(2000);
                 e.HasIndex(x => new { x.IncidentId, x.At });
                 e.HasOne<Incident>().WithMany().HasForeignKey(x => x.IncidentId).OnDelete(DeleteBehavior.Cascade);
+            });
+
+            model.Entity<CorrelationDecision>(e =>
+            {
+                e.ToTable("correlation_decisions");
+                Tenant(e);
+                e.Property(x => x.Decision).HasConversion<string>().HasMaxLength(20);
+                e.Property(x => x.WeightsVersion).HasMaxLength(40);
+                e.Property(x => x.Reason).HasMaxLength(500);
+                e.Property(x => x.DecidedBy).HasMaxLength(256);
+                e.Property(x => x.Evidence).HasColumnType("jsonb").HasConversion(new ValueConverter<List<CorrelationEvidence>, string>(
+                        v => JsonSerializer.Serialize(v, JsonOptions),
+                        v => JsonSerializer.Deserialize<List<CorrelationEvidence>>(v, JsonOptions) ?? new()),
+                    new ValueComparer<List<CorrelationEvidence>>(
+                        (a, b) => JsonSerializer.Serialize(a, JsonOptions) == JsonSerializer.Serialize(b, JsonOptions),
+                        v => JsonSerializer.Serialize(v, JsonOptions).GetHashCode(),
+                        v => JsonSerializer.Deserialize<List<CorrelationEvidence>>(JsonSerializer.Serialize(v, JsonOptions), JsonOptions)!));
+                // One decision per pair: a second one, from a retry or a colleague at the same moment, is refused.
+                e.HasIndex(x => new { x.TenantId, x.FirstAlertId, x.SecondAlertId }).IsUnique();
+                e.HasIndex(x => x.SecondAlertId);
+                e.HasOne<Alert>().WithMany().HasForeignKey(x => x.FirstAlertId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<Alert>().WithMany().HasForeignKey(x => x.SecondAlertId).OnDelete(DeleteBehavior.Restrict);
+                e.HasOne<Incident>().WithMany().HasForeignKey(x => x.IncidentId).OnDelete(DeleteBehavior.SetNull);
             });
         }
 

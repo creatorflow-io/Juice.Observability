@@ -14,6 +14,7 @@ import { IncidentEvent } from '../core/models';
 import { apiResource } from '../shared/resource';
 import { problemText } from '../shared/telemetry';
 import { ContextBar } from '../shared/ui';
+import { SuggestionsCard } from '../shared/suggestions';
 
 const MOVES: Record<string, string[]> = {
   Open: ['Investigating', 'Mitigated', 'Resolved'],
@@ -25,7 +26,7 @@ const MOVES: Record<string, string[]> = {
 /** One incident: its state and the moves from it, its alerts, and who did what. Resolving it changes no alert, and says so if some are still open. */
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [LinkPipe, RouterLink, DatePipe, FormsModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatProgressBarModule, ContextBar],
+  imports: [LinkPipe, RouterLink, DatePipe, FormsModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatProgressBarModule, ContextBar, SuggestionsCard],
   template: `
     <jc-context-bar>
       <a [routerLink]="['incidents'] | jcLink" [queryParams]="ctx.keep()" class="jc-crumb">Incidents</a><span class="jc-crumb-sep">›</span>
@@ -65,6 +66,13 @@ const MOVES: Record<string, string[]> = {
           } @empty { <tr><td class="jc-muted">None. Open an alert and use “Open an incident”, or add one through the API.</td></tr> }
         </tbody></table>
       </section>
+      @if (d.incident.state !== 'Resolved') {
+        <section class="jc-card" data-testid="incident-suggestions">
+          <h2>Suggested alerts</h2>
+          <jc-suggestions [suggestions]="suggestions.value()" [withAlert]="true" [incident]="d.incident.id" (decided)="decided()" />
+          @if (suggestions.error()) { <p class="jc-error">{{ suggestionsError() }}</p> }
+        </section>
+      }
       <section class="jc-card" data-testid="incident-events">
         <h2>What happened</h2>
         <table class="jc-table"><tbody>
@@ -89,6 +97,14 @@ export class IncidentPage {
 
   protected readonly detail = apiResource({ params: () => this.id(), stream: ({ params }) => this.api.incident(params) });
   protected readonly error = computed(() => problemText(this.detail.error()));
+  /** A resolved incident is suggested nothing, so its page doesn't ask. */
+  protected readonly suggestions = apiResource({
+    params: () => (this.detail.value() && this.detail.value()!.incident.state !== 'Resolved' ? this.id() : undefined),
+    stream: ({ params }) => this.api.incidentSuggestions(params),
+  });
+  protected readonly suggestionsError = computed(() => problemText(this.suggestions.error()));
+
+  protected decided() { this.detail.reload(); this.suggestions.reload(); }
 
   protected moves(state: string): string[] { return MOVES[state] ?? []; }
 

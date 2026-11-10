@@ -187,6 +187,16 @@ export interface CorrelatedItem { type: string; id: string; at: string; title: s
 /** What happened near an alert: correlation, never a proven cause. */
 export interface Related { relation: string; note: string; breachStartedAt: string; items: CorrelatedItem[]; }
 
+export interface CorrelationEvidence { code: string; text: string; weight: number; }
+/** `incidentId`: the unresolved incident one of the pair is in; accepting adds the other to it, otherwise opens one. */
+export interface Suggestion { alert: Alert; other: Alert; score: number; evidence: CorrelationEvidence[]; incidentId: string | null; }
+/** Alerts suggested together: correlation, never a proven cause, and nothing merges until someone accepts. */
+export interface Suggestions { relation: string; note: string; threshold: number; items: Suggestion[]; }
+export interface CorrelationDecision {
+  decision: string; alertId: string; otherAlertId: string; score: number; evidence: CorrelationEvidence[]; weightsVersion: string;
+  incidentId: string | null; reason: string | null; decidedBy: string; decidedAt: string;
+}
+
 export interface LoadRun { id: string; name: string; environment: string | null; startedAt: string; endedAt: string | null; startedBy: string; }
 export interface LoadRunPoint {
   at: string; perSecond: number; errorRate: number; p95Ms: number | null; queue: number | null; consumerBusy: number;

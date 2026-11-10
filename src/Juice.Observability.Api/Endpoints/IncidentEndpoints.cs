@@ -100,6 +100,29 @@ namespace Juice.Observability.Api.Endpoints
             return new IncidentDetailDto(ToSummary(incident), await AlertEndpoints.ToDtosAsync(db, incident.TenantId, alerts, ct), events, alerts.Count(a => a.State != AlertState.Resolved));
         }
 
+        /// <summary>
+        /// Serializes changes to which incidents an alert is in, so two at once (opening an incident, adding an alert, accepting a correlation suggestion)
+        /// can't both put it in an unresolved incident. Advisory locks, taken in key order, in the caller's transaction: not the alert's row, which the
+        /// rule evaluator updates in its own order.
+        /// </summary>
+        internal static async Task LockMembershipAsync(PlatformDbContext db, IEnumerable<Guid> alertIds, CancellationToken ct)
+        {
+            foreach (var key in alertIds.Select(id => WorkerLease.KeyOf($"incident-membership:{id}")).Distinct().Order())
+            {
+                await db.Database.ExecuteSqlAsync($"SELECT pg_advisory_xact_lock({key})", ct);
+            }
+        }
+
+        /// <summary>The same locks without waiting: false if one is held elsewhere (the ones taken stay held until the transaction ends).</summary>
+        internal static async Task<bool> TryLockMembershipAsync(PlatformDbContext db, IEnumerable<Guid> alertIds, CancellationToken ct)
+        {
+            foreach (var key in alertIds.Select(id => WorkerLease.KeyOf($"incident-membership:{id}")).Distinct().Order())
+            {
+                if (!await db.Database.SqlQuery<bool>($"SELECT pg_try_advisory_xact_lock({key}) AS \"Value\"").SingleAsync(ct)) return false;
+            }
+            return true;
+        }
+
         /// <summary>The alerts of an incident: they must be the tenant's, and not in another unresolved incident. Returns the problem, or null.</summary>
         private static async Task<IResult?> CheckAlertsAsync(Guid tenantId, Guid? incidentId, List<Guid> ids, PlatformDbContext db, CancellationToken ct)
         {
@@ -113,16 +136,45 @@ namespace Juice.Observability.Api.Endpoints
             return taken ? Mutation.Problem(StatusCodes.Status409Conflict, "Alert in another incident", "An alert is already in an unresolved incident.") : null;
         }
 
+        /// <summary>
+        /// A new open incident with its alerts, as entities to save: "Opened" then one "Alert added" per alert, a microsecond apart (ids made in one
+        /// millisecond sort at random, and "Alert added" must not read as coming before "Opened"). The caller holds the alerts' membership locks.
+        /// </summary>
+        internal static Incident Open(PlatformDbContext db, Guid tenantId, string title, AlertSeverity severity, string actor, string? note, IReadOnlyList<Guid> alertIds, DateTimeOffset now)
+        {
+            var incident = new Incident { TenantId = tenantId, Title = title, Severity = severity, State = IncidentState.Open, CreatedBy = actor, CreatedAt = now, UpdatedAt = now };
+            db.Incidents.Add(incident);
+            db.IncidentEvents.Add(new IncidentEvent { TenantId = tenantId, IncidentId = incident.Id, At = now, Actor = actor, Type = IncidentEventTypes.Created, ToState = IncidentState.Open, Text = note });
+            var order = 0;
+            foreach (var id in alertIds)
+            {
+                db.IncidentAlerts.Add(new IncidentAlert { TenantId = tenantId, IncidentId = incident.Id, AlertId = id, AddedBy = actor, AddedAt = now });
+                db.IncidentEvents.Add(new IncidentEvent { TenantId = tenantId, IncidentId = incident.Id, At = now.AddMicroseconds(++order), Actor = actor, Type = IncidentEventTypes.AlertAdded, AlertId = id });
+            }
+            return incident;
+        }
+
+        /// <summary>An alert joining an incident, as entities to save. The caller holds the alert's membership lock and has checked it may join.</summary>
+        internal static void Join(PlatformDbContext db, Incident incident, Guid alertId, string actor, DateTimeOffset now, string? text = null)
+        {
+            incident.UpdatedAt = now;
+            db.IncidentAlerts.Add(new IncidentAlert { TenantId = incident.TenantId, IncidentId = incident.Id, AlertId = alertId, AddedBy = actor, AddedAt = now });
+            db.IncidentEvents.Add(new IncidentEvent { TenantId = incident.TenantId, IncidentId = incident.Id, At = now, Actor = actor, Type = IncidentEventTypes.AlertAdded, AlertId = alertId, Text = text });
+        }
+
         private static async Task<IResult> CreateAsync(Guid tenantId, CreateIncidentRequest? request, HttpContext http, PlatformDbContext db, TimeProvider clock, CancellationToken ct)
         {
             var mutation = new Mutation(http, db, tenantId, "incident.create", "incident");
             if (await mutation.RequireAsync(null, ct, Roles.Operator, Roles.Admin) is { } denied) return denied;
             if (request is null) return Mutation.Invalid(["A body is required."]);
-            if (await mutation.ReplayAsync("POST incidents", request, ct) is { } replay) return replay;
             var title = ChangeSanitizer.Text(request.Title, MaxTitle);
             if (title.Length == 0) return Mutation.Invalid(["title is required."]);
             var ids = (request.AlertIds ?? []).Distinct().ToList();
             if (ids.Count > MaxAlerts) return Mutation.Invalid([$"At most {MaxAlerts} alerts."]);
+            await using var transaction = await db.Database.BeginTransactionAsync(ct);
+            await LockMembershipAsync(db, ids, ct);
+            // Under the lock, so a retry sent while the first still runs gets its answer, not "alert in another incident".
+            if (await mutation.ReplayAsync("POST incidents", request, ct) is { } replay) return replay;
             if (await CheckAlertsAsync(tenantId, null, ids, db, ct) is { } alertProblem) return alertProblem;
             // Unsaid, it's as serious as its worst alert.
             AlertSeverity severity;
@@ -135,19 +187,11 @@ namespace Juice.Observability.Api.Endpoints
                 severity = (await db.Alerts.AsNoTracking().Where(a => ids.Contains(a.Id)).Select(a => a.Severity).ToListAsync(ct)).DefaultIfEmpty(AlertSeverity.Warning).Max();
             }
             var now = clock.GetUtcNow();
-            var incident = new Incident { TenantId = tenantId, Title = title, Severity = severity, State = IncidentState.Open, CreatedBy = mutation.Actor, CreatedAt = now, UpdatedAt = now };
-            db.Incidents.Add(incident);
-            db.IncidentEvents.Add(new IncidentEvent { TenantId = tenantId, IncidentId = incident.Id, At = now, Actor = mutation.Actor, Type = IncidentEventTypes.Created, ToState = IncidentState.Open, Text = ChangeSanitizer.Text(request.Note, MaxText) is { Length: > 0 } note ? note : null });
-            // A microsecond apart: ids made in one millisecond sort at random, and "Alert added" must not read as coming before "Opened".
-            var order = 0;
-            foreach (var id in ids)
-            {
-                db.IncidentAlerts.Add(new IncidentAlert { TenantId = tenantId, IncidentId = incident.Id, AlertId = id, AddedBy = mutation.Actor, AddedAt = now });
-                db.IncidentEvents.Add(new IncidentEvent { TenantId = tenantId, IncidentId = incident.Id, At = now.AddMicroseconds(++order), Actor = mutation.Actor, Type = IncidentEventTypes.AlertAdded, AlertId = id });
-            }
+            var incident = Open(db, tenantId, title, severity, mutation.Actor, ChangeSanitizer.Text(request.Note, MaxText) is { Length: > 0 } note ? note : null, ids, now);
             mutation.Audit(AuditOutcome.Succeeded, incident.Id.ToString(), new() { ["alerts"] = ids.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) });
             var result = mutation.Remember(StatusCodes.Status201Created, ToSummary(incident), now);
             await db.SaveChangesAsync(ct);
+            await transaction.CommitAsync(ct);
             return result;
         }
 
@@ -156,13 +200,21 @@ namespace Juice.Observability.Api.Endpoints
             var mutation = new Mutation(http, db, tenantId, "incident.transition", "incident");
             if (await mutation.RequireAsync(incidentId.ToString(), ct, Roles.Operator, Roles.Admin) is { } denied) return denied;
             if (request is null) return Mutation.Invalid(["A body is required."]);
-            if (await mutation.ReplayAsync($"POST incidents/{incidentId}/transitions", request, ct) is { } replay) return replay;
             if (!Enum.TryParse<IncidentState>(request.To, ignoreCase: true, out var to) || !Enum.IsDefined(to))
             {
                 return Mutation.Invalid(["to is investigating, mitigated or resolved."]);
             }
             await using var transaction = await db.Database.BeginTransactionAsync(ct);
+            // Reopening puts its alerts back in an unresolved incident, so it takes their membership locks, before the incident's row as accepting does.
+            List<Guid> members = [];
+            if (to == IncidentState.Investigating)
+            {
+                members = await db.IncidentAlerts.AsNoTracking().Where(l => l.IncidentId == incidentId).Select(l => l.AlertId).ToListAsync(ct);
+                await LockMembershipAsync(db, members, ct);
+            }
             await db.Database.ExecuteSqlAsync($"SELECT 1 FROM incidents WHERE id = {incidentId} FOR UPDATE", ct);
+            // Under the locks, so a retry sent while the first still runs gets its answer, not "not allowed from this state".
+            if (await mutation.ReplayAsync($"POST incidents/{incidentId}/transitions", request, ct) is { } replay) return replay;
             var incident = await db.Incidents.SingleOrDefaultAsync(i => i.TenantId == tenantId && i.Id == incidentId, ct);
             if (incident is null) return NotFound();
             var from = incident.State;
@@ -177,6 +229,27 @@ namespace Juice.Observability.Api.Endpoints
             if (comment.Length == 0 && IncidentLifecycle.NeedsComment(from, to))
             {
                 return Mutation.Invalid(["Say why: a comment is required to resolve or reopen an incident."]);
+            }
+            if (from == IncidentState.Resolved)
+            {
+                // Adding an alert takes the incident's row, which this holds, so the members can't change from here on. One added between the first read
+                // and the row lock is locked now, without waiting: waiting for an alert's lock while holding the row could deadlock with someone adding it.
+                var current = await db.IncidentAlerts.AsNoTracking().Where(l => l.IncidentId == incidentId).Select(l => l.AlertId).ToListAsync(ct);
+                if (!await TryLockMembershipAsync(db, current.Except(members), ct))
+                {
+                    return Mutation.Problem(StatusCodes.Status409Conflict, "Changed meanwhile", "Its alerts changed while reopening it. Try again.");
+                }
+                members = current;
+            }
+            if (from == IncidentState.Resolved && members.Count > 0
+                && await db.IncidentAlerts.AsNoTracking().Where(l => members.Contains(l.AlertId) && l.IncidentId != incidentId)
+                    .Join(db.Incidents.AsNoTracking(), l => l.IncidentId, i => i.Id, (l, i) => i).AnyAsync(i => i.State != IncidentState.Resolved, ct))
+            {
+                mutation.Audit(AuditOutcome.Failed, incidentId.ToString(), new() { ["reason"] = "alert_in_another_incident", ["from"] = from.ToString(), ["to"] = to.ToString() });
+                await db.SaveChangesAsync(ct);
+                await transaction.CommitAsync(ct);
+                return Mutation.Problem(StatusCodes.Status409Conflict, "Alert in another incident",
+                    "One of its alerts joined another unresolved incident after this one was resolved. Remove it here or there first: an alert is in one unresolved incident at most.");
             }
             var now = clock.GetUtcNow();
             incident.State = to;
@@ -216,17 +289,19 @@ namespace Juice.Observability.Api.Endpoints
             var mutation = new Mutation(http, db, tenantId, "incident.alert.add", "incident");
             if (await mutation.RequireAsync(incidentId.ToString(), ct, Roles.Operator, Roles.Admin) is { } denied) return denied;
             if (request?.AlertId is not { } alertId) return Mutation.Invalid(["alertId is required."]);
+            await using var transaction = await db.Database.BeginTransactionAsync(ct);
+            await LockMembershipAsync(db, [alertId], ct);
+            // The incident's row too, after the alert's lock as accepting takes them: a reopen running now checks a fixed set of alerts.
+            await db.Database.ExecuteSqlAsync($"SELECT 1 FROM incidents WHERE id = {incidentId} FOR UPDATE", ct);
             var incident = await db.Incidents.SingleOrDefaultAsync(i => i.TenantId == tenantId && i.Id == incidentId, ct);
             if (incident is null) return NotFound();
             if (await db.IncidentAlerts.AnyAsync(l => l.IncidentId == incidentId && l.AlertId == alertId, ct)) return Results.Ok(await DetailAsync(db, incident, ct));
             if (await db.IncidentAlerts.CountAsync(l => l.IncidentId == incidentId, ct) >= MaxAlerts) return Mutation.Problem(StatusCodes.Status409Conflict, "Too many alerts", $"An incident has at most {MaxAlerts} alerts.");
             if (await CheckAlertsAsync(tenantId, incidentId, [alertId], db, ct) is { } alertProblem) return alertProblem;
-            var now = clock.GetUtcNow();
-            incident.UpdatedAt = now;
-            db.IncidentAlerts.Add(new IncidentAlert { TenantId = tenantId, IncidentId = incidentId, AlertId = alertId, AddedBy = mutation.Actor, AddedAt = now });
-            db.IncidentEvents.Add(new IncidentEvent { TenantId = tenantId, IncidentId = incidentId, At = now, Actor = mutation.Actor, Type = IncidentEventTypes.AlertAdded, AlertId = alertId });
+            Join(db, incident, alertId, mutation.Actor, clock.GetUtcNow());
             mutation.Audit(AuditOutcome.Succeeded, incidentId.ToString(), new() { ["alert"] = alertId.ToString() });
             await db.SaveChangesAsync(ct);
+            await transaction.CommitAsync(ct);
             return Results.Ok(await DetailAsync(db, incident, ct));
         }
 
@@ -234,6 +309,8 @@ namespace Juice.Observability.Api.Endpoints
         {
             var mutation = new Mutation(http, db, tenantId, "incident.alert.remove", "incident");
             if (await mutation.RequireAsync(incidentId.ToString(), ct, Roles.Operator, Roles.Admin) is { } denied) return denied;
+            await using var transaction = await db.Database.BeginTransactionAsync(ct);
+            await LockMembershipAsync(db, [alertId], ct);
             var incident = await db.Incidents.SingleOrDefaultAsync(i => i.TenantId == tenantId && i.Id == incidentId, ct);
             if (incident is null) return NotFound();
             var link = await db.IncidentAlerts.SingleOrDefaultAsync(l => l.IncidentId == incidentId && l.AlertId == alertId, ct);
@@ -244,6 +321,7 @@ namespace Juice.Observability.Api.Endpoints
             db.IncidentEvents.Add(new IncidentEvent { TenantId = tenantId, IncidentId = incidentId, At = now, Actor = mutation.Actor, Type = IncidentEventTypes.AlertRemoved, AlertId = alertId });
             mutation.Audit(AuditOutcome.Succeeded, incidentId.ToString(), new() { ["alert"] = alertId.ToString() });
             await db.SaveChangesAsync(ct);
+            await transaction.CommitAsync(ct);
             return Results.NoContent();
         }
     }

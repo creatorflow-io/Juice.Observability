@@ -1,3 +1,5 @@
+using Juice.Observability.Data;
+
 namespace Juice.Observability.Api.Endpoints
 {
     /// <summary>How something relates to the subject of an alert.</summary>
@@ -27,6 +29,8 @@ namespace Juice.Observability.Api.Endpoints
         public const int MaxProximityPoints = 40;
         public const int AfterBreachPoints = 5;
         public const int MaxItems = 20;
+        /// <summary>The health states that count as something wrong, here and in correlation suggestions.</summary>
+        public static IReadOnlyList<HealthState> Unhealthy { get; } = Array.AsReadOnly([HealthState.Degraded, HealthState.Unhealthy, HealthState.Critical, HealthState.Offline]);
 
         public static IReadOnlyList<CorrelatedItemDto> Rank(DateTimeOffset breachStarted, IEnumerable<CorrelationCandidate> candidates)
             => candidates.Select(c => Score(breachStarted, c))
@@ -64,7 +68,7 @@ namespace Juice.Observability.Api.Endpoints
             return new("before-breach", $"{Describe(before)} before the breach began", (int)Math.Round(MaxProximityPoints * share));
         }
 
-        private static string Describe(TimeSpan span)
+        internal static string Describe(TimeSpan span)
             => span.TotalHours >= 1 ? $"{span.TotalHours:0.#} h" : span.TotalMinutes >= 1 ? $"{span.TotalMinutes:0} min" : $"{span.TotalSeconds:0} s";
     }
 }

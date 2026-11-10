@@ -64,7 +64,10 @@ namespace Juice.Observability.Api.Endpoints
             return Problem(StatusCodes.Status409Conflict, "Owned by the platform", detail);
         }
 
-        /// <summary>The first response to a repeated key, a refusal if the key was used differently, or null to go on. Call <see cref="Remember"/> on success.</summary>
+        /// <summary>
+        /// The first response to a repeated key, a refusal if the key was used differently, or null to go on. Call <see cref="Remember"/> on success.
+        /// Called inside the change's transaction, it also serializes requests with the same key.
+        /// </summary>
         public async Task<IResult?> ReplayAsync(string route, object request, CancellationToken ct)
         {
             _key = http.Request.Headers["Idempotency-Key"].ToString();
@@ -78,6 +81,12 @@ namespace Juice.Observability.Api.Endpoints
             }
             _operationKey = route;
             _requestHash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(request))));
+            // In a transaction, a retry sent while the first is still running waits for it here and then gets its stored answer, instead of doing the
+            // change again or failing on the stored answer's key.
+            if (db.Database.CurrentTransaction is not null)
+            {
+                await db.Database.ExecuteSqlAsync($"SELECT pg_advisory_xact_lock({WorkerLease.KeyOf($"idempotency:{tenantId}:{_operationKey}:{_key}")})", ct);
+            }
             var previous = await db.IdempotencyRecords.AsNoTracking().SingleOrDefaultAsync(r => r.TenantId == tenantId && r.Key == _key && r.Operation == _operationKey, ct);
             if (previous is null)
             {

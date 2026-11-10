@@ -1,6 +1,6 @@
 # Phase 9 plan: SLOs, alert correlation, and selective streaming
 
-**Status:** in progress, milestones 1 and 2 of 4 done. The owner's requirements and decisions are marked **Owner**; the rest are mine, for review.
+**Status:** in progress, milestones 1, 2 and 3 of 4 done. The owner's requirements and decisions are marked **Owner**; the rest are mine, for review.
 
 **Roadmap gate:**
 - a benchmark shows scheduled queries can't meet an explicit requirement before streaming is introduced;
@@ -221,3 +221,50 @@ with this traffic, not a defect.
 | Independent review, 10 November | Two rounds of `code-review` (20 findings fixed) and a confirmation round on the round-2 fixes (5 fixed): among them, reserved keys checked only when a rule is made, resolving on the short window, a cooldown that follows only a cooled burn, judging a moved SLO on its new service's minutes only, a web-only replica that doesn't close alerts another replica still judges, and a rollback that resolves open alerts first. 615 tests pass |
 | Mutation check | 26 of 26 caught: a counting replica's alerts closed, a cooldown after any resolve, a held alert losing its rate, an unreadable old version holding the SLO, missing data as cooled, short window alone fires, both windows to resolve, the fast rate and its severity, firing without notifying, subject not the service, one alert per rule, retired or moved alerts left open, old service's minutes judged, no-data flag, no cooldown, the long window's rate on resolve, counting off leaving alerts open, rules not made or owned by the API, a held key taken over, reserved keys and the template accepted by the API, a platform rule changeable, a payload without the SLO |
 | Through the browser | `console/e2e/slos.mjs`: the burn alerts section on the SLO page, and the three platform rules marked and unchangeable on the rules page |
+
+## Milestone 3: correlation suggestions, 10 November
+
+- **Computed when asked, not stored:** `GET alerts/{id}/suggestions` and `GET incidents/{id}/suggestions` score the candidates from what the
+  platform already keeps (alerts, instances and hosts, dependencies, health snapshots, changes). No worker and no new stateful component.
+- **Candidates:** both alerts `Firing`, fired within 10 minutes of each other, in the same environment (a host alert has none, so it pairs
+  with any), not decided before, and not both in unresolved incidents. At most 500 other alerts are read, those firing closest first, and
+  at most 20 suggestions are returned.
+- **Evidence and weights** as in the table above (`CorrelationScorer`, weights version `phase9-1`):
+  - dependency: either service directly depends on the other in that environment, observed in traces from both sides (one only the caller
+    reported doesn't count) within the 7 days before the pair fired (discovery keeps dependencies it no longer sees). The same 7 days apply
+    to shared dependencies;
+  - same host: the hosts of each service's active instances in that environment, or the host alert's own host;
+  - recent change: a change on either alert's subject (service or host) or on something both depend on, from 30 minutes before the earlier
+    breach to the later one. One piece of evidence however many changes; it names up to three;
+  - fired together: 0.20 within 2 minutes, sliding to 0 at 10;
+  - unhealthy shared dependency: something both depend on whose current health is Degraded, Unhealthy, Critical or Offline.
+
+  Each weight is rounded to hundredths and the score is their sum, capped at 1. Suggested from 0.50.
+- **Accept** (`POST alerts/{id}/suggestions/{other}/accept`, operator or admin): both alerts' incident membership is locked (an advisory
+  lock per alert, which opening an incident and adding an alert to one take too, so an alert can't land in two unresolved incidents; not the
+  alert rows, which the rule evaluator updates), the pair is scored again, and it is refused if no longer suggested. Removing an alert
+  from an incident and reopening one take the same locks; reopening is refused while one of its alerts is in another unresolved incident. Otherwise it adds the other alert to the unresolved incident one of them is in, or opens one (titled
+  from both alerts unless a title is given, as serious as the worse). The incident's record says "From a correlation suggestion, score n".
+- **Dismiss** (`.../dismiss`, operator or admin, a reason required): the pair isn't suggested again.
+- **Kept for tuning:** each decision is one `correlation_decisions` row per pair (unique), with the score, evidence, weights version, reason,
+  incident, who and when. Both are audited (`correlation.accept`, `correlation.dismiss`), refusals too, with the reason.
+- **Console:** the alert page lists what is suggested with a firing alert; the incident page lists alerts outside it suggested with one
+  inside, each once with its best pair. Each shows the score and every piece of evidence with its weight, under the correlation note, with Accept ("Merge into a new
+  incident", "Add to this incident" or "Add to its incident") and Dismiss with a reason.
+
+| Requirement | Evidence |
+|---|---|
+| Weighted score with evidence (R9) | `CorrelationSuggestionTests.Each_piece_of_evidence_adds_its_weight_and_the_score_stops_at_one`, `Firing_together_counts_fully_within_two_minutes_then_slides_to_nothing_at_ten`, `A_pair_is_suggested_from_half` |
+| Suggests, people decide; audited; nothing merges on its own | `Suggestions_carry_their_evidence_and_people_accept_or_dismiss_them_audited_Async`: candidates by time, environment and state; all five pieces of evidence on a real seeded topology; roles; reasons; refusals audited; a new incident, then joining the open one; a dismissed pair not suggested again; idempotent retry; one decision per pair; alerts unchanged |
+| Incidents | `Alerts_in_two_incidents_or_a_resolved_one_are_left_alone_Async` |
+| Labelled correlation | The note on every response and on both pages |
+| Through the browser | `console/e2e/correlation.mjs`, 10 November, on the local stack's real alerts: 5 pairs suggested (the demo shop's checkout and payments, the flow services); one dismissed with a reason, one merged into a new incident whose record names the suggestion |
+| One unresolved incident per alert | `Accepting_waits_for_an_alert_being_added_to_an_incident_by_hand_Async` (the membership lock held, accepting and opening wait); reopening refused while an alert is elsewhere, and the missing comment reported first |
+| Retries | `Retries_with_one_key_at_the_same_time_get_one_answer_Async`: four at once open one incident (with and without alerts) and move it once |
+| Bounded | `Decided_pairs_dont_crowd_out_the_others_Async`: behind 500 dismissed alerts firing at the same moment, the real candidates are still found; `Dependencies_traces_no_longer_show_are_no_evidence_Async` |
+| Independent review, 10 November | Two rounds of `code-review` (19 findings fixed) and a confirmation round on the round-2 fixes (6 found, fixed on the owner's word). Among them: incident membership locked per alert with advisory locks (accepting, opening, adding, removing, reopening) instead of alert rows the rule evaluator updates; a retry with the same key waits and replays (`Mutation.ReplayAsync` in a transaction); observed dependencies only, seen in the last 7 days; the incident page lists each outside alert once, before the cap; candidates ranked by closeness to any focus alert after decided and grouped pairs are left out; a stale card reloads on a 409; the merged notice belongs to its alert |
+| Mutation check | 25 of 25 caught: dependency evidence ignored, inferred counted, timing not sliding, threshold 0.6, score uncapped, environment ignored, decided or grouped pairs suggested, stale dependencies, a healthy shared dependency counted, no change lookback, no shared host, the incident list not one per alert, the cap before exclusions, viewers deciding, dismissing without a reason, accepting without re-scoring, always a new incident, the milder severity, decision not stored or audited, no membership lock on accept or open, reopening into a second incident, retries not serialized |
+
+To watch with real decisions (not changed, as the weights are a starting point): a change on *either* alert counts, so a deployment of one
+service plus timing reaches 0.50 with any alert that fires beside it (the test's search and payments pair). Two alerts on the same service
+get no evidence beyond timing, since the table has no "same service" weight.

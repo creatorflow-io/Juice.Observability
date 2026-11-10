@@ -1000,6 +1000,84 @@ namespace Juice.Observability.Data.Migrations
                     b.ToTable("change_events", (string)null);
                 });
 
+            modelBuilder.Entity("Juice.Observability.Data.CorrelationDecision", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("DecidedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("decided_at");
+
+                    b.Property<string>("DecidedBy")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("decided_by");
+
+                    b.Property<string>("Decision")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("decision");
+
+                    b.Property<string>("Evidence")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("evidence");
+
+                    b.Property<Guid>("FirstAlertId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("first_alert_id");
+
+                    b.Property<Guid?>("IncidentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("incident_id");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("reason");
+
+                    b.Property<double>("Score")
+                        .HasColumnType("double precision")
+                        .HasColumnName("score");
+
+                    b.Property<Guid>("SecondAlertId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("second_alert_id");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("WeightsVersion")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("weights_version");
+
+                    b.HasKey("Id")
+                        .HasName("pk_correlation_decisions");
+
+                    b.HasIndex("FirstAlertId")
+                        .HasDatabaseName("ix_correlation_decisions_first_alert_id");
+
+                    b.HasIndex("IncidentId")
+                        .HasDatabaseName("ix_correlation_decisions_incident_id");
+
+                    b.HasIndex("SecondAlertId")
+                        .HasDatabaseName("ix_correlation_decisions_second_alert_id");
+
+                    b.HasIndex("TenantId", "FirstAlertId", "SecondAlertId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_correlation_decisions_tenant_id_first_alert_id_second_alert");
+
+                    b.ToTable("correlation_decisions", (string)null);
+                });
+
             modelBuilder.Entity("Juice.Observability.Data.Dependency", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2830,6 +2908,36 @@ namespace Juice.Observability.Data.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_change_events_platform_tenants_tenant_id");
+                });
+
+            modelBuilder.Entity("Juice.Observability.Data.CorrelationDecision", b =>
+                {
+                    b.HasOne("Juice.Observability.Data.Alert", null)
+                        .WithMany()
+                        .HasForeignKey("FirstAlertId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_correlation_decisions_alerts_first_alert_id");
+
+                    b.HasOne("Juice.Observability.Data.Incident", null)
+                        .WithMany()
+                        .HasForeignKey("IncidentId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_correlation_decisions_incidents_incident_id");
+
+                    b.HasOne("Juice.Observability.Data.Alert", null)
+                        .WithMany()
+                        .HasForeignKey("SecondAlertId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_correlation_decisions_alerts_second_alert_id");
+
+                    b.HasOne("Juice.Observability.Data.PlatformTenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_correlation_decisions_platform_tenants_tenant_id");
                 });
 
             modelBuilder.Entity("Juice.Observability.Data.Dependency", b =>

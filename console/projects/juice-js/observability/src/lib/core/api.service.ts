@@ -5,7 +5,7 @@ import { OBSERVABILITY_OPTIONS } from './options';
 import {
   ActionRequest, ActionRequestsWaiting, ActionTarget, Agent, SloDetail, SloSummary, AgentActions, AgentCommand, AgentPackage, EnrollmentToken, AlertDetail, AlertNotifications, Alert, AllowlistEntry, Application, Channel, ChannelTestResult, Delivery, EscalationPolicy, IncidentDetail, IncidentEvent, IncidentSummary, Silence, DependencyEvidence, DependencyStatsPage, DeploymentEnvironment, LoadRun, LoadRunResults, Related, Timeline, Health, LogRecord, MetricInfo, Operation,
   Page, ResourceDetail, ResourceSummary, Rule, SearchHit, Series, Capacity, ServiceStats, Tenant, TelemetryPage, Topology, Trace,
-  TraceSummary,
+  TraceSummary, Suggestions, CorrelationDecision,
 } from './models';
 
 /**
@@ -155,6 +155,10 @@ export class ApiService {
   capacity(query: Query) { return this.get<Capacity>('/telemetry/capacity', query); }
   timeline(query: Query) { return this.get<Timeline>('/timeline', query); }
   relatedToAlert(id: string) { return this.get<Related>(`/alerts/${id}/related`); }
+  alertSuggestions(id: string) { return this.get<Suggestions>(`/alerts/${id}/suggestions`); }
+  incidentSuggestions(id: string) { return this.get<Suggestions>(`/incidents/${id}/suggestions`); }
+  acceptSuggestion(alertId: string, otherId: string) { return this.once<CorrelationDecision>(`/alerts/${alertId}/suggestions/${otherId}/accept`, {}); }
+  dismissSuggestion(alertId: string, otherId: string, reason: string) { return this.once<CorrelationDecision>(`/alerts/${alertId}/suggestions/${otherId}/dismiss`, { reason }); }
   loadRuns(query: Query) { return this.get<Page<LoadRun>>('/load-runs', query); }
   loadRunResults(id: string) { return this.get<LoadRunResults>(`/load-runs/${id}/results`); }
   dependencyStats(query: Query) { return this.get<DependencyStatsPage>('/telemetry/dependencies', query); }
