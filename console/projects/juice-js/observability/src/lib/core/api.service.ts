@@ -3,7 +3,7 @@ import { Injectable, inject, signal } from '@angular/core';
 import { EMPTY, Observable, expand, map, reduce, shareReplay, switchMap, tap } from 'rxjs';
 import { OBSERVABILITY_OPTIONS } from './options';
 import {
-  ActionRequest, ActionRequestsWaiting, ActionTarget, Agent, AgentActions, AgentCommand, AgentPackage, EnrollmentToken, AlertDetail, AlertNotifications, Alert, AllowlistEntry, Application, Channel, ChannelTestResult, Delivery, EscalationPolicy, IncidentDetail, IncidentEvent, IncidentSummary, Silence, DependencyEvidence, DependencyStatsPage, DeploymentEnvironment, LoadRun, LoadRunResults, Related, Timeline, Health, LogRecord, MetricInfo, Operation,
+  ActionRequest, ActionRequestsWaiting, ActionTarget, Agent, SloDetail, SloSummary, AgentActions, AgentCommand, AgentPackage, EnrollmentToken, AlertDetail, AlertNotifications, Alert, AllowlistEntry, Application, Channel, ChannelTestResult, Delivery, EscalationPolicy, IncidentDetail, IncidentEvent, IncidentSummary, Silence, DependencyEvidence, DependencyStatsPage, DeploymentEnvironment, LoadRun, LoadRunResults, Related, Timeline, Health, LogRecord, MetricInfo, Operation,
   Page, ResourceDetail, ResourceSummary, Rule, SearchHit, Series, Capacity, ServiceStats, Tenant, TelemetryPage, Topology, Trace,
   TraceSummary,
 } from './models';
@@ -123,6 +123,9 @@ export class ApiService {
   downloadBundle(agentId: string, bundleId: string) {
     return this.tenant$.pipe(switchMap(t => this.http.get(`${this.base}/tenants/${t.id}/agents/${agentId}/bundles/${bundleId}`, { responseType: 'blob', observe: 'response' })));
   }
+  /** SLOs, technical or business apart (category), with their budgets and burn rates. */
+  slos(category?: string) { return this.get<Page<SloSummary>>('/slos', { category }); }
+  slo(key: string) { return this.get<SloDetail>(`/slos/${encodeURIComponent(key)}`); }
   /** How many requests wait, and how many of them the signed-in user can decide. */
   waitingRequests() { return this.get<ActionRequestsWaiting>('/action-requests/waiting'); }
   approveRequest(id: string, comment: string) { return this.send<ActionRequest>('POST', `/action-requests/${id}/approval`, { comment }); }

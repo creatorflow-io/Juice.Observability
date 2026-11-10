@@ -32,6 +32,8 @@ export const OBSERVABILITY_ROUTES: Routes = [
   page('agents', 'Agents', () => import('./pages/agents.page').then(m => m.AgentsPage)),
   page('agents/:id', 'Agent', () => import('./pages/agent.page').then(m => m.AgentPage)),
   page('approvals', 'Approvals', () => import('./pages/approvals.page').then(m => m.ApprovalsPage)),
+  page('slos', 'SLOs', () => import('./pages/slos.page').then(m => m.SlosPage)),
+  page('slos/:key', 'SLO', () => import('./pages/slo.page').then(m => m.SloPage)),
   page('timeline', 'Timeline', () => import('./pages/timeline.page').then(m => m.TimelinePage)),
   page('load-runs', 'Load runs', () => import('./pages/load-runs.page').then(m => m.LoadRunsPage)),
 ];
@@ -53,6 +55,7 @@ export function observabilityMenus(basePath = '/', order = 1): Menus {
     { id: 'rules', label: 'Rules', icon: 'rule', routerLink: link('rules') },
     { id: 'silences', label: 'Silences', icon: 'notifications_paused', routerLink: link('silences') },
     { id: 'notifications', label: 'Notifications', icon: 'campaign', routerLink: link('notifications') },
+    { id: 'slos', label: 'SLOs', icon: 'track_changes', routerLink: link('slos') },
     { id: 'agents', label: 'Agents', icon: 'smart_toy', routerLink: link('agents') },
     { id: 'approvals', label: 'Approvals', icon: 'approval', routerLink: link('approvals') },
     { id: 'timeline', label: 'Timeline', icon: 'history', routerLink: link('timeline') },

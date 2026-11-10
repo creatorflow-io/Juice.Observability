@@ -69,6 +69,7 @@ namespace Juice.Observability.Api.Endpoints
             tenant.MapAgentEndpoints();
             tenant.MapActionRequestEndpoints();
             tenant.MapBundleEndpoints();
+            tenant.MapSloEndpoints();
             tenant.MapTelemetryEndpoints();
             return app;
         }

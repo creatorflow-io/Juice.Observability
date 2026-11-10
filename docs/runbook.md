@@ -139,6 +139,23 @@ Use `Open an incident` on an alert, or the Incidents page. Operators and admins 
 - **They don't touch alerts.** Resolving an incident leaves its alerts as they are, and the page says if some are still open.
 - **The record** is on the page, and `audit_records` holds `incident.*`. Notes are masked for common secret shapes, but write a summary rather than paste a terminal.
 
+## SLOs
+
+- **Where they come from:** the file named by `Slos:File`. Edit it, restart the API, and a changed SLO becomes a new version. The SLO's
+  page lists its versions, and the audit records them as `slo.*`.
+- **States:** `Met`, `AtRisk` (over 75% of the budget used), `Exhausted`, `InsufficientData` (too few requests in 30 days) and `Unknown`
+  (more than 10% of the minutes weren't counted). The last two show no budget.
+- **An SLO reads Unknown:**
+  - **Just added:** its 30 days are being counted, `Slos:MaxMinutesPerPass` minutes a pass; it settles within the hour at the default.
+    If the log says `out of time: next pass counts N minutes`, the stretch was too big for `Slos:QueryTimeout`: passes narrow until they
+    fit, so it catches up more slowly. Raise the timeout if it never does.
+  - **Telemetry stopped:** minutes after the service's newest telemetry (its spans or metrics) aren't counted. See [Telemetry missing](#telemetry-missing). Once it flows
+    again, the minutes still in ClickHouse are counted. Minutes the tenant sent nothing in at all stay a gap: they don't read as quiet.
+    The SLO reads `Unknown` until the gap is less than 10% of the window, so a long outage shows on the 30 days for a while.
+  - **Counting failed:** the API's log says `SLO …: counting failed` with the reason; `juice.observability.slos.counted` counts passes
+    by outcome.
+- **What was left out:** an SLO's page lists, by day, the health checks, given-up requests and client errors it didn't count.
+
 ## Juice Agents
 
 Everything below can be done on the Console's **Agents** page, with the same roles. The list shows each agent's state, version and

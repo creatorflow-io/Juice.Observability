@@ -20,7 +20,7 @@ namespace Juice.Observability.Rules
         private const string Svc = "{svc:String}", Ns = "{ns:String}", EnvParam = "{env:String}", HostParam = "{host:String}";
 
         // Service scope: the rule's service (namespace and name) and environment, empty for all.
-        private const string Env = "if(ResourceAttributes['deployment.environment.name'] = '', 'unspecified', lower(trim(BOTH ' ' FROM ResourceAttributes['deployment.environment.name'])))";
+        private const string Env = EnvironmentKey;
         private const string ServiceScope = $"""
             ServiceName != ''
             AND ({Svc} = '' OR (ServiceName = {Svc} AND ResourceAttributes['service.namespace'] = {Ns}))
@@ -139,10 +139,5 @@ namespace Juice.Observability.Rules
             return d > 0 ? Convert.ToDouble(numerator) / d : null;
         }
 
-        private static (string Namespace, string Name) SplitService(string service)
-        {
-            var slash = service.LastIndexOf('/');
-            return slash < 0 ? ("", service) : (service[..slash], service[(slash + 1)..]);
-        }
     }
 }

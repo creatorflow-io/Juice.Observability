@@ -209,3 +209,22 @@ export interface DependencyEvidence {
 }
 
 export interface SearchHit { kind: 'trace' | 'span' | 'service'; id: string; title: string; traceId: string | null; }
+
+/** One window of an SLO: its SLI events, attainment and burn rate, or why it has none (state InsufficientData or Unknown). */
+export interface SloWindow { name: string; total: number; good: number; bad: number; attainment: number | null; burnRate: number | null; coverage: number; state: string; }
+/** An SLO as it stands now. State is Met, AtRisk, Exhausted, InsufficientData or Unknown; the last two have no budget figures. */
+export interface SloSummary {
+  key: string; name: string; category: string; sli: string; service: string; environment: string; target: number; thresholdMs: number | null; version: number;
+  pendingVersion: number | null; retired: boolean; state: string; attainment: number | null; budgetUsed: number | null; budgetRemaining: number | null;
+  total: number; good: number; bad: number; budgetAllowed: number; coverage: number; burn: SloWindow[];
+}
+export interface SloDefinition {
+  name: string; sli: string; service: string; environment: string; target: number; thresholdMs: number | null; operations: string[]; excludeOperations: string[];
+  clientErrors: string; cancellations: string;
+}
+export interface SloVersion { version: number; target: number; effectiveFrom: string; createdAt: string; createdBy: string; hash: string; status: string; definition: SloDefinition; }
+export interface SloDay {
+  day: string; total: number; good: number; bad: number; attainment: number | null; excludedHealth: number; excludedCancelled: number; excludedClientErrors: number; minutes: number;
+  expectedMinutes: number;
+}
+export interface SloDetail { slo: SloSummary; definition: SloDefinition; versions: SloVersion[]; days: SloDay[]; countedThrough: string | null; }

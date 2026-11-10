@@ -10,6 +10,7 @@
     <Project Path="src/Juice.Observability.Host/Juice.Observability.Host.csproj" />
     <Project Path="src/Juice.Observability.Health/Juice.Observability.Health.csproj" />
     <Project Path="src/Juice.Observability.Rules/Juice.Observability.Rules.csproj" />
+    <Project Path="src/Juice.Observability.Slos/Juice.Observability.Slos.csproj" />
     <Project Path="src/Juice.Observability.Webhooks/Juice.Observability.Webhooks.csproj" />
   </Folder>
   <Folder Name="/samples/">

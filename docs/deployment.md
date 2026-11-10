@@ -39,6 +39,8 @@ The API applies database migrations on start (`Database:Migrate`). It creates th
 | OTLP clients | `secrets/otlp-tokens`, one token per line | restart the Collector after a change (runbook) |
 | Rules | `rules.json` (`Rules:File`), or the API and Console | validated at start; an invalid rule stops the API; every change audited |
 | Channels and allowlist | `webhooks.json` (`Webhooks:File`), or the API and Console | secrets as `env:NAME` or `file:/path`, never in the file |
+| SLOs | `slos.json` (`Slos:File`) only; the API and Console show them | validated at start; an invalid SLO stops the API; a changed one is a new version, audited (see below) |
+| SLO counting | `Slos:Interval` (30 s), `Slos:Lateness` (5 min), `Slos:MaxMinutesPerPass` (720), `Slos:Retention` (35 days), `Slos:QueryTimeout` (30 s), `Slos:MinimumEvents` (1,000 in 30 days), `Slos:MinimumBurnEvents` (10 per burn window), `Slos:UnknownTolerance` (0.10), `Slos:Enabled` | at most 200 SLOs; `Interval` at most 1 minute; `MaxMinutesPerPass` at least `Lateness` plus 5 minutes; the newest minutes are counted again until they're `Lateness` behind the service's newest telemetry, then sealed; a new SLO counts its 30 days `MaxMinutesPerPass` at a time, half that after a pass that runs out of `QueryTimeout` |
 | Secrets for channels set through the API | environment variables named `Webhooks:ApiSecretEnvPrefix` (default `JUICE_WEBHOOK_`) + a name, or files directly in `Webhooks:ApiSecretDirectory` | the API refuses any other reference, so an admin can't name other secrets on the host |
 | Email channels | `Webhooks:Smtp`: `Host`, `Port` (587), `From`, `UseTls` (true: STARTTLS), `UsernameRef`, `PasswordRef` | without it, email channels are refused; implicit TLS on 465 isn't supported |
 | Slack and Teams | The channel's URL behind a secret reference | they post only to `hooks.slack.com`, `*.webhook.office.com`, `*.logic.azure.com` and `*.api.powerplatform.com`, plus any in `Webhooks:AdditionalChatHosts` |
@@ -50,6 +52,53 @@ The API applies database migrations on start (`Database:Migrate`). It creates th
 
 Every one of these files lives in version control (requirements §6.1). Changes take effect on the next API start, with
 an audit record for each. What the API creates lives in the platform database instead, also audited: the [runbook](runbook.md#change-rules-webhooks-or-the-allowlist) says which side owns what.
+
+### An SLO
+
+```json
+{
+  "Slos": {
+    "Definitions": [
+      { "Key": "checkout-availability", "Name": "Checkout availability", "Sli": "Availability",
+        "Service": "shop/checkout", "Environment": "production", "Target": 99.5 },
+      { "Key": "checkout-latency", "Name": "Checkout latency", "Sli": "Latency",
+        "Service": "shop/checkout", "Environment": "production", "Target": 99, "ThresholdMs": 300,
+        "Operations": [ "/checkout*" ], "EffectiveFrom": "2026-12-01T00:00:00Z" }
+    ]
+  }
+}
+```
+
+- **What it measures:** `Sli` is `Availability` (requests that didn't fail) or `Latency` (successful requests at or under `ThresholdMs`,
+  one of 1, 2, 5, 10, 25, 50, 75, 100, 150, 200, 250, 300, 400, 500, 750, 1000, 1500, 2000, 2500, 3000, 5000, 7500, 10000, 15000, 30000 or
+  60000). Both are technical SLOs. `BusinessSuccess`, `MessageProcessing`, `QueueLatency` and `DataFreshness` are reserved for business
+  and other measures and refused for now. The budget window is 30 days, rolling.
+- **What counts as a request:** the service's server and consumer spans in that environment (`Operations` narrows them to routes or span
+  names, `*` as a wildcard). Each SLO can change these defaults:
+
+  | Request | Default | Setting |
+  |---|---|---|
+  | Health checks: `/health`, `/healthz`, `/ready`, `/live`, `/metrics` and the paths under them (not `/livestream`) | not counted | `ExcludeHealthChecks`, `ExcludeOperations` |
+  | 5xx, 429, a failed span without an HTTP code, a message Juice failed to dispatch | bad | none |
+  | Other 4xx (the client's mistake) | good | `ClientErrors`: `Good`, `Bad` or `Exclude` |
+  | 408 and 499 (the client gave up) | not counted | `Cancellations`: `Exclude` or `Bad` |
+  | A retry | each attempt the service received counts on its own | none |
+
+  `ExcludeOperations` adds patterns to the health checks. To count the health checks as requests, set `ExcludeHealthChecks` to `false`.
+
+- **Versions:** a changed definition becomes the next version from `EffectiveFrom` (when the API starts, by default; never in the past).
+  Each minute is counted under the version in effect then, so a new target doesn't rewrite the past. A version still waiting for its date
+  is withdrawn by any newer one, such as the file put back or only its date moved (earlier or later): it never applies, and the SLO's
+  page lists it as `Withdrawn`. `EffectiveFrom` may carry any offset; it's stored as UTC. A version moving the SLO to another service
+  changes nothing until its date. Changing `Sli` needs a new `Key`. A
+  key removed from the file is retired, and comes back if it's listed again. Each step is audited (`slo.create`, `slo.version`,
+  `slo.retire`, `slo.restore`) and shown on the timeline.
+- **Missing telemetry is never success.** Each SLO looks at its own service: minutes after the service's newest telemetry (spans or
+  metrics or logs) aren't counted, and neither are minutes it sent nothing in at all, so a service that stops shows even while the rest of the
+  tenant carries on. Those minutes stay unknown. A running service exports metrics every minute, so a quiet one isn't taken for a
+  stopped one; a service that sends only spans reads as unknown while it has no traffic. An SLO with more
+  than `UnknownTolerance` of its minutes unknown reads `Unknown`, and one with fewer than `MinimumEvents` requests `InsufficientData`.
+  Neither has a budget or a burn rate.
 
 ### A webhook endpoint
 

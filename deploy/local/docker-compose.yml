@@ -180,6 +180,9 @@ services:
       Database__Migrate: "true"
       Rules__File: /config/rules.json
       Webhooks__File: /config/webhooks.json
+      Slos__File: /config/slos.json
+      # A new SLO counts its 30 days in a few passes here; production counts 12 hours a pass.
+      Slos__MaxMinutesPerPass: "10080"
       Integrations__Grafana__BaseUrl: http://${PUBLIC_HOST:-localhost}:3000
       # Juice Agent: the agent listener on 8443 (mTLS), with the keys scripts/init.sh writes.
       Agents__Enabled: "true"
@@ -194,6 +197,7 @@ services:
     volumes:
       - ./rules.json:/config/rules.json:ro
       - ./webhooks.json:/config/webhooks.json:ro
+      - ./slos.json:/config/slos.json:ro
       - ./secrets/agents:/secrets/agents:ro
       - ./secrets/release/release.pub:/secrets/release.pub:ro
       - ./packages:/packages:ro

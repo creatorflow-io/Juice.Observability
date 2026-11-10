@@ -34,9 +34,22 @@ namespace Juice.Observability.Discovery
         public const string From = "{from:DateTime64(9)}";
         public const string To = "{to:DateTime64(9)}";
         public const string Limit = "{limit:UInt32}";
+        /// <summary>A span's environment key, as rules and SLOs match it: lowercase and trimmed, <c>unspecified</c> when missing or blank.</summary>
+        public const string EnvironmentKey = "if(trim(BOTH ' ' FROM ResourceAttributes['deployment.environment.name']) = '', 'unspecified', lower(trim(BOTH ' ' FROM ResourceAttributes['deployment.environment.name'])))";
         public const string CountFrom = "{count_from:DateTime64(9)}";
 
-        private static readonly (string Table, string Time)[] ResourceTables =
+        /// <summary>One service (<c>{svc}</c>, <c>{ns}</c>) in one environment (<c>{env}</c>), in any of <see cref="ResourceTables"/>.</summary>
+        public const string ServiceMatch = $"ServiceName = {{svc:String}} AND ResourceAttributes['service.namespace'] = {{ns:String}} AND {EnvironmentKey} = {{env:String}}";
+
+        /// <summary><c>namespace/name</c> or <c>name</c> (no namespace), as rules and SLOs name a service.</summary>
+        public static (string Namespace, string Name) SplitService(string service)
+        {
+            var slash = service.LastIndexOf('/');
+            return slash < 0 ? ("", service) : (service[..slash], service[(slash + 1)..]);
+        }
+
+        /// <summary>Every table a service's telemetry lands in (in <c>otel</c>), with its time column.</summary>
+        public static readonly IReadOnlyList<(string Table, string Time)> ResourceTables =
         [
             ("otel_traces", "Timestamp"),
             ("otel_logs", "Timestamp"),

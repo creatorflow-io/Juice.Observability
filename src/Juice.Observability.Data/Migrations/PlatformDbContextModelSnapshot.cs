@@ -2147,6 +2147,215 @@ namespace Juice.Observability.Data.Migrations
                     b.ToTable("silences", (string)null);
                 });
 
+            modelBuilder.Entity("Juice.Observability.Data.Slo", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Category")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("category");
+
+                    b.Property<DateTimeOffset?>("CountedThrough")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("counted_through");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<int>("CurrentVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("current_version");
+
+                    b.Property<string>("Environment")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("environment");
+
+                    b.Property<string>("Key")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("key");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("name");
+
+                    b.Property<bool>("Retired")
+                        .HasColumnType("boolean")
+                        .HasColumnName("retired");
+
+                    b.Property<DateTimeOffset?>("RetiredAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("retired_at");
+
+                    b.Property<string>("Service")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("service");
+
+                    b.Property<string>("Sli")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("sli");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_slos");
+
+                    b.HasIndex("TenantId", "Key")
+                        .IsUnique()
+                        .HasDatabaseName("ix_slos_tenant_id_key");
+
+                    b.ToTable("slos", (string)null);
+                });
+
+            modelBuilder.Entity("Juice.Observability.Data.SloBucket", b =>
+                {
+                    b.Property<Guid>("SloId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("slo_id");
+
+                    b.Property<DateTimeOffset>("Minute")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("minute");
+
+                    b.Property<long>("Bad")
+                        .HasColumnType("bigint")
+                        .HasColumnName("bad");
+
+                    b.Property<DateTimeOffset>("CountedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("counted_at");
+
+                    b.Property<long>("Eligible")
+                        .HasColumnType("bigint")
+                        .HasColumnName("eligible");
+
+                    b.Property<long>("ExcludedCancelled")
+                        .HasColumnType("bigint")
+                        .HasColumnName("excluded_cancelled");
+
+                    b.Property<long>("ExcludedClientErrors")
+                        .HasColumnType("bigint")
+                        .HasColumnName("excluded_client_errors");
+
+                    b.Property<long>("ExcludedHealth")
+                        .HasColumnType("bigint")
+                        .HasColumnName("excluded_health");
+
+                    b.Property<long>("Good")
+                        .HasColumnType("bigint")
+                        .HasColumnName("good");
+
+                    b.PrimitiveCollection<long[]>("Histogram")
+                        .IsRequired()
+                        .HasColumnType("bigint[]")
+                        .HasColumnName("histogram");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<long>("Total")
+                        .HasColumnType("bigint")
+                        .HasColumnName("total");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.HasKey("SloId", "Minute")
+                        .HasName("pk_slo_buckets");
+
+                    b.HasIndex("Minute")
+                        .HasDatabaseName("ix_slo_buckets_minute");
+
+                    b.HasIndex("TenantId")
+                        .HasDatabaseName("ix_slo_buckets_tenant_id");
+
+                    b.ToTable("slo_buckets", (string)null);
+                });
+
+            modelBuilder.Entity("Juice.Observability.Data.SloVersion", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("CreatedBy")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("created_by");
+
+                    b.Property<string>("Definition")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("definition");
+
+                    b.Property<DateTimeOffset>("EffectiveFrom")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("effective_from");
+
+                    b.Property<string>("Hash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("hash");
+
+                    b.Property<Guid>("SloId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("slo_id");
+
+                    b.Property<double>("Target")
+                        .HasColumnType("double precision")
+                        .HasColumnName("target");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.Property<DateTimeOffset?>("WithdrawnAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("withdrawn_at");
+
+                    b.HasKey("Id")
+                        .HasName("pk_slo_versions");
+
+                    b.HasIndex("TenantId")
+                        .HasDatabaseName("ix_slo_versions_tenant_id");
+
+                    b.HasIndex("SloId", "Version")
+                        .IsUnique()
+                        .HasDatabaseName("ix_slo_versions_slo_id_version");
+
+                    b.ToTable("slo_versions", (string)null);
+                });
+
             modelBuilder.Entity("Juice.Observability.Data.WebhookAllowlistEntry", b =>
                 {
                     b.Property<Guid>("TenantId")
@@ -2906,6 +3115,50 @@ namespace Juice.Observability.Data.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_silences_platform_tenants_tenant_id");
+                });
+
+            modelBuilder.Entity("Juice.Observability.Data.Slo", b =>
+                {
+                    b.HasOne("Juice.Observability.Data.PlatformTenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_slos_platform_tenants_tenant_id");
+                });
+
+            modelBuilder.Entity("Juice.Observability.Data.SloBucket", b =>
+                {
+                    b.HasOne("Juice.Observability.Data.Slo", null)
+                        .WithMany()
+                        .HasForeignKey("SloId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_slo_buckets_slos_slo_id");
+
+                    b.HasOne("Juice.Observability.Data.PlatformTenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_slo_buckets_platform_tenants_tenant_id");
+                });
+
+            modelBuilder.Entity("Juice.Observability.Data.SloVersion", b =>
+                {
+                    b.HasOne("Juice.Observability.Data.Slo", null)
+                        .WithMany()
+                        .HasForeignKey("SloId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_slo_versions_slos_slo_id");
+
+                    b.HasOne("Juice.Observability.Data.PlatformTenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_slo_versions_platform_tenants_tenant_id");
                 });
 
             modelBuilder.Entity("Juice.Observability.Data.WebhookAllowlistEntry", b =>

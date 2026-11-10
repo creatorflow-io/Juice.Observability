@@ -55,6 +55,9 @@ namespace Juice.Observability.Data
         public DbSet<AgentCommand> AgentCommands => Set<AgentCommand>();
         public DbSet<ActionRequest> ActionRequests => Set<ActionRequest>();
         public DbSet<AgentBundle> AgentBundles => Set<AgentBundle>();
+        public DbSet<Slo> Slos => Set<Slo>();
+        public DbSet<SloVersion> SloVersions => Set<SloVersion>();
+        public DbSet<SloBucket> SloBuckets => Set<SloBucket>();
         public DbSet<AgentEnrollmentFailure> AgentEnrollmentFailures => Set<AgentEnrollmentFailure>();
 
         /// <summary>Applies the snake_case naming used by every table. Call it when configuring the context.</summary>
@@ -369,6 +372,39 @@ namespace Juice.Observability.Data
                 e.HasIndex(x => new { x.AgentId, x.IdempotencyKey }).IsUnique();
                 e.HasIndex(x => new { x.AgentId, x.State, x.IssuedAt });
                 e.HasOne<EnrolledAgent>().WithMany().HasForeignKey(x => x.AgentId).OnDelete(DeleteBehavior.Cascade);
+            });
+
+            model.Entity<Slo>(e =>
+            {
+                e.ToTable("slos");
+                Tenant(e);
+                e.Property(x => x.Key).HasMaxLength(64);
+                e.Property(x => x.Name).HasMaxLength(200);
+                e.Property(x => x.Category).HasConversion<string>().HasMaxLength(20);
+                e.Property(x => x.Sli).HasMaxLength(40);
+                e.Property(x => x.Service).HasMaxLength(256);
+                e.Property(x => x.Environment).HasMaxLength(256);
+                e.HasIndex(x => new { x.TenantId, x.Key }).IsUnique();
+            });
+
+            model.Entity<SloVersion>(e =>
+            {
+                e.ToTable("slo_versions");
+                Tenant(e);
+                e.Property(x => x.Definition).HasColumnType("text");
+                e.Property(x => x.Hash).HasMaxLength(64);
+                e.Property(x => x.CreatedBy).HasMaxLength(256);
+                e.HasIndex(x => new { x.SloId, x.Version }).IsUnique();
+                e.HasOne<Slo>().WithMany().HasForeignKey(x => x.SloId).OnDelete(DeleteBehavior.Cascade);
+            });
+
+            model.Entity<SloBucket>(e =>
+            {
+                e.ToTable("slo_buckets");
+                Tenant(e);
+                e.HasKey(x => new { x.SloId, x.Minute });
+                e.HasIndex(x => x.Minute);
+                e.HasOne<Slo>().WithMany().HasForeignKey(x => x.SloId).OnDelete(DeleteBehavior.Cascade);
             });
 
             model.Entity<AgentBundle>(e =>
