@@ -6,8 +6,9 @@ using Juice.Observability.Data;
 
 namespace Juice.Observability.Webhooks
 {
-    /// <summary>One alert in a notification.</summary>
-    public sealed record NotificationItem(Guid AlertId, string Rule, string RuleName, string Severity, string State, string Subject, double? Value, string? Reason);
+    /// <summary>One alert in a notification. <c>Slo</c> is an SLO burn alert's SLO key, null for a rule's alert.</summary>
+    public sealed record NotificationItem(Guid AlertId, string Rule, string RuleName, string Severity, string State, string Subject, double? Value, string? Reason,
+        string? Slo = null);
 
     /// <summary>A delivery's stored payload, as the chat and email channels read it. <see cref="Event"/> is the alert event, also for a group.</summary>
     public sealed record NotificationView(string Event, int? EscalationStep, IReadOnlyList<NotificationItem> Alerts)
@@ -30,7 +31,11 @@ namespace Juice.Observability.Webhooks
         private static NotificationItem Item(JsonElement a) => new(a.GetProperty("id").GetGuid(), a.GetProperty("rule").GetString()!, a.GetProperty("ruleName").GetString()!,
             a.GetProperty("severity").GetString()!, a.GetProperty("state").GetString()!, a.GetProperty("subject").GetString()!,
             a.GetProperty("value").ValueKind == JsonValueKind.Number ? a.GetProperty("value").GetDouble() : null,
-            a.TryGetProperty("reason", out var reason) ? reason.GetString() : null);
+            a.TryGetProperty("reason", out var reason) ? reason.GetString() : null,
+            a.TryGetProperty("slo", out var slo) && slo.ValueKind == JsonValueKind.Object ? slo.GetProperty("key").GetString() : null);
+
+        /// <summary>The rule, and the SLO when it's a burn alert: <c>slo-fast-burn, SLO orders-availability</c>.</summary>
+        internal static string RuleAndSlo(NotificationItem alert) => alert.Slo is { } slo ? $"{alert.Rule}, SLO {slo}" : alert.Rule;
 
         /// <summary>Several deliveries' payloads as one, for a signed webhook's body as for a chat message.</summary>
         public static string Group(Guid id, string @event, DateTimeOffset at, IEnumerable<string> payloads)
@@ -119,7 +124,7 @@ namespace Juice.Observability.Webhooks
             {
                 var subject = Slack(alert.Subject);
                 var label = Link(consoleUrl, alert) is { } link ? $"<{link}|{subject}>" : subject;
-                lines.Add($"• *{Slack(alert.Severity)}* {label}: {Slack(Value(alert))} ({Slack(alert.Rule)})");
+                lines.Add($"• *{Slack(alert.Severity)}* {label}: {Slack(Value(alert))} ({Slack(NotificationView.RuleAndSlo(alert))})");
             }
             if (More(view) is { } more) lines.Add(more);
             return new JsonObject
@@ -136,7 +141,7 @@ namespace Juice.Observability.Webhooks
             var body = new JsonArray(new JsonObject { ["type"] = "TextBlock", ["text"] = Teams(Title(view)), ["weight"] = "Bolder", ["size"] = "Medium", ["wrap"] = true });
             foreach (var alert in Listed(view))
             {
-                body.Add(new JsonObject { ["type"] = "TextBlock", ["wrap"] = true, ["text"] = $"{Teams(alert.Severity)} {Teams(alert.Subject)}: {Teams(Value(alert))} ({Teams(alert.Rule)})" });
+                body.Add(new JsonObject { ["type"] = "TextBlock", ["wrap"] = true, ["text"] = $"{Teams(alert.Severity)} {Teams(alert.Subject)}: {Teams(Value(alert))} ({Teams(NotificationView.RuleAndSlo(alert))})" });
             }
             if (More(view) is { } more) body.Add(new JsonObject { ["type"] = "TextBlock", ["text"] = more });
             var card = new JsonObject
@@ -164,6 +169,7 @@ namespace Juice.Observability.Webhooks
             {
                 body.Append(Plain(alert.Severity)).Append(' ').Append(Plain(alert.Subject)).Append(": ").Append(Value(alert)).AppendLine();
                 body.Append("  Rule: ").Append(Plain(alert.RuleName)).Append(" (").Append(Plain(alert.Rule)).AppendLine(")");
+                if (alert.Slo is { } slo) body.Append("  SLO: ").AppendLine(Plain(slo));
                 if (Plain(alert.Reason) is { Length: > 0 } reason) body.Append("  Reason: ").AppendLine(reason);
                 if (Link(consoleUrl, alert) is { } link) body.Append("  ").AppendLine(link);
                 body.AppendLine();

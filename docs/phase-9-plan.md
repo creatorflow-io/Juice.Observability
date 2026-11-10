@@ -1,6 +1,6 @@
 # Phase 9 plan: SLOs, alert correlation, and selective streaming
 
-**Status:** in progress, milestone 1 of 4 done. The owner's requirements and decisions are marked **Owner**; the rest are mine, for review.
+**Status:** in progress, milestones 1 and 2 of 4 done. The owner's requirements and decisions are marked **Owner**; the rest are mine, for review.
 
 **Roadmap gate:**
 - a benchmark shows scheduled queries can't meet an explicit requirement before streaming is introduced;
@@ -90,6 +90,20 @@ Every excluded request is counted by reason, so the Console shows what was left 
 
 - They go through the existing alert lifecycle, so notifications, silences, escalations and incidents work unchanged. Each carries the
   SLO's key, version, category and the windows' numbers as evidence.
+- **How they fit the lifecycle (milestone 2 design, 10 November):** routing, silences, escalation, webhooks and the timeline read an
+  alert's rule key, subject key and severity, through `Alert.RuleId`. So the burn alerts are ordinary alerts owned by three
+  platform-managed rules, created by the SLO provisioner:
+  - `slo-fast-burn` (Critical), `slo-slow-burn` (6×, Warning) and `slo-slow-burn-3d` (1×, Warning), with a new `RuleTemplate.SloBurn`
+    and `ManagedBy` `platform`. An endpoint can page on every SLO's fast burn by naming one rule key.
+  - One alert per SLO and rule. Its subject key is the SLO's service, `service:ns/name@env`, so environment routing and service
+    silences work unchanged. Its dedup key is `rule|slo:<key>`, so two SLOs on one service don't collide. `SubjectId` and
+    `EnvironmentId` come from discovery, for milestone 3's correlation.
+  - To guard: the rule scheduler skips `SloBurn` rules; the rules API and the rules file refuse to create, change or take over
+    platform rules and their keys; `RuleAdminEndpoints.ToDto` shows them without reading a `RuleDefinition` they don't have.
+  - Evaluated once a minute, after a counting pass, from the burn windows (`SloReader`, 3 days read): fires when both windows are over
+    the rate, resolves when the short one is under it (review round 1: waiting for the long window kept a 3-day alert firing for days).
+    `Unknown` or `InsufficientData` in either window holds the state, like `NoData`. After a move to another service only the new
+    service's minutes count, so it isn't paged for the old one's errors.
 
 ## Correlation suggestions (R9)
 
@@ -175,3 +189,35 @@ Each milestone ends with its tests, a mutation check, browser checks on the loca
 
 Not yet: burn-rate alerts (milestone 2). The demo shop fails half its charges, so locally every SLO reads Exhausted. That is expected
 with this traffic, not a defect.
+
+## Milestone 2: burn-rate alerts, 10 November
+
+- **Rules:** three platform-owned rules (`RuleTemplate.SloBurn`, `ManagedBy` `platform`), made with the first SLO: `slo-fast-burn`
+  (14.4× over 1 h and 5 min, Critical), `slo-slow-burn` (6× over 6 h and 30 min) and `slo-slow-burn-3d` (1× over 3 days and 6 h), both
+  Warning. The rules file and API can't make, change or take them; their keys are reserved when a rule is made, so a rule that held one
+  before keeps it, and that burn kind is left out with an error in the log. The rule scheduler skips them.
+- **Alerts:** one per SLO and rule (dedup key `rule|slo:<key>`), subject the SLO's service in its environment, through the shared
+  alert lifecycle (`AlertChanges`): Pending then Firing, transitions counted, notifications through the outbox, so routing, silences,
+  escalation, webhooks and incidents treat them as any alert. Evidence: SLO key, name, version, category, SLI, target, rate and both
+  windows' totals, bad requests, states and rates. Webhook payloads carry `slo` (key and name), and Slack, Teams and email name it.
+- **Judging:** once a minute after a counting pass, over the burn windows' 3 days. Fires when both windows reach the rate; resolves
+  when the short one is under it, reporting its rate; holds when either window is `Unknown` or `InsufficientData`. After resolving, a
+  cooldown (10 minutes, or the short window if longer) stops a burn hovering at the rate from flapping. After a move to another
+  service only the new service's minutes count, so it isn't paged for the old one's errors. A retired or moved SLO resolves its open
+  alerts with that reason; with `Slos:Enabled` false they're resolved at startup.
+- **Console:** the SLO page lists its burn alerts, linked to each alert, and says when one is held; the rules page marks the burn
+  rules as the platform's and offers no way to change them, or to make one.
+- **Rollback:** a build without burn alerts can't read the template; `docs/deployment.md` gives the statement that sets the rules
+  aside, and upgrading again puts them back.
+
+| Requirement | Evidence |
+|---|---|
+| Multiwindow burn alerts at 14.4×, 6× and 1× (R6) | `SloBurnTests.Both_windows_must_burn_to_fire_and_the_short_one_cooling_resolves` (rates, windows, severities); `Burn_alerts_fire_hold_on_missing_data_and_resolve_through_the_alert_lifecycle` |
+| Through the existing alert lifecycle | The same test: Pending then Firing transitions and the outbox's `AlertTransitioned` messages; `A_burn_alerts_notification_names_its_slo` |
+| Never fire or resolve on missing data (R8) | `Missing_data_neither_fires_nor_resolves`; the lifecycle test holds two alerts, marked no data, while ten minutes are unread |
+| Evidence: SLO, version, category, windows | The lifecycle test's evidence checks; the SLO page's alerts section |
+| Platform-owned rules | `The_burn_rules_are_the_platforms_and_their_keys_are_reserved`; `The_api_lists_the_burn_rules_and_refuses_to_change_or_take_them` (409, audited; a legacy holder of a key still changeable); `A_rule_already_holding_a_burn_rule_key_doesnt_stop_starting` |
+| Resolve, cooldown, move, retire, counting off | `A_burn_that_stops_resolves_on_its_short_window_and_reports_its_rate`; the lifecycle test; `With_counting_off_open_burn_alerts_are_closed` |
+| Independent review, 10 November | Two rounds of `code-review` (20 findings fixed) and a confirmation round on the round-2 fixes (5 fixed): among them, reserved keys checked only when a rule is made, resolving on the short window, a cooldown that follows only a cooled burn, judging a moved SLO on its new service's minutes only, a web-only replica that doesn't close alerts another replica still judges, and a rollback that resolves open alerts first. 615 tests pass |
+| Mutation check | 26 of 26 caught: a counting replica's alerts closed, a cooldown after any resolve, a held alert losing its rate, an unreadable old version holding the SLO, missing data as cooled, short window alone fires, both windows to resolve, the fast rate and its severity, firing without notifying, subject not the service, one alert per rule, retired or moved alerts left open, old service's minutes judged, no-data flag, no cooldown, the long window's rate on resolve, counting off leaving alerts open, rules not made or owned by the API, a held key taken over, reserved keys and the template accepted by the API, a platform rule changeable, a payload without the SLO |
+| Through the browser | `console/e2e/slos.mjs`: the burn alerts section on the SLO page, and the three platform rules marked and unchangeable on the rules page |

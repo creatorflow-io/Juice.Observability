@@ -103,14 +103,18 @@ namespace Juice.Observability.Slos
             CancellationToken ct)
             => (await StatusesAsync(db, [slo.Id], _ => versions, options, now, ct))[slo.Id];
 
-        /// <summary>Several SLOs' statuses in two queries, whatever their number.</summary>
+        /// <summary>
+        /// Several SLOs' statuses in two queries, whatever their number. <paramref name="burnOnly"/> reads only the burn windows' 3 days: the 30-day
+        /// budget it returns then isn't the SLO's, and isn't to be read. <paramref name="countedVersions"/>, when it gives a set for an SLO, counts
+        /// only minutes counted under those versions: the others look unread, so a window mostly from before a change reads Unknown.
+        /// </summary>
         public static async Task<Dictionary<Guid, SloStatus>> StatusesAsync(PlatformDbContext db, IReadOnlyList<Guid> ids, Func<Guid, IReadOnlyList<SloVersion>> versionsOf,
-            SloOptions options, DateTimeOffset now, CancellationToken ct)
+            SloOptions options, DateTimeOffset now, CancellationToken ct, bool burnOnly = false, Func<Guid, IReadOnlySet<int>?>? countedVersions = null)
         {
             var end = SloCounter.Floor(now) - Settle;
             var windows = SloBudget.BurnWindows.Append((Name: "30d", Length: SloOptions.Window)).ToList();
             var starts = windows.Select(w => end - w.Length).ToArray();
-            var start = starts.Min();
+            var start = burnOnly ? end - SloBudget.BurnWindows.Max(w => w.Length) : starts.Min();
             // A window starts when the SLO's telemetry did: before its first counted minute there was nothing to miss. After it, a minute not
             // counted is a gap and makes the window unknown. No minute counted yet: every window is unknown.
             var idList = ids.ToArray();
@@ -135,7 +139,8 @@ namespace Juice.Observability.Slos
             foreach (var id in ids)
             {
                 var versions = versionsOf(id);
-                var rows = bySlo[id].ToList();
+                var counted = countedVersions?.Invoke(id);
+                var rows = bySlo[id].Where(r => counted is null || counted.Contains(r.Version)).ToList();
                 DateTimeOffset? first = firsts.TryGetValue(id, out var f) ? f : null;
                 long Expected(DateTimeOffset windowStart)
                     => first is { } from ? Math.Max(0, (long)(end - (from > windowStart ? from : windowStart)).TotalMinutes) : (long)(end - windowStart).TotalMinutes;

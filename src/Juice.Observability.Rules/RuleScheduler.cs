@@ -71,7 +71,8 @@ namespace Juice.Observability.Rules
             await using var scope = scopes.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
             var tenantId = await db.Tenants.Where(t => t.Key == platform.Value.TenantKey).Select(t => t.Id).SingleAsync(cancellationToken);
-            var rules = await db.Rules.AsNoTracking().Where(r => r.TenantId == tenantId && r.Enabled).ToListAsync(cancellationToken);
+            // SLO burn rules have no query to run: their alerts come from the SLO counter's burn rates.
+            var rules = await db.Rules.AsNoTracking().Where(r => r.TenantId == tenantId && r.Enabled && r.Template != RuleTemplate.SloBurn).ToListAsync(cancellationToken);
             var now = clock.GetUtcNow();
             foreach (var rule in rules)
             {
@@ -239,6 +240,13 @@ namespace Juice.Observability.Rules
                 });
             }
 
+            // The file can't make a rule with an SLO burn rule's key, or take one over; a rule that held the key before it was reserved keeps it.
+            var reserved = definitions.Where(d => RuleDefinition.IsReservedKey(d.Key)
+                && (!existing.TryGetValue(d.Key, out var holder) || holder.ManagedBy == ManagedBy.Platform)).Select(d => RuleDefinition.ReservedKeyError(d.Key)).ToList();
+            if (reserved.Count > 0)
+            {
+                throw new InvalidOperationException("Invalid rule configuration:\n" + string.Join("\n", reserved));
+            }
             foreach (var definition in definitions)
             {
                 var hash = definition.Hash();

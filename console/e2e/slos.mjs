@@ -58,6 +58,21 @@ await step('detail', async () => {
   await page.locator('[data-testid^=slo-version-]', { hasText: 'Effective' }).first().waitFor();
   expect(await page.locator('[data-testid^=slo-version-]', { hasText: 'Effective' }).count() === 1, 'one version should be in effect');
   console.log(`  budget: ${(await page.locator('[data-testid=slo-budget]').textContent()).replace(/\s+/g, ' ').trim()}`);
+  // Burn alerts: the section explains them, and lists any there are, each linking to its alert.
+  const alerts = await page.locator('[data-testid=slo-alerts]').textContent();
+  expect(alerts.includes('14.4×') && alerts.includes('holds the alert'), `burn alerts: ${alerts}`);
+  console.log(`  alerts: ${alerts.replace(/\s+/g, ' ').trim().slice(0, 300)}`);
+});
+await step('burn-rules', async () => {
+  // The platform's three burn rules are on the rules page, marked as its own, with no way to change them.
+  await page.goto(`${base}/rules`);
+  const table = page.locator('[data-testid=rules]');
+  await table.locator('tr', { hasText: 'slo-fast-burn' }).waitFor();
+  for (const key of ['slo-fast-burn', 'slo-slow-burn', 'slo-slow-burn-3d']) {
+    const row = table.locator('tr', { hasText: key }).first();
+    expect((await row.textContent()).includes("the platform's, for SLOs"), `${key} should be marked as the platform's`);
+    expect(await page.locator(`[data-testid=rule-edit-${key}]`).count() === 0, `${key} should have no Change button`);
+  }
 });
 
 await browser.close();

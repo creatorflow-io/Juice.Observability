@@ -72,6 +72,29 @@ const WINDOWS: Record<string, string> = { '5m': '5 minutes', '30m': '30 minutes'
         </table>
       </section>
 
+      <section class="jc-card" data-testid="slo-alerts">
+        <h2>Burn alerts</h2>
+        <p class="jc-muted jc-small">Fast burn (14.4× over 1 hour and 5 minutes) is critical; slow burn (6× over 6 hours and 30 minutes, 1× over 3 days and 6 hours) a warning.
+          Each fires when both its windows reach the rate and resolves when its short window is under it, then waits at least 10 minutes before firing
+          again. A window without a rate holds the alert as it is.</p>
+        @if (d.alerts.length) {
+          <table class="jc-table">
+            <thead><tr><th>Alert</th><th>State</th><th>Fired</th><th>Resolved</th><th>Burn rate</th></tr></thead>
+            <tbody>
+              @for (a of d.alerts; track a.id) {
+                <tr [attr.data-testid]="'slo-alert-' + a.rule">
+                  <td><a [routerLink]="['alerts', a.id] | jcLink" [queryParams]="ctx.keep()">{{ a.rule }}</a> <span class="jc-muted jc-small">{{ a.severity }}</span></td>
+                  <td>{{ a.state }}@if (a.noData && a.state !== 'Resolved') { <span class="jc-muted jc-small"> · held: a window has no rate</span> }</td>
+                  <td class="jc-nowrap">{{ a.firedAt | date: 'MMM d, HH:mm' }}</td>
+                  <td class="jc-nowrap">{{ a.resolvedAt ? (a.resolvedAt | date: 'MMM d, HH:mm') : '—' }}</td>
+                  <td>{{ a.burnRate === null ? '—' : times(a.burnRate) }}</td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        } @else { <p class="jc-muted">No burn alerts yet.</p> }
+      </section>
+
       <section class="jc-card" data-testid="slo-days">
         <h2>By day</h2>
         @if (d.days.length) {

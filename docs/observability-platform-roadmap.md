@@ -171,7 +171,7 @@
 
 **Acceptance gate:** benchmark shows scheduled queries cannot meet an explicit requirement before streaming is introduced; new stateful components have an approved ADR, operations plan, recovery design, and cost rationale.
 
-**Status:** in progress, milestone 1 of 4 done (SLOs and budgets). See the [Phase 9 plan](phase-9-plan.md).
+**Status:** in progress, milestones 1 and 2 of 4 done (SLOs and budgets; burn-rate alerts). See the [Phase 9 plan](phase-9-plan.md).
 
 ## Phase 10 — Domain console and scale hardening
 

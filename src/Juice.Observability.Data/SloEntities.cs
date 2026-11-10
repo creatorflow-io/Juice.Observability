@@ -6,6 +6,21 @@ namespace Juice.Observability.Data
     public enum SloCategory { Technical, Business }
 
     /// <summary>
+    /// The platform's three burn-rate rules (Phase 9 plan): every SLO's burn alerts belong to one of them, so routing and silences can name all of
+    /// an SLO kind at once. Their keys are reserved: the rules file and the API refuse them.
+    /// </summary>
+    public static class SloBurnRules
+    {
+        public const string FastBurn = "slo-fast-burn";
+        public const string SlowBurn = "slo-slow-burn";
+        public const string SlowBurn3d = "slo-slow-burn-3d";
+        public static readonly IReadOnlyList<string> Keys = [FastBurn, SlowBurn, SlowBurn3d];
+
+        /// <summary>An SLO alert's dedup key: one open alert per rule and SLO, though several SLOs may watch one service.</summary>
+        public static string DedupKey(string ruleKey, string sloKey) => $"{ruleKey}|slo:{sloKey}";
+    }
+
+    /// <summary>
     /// An SLO as the deployment's file names it, by <see cref="Key"/>. What it measures lives in its <see cref="SloVersion"/>s; this row is the key's
     /// current state: its newest version, whether the file still lists it, and how far its minutes have been counted.
     /// </summary>

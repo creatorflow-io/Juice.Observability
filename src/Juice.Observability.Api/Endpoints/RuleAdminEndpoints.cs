@@ -60,11 +60,13 @@ namespace Juice.Observability.Api.Endpoints
             if (await mutation.RequireAsync(null, ct, Roles.Admin) is { } denied) return denied;
             var (definition, problem) = Read(body, null);
             if (problem is not null) return problem;
+            if (RuleDefinition.IsReservedKey(definition!.Key)) return Mutation.Invalid([RuleDefinition.ReservedKeyError(definition.Key)]);
             if (await db.Rules.AnyAsync(r => r.TenantId == tenantId && r.Key == definition!.Key, ct))
             {
                 return Mutation.Problem(StatusCodes.Status409Conflict, "Rule exists", $"A rule with the key '{definition!.Key}' exists.");
             }
-            if (await db.Rules.CountAsync(r => r.TenantId == tenantId, ct) >= MaxRules)
+            // The platform's burn rules run no query, so they don't count against the cap.
+            if (await db.Rules.CountAsync(r => r.TenantId == tenantId && r.ManagedBy != ManagedBy.Platform, ct) >= MaxRules)
             {
                 return Mutation.Problem(StatusCodes.Status409Conflict, "Too many rules", $"A tenant has at most {MaxRules} rules: each one runs queries on its schedule.");
             }
@@ -92,6 +94,10 @@ namespace Juice.Observability.Api.Endpoints
                 return Mutation.Problem(StatusCodes.Status404NotFound, "Rule not found", $"No rule '{key}'.");
             }
             if (rule.ManagedBy == ManagedBy.Configuration) return await mutation.ManagedByConfigurationAsync(key, File, ct);
+            if (rule.ManagedBy == ManagedBy.Platform)
+            {
+                return await mutation.ManagedByPlatformAsync(key, $"'{key}' raises SLO burn alerts and changes with the SLOs. Route or silence its alerts instead.", ct);
+            }
             if (http.Request.Headers.IfMatch.ToString() is { Length: > 0 } match && match.Trim('"') != rule.DefinitionHash)
             {
                 return Mutation.Problem(StatusCodes.Status412PreconditionFailed, "Rule changed", "Someone changed this rule since you read it. Read it again.");

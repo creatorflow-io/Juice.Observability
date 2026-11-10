@@ -32,7 +32,14 @@ namespace Juice.Observability.Api.Endpoints
         long ExcludedClientErrors, long Minutes, long ExpectedMinutes);
 
     public sealed record SloDetailDto(SloSummaryDto Slo, SloDefinitionDto Definition, IReadOnlyList<SloVersionDto> Versions, IReadOnlyList<SloDayDto> Days,
-        DateTimeOffset? CountedThrough);
+        DateTimeOffset? CountedThrough, IReadOnlyList<SloAlertDto> Alerts);
+
+    /// <summary>
+    /// One of the SLO's burn alerts (<c>Rule</c> is <c>slo-fast-burn</c>, <c>slo-slow-burn</c> or <c>slo-slow-burn-3d</c>): open ones, then the latest
+    /// resolved. <c>NoData</c> says its last evaluation had a window without a rate, so it was held, neither fired nor resolved.
+    /// </summary>
+    public sealed record SloAlertDto(Guid Id, string Rule, string State, string Severity, DateTimeOffset? FiredAt, DateTimeOffset? ResolvedAt, double? BurnRate,
+        bool NoData);
 
     /// <summary>
     /// SLOs, read-only (roadmap Phase 9): they're defined in the deployment's file. Technical and business SLOs are listed apart by <c>category</c>.
@@ -91,7 +98,7 @@ namespace Juice.Observability.Api.Endpoints
             var ids = slos.Select(s => s.Id).ToList();
             var versions = (await db.SloVersions.AsNoTracking().Where(v => ids.Contains(v.SloId)).OrderBy(v => v.Version).ToListAsync(ct)).ToLookup(v => v.SloId);
             var now = clock.GetUtcNow();
-            var statuses = await SloReader.StatusesAsync(db, ids, id => [.. versions[id]], options.Value, now, ct);
+            var statuses = await StatusesAsync(db, ids, id => [.. versions[id]], options.Value, now, ct);
             return Results.Ok(new Page<SloSummaryDto>([.. slos.Select(slo => Summary(slo, [.. versions[slo.Id]], statuses[slo.Id], now))], next));
         }
 
@@ -103,14 +110,52 @@ namespace Juice.Observability.Api.Endpoints
             var now = clock.GetUtcNow();
             var effective = SloCounter.VersionAt(versions, now);
             var days = await SloReader.DaysAsync(db, slo.Id, now, ct);
-            var status = await SloReader.StatusAsync(db, slo, versions, options.Value, now, ct);
+            var status = (await StatusesAsync(db, [slo.Id], _ => versions, options.Value, now, ct))[slo.Id];
             return Results.Ok(new SloDetailDto(
                 Summary(slo, versions, status, now),
                 ToDto(SloDefinition.FromJson(effective.Definition)),
                 [.. versions.OrderByDescending(v => v.Version).Select(v => new SloVersionDto(v.Version, v.Target, v.EffectiveFrom, v.CreatedAt, v.CreatedBy, v.Hash,
                     Status(versions, v, effective, now), ToDto(SloDefinition.FromJson(v.Definition))))],
                 Days(days, status.CountedSince, now),
-                slo.CountedThrough));
+                slo.CountedThrough,
+                await AlertsAsync(db, tenantId, slo.Key, ct)));
+        }
+
+        /// <summary>
+        /// The SLOs' statuses: the 30-day budget over every version's minutes, and the burn windows as the burn alerts judge them, over the current
+        /// service's minutes only, so the page and the alerts agree after a move.
+        /// </summary>
+        private static async Task<Dictionary<Guid, SloStatus>> StatusesAsync(PlatformDbContext db, IReadOnlyList<Guid> ids, Func<Guid, IReadOnlyList<SloVersion>> versionsOf,
+            SloOptions options, DateTimeOffset now, CancellationToken ct)
+        {
+            IReadOnlySet<int>? SameService(Guid id)
+            {
+                try
+                {
+                    var versions = versionsOf(id);
+                    return SloBurnAlerts.SameServiceVersions(versions, SloDefinition.FromJson(SloCounter.VersionAt(versions, now).Definition));
+                }
+                catch (Exception)
+                {
+                    // The version in effect can't be read: the burn alerts hold for it, so whatever the windows show here, nothing fires on them.
+                    return null;
+                }
+            }
+            var full = await SloReader.StatusesAsync(db, ids, versionsOf, options, now, ct);
+            var burn = await SloReader.StatusesAsync(db, ids, versionsOf, options, now, ct, burnOnly: true, countedVersions: SameService);
+            return full.ToDictionary(p => p.Key, p => p.Value with { Windows = burn[p.Key].Windows });
+        }
+
+        /// <summary>The SLO's burn alerts: every open one, then the ten latest resolved.</summary>
+        private static async Task<List<SloAlertDto>> AlertsAsync(PlatformDbContext db, Guid tenantId, string sloKey, CancellationToken ct)
+        {
+            var keys = SloBurnRules.Keys.Select(rule => SloBurnRules.DedupKey(rule, sloKey)).ToList();
+            var alerts = db.Alerts.AsNoTracking().Where(a => a.TenantId == tenantId && keys.Contains(a.DedupKey));
+            var list = await alerts.Where(a => a.State != AlertState.Resolved).OrderByDescending(a => a.Id).ToListAsync(ct);
+            list.AddRange(await alerts.Where(a => a.State == AlertState.Resolved).OrderByDescending(a => a.Id).Take(10).ToListAsync(ct));
+            // The dedup key starts with the rule's key (SloBurnRules.DedupKey).
+            return [.. list.Select(a => new SloAlertDto(a.Id, a.DedupKey[..a.DedupKey.IndexOf('|')], a.State.ToString(), a.Severity.ToString(), a.FiredAt, a.ResolvedAt,
+                a.LastValue, a.NoData))];
         }
 
         /// <summary>

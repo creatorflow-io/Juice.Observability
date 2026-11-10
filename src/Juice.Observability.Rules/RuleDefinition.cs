@@ -63,6 +63,7 @@ namespace Juice.Observability.Rules
             if (!KeyPattern().IsMatch(Key)) yield return $"{at}: Key must match {KeyPattern()}";
             if (Name.Length is 0 or > 200) yield return $"{at}: Name is required (at most 200 characters)";
             if (!Enum.IsDefined(Template)) yield return $"{at}: unknown Template";
+            if (Template == RuleTemplate.SloBurn) yield return $"{at}: SloBurn rules are the platform's own; define an SLO instead";
             if (Schedule < TimeSpan.FromSeconds(5) || Schedule > TimeSpan.FromHours(1)) yield return $"{at}: Schedule must be 5 s to 1 h";
             if (Window < Schedule || Window > TimeSpan.FromHours(6)) yield return $"{at}: Window must be at least Schedule and at most 6 h";
             if (ForDuration < TimeSpan.Zero || ForDuration > TimeSpan.FromDays(1)) yield return $"{at}: ForDuration must be 0 to 24 h";
@@ -81,6 +82,14 @@ namespace Juice.Observability.Rules
             if (Service.Length > 256 || Host.Length > 256 || Environment.Length > 256) yield return $"{at}: scope values are at most 256 characters";
             if (Environment != Environment.ToLowerInvariant()) yield return $"{at}: Environment is a lowercase key";
         }
+
+        /// <summary>
+        /// A key the SLO burn rules hold (or will). Checked only when a rule is made: a rule that held one before they were reserved keeps it, and can
+        /// still be changed or disabled, since rules can be neither deleted nor renamed.
+        /// </summary>
+        public static bool IsReservedKey(string key) => SloBurnRules.Keys.Contains(key);
+
+        public static string ReservedKeyError(string key) => $"rule '{key}': the key is reserved for SLO burn alerts";
 
         private static readonly JsonSerializerOptions Json = new() { WriteIndented = false };
 

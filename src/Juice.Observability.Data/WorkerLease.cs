@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Npgsql;
@@ -159,6 +160,33 @@ namespace Juice.Observability.Data
                 await Task.Delay(20, cancellationToken);
             }
             return true;
+        }
+
+        /// <summary>
+        /// Whether any replica holds the lease named <paramref name="name"/> now: its advisory lock is granted to some session. Runs on the context's
+        /// connection, in its transaction if it has one.
+        /// </summary>
+        public static async Task<bool> IsHeldAsync(PlatformDbContext db, string name, CancellationToken cancellationToken)
+        {
+            var key = KeyOf(name);
+            await db.Database.OpenConnectionAsync(cancellationToken);
+            try
+            {
+                await using var command = db.Database.GetDbConnection().CreateCommand();
+                command.Transaction = db.Database.CurrentTransaction?.GetDbTransaction();
+                command.CommandText = """
+                    SELECT EXISTS (SELECT 1 FROM pg_locks l
+                    WHERE l.locktype = 'advisory' AND l.granted AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
+                      AND l.classid::bigint = @high AND l.objid::bigint = @low AND l.objsubid = 1)
+                    """;
+                command.Parameters.Add(new NpgsqlParameter("high", (long)((ulong)key >> 32)));
+                command.Parameters.Add(new NpgsqlParameter("low", (long)((ulong)key & 0xFFFFFFFF)));
+                return await command.ExecuteScalarAsync(cancellationToken) is true;
+            }
+            finally
+            {
+                await db.Database.CloseConnectionAsync();
+            }
         }
 
         public ValueTask DisposeAsync() => CloseAsync();

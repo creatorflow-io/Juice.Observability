@@ -25,6 +25,7 @@ const TEMPLATES: Record<string, string> = {
   HostMemory: 'Ratio of host memory used, 0 to 1. Fires above the threshold.',
   MediatorErrors: 'Mediator errors in the window. Fires above the threshold.',
   ConsumerFailures: 'Failed consumer messages in the window. Fires above the threshold.',
+  SloBurn: "An SLO's burn rate over a long and a short window. Fires when both reach the rate; one alert per SLO.",
 };
 
 /** A TimeSpan as the API writes it (`1.02:03:04`) in seconds. */
@@ -107,7 +108,7 @@ const NEW_RULE: RuleForm = {
       <tbody>
         @for (r of rows(); track r.key) {
           <tr [class.jc-muted]="!r.enabled">
-            <td><strong>{{ r.name }}</strong><div class="jc-muted jc-small">{{ r.key }}@if (!r.enabled) { · disabled }@if (r.managedBy === 'config') { · from the rules file }</div></td>
+            <td><strong>{{ r.name }}</strong><div class="jc-muted jc-small">{{ r.key }}@if (!r.enabled) { · disabled }@if (r.managedBy === 'config') { · from the rules file }@if (r.managedBy === 'platform') { · the platform's, for SLOs }</div></td>
             <td>{{ r.template }}</td>
             <td>{{ r.severity }}</td>
             <td>{{ r.definition['threshold'] ?? '—' }}</td>
@@ -119,7 +120,7 @@ const NEW_RULE: RuleForm = {
               } @empty { <span class="jc-muted">none</span> }
             </td>
             <td>{{ r.lastEvaluatedAt | ago }}</td>
-            <td class="jc-row-actions">@if (r.managedBy !== 'config') { <button mat-button type="button" [attr.data-testid]="'rule-edit-' + r.key" (click)="edit(r)">Change</button> }</td>
+            <td class="jc-row-actions">@if (r.managedBy === 'api') { <button mat-button type="button" [attr.data-testid]="'rule-edit-' + r.key" (click)="edit(r)">Change</button> }</td>
           </tr>
         }
       </tbody>
@@ -128,7 +129,8 @@ const NEW_RULE: RuleForm = {
 export class RulesPage {
   protected readonly ctx = inject(ContextService);
   private readonly api = inject(ApiService);
-  protected readonly templates = Object.keys(TEMPLATES);
+  /** What a rule can be made from: SloBurn is described, but its rules are the platform's own, made for SLOs. */
+  protected readonly templates = Object.keys(TEMPLATES).filter(t => t !== 'SloBurn');
   protected readonly form = signal<RuleForm | null>(null);
   protected readonly editing = signal<Rule | null>(null);
   protected readonly saving = signal(false);

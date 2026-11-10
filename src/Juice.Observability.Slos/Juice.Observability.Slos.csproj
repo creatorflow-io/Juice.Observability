@@ -8,6 +8,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Juice.Observability.Discovery\Juice.Observability.Discovery.csproj" />
+    <!-- Burn alerts go through the rules' alert lifecycle, so they notify, escalate and are silenced as any alert is. -->
+    <ProjectReference Include="..\Juice.Observability.Rules\Juice.Observability.Rules.csproj" />
   </ItemGroup>
 
   <ItemGroup>

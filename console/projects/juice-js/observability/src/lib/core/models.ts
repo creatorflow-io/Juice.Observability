@@ -227,4 +227,7 @@ export interface SloDay {
   day: string; total: number; good: number; bad: number; attainment: number | null; excludedHealth: number; excludedCancelled: number; excludedClientErrors: number; minutes: number;
   expectedMinutes: number;
 }
-export interface SloDetail { slo: SloSummary; definition: SloDefinition; versions: SloVersion[]; days: SloDay[]; countedThrough: string | null; }
+export interface SloAlert {
+  id: string; rule: string; state: string; severity: string; firedAt: string | null; resolvedAt: string | null; burnRate: number | null; noData: boolean;
+}
+export interface SloDetail { slo: SloSummary; definition: SloDefinition; versions: SloVersion[]; days: SloDay[]; countedThrough: string | null; alerts: SloAlert[]; }

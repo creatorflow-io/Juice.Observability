@@ -1,4 +1,5 @@
 using System.Diagnostics.Metrics;
+using Juice.MediatR;
 using Juice.Observability.Data;
 using Juice.Observability.Discovery;
 using Microsoft.EntityFrameworkCore;
@@ -93,7 +94,7 @@ namespace Juice.Observability.Slos
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            await using var lease = WorkerLease.For(scopes, "slos", logger);
+            await using var lease = WorkerLease.For(scopes, CloseSloBurnAlertsHandler.CounterLease, logger);
             using var timer = new PeriodicTimer(options.Value.Interval);
             do
             {
@@ -151,6 +152,7 @@ namespace Juice.Observability.Slos
                     Passes.Add(1, new KeyValuePair<string, object?>("outcome", "failed"));
                 }
             }
+            await EvaluateBurnsAsync(ct);
             // Buckets expire a minute at a time: deleting them once an hour is plenty.
             if (now - _lastExpiry >= TimeSpan.FromHours(1))
             {
@@ -161,6 +163,36 @@ namespace Juice.Observability.Slos
         }
 
         private DateTimeOffset _lastExpiry = DateTimeOffset.MinValue;
+        private DateTimeOffset _lastBurnEnd = DateTimeOffset.MinValue;
+
+        /// <summary>
+        /// The burn alerts, judged on what this pass counted, as a command: the alerts, their transitions and the notifications they raise commit
+        /// together. A failure leaves every alert as it was until the next pass.
+        /// </summary>
+        private async Task EvaluateBurnsAsync(CancellationToken ct)
+        {
+            // The windows end on a whole minute: judging them again before it moves would read the same minutes.
+            var end = Floor(clock.GetUtcNow()) - SloReader.Settle;
+            if (end == _lastBurnEnd)
+            {
+                return;
+            }
+            try
+            {
+                using var context = PlatformMessageContext.Begin("slos");
+                await using var scope = scopes.CreateAsyncScope();
+                var result = await scope.ServiceProvider.GetRequiredService<IMediator>().Send(new EvaluateSloBurns(), ct);
+                _lastBurnEnd = end;
+                if (result.Fired + result.Resolved > 0)
+                {
+                    logger.LogInformation("SLO burn alerts: {Fired} fired, {Resolved} resolved", result.Fired, result.Resolved);
+                }
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                logger.LogWarning(ex, "SLO burn alerts couldn't be evaluated; they stay as they were until the next pass");
+            }
+        }
 
         /// <summary>What one pass reads from ClickHouse that SLOs can share.</summary>
         private sealed class PassCache

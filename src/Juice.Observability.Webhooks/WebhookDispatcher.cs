@@ -275,6 +275,8 @@ namespace Juice.Observability.Webhooks
                     firedAt = alert.FiredAt,
                     resolvedAt = alert.ResolvedAt,
                     reason = transition.Reason,
+                    // An SLO burn alert's objective: several SLOs can watch one service, and its subject alone doesn't say which is burning.
+                    slo = alert.Evidence.TryGetValue("slo", out var slo) ? new { key = slo, name = alert.Evidence.GetValueOrDefault("sloName") } : null,
                 },
                 links = new { alert = $"/api/v1/tenants/{alert.TenantId}/alerts/{alert.Id}" },
             }, JsonSerializerOptions.Web);

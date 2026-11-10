@@ -13,6 +13,48 @@ namespace Juice.Observability.Rules
 {
     public sealed record RuleEvaluation(string RuleKey, DateTimeOffset At, int Subjects, int Opened, int Fired, int Resolved);
 
+    /// <summary>
+    /// The alert lifecycle's changes, for every source of alerts (rules, SLO burn rates): a transition in the history, counted; a resolve; and the
+    /// domain event that notifies. Only changes entities: the command's TransactionBehavior saves them and dispatches the events.
+    /// </summary>
+    public static class AlertChanges
+    {
+        private static readonly Counter<long> Transitions = RuleEvaluator.Meter.CreateCounter<long>("juice.observability.alerts.transitions", "{transition}",
+            "Alert state transitions, by rule template and new state");
+
+        /// <summary>A transition that notifies: the alert raises it, and whoever notifies hears of it through the outbox once it commits.</summary>
+        public static void Raise(Alert alert, AlertTransition transition)
+            => alert.AddDomainEvent<INotification>(new AlertTransitioned(alert.TenantId, alert.Id, transition.Id, transition.ToState));
+
+        /// <summary>Records a state change in the alert's history, and counts it (<c>juice.observability.alerts.transitions</c>).</summary>
+        public static AlertTransition Transition(PlatformDbContext db, Alert alert, AlertState? from, AlertState to, DateTimeOffset at,
+            double? value, string reason, RuleTemplate template)
+        {
+            var transition = new AlertTransition
+            {
+                TenantId = alert.TenantId, AlertId = alert.Id, FromState = from, ToState = to, At = at, Value = value, Reason = reason,
+            };
+            db.AlertTransitions.Add(transition);
+            Transitions.Add(1, new KeyValuePair<string, object?>("template", template.ToString()),
+                new KeyValuePair<string, object?>("state", to.ToString()));
+            return transition;
+        }
+
+        /// <summary>Resolves an open alert for <paramref name="reason"/>, notifying if it had fired.</summary>
+        public static AlertTransition Resolve(PlatformDbContext db, Alert alert, string reason, DateTimeOffset at, RuleTemplate template)
+        {
+            var transition = Transition(db, alert, alert.State, AlertState.Resolved, at, alert.LastValue, reason, template);
+            alert.State = AlertState.Resolved;
+            alert.ResolvedAt = at;
+            alert.RecoveringSince = null;
+            if (alert.FiredAt is not null)
+            {
+                Raise(alert, transition);
+            }
+            return transition;
+        }
+    }
+
     /// <summary>Evaluate one rule now. Its alert changes, and the notifications they raise, commit together through the TransactionBehavior.</summary>
     public sealed record EvaluateRule(Rule Rule) : MessageBase, IRequest<RuleEvaluation>;
 
@@ -46,9 +88,6 @@ namespace Juice.Observability.Rules
     public sealed class EvaluateRuleHandler(PlatformDbContext db, RuleTemplates templates, IOptions<RulesOptions> options,
         IOptions<PlatformOptions> platform, TimeProvider clock) : IRequestHandler<EvaluateRule, RuleEvaluation>
     {
-        private static readonly Counter<long> Transitions = RuleEvaluator.Meter.CreateCounter<long>("juice.observability.alerts.transitions", "{transition}",
-            "Alert state transitions, by rule template and new state");
-
         public async ValueTask<RuleEvaluation> Handle(EvaluateRule request, CancellationToken cancellationToken)
         {
             var rule = request.Rule;
@@ -123,9 +162,10 @@ namespace Juice.Observability.Rules
 
         public static string DedupKey(string ruleKey, string subjectKey) => $"{ruleKey}|{subjectKey}";
 
-        /// <summary>A transition that notifies: the alert raises it, and whoever notifies hears of it through the outbox once it commits.</summary>
-        internal static void Raise(Alert alert, AlertTransition transition)
-            => alert.AddDomainEvent<INotification>(new AlertTransitioned(alert.TenantId, alert.Id, transition.Id, transition.ToState));
+        private static void Raise(Alert alert, AlertTransition transition) => AlertChanges.Raise(alert, transition);
+
+        private static AlertTransition Transition(PlatformDbContext db, Alert alert, AlertState? from, AlertState to, DateTimeOffset at,
+            double? value, string reason, RuleTemplate template) => AlertChanges.Transition(db, alert, from, to, at, value, reason, template);
 
         /// <summary>
         /// Resolves a rule's open alerts because the rule no longer watches them: disabled, or its scope changed. Left alone they would be held as "no data"
@@ -137,29 +177,9 @@ namespace Juice.Observability.Rules
             var open = await db.Alerts.Where(a => a.TenantId == rule.TenantId && a.RuleId == rule.Id && a.State != AlertState.Resolved).ToListAsync(cancellationToken);
             foreach (var alert in open)
             {
-                var transition = Transition(db, alert, alert.State, AlertState.Resolved, now, alert.LastValue, reason, rule.Template);
-                alert.State = AlertState.Resolved;
-                alert.ResolvedAt = now;
-                alert.RecoveringSince = null;
-                if (alert.FiredAt is not null)
-                {
-                    Raise(alert, transition);
-                }
+                AlertChanges.Resolve(db, alert, reason, now, rule.Template);
             }
             return open.Count;
-        }
-
-        private static AlertTransition Transition(PlatformDbContext db, Alert alert, AlertState? from, AlertState to, DateTimeOffset at,
-            double? value, string reason, RuleTemplate template)
-        {
-            var transition = new AlertTransition
-            {
-                TenantId = alert.TenantId, AlertId = alert.Id, FromState = from, ToState = to, At = at, Value = value, Reason = reason,
-            };
-            db.AlertTransitions.Add(transition);
-            Transitions.Add(1, new KeyValuePair<string, object?>("template", template.ToString()),
-                new KeyValuePair<string, object?>("state", to.ToString()));
-            return transition;
         }
 
         /// <summary>The evidence reference (requirements §8): enough to repeat the query and see the same numbers.</summary>

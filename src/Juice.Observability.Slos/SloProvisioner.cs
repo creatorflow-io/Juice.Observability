@@ -29,16 +29,30 @@ namespace Juice.Observability.Slos
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
             await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
             await db.Database.ExecuteSqlAsync($"SELECT pg_advisory_xact_lock({WorkerLease.KeyOf("slo-provisioning")})", cancellationToken);
-            var changes = await ProvisionAsync(db, options.Value.Definitions, platform.Value.TenantKey, clock.GetUtcNow(), cancellationToken);
+            var warnings = new List<string>();
+            var changes = await ProvisionAsync(db, options.Value.Definitions, platform.Value.TenantKey, clock.GetUtcNow(), cancellationToken, warnings);
             await db.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
+            foreach (var warning in warnings) logger.LogError("SLO burn alerts: {Problem}", warning);
+            if (!options.Value.Enabled)
+            {
+                // Nothing counts, so nothing would ever judge the burn alerts again: close the open ones rather than let them escalate forever.
+                using var context = PlatformMessageContext.Begin("slo-provisioning");
+                var closed = await scope.ServiceProvider.GetRequiredService<Juice.MediatR.IMediator>()
+                    .Send(new CloseSloBurnAlerts(CloseSloBurnAlertsHandler.CountingDisabled), cancellationToken);
+                if (closed > 0) logger.LogWarning("SLO counting is off: {Count} open burn alerts resolved", closed);
+            }
             logger.LogInformation("SLOs loaded: {Count} configured, {Changes} changed", options.Value.Definitions.Count, changes);
         }
 
         public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
-        /// <summary>Makes the SLOs match the file; returns how many changed. Only adds and changes entities: the caller saves them.</summary>
-        public static async Task<int> ProvisionAsync(PlatformDbContext db, IReadOnlyList<SloDefinition> definitions, string tenantKey, DateTimeOffset now, CancellationToken ct)
+        /// <summary>
+        /// Makes the SLOs match the file; returns how many changed. Only adds and changes entities: the caller saves them. <paramref name="warnings"/>
+        /// collects what's wrong but doesn't stop starting (a burn rule key another rule holds).
+        /// </summary>
+        public static async Task<int> ProvisionAsync(PlatformDbContext db, IReadOnlyList<SloDefinition> definitions, string tenantKey, DateTimeOffset now, CancellationToken ct,
+            ICollection<string>? warnings = null)
         {
             var tenantId = await db.Tenants.Where(t => t.Key == tenantKey).Select(t => t.Id).SingleAsync(ct);
             var existing = await db.Slos.Where(s => s.TenantId == tenantId).ToDictionaryAsync(s => s.Key, ct);
@@ -125,6 +139,8 @@ namespace Juice.Observability.Slos
                     Record("slo.restore", slo, new() { ["version"] = slo.CurrentVersion.ToString(System.Globalization.CultureInfo.InvariantCulture) }, $"SLO {slo.Key}: listed again");
                 }
             }
+            // The rules their burn alerts belong to, once there are SLOs to have them.
+            if (definitions.Count > 0 || existing.Count > 0) await SloBurnAlerts.EnsureRulesAsync(db, tenantId, now, warnings ?? [], ct);
             if (problems.Count > 0) throw new InvalidOperationException("Invalid SLO configuration:\n" + string.Join("\n", problems));
             var listed = definitions.Select(d => d.Key).ToHashSet();
             foreach (var removed in existing.Values.Where(s => !s.Retired && !listed.Contains(s.Key)))

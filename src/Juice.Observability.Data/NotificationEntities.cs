@@ -7,6 +7,8 @@ namespace Juice.Observability.Data
     {
         public const string Configuration = "config";
         public const string Api = "api";
+        /// <summary>Made and kept by the platform itself (the SLO burn-rate rules): neither the file nor the API changes it.</summary>
+        public const string Platform = "platform";
     }
 
     public enum SilenceKind

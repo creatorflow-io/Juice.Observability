@@ -56,6 +56,14 @@ namespace Juice.Observability.Api.Endpoints
             return Problem(StatusCodes.Status409Conflict, "Managed by deployment configuration", $"This is defined in {file}. Change it there, or remove it there to manage it here.");
         }
 
+        /// <summary>The refusal to touch what the platform keeps itself (the SLO burn rules), audited as a refused change to configuration is.</summary>
+        public async Task<IResult> ManagedByPlatformAsync(string? target, string detail, CancellationToken ct)
+        {
+            Audit(AuditOutcome.Failed, target, new() { ["reason"] = "managed_by_platform" });
+            await db.SaveChangesAsync(ct);
+            return Problem(StatusCodes.Status409Conflict, "Owned by the platform", detail);
+        }
+
         /// <summary>The first response to a repeated key, a refusal if the key was used differently, or null to go on. Call <see cref="Remember"/> on success.</summary>
         public async Task<IResult?> ReplayAsync(string route, object request, CancellationToken ct)
         {

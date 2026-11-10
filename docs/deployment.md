@@ -99,6 +99,32 @@ an audit record for each. What the API creates lives in the platform database in
   stopped one; a service that sends only spans reads as unknown while it has no traffic. An SLO with more
   than `UnknownTolerance` of its minutes unknown reads `Unknown`, and one with fewer than `MinimumEvents` requests `InsufficientData`.
   Neither has a budget or a burn rate.
+- **Burn alerts.** Every SLO gets three, judged after each counting pass. They belong to three rules the platform creates with the first
+  SLO and keeps itself (`managedBy: platform`): the rules file and API can't change them or use their keys.
+
+  | Rule | Fires when both windows reach | Long | Short | Severity |
+  |---|---|---|---|---|
+  | `slo-fast-burn` | 14.4× | 1 h | 5 min | Critical |
+  | `slo-slow-burn` | 6× | 6 h | 30 min | Warning |
+  | `slo-slow-burn-3d` | 1× | 3 days | 6 h | Warning |
+
+  An alert resolves when its short window is under the rate: the burn has stopped, though the long window remembers it. A window
+  without a rate (`Unknown` or `InsufficientData`) holds it as it is, neither firing nor resolving. After a move to another service, only
+  the new service's minutes count. Its subject is the SLO's service in its environment (`service:shop/orders@production`), so
+  endpoints, silences and escalation policies match it as any alert: by rule key (`slo-fast-burn` pages on every SLO's fast burn),
+  service, environment or severity. Its evidence names the SLO, version, category and both windows' numbers. An SLO that's retired, or
+  moved to another service, resolves its open alerts with that reason. After resolving, a burn alert waits out a cooldown (10 minutes,
+  or its short window if longer) before firing again. With `Slos:Enabled` false, the API resolves any open burn alert at startup, since
+  nothing would judge it again, unless another replica is counting (holds the `slos` worker lease). The cooldown follows only a burn
+  that cooled, not an alert closed for another reason.
+- **Rolling back to a build without burn alerts** (before Phase 9 milestone 2): that build can't read the `SloBurn` template, and its
+  rule scheduler would fail on every tick; nothing in it would resolve an open burn alert either. Before rolling back:
+  1. Set `Slos:Enabled` to `false` on every replica and restart them. With no replica counting, the API resolves the open burn alerts
+     at startup (`slo_counting_disabled`), and says so in its log; resolves are notified as usual. While any replica still counts, it
+     leaves them, since they're still being judged.
+  2. Set the three rules aside:
+     `UPDATE rules SET template = 'ErrorRate', enabled = false, definition = jsonb_set(definition, '{Template}', '"ErrorRate"') WHERE managed_by = 'platform';`
+  3. Roll back. Upgrading again puts the rules back as they were; their alerts keep their history either way.
 
 ### A webhook endpoint
 

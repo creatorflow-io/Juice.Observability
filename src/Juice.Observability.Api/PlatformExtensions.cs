@@ -73,6 +73,7 @@ namespace Juice.Observability.Api
             services.AddMediatR(mediator => mediator
                 .RegisterServicesFromAssemblyContaining<EvaluateRule>()
                 .RegisterServicesFromAssemblyContaining<PlanNotifications>()
+                .RegisterServicesFromAssemblyContaining<EvaluateSloBurns>()
                 .RegisterServicesFromAssemblyContaining<ChangeRule>(includeNonPublicTypes: true));
             services.AddScoped(typeof(IPipelineBehavior<,>), typeof(PlatformTransactionBehavior<,>));
             var messaging = services.AddMessaging();

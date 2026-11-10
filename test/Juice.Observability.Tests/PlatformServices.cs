@@ -33,6 +33,7 @@ namespace Juice.Observability.Tests
             services.AddSingleton(Options.Create(rules ?? new RulesOptions()));
             services.AddSingleton(new RuleTemplates(new ClickHouseTelemetrySource(Options.Create(new ClickHouseOptions { ConnectionString = LocalStack.ClickHouseReader }))));
             services.AddSingleton<RuleEvaluator>();
+            services.AddSingleton(Options.Create(new Slos.SloOptions()));
             services.AddPlatformMessaging();
             services.AddMessaging().AddLocalConsumer(consumer => consumer.Subscribe<AlertTransitionedIntegrationEvent, AlertTransitionedConsumer>());
             return services.BuildServiceProvider();

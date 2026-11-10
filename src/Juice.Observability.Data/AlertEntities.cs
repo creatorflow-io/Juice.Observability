@@ -5,7 +5,11 @@ namespace Juice.Observability.Data
 {
     // Rules and alerts (requirements §8, decision D5).
 
-    public enum RuleTemplate { ErrorRate, LatencyP95, ThroughputAbsent, DeliveryFailureRate, HostMemory, MediatorErrors, ConsumerFailures }
+    /// <summary>
+    /// What a rule measures. <see cref="SloBurn"/> rules are the platform's own (<see cref="ManagedBy.Platform"/>): their alerts come from SLO burn
+    /// rates, not from a scheduled query, and neither the rules file nor the API can create or change them.
+    /// </summary>
+    public enum RuleTemplate { ErrorRate, LatencyP95, ThroughputAbsent, DeliveryFailureRate, HostMemory, MediatorErrors, ConsumerFailures, SloBurn }
 
     public enum AlertSeverity { Info, Warning, Critical }
 

@@ -155,6 +155,19 @@ Use `Open an incident` on an alert, or the Incidents page. Operators and admins 
   - **Counting failed:** the API's log says `SLO …: counting failed` with the reason; `juice.observability.slos.counted` counts passes
     by outcome.
 - **What was left out:** an SLO's page lists, by day, the health checks, given-up requests and client errors it didn't count.
+- **A burn alert fires** (`slo-fast-burn`, `slo-slow-burn`, `slo-slow-burn-3d`): both its windows spend the budget at least that many
+  times faster than 30 days allow. Its evidence names the SLO and both windows' totals, bad requests and rates; the SLO's page shows
+  which days and which requests. A fast burn is an outage now. A slow burn is a leak that will spend the budget early if nothing changes.
+- **A burn alert stays firing though things look fine:** it resolves once its short window is under its rate, so up to 5 minutes after
+  a fast burn ends, 30 minutes for the 6-hour burn and 6 hours for the 3-day one. If its alert says `held: a window has no rate`, a
+  window is `Unknown` or has too few requests, and missing data never resolves an alert: see why the SLO reads `Unknown` above.
+- **A burn alert fires again soon after resolving:** the long window still remembers the burn, so a new spike in the short window is
+  enough to fire it again. That's a burn that hasn't really stopped.
+- **After an SLO moves to another service** (a new version naming another `Service`), its windows count only the new service's
+  minutes, so they read `Unknown` and raise nothing until the new service has filled them: an hour for the fast burn, three days for the
+  slowest.
+- **Silencing them:** by rule key for one kind across every SLO, or by service for every alert on that service, rules' and SLOs'
+  alike. The burn rules themselves can't be changed or disabled; change the SLO, or retire it, which resolves its alerts.
 
 ## Juice Agents
 
