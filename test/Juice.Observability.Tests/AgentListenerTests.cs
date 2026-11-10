@@ -35,23 +35,26 @@ namespace Juice.Observability.Tests
         [Fact]
         public void An_agent_builds_the_chain_with_the_intermediate_the_server_sent_and_still_trusts_only_its_CA()
         {
-            static X509Certificate2 Ca(string name, X509Certificate2? issuer)
+            // One clock reading for every certificate: read again for each, a child can end a second after its issuer when the clock ticks between
+            // them, and .NET refuses to make it (seen on CI, 10 November).
+            var now = DateTimeOffset.UtcNow;
+            static X509Certificate2 Ca(string name, X509Certificate2? issuer, DateTimeOffset now)
             {
                 using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
                 var request = new CertificateRequest($"CN={name}", key, HashAlgorithmName.SHA256);
                 request.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, false, 0, true));
                 request.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.KeyCertSign, true));
                 using var certificate = issuer is null
-                    ? request.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow.AddDays(1))
-                    : request.Create(issuer, DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow.AddDays(1), RandomNumberGenerator.GetBytes(12));
+                    ? request.CreateSelfSigned(now.AddMinutes(-5), now.AddDays(1))
+                    : request.Create(issuer, now.AddMinutes(-5), now.AddDays(1), RandomNumberGenerator.GetBytes(12));
                 return issuer is null ? X509CertificateLoader.LoadPkcs12(certificate.Export(X509ContentType.Pkcs12), null) : certificate.CopyWithPrivateKey(key);
             }
-            using var root = Ca($"Listener root {Guid.NewGuid():N}", null);
-            using var intermediate = Ca($"Listener intermediate {Guid.NewGuid():N}", root);
-            using var other = Ca($"Other root {Guid.NewGuid():N}", null);
+            using var root = Ca($"Listener root {Guid.NewGuid():N}", null, now);
+            using var intermediate = Ca($"Listener intermediate {Guid.NewGuid():N}", root, now);
+            using var other = Ca($"Other root {Guid.NewGuid():N}", null, now);
             using var leafKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
             using var leaf = new CertificateRequest("CN=localhost", leafKey, HashAlgorithmName.SHA256)
-                .Create(intermediate, DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow.AddDays(1), RandomNumberGenerator.GetBytes(12));
+                .Create(intermediate, now.AddMinutes(-5), now.AddDays(1), RandomNumberGenerator.GetBytes(12));
             using var sent = new X509Chain();
             sent.ChainPolicy.ExtraStore.Add(intermediate);
 
