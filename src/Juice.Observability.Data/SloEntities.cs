@@ -92,4 +92,48 @@ namespace Juice.Observability.Data
         public long[] Histogram { get; set; } = [];
         public DateTimeOffset CountedAt { get; set; }
     }
+
+    /// <summary>
+    /// One UTC day of one SLO and version: its minute buckets summed (Phase 9, milestone 4). With <see cref="SloHour"/>, a window reads its whole
+    /// days from here, the hours of its partial days, and only the minutes of its partial first and last hours: hundreds of rows per SLO, not
+    /// 43,000. The counter keeps both in step with the buckets: each pass sums again the days and hours it wrote, in the same transaction.
+    /// </summary>
+    public sealed class SloDay
+    {
+        public Guid TenantId { get; init; }
+        public Guid SloId { get; init; }
+        /// <summary>Midnight UTC.</summary>
+        public DateTimeOffset Day { get; init; }
+        public int Version { get; init; }
+        public long Total { get; init; }
+        public long Good { get; init; }
+        /// <summary>Minutes counted that day under this version.</summary>
+        public long Minutes { get; init; }
+        /// <summary>Requests that counted, and those of them that failed; then what was left out, by reason (as the buckets have).</summary>
+        public long Eligible { get; init; }
+        public long Bad { get; init; }
+        public long ExcludedHealth { get; init; }
+        public long ExcludedCancelled { get; init; }
+        public long ExcludedClientErrors { get; init; }
+    }
+
+    /// <summary>One UTC hour of one SLO and version: its minute buckets summed. See <see cref="SloDay"/>.</summary>
+    public sealed class SloHour
+    {
+        public Guid TenantId { get; init; }
+        public Guid SloId { get; init; }
+        /// <summary>The start of the hour, UTC.</summary>
+        public DateTimeOffset Hour { get; init; }
+        public int Version { get; init; }
+        public long Total { get; init; }
+        public long Good { get; init; }
+        /// <summary>Minutes counted that hour under this version.</summary>
+        public long Minutes { get; init; }
+        /// <summary>Requests that counted, and those of them that failed; then what was left out, by reason (as the buckets have).</summary>
+        public long Eligible { get; init; }
+        public long Bad { get; init; }
+        public long ExcludedHealth { get; init; }
+        public long ExcludedCancelled { get; init; }
+        public long ExcludedClientErrors { get; init; }
+    }
 }

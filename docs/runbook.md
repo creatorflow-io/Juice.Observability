@@ -42,8 +42,13 @@ enter telemetry.
   `juice.observability.rules.evaluations{outcome}`.
 - **ClickHouse unreachable.** Every pass fails and states are kept, never turned Offline or resolved. Once
   ClickHouse is back, the next pass (≤ 30 s) catches up.
-- **`juice.observability.rules.skipped{reason=saturated}` keeps growing.** Rules are queued behind slow ones. Raise
-  `Rules:MaxConcurrency`, or look at `juice.observability.rules.duration` to find the slow template.
+- **`juice.observability.rules.lag` above a few seconds.** Rules wait for a worker longer than they should. Every rule due on a tick
+  starts then and waits for one of `Rules:MaxConcurrency` workers, so `juice.observability.rules.queued` (an evaluation that waited)
+  rises steadily in a healthy deployment with more rules than workers: it is the lag that matters. Raise `Rules:MaxConcurrency`, or look
+  at `juice.observability.rules.duration` to find the slow template.
+- **`juice.observability.rules.skipped` rising.** Due evaluations that didn't run: `overrun`, a rule still running (or waiting) when due
+  again, so it is slower than its schedule; `released` and `disabled`, a rule that gave up waiting because another replica took the lease
+  or the rule was turned off meanwhile (occasional, around a failover or a change).
 
 ## Telemetry missing
 
@@ -154,6 +159,9 @@ Use `Open an incident` on an alert, or the Incidents page. Operators and admins 
     The SLO reads `Unknown` until the gap is less than 10% of the window, so a long outage shows on the 30 days for a while.
   - **Counting failed:** the API's log says `SLO …: counting failed` with the reason; `juice.observability.slos.counted` counts passes
     by outcome.
+- **Counting falls behind:** `juice.observability.slos.duration` is how long a pass over every SLO takes, and
+  `juice.observability.slos.burn_lag` how late burn alerts are judged after their windows move on (each minute). Burn lag past a minute
+  means passes take longer than the minute they have: fewer SLOs, a shorter `Slos:QueryTimeout`, or a faster ClickHouse.
 - **What was left out:** an SLO's page lists, by day, the health checks, given-up requests and client errors it didn't count.
 - **A burn alert fires** (`slo-fast-burn`, `slo-slow-burn`, `slo-slow-burn-3d`): both its windows spend the budget at least that many
   times faster than 30 days allow. Its evidence names the SLO and both windows' totals, bad requests and rates; the SLO's page shows

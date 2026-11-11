@@ -1,6 +1,6 @@
 # Phase 9 plan: SLOs, alert correlation, and selective streaming
 
-**Status:** in progress, milestones 1, 2 and 3 of 4 done. The owner's requirements and decisions are marked **Owner**; the rest are mine, for review.
+**Status:** milestones 1 to 4 done; the owner approved [the Phase 9 decision records](phase-9-decisions.md) on 11 November. Follow-up: DR-4, SLO statuses computed once per window minute. The owner's requirements and decisions are marked **Owner**; the rest are mine, for review.
 
 **Roadmap gate:**
 - a benchmark shows scheduled queries can't meet an explicit requirement before streaming is introduced;
@@ -135,6 +135,33 @@ Every excluded request is counted by reason, so the Console shows what was left 
 - **Outcome:** if scheduled evaluation meets every target, the decision record says so with the numbers, and nothing is added. If one is
   missed, an ADR is needed before anything streams.
 
+### Benchmark method and targets, fixed 10 November before the first run
+
+`deploy/local/tests/streaming-benchmark.sh` runs `tests/load.sh` (the reference load through the test Collector) and, beside it,
+`StreamingBenchmark` in the test project, which hosts the whole platform (rules, SLO counting and burn alerts, discovery, health,
+notifications and webhooks) on a scratch database reading the same ClickHouse tenant.
+
+- **Workload:** 50 services (`bench/svc-00` to `svc-49`, environment `bench`) each sending 4 requests a second. 50 rules on them: 20
+  `ErrorRate` (5%, `ForDuration` 1 minute), 15 `LatencyP95` and 15 `ThroughputAbsent`, all on the 1-minute schedule. 50 SLOs: 35
+  Availability (99.5%) and 15 Latency (99% under 300 ms). The SLOs' 30 days are seeded as minute buckets once counting has caught up, so
+  reads and windows have the full history. A webhook endpoint takes every firing.
+- **Breaches:** from minute 8, one more of the 20 error-rule services fails every request every 75 seconds. Each break is one rule
+  breach and one SLO fast burn.
+
+| Measure | Measured as | Target |
+|---|---|---|
+| Rule breach-to-alert | The alert seen firing in the database, minus the first failing request plus `ForDuration`. 20 breaches | p95 ≤ 2 min |
+| SLO fast-burn detection | The fast-burn alert seen in the database, minus the moment both its windows (1 h and 5 min) first reach 14.4× on the requests sent and seeded. 20 burns | p95 ≤ 2 min |
+| First webhook dispatch | A delivery's first attempt minus its creation, which commits with the transition. Every delivery of the run | p95 ≤ 30 s |
+| Rule evaluation lag | `juice.observability.rules.lag`: a rule's start minus its due time | never above 1 min (its schedule) |
+| SLO evaluation lag | `juice.observability.slos.burn_lag`: burn alerts judged minus when their windows moved on | never above 1 min (they move each minute) |
+| Reading SLO status | `GET slos` at 20 requests a second for 60 s, 50 SLOs with 30 days of buckets, under the reference load | p95 ≤ 500 ms (§9 API reads) |
+| At the 200-SLO limit | The same read with 200 SLOs, after the run | p95 ≤ 500 ms; if missed, daily totals (milestone 1, round 3) |
+
+Known before the run, from the design: burn windows end two minutes before now and on whole minutes (`SloReader.Settle`, so telemetry
+still arriving isn't read as missing), so a burn can't be seen less than 2 minutes after it crosses its rate. The benchmark measures it
+as it is; the decision record says what that means.
+
 ## Anomaly detection (R11)
 
 Not in this phase. Revisit when there are at least 90 days of SLO buckets and 20 reviewed incidents (accepted or dismissed suggestions
@@ -268,3 +295,36 @@ with this traffic, not a defect.
 To watch with real decisions (not changed, as the weights are a starting point): a change on *either* alert counts, so a deployment of one
 service plus timing reaches 0.50 with any alert that fires beside it (the test's search and payments pair). Two alerts on the same service
 get no evidence beyond timing, since the table has no "same service" weight.
+
+## Milestone 4: the streaming benchmark and decision records, 10 November
+
+- **Benchmark:** `deploy/local/tests/streaming-benchmark.sh` runs `tests/load.sh` and `StreamingBenchmark` (test project, run only with
+  `JUICE_BENCHMARK=1`; `BREAKS=2` for a 15-minute smoke run of the harness). Method and targets as fixed above. Results and what they
+  mean: [Phase 9 decision records](phase-9-decisions.md), DR-1.
+- **Found and fixed inside scheduled evaluation:**
+  - **Rule scheduler:** it started at most `Rules:MaxConcurrency` rules per tick (48 a minute at the defaults), so 50 one-minute rules
+    fell further behind every minute (lag 780 s after 15 minutes). Every due rule now starts on its tick and waits for a free worker.
+    `juice.observability.rules.queued` counts evaluations that waited for a worker; `rules.skipped` keeps only those that didn't run (`overrun`, and the new `released` and `disabled` for a rule that gave up waiting).
+  - **Reading SLO status:** hourly and daily totals (`slo_hours`, `slo_days`) kept by the counter in the transaction that writes the
+    buckets, backfilled by the `SloRollups` migration, dropped with the buckets by retention. A window reads its whole days, the hours
+    of its partial days and the minutes of its partial first and last hours, each stretch an index range; one read serves the page and
+    the burn windows. `GET slos` at 50 SLOs: p95 20 s with 964 of 1,200 failing, now 175 ms with none.
+  - **Metrics:** `juice.observability.slos.duration` (a counting pass) and `juice.observability.slos.burn_lag` (burn alerts judged after
+    their windows move), as the rules have; in the runbook.
+- **Not met:** fast-burn detection (p95 172 s against 2 minutes), from the 2-minute settle by design: the target is now p95 ≤ 4 minutes
+  (DR-3, approved), which it meets. `GET slos` at the 200-SLO limit at 20 requests a second: statuses to be computed once per window
+  minute (DR-4, approved, a follow-up).
+- **Anomaly detection:** deferred (DR-2).
+
+| Requirement | Evidence |
+|---|---|
+| Targets fixed before the run (R10) | This plan's method and targets section, written before the first run |
+| Scheduled evaluation measured at reference load | DR-1's table: 20 breaches and 20 burns, 61 deliveries, 1,950 rule and 39 burn evaluations under the 55-minute reference load |
+| The measure of the burn | `StreamingBenchmark.A_burn_crosses_when_both_windows_reach_the_rate_on_what_was_sent` (the reference point, checked by hand); each burn's alert evidence logged beside what was sent |
+| Rule scheduler | `RuleEvaluatorTests.Scheduler_bounds_concurrency_times_out_and_records_lag_Async`: one worker, three due rules, all three run on the same tick |
+| Hourly and daily totals | `SloDayTests.Windows_from_daily_totals_equal_the_sum_of_their_minutes_Async`: every window equals summing its minutes, across a version change, gaps, midnight and overlapping stretches; the SLO and burn tests seed through the counter's own re-summing |
+| Streaming not introduced; anomaly detection deferred | DR-1, DR-2 |
+| Totals kept with the buckets | `SloTests.Requests_are_counted_as_the_eligibility_rules_say_Async` checks every hour and day the counter wrote against its minutes; `SloDayTests` the catch-up after minutes counted without totals, as far back as another replica counts again |
+| Lease taken back within one call | `WorkerLeaseTests.A_lease_taken_back_within_one_call_has_a_new_generation_Async` |
+| Independent review, 11 November | Two rounds of `code-review` (20 findings fixed) and a confirmation round on the round-2 fixes (8 found, fixed on the owner's word). Among them: a rule waiting for a worker gives up when the lease is lost (also when lost and taken back in one call, now told by the lease's generation) and runs the rule as it is when it starts, never older than its tick; waiting is counted as `rules.queued`, not as skipped; the counter catches each SLO's totals up when it takes the lease, as far back as another replica may have counted again, on its own timeout so it never holds counting back; burn lag recorded only for judgments made; the SLO page's days read from the daily totals |
+| Mutation check | 10 of 10 caught: workers unbounded, the lease's generation stuck, overlapping stretches counted twice, partial days or whole days or the newest minutes not read, catch-up without its lookback, page days without the partial first day, the counter keeping no totals (found missed at first; the counting test now checks the totals), the benchmark's crossing at the wrong rate |

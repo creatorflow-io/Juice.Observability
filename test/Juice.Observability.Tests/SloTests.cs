@@ -356,6 +356,14 @@ namespace Juice.Observability.Tests
             var buckets = await check.SloBuckets.AsNoTracking().Join(check.Slos, b => b.SloId, s => s.Id, (b, s) => new { s.Key, b }).Where(x => x.b.Minute == SloCounter.Floor(at))
                 .ToDictionaryAsync(x => x.Key, x => x.b, Ct);
             Assert.Equal(4, buckets.Count);
+            // The counter keeps the hourly and daily totals in step with what it wrote: the same sums, every count.
+            var byHour = (await check.SloBuckets.AsNoTracking().ToListAsync(Ct)).GroupBy(b => (b.SloId, SloDays.Hour(b.Minute), b.Version))
+                .ToDictionary(g => g.Key, g => (g.Sum(b => b.Total), g.Sum(b => b.Good), g.Sum(b => b.Eligible), g.Sum(b => b.Bad), (long)g.Count()));
+            var hours = (await check.SloHours.AsNoTracking().ToListAsync(Ct)).ToDictionary(h => (h.SloId, h.Hour, h.Version), h => (h.Total, h.Good, h.Eligible, h.Bad, h.Minutes));
+            Assert.Equal(byHour.OrderBy(p => p.Key), hours.OrderBy(p => p.Key));
+            var byDay = byHour.GroupBy(p => (p.Key.SloId, SloDays.Day(p.Key.Item2), p.Key.Version)).ToDictionary(g => g.Key, g => (g.Sum(p => p.Value.Item1), g.Sum(p => p.Value.Item5)));
+            var days = (await check.SloDays.AsNoTracking().ToListAsync(Ct)).ToDictionary(d => (d.SloId, d.Day, d.Version), d => (d.Total, d.Minutes));
+            Assert.Equal(byDay.OrderBy(p => p.Key), days.OrderBy(p => p.Key));
             var a = buckets["availability"];
             // Eligible: 10 + 2 + 3 + 2 (429, new and old attribute) + 2 (404, the client's) + 2 consumers + 4 checkout + 1 healthcare = 26.
             // Bad: 3 + 2 (429) + 1 consumer + 1 checkout = 7.
@@ -654,7 +662,9 @@ namespace Juice.Observability.Tests
             {
                 var slo = await db.Slos.SingleAsync(s => s.Key == "orders-availability", Ct);
                 var end = SloCounter.Floor(DateTimeOffset.UtcNow) - SloReader.Settle;
-                foreach (var from in new[] { end - TimeSpan.FromDays(2), end - TimeSpan.FromHours(1) })
+                // The older hour at midday two days back, so a whole day lies between it and the last hour whatever the time of the run (just
+                // after midnight, "two days ago" reached into the middle day).
+                foreach (var from in new[] { SloDays.Day(end) - TimeSpan.FromDays(2) + TimeSpan.FromHours(12), end - TimeSpan.FromHours(1) })
                 {
                     for (var minute = from; minute < from + TimeSpan.FromHours(1); minute += TimeSpan.FromMinutes(1))
                     {
@@ -662,6 +672,8 @@ namespace Juice.Observability.Tests
                     }
                 }
                 await db.SaveChangesAsync(Ct);
+                // Their daily totals, as the counter keeps them with what it writes.
+                await SloDays.RecomputeAsync(db, slo.Id, SloDays.Day(end) - TimeSpan.FromDays(2), end, Ct);
             }
 
             var list = (await Caller.JsonAsync(await viewer.GetAsync($"/api/v1/tenants/{tenant}/slos?category=Technical"))).GetProperty("items");

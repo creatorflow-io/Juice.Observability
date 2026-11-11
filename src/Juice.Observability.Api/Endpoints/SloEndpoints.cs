@@ -141,9 +141,8 @@ namespace Juice.Observability.Api.Endpoints
                     return null;
                 }
             }
-            var full = await SloReader.StatusesAsync(db, ids, versionsOf, options, now, ct);
-            var burn = await SloReader.StatusesAsync(db, ids, versionsOf, options, now, ct, burnOnly: true, countedVersions: SameService);
-            return full.ToDictionary(p => p.Key, p => p.Value with { Windows = burn[p.Key].Windows });
+            // One read for both: the same sums, the burn windows counting only the current service's versions.
+            return await SloReader.StatusesWithBurnsAsync(db, ids, versionsOf, options, now, SameService, ct);
         }
 
         /// <summary>The SLO's burn alerts: every open one, then the ten latest resolved.</summary>

@@ -166,6 +166,8 @@ namespace Juice.Observability.Tests
                 SELECT {slo.TenantId}, {slo.SloId}, m, {version}, 100, {good}, 100, {100 - good}, 0, 0, 0, ARRAY[]::bigint[], {to}
                 FROM generate_series({from}, {last}, interval '1 minute') AS m
                 """, Ct);
+            // Their daily totals, as the counter keeps them with what it writes.
+            await SloDays.RecomputeAsync(db, slo.SloId, from, to, Ct);
         }
 
         /// <summary>A command through the mediator and its TransactionBehavior, as the counter sends it.</summary>
@@ -304,6 +306,8 @@ namespace Juice.Observability.Tests
             await using (var db = database.Context())
             {
                 await db.SloBuckets.Where(b => b.Minute >= end - TimeSpan.FromMinutes(10)).ExecuteDeleteAsync(Ct);
+                // As the counter would: their hour and day summed again, or just after an hour began, the hour before would still hold them.
+                await SloDays.RecomputeAsync(db, slo.SloId, end - TimeSpan.FromMinutes(10), end, Ct);
             }
             Assert.Equal(1, (await EvaluateAsync()).Resolved);
             open = await OpenAsync();

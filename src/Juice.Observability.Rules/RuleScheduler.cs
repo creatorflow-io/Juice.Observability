@@ -30,24 +30,53 @@ namespace Juice.Observability.Rules
         private static readonly Histogram<double> Lag = RuleEvaluator.Meter.CreateHistogram<double>("juice.observability.rules.lag",
             "s", "Delay between a rule's due time and the start of its evaluation");
         private static readonly Counter<long> Skipped = RuleEvaluator.Meter.CreateCounter<long>("juice.observability.rules.skipped",
-            "{evaluation}", "Due evaluations not started, by reason (overrun: still running; saturated: no free worker)");
+            "{evaluation}", "Due evaluations not run, by reason (overrun: still running or waiting when due again; released: the lease went to another replica while it waited; disabled: turned off while it waited)");
+        private static readonly Counter<long> Queued = RuleEvaluator.Meter.CreateCounter<long>("juice.observability.rules.queued",
+            "{evaluation}", "Due evaluations that waited for a free worker before running; the wait is in rules.lag");
 
         private readonly ConcurrentDictionary<Guid, DateTimeOffset> _due = new();
         private readonly ConcurrentDictionary<Guid, Task> _running = new();
+        /// <summary>
+        /// The workers. Every due rule is started on its tick and waits here for one, so a worker that frees up starts the next rule at once. Waiting
+        /// for the next tick instead capped the scheduler at MaxConcurrency rules per tick (48 a minute at the defaults), however quick each was.
+        /// </summary>
+        private readonly SemaphoreSlim _workers = new(Math.Max(1, options.Value.MaxConcurrency));
+        /// <summary>Cancelled when this replica loses the lease, so rules it queued don't run beside the replica that took over.</summary>
+        private CancellationTokenSource _holding = new();
+        private int _inFlight;
+
+        /// <summary>The most evaluations that ran at once; tests check it against MaxConcurrency.</summary>
+        internal int PeakInFlight { get; private set; }
+
+        /// <summary>The enabled rules as last read, shared by the evaluations that waited for a worker: read again at most once a second.</summary>
+        private (DateTimeOffset At, Task<Dictionary<Guid, Rule>> Rules)? _current;
+        private readonly Lock _currentLock = new();
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             await using var lease = WorkerLease.For(scopes, "rules", logger);
             var held = false;
+            var generation = 0;
             using var timer = new PeriodicTimer(options.Value.Tick);
             do
             {
                 try
                 {
                     var holds = await lease.TryHoldAsync(stoppingToken);
-                    if (holds && !held)
+                    if (!holds && held)
                     {
-                        // Due times from before this replica took over are stale: every rule is due now.
+                        // Lost to another replica: rules still waiting for a worker give up, it evaluates them now.
+                        await _holding.CancelAsync();
+                    }
+                    else if (holds && lease.Generation != generation)
+                    {
+                        // Taken (back), even within one call: another replica may have held it meanwhile. What this replica queued before
+                        // gives up, and due times from before are stale: every rule is due now.
+                        generation = lease.Generation;
+                        await _holding.CancelAsync();
+                        var previous = _holding;
+                        _holding = new CancellationTokenSource();
+                        previous.Dispose();
                         _due.Clear();
                     }
                     held = holds;
@@ -65,15 +94,18 @@ namespace Juice.Observability.Rules
             await Task.WhenAll(_running.Values);
         }
 
-        /// <summary>Starts every due rule that has a free worker. Exposed for tests.</summary>
+        /// <summary>Starts every due rule; each runs when a worker is free. Exposed for tests.</summary>
         public async Task TickAsync(CancellationToken cancellationToken)
         {
+            // Before reading the rules: a rule that waits for a worker is checked against a list read after this, never one from before the tick.
+            var tickAt = clock.GetUtcNow();
             await using var scope = scopes.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
             var tenantId = await db.Tenants.Where(t => t.Key == platform.Value.TenantKey).Select(t => t.Id).SingleAsync(cancellationToken);
             // SLO burn rules have no query to run: their alerts come from the SLO counter's burn rates.
             var rules = await db.Rules.AsNoTracking().Where(r => r.TenantId == tenantId && r.Enabled && r.Template != RuleTemplate.SloBurn).ToListAsync(cancellationToken);
             var now = clock.GetUtcNow();
+            var hold = _holding.Token;
             foreach (var rule in rules)
             {
                 var schedule = RuleDefinition.FromJson(rule.Definition).Schedule;
@@ -88,15 +120,9 @@ namespace Juice.Observability.Rules
                     _due[rule.Id] = Next(due, schedule, now);
                     continue;
                 }
-                if (_running.Count >= options.Value.MaxConcurrency)
-                {
-                    Skipped.Add(1, new KeyValuePair<string, object?>("reason", "saturated"));
-                    continue; // stays due: it starts on a later tick, and the wait shows as lag
-                }
-                Lag.Record((now - due).TotalSeconds, new KeyValuePair<string, object?>("template", rule.Template.ToString()));
                 _due[rule.Id] = Next(due, schedule, now);
                 // Registered before it starts, so its own removal on completion can never come first.
-                var start = new Task<Task>(() => RunAsync(rule, cancellationToken));
+                var start = new Task<Task>(() => RunAsync(rule, due, tickAt, hold, cancellationToken));
                 _running[rule.Id] = start.Unwrap();
                 start.Start(TaskScheduler.Default);
             }
@@ -105,17 +131,69 @@ namespace Juice.Observability.Rules
         /// <summary>Evaluations in flight; tests wait on them.</summary>
         public Task Running => Task.WhenAll(_running.Values);
 
-        private async Task RunAsync(Rule rule, CancellationToken stoppingToken)
+        /// <summary>
+        /// Waits for a worker, then evaluates. It gives up if this replica lost the lease meanwhile (the replica that took it evaluates it now). A
+        /// rule that had to wait runs as the rule is now, not as it was on its tick: one disabled or changed while it waited is skipped or evaluated
+        /// as changed.
+        /// </summary>
+        private async Task RunAsync(Rule rule, DateTimeOffset due, DateTimeOffset tickAt, CancellationToken hold, CancellationToken stoppingToken)
         {
-            var started = Stopwatch.GetTimestamp();
-            var outcome = "success";
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-            timeout.CancelAfter(options.Value.EvaluationTimeout);
+            var queued = false;
             try
             {
+                if (!_workers.Wait(0))
+                {
+                    queued = true;
+                    Queued.Add(1, new KeyValuePair<string, object?>("template", rule.Template.ToString()));
+                    using var waiting = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, hold);
+                    await _workers.WaitAsync(waiting.Token);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                if (!stoppingToken.IsCancellationRequested) Skipped.Add(1, new KeyValuePair<string, object?>("reason", "released"));
+                _running.TryRemove(rule.Id, out _);
+                return;
+            }
+            var inFlight = Interlocked.Increment(ref _inFlight);
+            lock (_currentLock) PeakInFlight = Math.Max(PeakInFlight, inFlight);
+            var outcome = "success";
+            var started = Stopwatch.GetTimestamp();
+            // Counted as an evaluation unless it gives up below: a failure to read the rule again is a failed evaluation, not a silent one.
+            var counted = true;
+            try
+            {
+                // Waited or not: a task can start after the lease was lost even when a worker is free.
+                if (hold.IsCancellationRequested)
+                {
+                    counted = false;
+                    Skipped.Add(1, new KeyValuePair<string, object?>("reason", "released"));
+                    return;
+                }
+                if (queued)
+                {
+                    if (!(await CurrentAsync(tickAt, stoppingToken)).TryGetValue(rule.Id, out var current))
+                    {
+                        counted = false;
+                        Skipped.Add(1, new KeyValuePair<string, object?>("reason", "disabled"));
+                        return;
+                    }
+                    rule = current;
+                }
+                // The wait for a worker shows as lag; the timeout and duration count from the start.
+                Lag.Record((clock.GetUtcNow() - due).TotalSeconds, new KeyValuePair<string, object?>("template", rule.Template.ToString()),
+                    new KeyValuePair<string, object?>("queued", queued));
+                started = Stopwatch.GetTimestamp();
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+                timeout.CancelAfter(options.Value.EvaluationTimeout);
                 await evaluator.EvaluateAsync(rule, timeout.Token);
             }
-            catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                // Shutting down: nothing was evaluated to count.
+                counted = false;
+            }
+            catch (OperationCanceledException)
             {
                 outcome = "timeout";
                 logger.LogWarning("Rule {Rule} timed out after {Timeout}", rule.Key, options.Value.EvaluationTimeout);
@@ -127,10 +205,42 @@ namespace Juice.Observability.Rules
             }
             finally
             {
-                Evaluations.Add(1, new KeyValuePair<string, object?>("template", rule.Template.ToString()),
-                    new KeyValuePair<string, object?>("outcome", outcome));
-                Duration.Record(Stopwatch.GetElapsedTime(started).TotalSeconds);
+                if (counted)
+                {
+                    Evaluations.Add(1, new KeyValuePair<string, object?>("template", rule.Template.ToString()),
+                        new KeyValuePair<string, object?>("outcome", outcome));
+                    Duration.Record(Stopwatch.GetElapsedTime(started).TotalSeconds);
+                }
+                Interlocked.Decrement(ref _inFlight);
+                _workers.Release();
                 _running.TryRemove(rule.Id, out _);
+            }
+        }
+
+        /// <summary>
+        /// The rules the scheduler runs, as they are now (gone, disabled and SLO burn rules left out), by id. Read once and shared for a second, so
+        /// the evaluations that waited for a worker on a tick don't each query; but never a list read before <paramref name="notBefore"/>, the tick
+        /// that queued the caller, or a rule enabled or changed just before that tick would look gone or old.
+        /// </summary>
+        private Task<Dictionary<Guid, Rule>> CurrentAsync(DateTimeOffset notBefore, CancellationToken ct)
+        {
+            lock (_currentLock)
+            {
+                var now = clock.GetUtcNow();
+                if (_current is { } cached && cached.At >= notBefore && now - cached.At < TimeSpan.FromSeconds(1) && !cached.Rules.IsFaulted && !cached.Rules.IsCanceled)
+                {
+                    return cached.Rules;
+                }
+                var read = ReadAsync();
+                _current = (now, read);
+                return read;
+            }
+
+            async Task<Dictionary<Guid, Rule>> ReadAsync()
+            {
+                await using var scope = scopes.CreateAsyncScope();
+                var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+                return await db.Rules.AsNoTracking().Where(r => r.Enabled && r.Template != RuleTemplate.SloBurn).ToDictionaryAsync(r => r.Id, ct);
             }
         }
 

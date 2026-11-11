@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using Juice.MediatR;
 using Juice.Observability.Data;
@@ -23,6 +24,10 @@ namespace Juice.Observability.Slos
         private static readonly Meter Meter = new("Juice.Observability");
         private static readonly Counter<long> Passes = Meter.CreateCounter<long>("juice.observability.slos.counted", "{pass}",
             "SLO counting passes, by outcome (counted, idle, failed)");
+        private static readonly Histogram<double> PassDuration = Meter.CreateHistogram<double>("juice.observability.slos.duration", "s",
+            "Duration of one counting pass over every SLO, burn alerts included");
+        private static readonly Histogram<double> BurnLag = Meter.CreateHistogram<double>("juice.observability.slos.burn_lag", "s",
+            "Delay between a burn window's end moving on (each minute, once settled) and the burn alerts being judged on it");
 
         /// <summary>Codes of the classes the query sorts requests into.</summary>
         internal const int ExcludedHealth = 1, ExcludedCancelled = 2, ExcludedClient = 3, BadRequest = 4, GoodRequest = 5;
@@ -96,11 +101,26 @@ namespace Juice.Observability.Slos
         {
             await using var lease = WorkerLease.For(scopes, CloseSloBurnAlertsHandler.CounterLease, logger);
             using var timer = new PeriodicTimer(options.Value.Interval);
+            var generation = 0;
             do
             {
                 try
                 {
-                    if (await lease.TryHoldAsync(stoppingToken)) await PassAsync(stoppingToken);
+                    var holds = await lease.TryHoldAsync(stoppingToken);
+                    if (holds && lease.Generation != generation)
+                    {
+                        // Taken (back), even within one call: another replica may have judged and counted meanwhile. Burn lag counts from this
+                        // replica's next judgment, and each SLO's totals are caught up once with whatever was counted without them.
+                        generation = lease.Generation;
+                        _lastBurnEnd = DateTimeOffset.MinValue;
+                        _caughtUp.Clear();
+                    }
+                    if (holds)
+                    {
+                        var started = Stopwatch.GetTimestamp();
+                        await PassAsync(stoppingToken);
+                        PassDuration.Record(Stopwatch.GetElapsedTime(started).TotalSeconds);
+                    }
                 }
                 catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
                 {
@@ -129,6 +149,7 @@ namespace Juice.Observability.Slos
                 // Each SLO on its own: one that can't be read (a stored definition this build can't parse) doesn't hold back the others.
                 try
                 {
+                    if (!_caughtUp.Contains(id)) await CatchUpAsync(id, ct);
                     // Watched through the service in effect now (not a later one still waiting for its date) and, for a while after a move, the
                     // one it moved from, so the minutes just before the move are still counted again as their late telemetry arrives.
                     var sloVersions = versions[id].ToList();
@@ -158,12 +179,42 @@ namespace Juice.Observability.Slos
             {
                 var expired = now - options.Value.Retention;
                 await db.SloBuckets.Where(b => b.TenantId == tenantId && b.Minute < expired).ExecuteDeleteAsync(ct);
+                // An hour or a day goes once all of it has: one still partly kept is older than any window reads from it.
+                var expiredHours = expired - TimeSpan.FromHours(1);
+                await db.SloHours.Where(h => h.TenantId == tenantId && h.Hour <= expiredHours).ExecuteDeleteAsync(ct);
+                var expiredDays = expired - TimeSpan.FromDays(1);
+                await db.SloDays.Where(d => d.TenantId == tenantId && d.Day <= expiredDays).ExecuteDeleteAsync(ct);
                 _lastExpiry = now;
             }
         }
 
         private DateTimeOffset _lastExpiry = DateTimeOffset.MinValue;
         private DateTimeOffset _lastBurnEnd = DateTimeOffset.MinValue;
+        /// <summary>SLOs whose totals this replica has caught up since it took the lease (<see cref="SloDays.CatchUpAsync"/>).</summary>
+        private readonly HashSet<Guid> _caughtUp = [];
+
+        /// <summary>
+        /// Catches an SLO's totals up, once per lease, on its own: within the query timeout, and a failure only logged and tried again next pass, so
+        /// it never holds back counting. Back as far as another replica may have counted again: its lookback for the newest telemetry, then its
+        /// lateness before that.
+        /// </summary>
+        private async Task CatchUpAsync(Guid id, CancellationToken stoppingToken)
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+            timeout.CancelAfter(options.Value.QueryTimeout);
+            try
+            {
+                await using var scope = scopes.CreateAsyncScope();
+                var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+                var countedThrough = await db.Slos.Where(s => s.Id == id).Select(s => s.CountedThrough).SingleAsync(timeout.Token);
+                await SloDays.CatchUpAsync(db, id, countedThrough, Lookback(options.Value) + options.Value.Lateness, timeout.Token);
+                _caughtUp.Add(id);
+            }
+            catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
+            {
+                logger.LogWarning(ex, "SLO {Slo}: its hourly and daily totals couldn't be caught up; counting carries on, and it's tried again next pass", id);
+            }
+        }
 
         /// <summary>
         /// The burn alerts, judged on what this pass counted, as a command: the alerts, their transitions and the notifications they raise commit
@@ -172,17 +223,23 @@ namespace Juice.Observability.Slos
         private async Task EvaluateBurnsAsync(CancellationToken ct)
         {
             // The windows end on a whole minute: judging them again before it moves would read the same minutes.
-            var end = Floor(clock.GetUtcNow()) - SloReader.Settle;
+            var now = clock.GetUtcNow();
+            var end = Floor(now) - SloReader.Settle;
             if (end == _lastBurnEnd)
             {
                 return;
             }
+            // Due when the window end first moved past the last one judged: a minute after it, once settled. A slow pass that skips minutes shows
+            // as lag from the first minute it skipped. The first judgment after taking the lease has nothing to be late against. Recorded once it
+            // has been judged: a failed attempt is retried, not a judgment.
+            double? lag = _lastBurnEnd == DateTimeOffset.MinValue ? null : (now - (_lastBurnEnd + TimeSpan.FromMinutes(1) + SloReader.Settle)).TotalSeconds;
             try
             {
                 using var context = PlatformMessageContext.Begin("slos");
                 await using var scope = scopes.CreateAsyncScope();
                 var result = await scope.ServiceProvider.GetRequiredService<IMediator>().Send(new EvaluateSloBurns(), ct);
                 _lastBurnEnd = end;
+                if (lag is { } late) BurnLag.Record(late);
                 if (result.Fired + result.Resolved > 0)
                 {
                     logger.LogInformation("SLO burn alerts: {Fired} fired, {Resolved} resolved", result.Fired, result.Resolved);
@@ -332,6 +389,8 @@ namespace Juice.Observability.Slos
                 db.SloBuckets.AddRange(buckets);
                 if (slo.CountedThrough is null || to > slo.CountedThrough) slo.CountedThrough = to;
                 await db.SaveChangesAsync(ct);
+                // Its hourly and daily totals, in step with the buckets: reads sum these instead of every minute of the 30 days.
+                await SloDays.RecomputeAsync(db, slo.Id, from, to, ct);
                 await transaction.CommitAsync(ct);
                 Passes.Add(1, new KeyValuePair<string, object?>("outcome", "counted"));
                 // Grow back towards the full stretch once a pass fits.

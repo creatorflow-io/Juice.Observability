@@ -28,7 +28,8 @@ collector_metric() {   # sum of a Collector self-metric across its label sets
 
 gen() {   # gen <signal> <workers> <rate per worker> [extra args...]
   local signal=$1 workers=$2 rate=$3; shift 3
-  docker run --rm -d --network "$NETWORK" -v "$(pwd -W 2>/dev/null || pwd)/secrets/tls/ca.crt:/ca.crt:ro" "$IMAGE" "$signal" \
+  # Labelled with the run, so a caller (tests/streaming-benchmark.sh) can stop this run's generators and no one else's.
+  docker run --rm -d --label "juice.load=${LOAD_LABEL:-$RUN}" --network "$NETWORK" -v "$(pwd -W 2>/dev/null || pwd)/secrets/tls/ca.crt:/ca.crt:ro" "$IMAGE" "$signal" \
     --otlp-endpoint otel-collector-test:4317 --ca-cert /ca.crt --otlp-header "Authorization=\"Bearer $TOKEN\"" \
     --service "$SERVICE" --workers "$workers" --rate "$rate" --duration "$DURATION" "$@"
 }

@@ -38,6 +38,35 @@ namespace Juice.Observability.Tests
         }
 
         /// <summary>
+        /// Phase 9 milestone 4: a lease lost and taken back within one call still says so. Its connection ends (as when the database restarts or
+        /// a newer replica ends it), so the next call takes the lease again and returns true as before; the generation tells the worker another
+        /// replica may have held it in between.
+        /// </summary>
+        [Fact]
+        public async Task A_lease_taken_back_within_one_call_has_a_new_generation_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var ct = TestContext.Current.CancellationToken;
+            await using var lease = new WorkerLease(database.ConnectionString, $"counter-{_run}", NullLogger.Instance);
+            Assert.Equal(0, lease.Generation);
+            Assert.True(await lease.TryHoldAsync(ct));
+            Assert.Equal(1, lease.Generation);
+            Assert.True(await lease.TryHoldAsync(ct));
+            Assert.Equal(1, lease.Generation);   // held all along
+
+            await using (var admin = new Npgsql.NpgsqlConnection(LocalStack.PostgresConnection("juice_observability")))
+            {
+                await admin.OpenAsync(ct);
+                await using var end = new Npgsql.NpgsqlCommand(
+                    $"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{database.Name}' AND application_name LIKE 'juice-worker:counter-{_run}%'", admin);
+                await end.ExecuteNonQueryAsync(ct);
+            }
+            Assert.True(await lease.TryHoldAsync(ct));   // lost and taken back in one call
+            Assert.Equal(2, lease.Generation);
+        }
+
+        /// <summary>
         /// Phase 5's limit, seen for real: a host left on an older version held discovery and recorded no version changes. A newer replica now
         /// takes a lease over from an older holder; replicas of the same version don't, and an older one still takes a free lease.
         /// </summary>

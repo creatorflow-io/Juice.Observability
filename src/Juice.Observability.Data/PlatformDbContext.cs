@@ -59,6 +59,8 @@ namespace Juice.Observability.Data
         public DbSet<Slo> Slos => Set<Slo>();
         public DbSet<SloVersion> SloVersions => Set<SloVersion>();
         public DbSet<SloBucket> SloBuckets => Set<SloBucket>();
+        public DbSet<SloDay> SloDays => Set<SloDay>();
+        public DbSet<SloHour> SloHours => Set<SloHour>();
         public DbSet<AgentEnrollmentFailure> AgentEnrollmentFailures => Set<AgentEnrollmentFailure>();
 
         /// <summary>Applies the snake_case naming used by every table. Call it when configuring the context.</summary>
@@ -428,6 +430,24 @@ namespace Juice.Observability.Data
                 Tenant(e);
                 e.HasKey(x => new { x.SloId, x.Minute });
                 e.HasIndex(x => x.Minute);
+                e.HasOne<Slo>().WithMany().HasForeignKey(x => x.SloId).OnDelete(DeleteBehavior.Cascade);
+            });
+
+            model.Entity<SloDay>(e =>
+            {
+                e.ToTable("slo_days");
+                Tenant(e);
+                e.HasKey(x => new { x.SloId, x.Day, x.Version });
+                e.HasIndex(x => x.Day);   // expiry
+                e.HasOne<Slo>().WithMany().HasForeignKey(x => x.SloId).OnDelete(DeleteBehavior.Cascade);
+            });
+
+            model.Entity<SloHour>(e =>
+            {
+                e.ToTable("slo_hours");
+                Tenant(e);
+                e.HasKey(x => new { x.SloId, x.Hour, x.Version });
+                e.HasIndex(x => x.Hour);   // expiry
                 e.HasOne<Slo>().WithMany().HasForeignKey(x => x.SloId).OnDelete(DeleteBehavior.Cascade);
             });
 

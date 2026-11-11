@@ -122,18 +122,15 @@ namespace Juice.Observability.Tests
             var measurements = new List<(string Name, string? Reason, string? Outcome)>();
             using var listener = Listen(measurements);
 
-            // One worker for three due rules: one starts, two wait (saturated) and start on later ticks.
+            // One worker for three due rules: one starts, two wait for it (queued) and start as soon as it's free, on the same tick: not a tick
+            // per worker, which capped the scheduler at MaxConcurrency rules a tick however quick they were (the streaming benchmark found it).
+            // How many had to wait depends on thread timing; that all three ran from one tick, never two at once, doesn't.
             var scheduler = Scheduler(database, o => o.MaxConcurrency = 1);
             await scheduler.TickAsync(Ct);
-            Assert.Equal(2, measurements.Count(m => m.Reason == "saturated"));
-            for (var i = 0; i < 2; i++)
-            {
-                await scheduler.Running;
-                await scheduler.TickAsync(Ct);
-            }
             await scheduler.Running;
             Assert.Equal(3, measurements.Count(m => m.Name == "juice.observability.rules.evaluations" && m.Outcome == "success"));
             Assert.Equal(3, measurements.Count(m => m.Name == "juice.observability.rules.lag"));
+            Assert.Equal(1, scheduler.PeakInFlight);
 
             // An evaluation past its timeout is cancelled and counted; alerts are unchanged.
             var slow = Scheduler(database, o => o.EvaluationTimeout = TimeSpan.FromMilliseconds(1));

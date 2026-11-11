@@ -61,6 +61,13 @@ namespace Juice.Observability.Data
             return new WorkerLease(connectionString, name, logger);
         }
 
+        /// <summary>
+        /// Goes up each time this replica takes the lease on a new connection. A worker compares it rather than waiting for a <c>false</c> from
+        /// <see cref="TryHoldAsync"/>: a lease lost and taken back within one call returns <c>true</c> both times, though another replica may
+        /// have held it in between.
+        /// </summary>
+        public int Generation { get; private set; }
+
         /// <summary>Whether this replica holds the lease now, taking it if it is free.</summary>
         public async Task<bool> TryHoldAsync(CancellationToken cancellationToken)
         {
@@ -86,12 +93,14 @@ namespace Juice.Observability.Data
                 if (await TakeAsync(connection, cancellationToken))
                 {
                     _connection = connection;
+                    Generation++;
                     _logger.LogInformation("This replica now runs {Worker}, version {Version}", _name, _version);
                     return true;
                 }
                 if (await EndOlderHolderAsync(connection, cancellationToken) && await TakeAsync(connection, cancellationToken))
                 {
                     _connection = connection;
+                    Generation++;
                     _logger.LogWarning("This replica took {Worker} over from an older version; that replica should be upgraded or stopped", _name);
                     return true;
                 }
