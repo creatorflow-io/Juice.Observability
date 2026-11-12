@@ -181,6 +181,8 @@
 
 **Acceptance gate:** console does not duplicate general Grafana exploration without a product need; tenant context is preserved; scale tests document throughput, query mix, queue lag, resource use, and cost assumptions.
 
+**Status:** plan approved 12 November, milestone 1 next; see the [Phase 10 plan](phase-10-plan.md).
+
 ## Explicit triggers for deferred infrastructure and SaaS
 
 | Addition | Trigger required before adoption |
