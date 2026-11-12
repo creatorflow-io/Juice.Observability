@@ -183,6 +183,10 @@ namespace Juice.Observability.Tests
             Assert.Empty((await JsonAsync(await Raw($"/telemetry/logs?traceId={trace}"))).GetProperty("items").EnumerateArray());
             Assert.Empty((await JsonAsync(await Raw("/telemetry/logs?q=secret%20body"))).GetProperty("items").EnumerateArray());
             Assert.Empty((await JsonAsync(await Raw($"/search?q={span}"))).GetProperty("items").EnumerateArray());
+            // By trace id too: the exporter's trace-id index carries no tenant, so a hit there alone would tell whether another
+            // tenant's trace exists.
+            Assert.Empty((await JsonAsync(await Raw($"/search?q={trace}"))).GetProperty("items").EnumerateArray());
+            Assert.Empty((await JsonAsync(await Raw($"/search?q=00-{trace}-{span}-01"))).GetProperty("items").EnumerateArray());
         }
 
         [Fact]

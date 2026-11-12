@@ -8,20 +8,28 @@
 #
 # Images are pinned; change versions here and in README.md together.
 
+# ClickHouse's image and what clickhouse/init-users.sh needs, shared by the server and the clickhouse-access service.
+x-clickhouse-image: &clickhouse-image clickhouse/clickhouse-server:26.8.36.3-alpine
+x-clickhouse-access-env: &clickhouse-access-env
+  CLICKHOUSE_USER: admin
+  CLICKHOUSE_PASSWORD: ${CLICKHOUSE_ADMIN_PASSWORD:?run scripts/init.sh}
+  CLICKHOUSE_OTEL_PASSWORD: ${CLICKHOUSE_OTEL_PASSWORD}
+  CLICKHOUSE_GRAFANA_PASSWORD: ${CLICKHOUSE_GRAFANA_PASSWORD}
+  CLICKHOUSE_PLATFORM_PASSWORD: ${CLICKHOUSE_PLATFORM_PASSWORD}
+  # Grafana's row policy (clickhouse/init-users.sh): grafana_reader sees only this tenant.
+  JUICE_PLATFORM_TENANT_ID: ${JUICE_PLATFORM_TENANT_ID:?run scripts/init.sh}
+
 services:
   clickhouse:
-    image: clickhouse/clickhouse-server:26.8.36.3-alpine
+    image: *clickhouse-image
     environment:
-      CLICKHOUSE_USER: admin
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_ADMIN_PASSWORD:?run scripts/init.sh}
+      <<: *clickhouse-access-env
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
-      CLICKHOUSE_OTEL_PASSWORD: ${CLICKHOUSE_OTEL_PASSWORD}
-      CLICKHOUSE_GRAFANA_PASSWORD: ${CLICKHOUSE_GRAFANA_PASSWORD}
-      CLICKHOUSE_PLATFORM_PASSWORD: ${CLICKHOUSE_PLATFORM_PASSWORD}
     volumes:
       - clickhouse-data:/var/lib/clickhouse
       - ./clickhouse/init-users.sh:/docker-entrypoint-initdb.d/init-users.sh:ro
       - ./clickhouse/backups.xml:/etc/clickhouse-server/config.d/backups.xml:ro
+      - ./clickhouse/access.xml:/etc/clickhouse-server/config.d/access.xml:ro
       - ./backups/clickhouse:/backups
     ports:
       - "127.0.0.1:8123:8123"
@@ -58,6 +66,9 @@ services:
     depends_on:
       clickhouse:
         condition: service_healthy
+      # Its password applied (a password rotated in .env reaches ClickHouse through clickhouse/init-users.sh).
+      clickhouse-access:
+        condition: service_healthy
 
   # Only with --profile test: the same Collector stamping its own tenant, for the integration tests. Their services,
   # alerts and scratch data stay out of the tenant the running API works on.
@@ -69,6 +80,35 @@ services:
     ports: !override
       - "127.0.0.1:14318:4318"
       - "127.0.0.1:18888:8888"    # its own metrics, read by tests/verify.sh --outage and tests/load.sh
+
+  # Applies clickhouse/init-users.sh (users, grants, Grafana's tenant row policy) each time this container starts. ClickHouse
+  # runs that script by itself only on an empty volume; this brings an existing one up to date. The Collectors, the API and Grafana wait for
+  # it, so starting any of them after an upgrade applies it. It then idles, healthy, because `docker compose up --wait` fails on a
+  # container that exits even with 0; a failed script exits it, and --wait fails. A change to init-users.sh while it runs is
+  # applied by scripts/apply-clickhouse-access.sh (a bind-mounted file changing doesn't recreate the container).
+  # The marker is cleared first, so a restarted container isn't healthy until the script has run again; init: true lets it
+  # stop at once instead of after Docker's 10 s grace period.
+  clickhouse-access:
+    image: *clickhouse-image
+    entrypoint: ["bash", "-c", "rm -f /tmp/applied && bash /init-users.sh && touch /tmp/applied && exec sleep infinity"]
+    init: true
+    environment:
+      <<: *clickhouse-access-env
+      CLICKHOUSE_HOST: clickhouse
+    volumes:
+      - ./clickhouse/init-users.sh:/init-users.sh:ro
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/applied"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      # Longer than init-users.sh waits for ClickHouse on the network (120 s): failures in this period don't count, and the
+      # container turns healthy as soon as the script is done.
+      start_period: 150s
+    restart: "no"
 
   # Optional (UI architecture §5): only with --profile grafana. Juice Console is the product UI.
   grafana:
@@ -114,6 +154,8 @@ services:
       - "3000:3000"
     depends_on:
       clickhouse:
+        condition: service_healthy
+      clickhouse-access:
         condition: service_healthy
       keycloak:
         condition: service_healthy
@@ -211,6 +253,9 @@ services:
       postgres:
         condition: service_healthy
       clickhouse:
+        condition: service_healthy
+      # Its users, grants and row policies applied (and so after an upgrade, by starting the API alone).
+      clickhouse-access:
         condition: service_healthy
       keycloak:
         condition: service_healthy

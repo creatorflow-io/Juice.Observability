@@ -423,13 +423,8 @@ namespace Juice.Observability.Api.Endpoints
             traceId = TraceIdOf(traceId);
             var tenantKey = (string)http.Items[TenantKeyItem]!;
             var parameters = new Dictionary<string, object> { ["trace"] = traceId };
-            // The exporter's per-trace time index bounds the span query; it carries no tenant, so it only narrows time.
-            var bounds = await clickHouse.QueryAsync(
-                "SELECT min(Start), max(End) FROM otel.otel_traces_trace_id_ts WHERE TraceId = {trace:String} HAVING count() > 0",
-                new TelemetryWindow(tenantKey, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, 1),
-                r => (Start: Utc(r.GetValue(0)), End: Utc(r.GetValue(1))), ct, parameters);
-            if (bounds.Count == 0) throw Missing("Trace");
-            var window = new TelemetryWindow(tenantKey, bounds[0].Start.AddMinutes(-1), bounds[0].End.AddMinutes(1), MaxSpans + 1);
+            var bounds = await TraceBoundsAsync(clickHouse, tenantKey, parameters, ct) ?? throw Missing("Trace");
+            var window = new TelemetryWindow(tenantKey, bounds.Start.AddMinutes(-1), bounds.End.AddMinutes(1), MaxSpans + 1);
             var spans = await clickHouse.QueryAsync($"""
                 SELECT SpanId, ParentSpanId, ServiceName, {Environment}, {Instance}, {Host}, SpanName, SpanKind, Timestamp, Duration,
                        StatusCode, StatusMessage, ScopeName, ScopeVersion, SpanAttributes, Events.Name, Events.Timestamp,
@@ -994,6 +989,21 @@ namespace Juice.Observability.Api.Endpoints
         // ─── search ───
 
         /// <summary>
+        /// The time span of a trace (parameter <c>trace</c>), from the exporter's per-trace index, or null if it isn't there. The index
+        /// carries no tenant (and so has no Grafana row policy): use it only to narrow time, then read <c>otel_traces</c> under the
+        /// tenant condition. Never answer from the index alone.
+        /// </summary>
+        private static async Task<(DateTimeOffset Start, DateTimeOffset End)?> TraceBoundsAsync(ClickHouseTelemetrySource clickHouse, string tenantKey,
+            Dictionary<string, object> parameters, CancellationToken ct)
+        {
+            var bounds = await clickHouse.QueryAsync(
+                "SELECT min(Start), max(End) FROM otel.otel_traces_trace_id_ts WHERE TraceId = {trace:String} HAVING count() > 0",
+                new TelemetryWindow(tenantKey, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, 1),
+                r => (Start: Utc(r.GetValue(0)), End: Utc(r.GetValue(1))), ct, parameters);
+            return bounds.Count == 0 ? null : bounds[0];
+        }
+
+        /// <summary>
         /// Direct lookup (Console requirements §13): a trace id (or a W3C traceparent), a span id (last 24 hours), or services by
         /// name. Ids that are not found return no hit rather than an error.
         /// </summary>
@@ -1007,10 +1017,18 @@ namespace Juice.Observability.Api.Endpoints
             var lower = q.ToLowerInvariant();
             if (PlainTraceId(lower) is { } traceId)
             {
-                var found = await clickHouse.QueryAsync("SELECT count() FROM otel.otel_traces_trace_id_ts WHERE TraceId = {trace:String}",
-                    new TelemetryWindow(tenantKey, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, 1), r => Convert.ToInt64(r.GetValue(0)), ct,
-                    new Dictionary<string, object> { ["trace"] = traceId });
-                if (found[0] > 0) hits.Add(new SearchHitDto("trace", traceId, $"Trace {traceId}", traceId));
+                // The trace-id index only narrows time (it carries no tenant): the trace is a hit only if this tenant has a span of it,
+                // so another tenant's trace and an unknown one look the same, as on the trace page.
+                var parameters = new Dictionary<string, object> { ["trace"] = traceId };
+                if (await TraceBoundsAsync(clickHouse, tenantKey, parameters, ct) is { } bounds)
+                {
+                    var mine = await clickHouse.QueryAsync($"""
+                        SELECT count() FROM otel.otel_traces
+                        WHERE {Tenant} AND Timestamp >= {From} AND Timestamp < {To} AND TraceId = {"{trace:String}"}
+                        """, new TelemetryWindow(tenantKey, bounds.Start.AddMinutes(-1), bounds.End.AddMinutes(1), 1), r => Convert.ToInt64(r.GetValue(0)),
+                        ct, parameters);
+                    if (mine[0] > 0) hits.Add(new SearchHitDto("trace", traceId, $"Trace {traceId}", traceId));
+                }
             }
             else if (SpanIdPattern.IsMatch(lower))
             {

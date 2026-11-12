@@ -109,17 +109,31 @@ with `resource_detection` so application telemetry never gets the Collector's ho
   later, run `ALTER TABLE otel.<table> MODIFY TTL toDateTime(<time column>) + toIntervalHour(<hours>)` on each table of
   the signal (time column: `Timestamp` for traces/logs, `TimeUnix` for metrics, `Start` for
   `otel_traces_trace_id_ts`), and update `.env`.
-- **Users** (`clickhouse/init-users.sh`, first start only):
+- **Users** (`clickhouse/init-users.sh`: run by ClickHouse on an empty volume, and by the `clickhouse-access` service each
+  time it starts, which the Collectors, the API and Grafana wait for, so an existing volume gets changes too; after editing the script on a
+  running stack, `scripts/apply-clickhouse-access.sh` applies it). Each run brings the users' passwords, the profile's caps,
+  the grants and the row policies to what the script says; it doesn't revoke a grant or drop a policy taken out of it:
 
   | User | Can do |
   |---|---|
   | `otel_writer` | Collector: create tables, insert |
-  | `grafana_reader` | Grafana: SELECT on `otel` only |
+  | `grafana_reader` | Grafana: SELECT on `otel` only, and only this deployment's tenant (row policy `grafana_tenant`) |
   | `platform_reader` | Track B workers: SELECT on `otel` only |
 
   The two readers share the `bounded_reader` profile: `readonly = 2` (no writes or DDL), with execution time 60 s,
   result rows 1,000,000 and memory 4 GB, each capped with `MAX` so a client cannot raise it. The Grafana data source
   sets `queryTimeout` 50 s to stay under the cap.
+
+  **Row policies.** One ClickHouse can hold more than one tenant (the test Collector writes `local-test` here), and
+  Grafana's queries don't filter by tenant, so `grafana_tenant` limits `grafana_reader` to rows whose
+  `ResourceAttributes['juice.platform_tenant_id']` is `JUICE_PLATFORM_TENANT_ID`, on each of the seven tables that carry
+  it. `all_tenants` lets the other users read every row. `clickhouse/access.xml` turns off ClickHouse's default of letting a user
+  with no policy read every row, so a missing policy hides rows instead of showing them. The filter costs Grafana about 0.2 s on a month of spans (42 M on this stack).
+
+  **Not covered: the trace-ID index.** `otel_traces_trace_id_ts` (and its materialized view `otel_traces_trace_id_ts_mv`) has no tenant column, and Grafana's trace view reads a
+  trace's time range from it, so it stays readable. It holds no span content, but a Grafana user can list the trace IDs
+  and start and end times of every tenant in this ClickHouse from it. That matters only where ClickHouse is shared; it's
+  accepted by the owner, 12 November ([Phase 10, milestone 1](../../docs/phase-10-console.md)).
 - **Backups.** `scripts/backup.sh` (PostgreSQL) and `scripts/backup-telemetry.sh` (ClickHouse `otel`) write to
   `backups/`, which git ignores. Each run is a full backup and nothing prunes old ones. See the runbook.
 - **Integration test tenant.** `--profile test` adds `otel-collector-test` on `127.0.0.1:14318`, the same configuration
@@ -184,14 +198,15 @@ Grafana's default (`viewers_can_edit` off). Every query, from a dashboard, Explo
 - time, rows and memory are capped by a profile the client cannot raise;
 - it can't write, and it can't read `system.users`.
 
-This instance and its ClickHouse credentials serve one deployment, so the boundary is the deployment itself, not a
-dashboard filter.
+This instance and its ClickHouse credentials serve one deployment. The tenant boundary is the ClickHouse row policy
+above, not a dashboard filter: it holds for every query Grafana sends, from a dashboard or Explore, except on the trace-ID
+index (above).
 
 ## Tests
 
 | Script | Checks |
 |---|---|
-| `tests/verify.sh` | Plain HTTP refused; missing and unknown token give 401; untrusted certificate refused. Forged tenant at resource, scope and record level, on traces, metrics and logs, is stored as only the trusted tenant. Redaction. TTL present. `grafana_reader` cannot write or read `system.users`. Grafana data source healthy; anonymous access refused. OIDC sign-in, run headless with curl through Keycloak: alice → Admin, erin → Editor, victor → Viewer, nora and a wrong password refused, no OIDC user is server admin; a Grafana access token carries no platform audience or roles. Prints this run's ingestion freshness. |
+| `tests/verify.sh` | Plain HTTP refused; missing and unknown token give 401; untrusted certificate refused. Forged tenant at resource, scope and record level, on traces, metrics and logs, is stored as only the trusted tenant. Redaction. TTL present. `grafana_reader` cannot write or read `system.users`, can't see this run's `local-test` records or any other tenant in the last hour, and every table with the tenant stamp has both row policies; `platform_reader` still reads every tenant. Grafana data source healthy; anonymous access refused. OIDC sign-in, run headless with curl through Keycloak: alice → Admin, erin → Editor, victor → Viewer, nora and a wrong password refused, no OIDC user is server admin; a Grafana access token carries no platform audience or roles. Prints this run's ingestion freshness. |
 | `tests/verify.sh --outage` | Also: ClickHouse stopped, a record accepted and held in the exporter queue, then stored after ClickHouse returns. |
 | `tests/breach-to-alert.sh [runs]` | Through the running platform: sends a failing service and times rule `service-error-rate` firing after its ForDuration (§9: ≤ 2 min). |
 | `node tests/api-latency.mjs [seconds]` | Platform API reads at 20 requests/s, p50/p95 (§9: p95 ≤ 500 ms). |

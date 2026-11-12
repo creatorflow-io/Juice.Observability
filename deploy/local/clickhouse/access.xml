@@ -1,0 +1,7 @@
+<!-- A user with no row policy on a table that has some reads none of its rows (ClickHouse's default lets it read them all), so a
+     missing policy fails closed. clickhouse/init-users.sh gives every user one on the tenant-stamped tables. -->
+<clickhouse>
+    <access_control_improvements>
+        <users_without_row_policies_can_read_rows>false</users_without_row_policies_can_read_rows>
+    </access_control_improvements>
+</clickhouse>

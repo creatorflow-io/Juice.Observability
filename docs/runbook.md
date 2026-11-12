@@ -287,5 +287,10 @@ it. The agent's log says `The platform refused this agent's action report` when 
 1. Back up first.
 2. Build and start the new API: `docker compose --profile platform up -d --build platform-api`. It applies pending
    migrations on start.
+   - **Then run `scripts/apply-clickhouse-access.sh`.** It applies `clickhouse/init-users.sh` (ClickHouse users, grants and row
+     policies) to the existing volume. The `clickhouse-access` service does this whenever it starts, but an upgrade that only
+     changes the script doesn't restart it, so run the script every time. Coming from 1.2.0 or earlier, step 2 already recreates ClickHouse (keeping its volume) and
+     runs `clickhouse-access`, which adds Grafana's tenant row policy (new after 1.2.0: on 1.2.0 Grafana reads every tenant in a
+     shared ClickHouse); the script makes sure. `tests/verify.sh` checks the result.
 3. `MigrationTests` checks every upgrade path from an empty database up, one migration at a time, and the data
    carried across.

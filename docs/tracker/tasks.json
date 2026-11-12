@@ -1,0 +1,130 @@
+{
+  "about": "Local copy of tracker rows, to push into the Observability MVP Tracker artifact's `tasks` collection from a session that can reach its database. See README.md.",
+  "artifacts": {
+    "tracker": "https://claude.ai/artifact/PPUBLFLKaTKePJDu6fKbrP",
+    "architecture": "https://claude.ai/artifact/5GuMPfEX4FojS3oxoTTxGC"
+  },
+  "asOf": "2026-11-12",
+  "groupStatus": {
+    "p5": {
+      "status": "done",
+      "note": "Gate accepted by the owner 2026-11-12; released in 1.2.0. docs/phase-5-acceptance.md"
+    },
+    "p6": {
+      "status": "done",
+      "note": "Gate accepted 2026-11-12; released in 1.2.0. Slack and TLS mail tried with real services 2026-11-12; Teams not yet. docs/phase-6-acceptance.md"
+    },
+    "p7": {
+      "status": "done",
+      "note": "Gate accepted 2026-11-12; released in 1.2.0. docs/phase-7-acceptance.md"
+    },
+    "p8": {
+      "status": "done",
+      "note": "Three milestones done 9 Nov; gate accepted 2026-11-12; released in 1.2.0. docs/phase-8-plan.md"
+    },
+    "p9": {
+      "status": "done",
+      "note": "Four milestones done; gate accepted 2026-11-11 (no streaming, no new stateful component, docs/phase-9-decisions.md); released in 1.2.0."
+    }
+  },
+  "tasks": [
+    {
+      "doc_id": "p10-plan",
+      "group": "p10",
+      "order": 1,
+      "kind": "task",
+      "title": "Phase 10 plan approved",
+      "ref": "docs/phase-10-plan.md",
+      "status": "done",
+      "note": "Approved by the owner 2026-11-12 (commit 9f9282a). P2 corrected the same day: one tenant per deployment, shared ClickHouse."
+    },
+    {
+      "doc_id": "p10-m1",
+      "group": "p10",
+      "order": 2,
+      "kind": "task",
+      "title": "M1 Console scope and tenant context",
+      "ref": "docs/phase-10-console.md",
+      "status": "done",
+      "note": "Done 2026-11-12: review rounds 1 (8 findings) and 2 (4) fixed, confirmation round clean. Fixed Grafana reading every tenant (ClickHouse row policies, fail-closed access.xml, clickhouse-access service) and search answering for another tenant's trace ID. Tests: TelemetryApiTests 20/20, verify.sh, tenant.mjs + self-test, inventory.mjs. Trace-ID index gap accepted by the owner. docs/phase-10-console.md"
+    },
+    {
+      "doc_id": "p10-m2",
+      "group": "p10",
+      "order": 3,
+      "kind": "task",
+      "title": "M2 Scale harness",
+      "ref": "docs/phase-10-plan.md §Milestones",
+      "status": "todo",
+      "note": "load.sh multiplier, 10 services x 10 instances, query-mix driver (P4), resource sampling, one report per run. Evidence: 1x smoke run matching Phase 4 figures. Can run in parallel with M1."
+    },
+    {
+      "doc_id": "p10-m3",
+      "group": "p10",
+      "order": 4,
+      "kind": "task",
+      "title": "M3 Scale tests 1x/3x/5x/10x",
+      "ref": "docs/scale-tests.md (to write)",
+      "status": "todo",
+      "note": "Needs M2. 30 min per step, upward until a limit is found; raw data under build/scale/; resource table (P6). 1x must meet every §9 target or fix / P7 ADR."
+    },
+    {
+      "doc_id": "p10-m4",
+      "group": "p10",
+      "order": 5,
+      "kind": "task",
+      "title": "M4 Drills: upgrade, retention, restore, DR",
+      "ref": "docs/drills.md (to write)",
+      "status": "todo",
+      "note": "Can start after M2. Upgrade 1.1.0→1.2.0 with 1x data; retention with short TTLs + disk budget; restore on a fresh compose project; DR RPO ≤ 24 h, RTO ≤ 4 h."
+    },
+    {
+      "doc_id": "p10-m5",
+      "group": "p10",
+      "order": 6,
+      "kind": "task",
+      "title": "M5 Phase 10 acceptance doc",
+      "ref": "docs/phase-10-acceptance.md (to write)",
+      "status": "todo",
+      "note": "Maps each gate line to its evidence; owner acceptance."
+    },
+    {
+      "doc_id": "p10-gate-console",
+      "group": "p10",
+      "order": 7,
+      "kind": "gate",
+      "title": "Gate: Console doesn't duplicate Grafana exploration without a product need",
+      "ref": "Roadmap Phase 10 gate",
+      "status": "doing",
+      "note": "Evidence ready: product need recorded (P1, owner 2026-11-12); every route walked by a journey (docs/phase-10-console.md). Awaits owner acceptance at the Phase 10 gate."
+    },
+    {
+      "doc_id": "p10-gate-tenant",
+      "group": "p10",
+      "order": 8,
+      "kind": "gate",
+      "title": "Gate: tenant context is preserved",
+      "ref": "Roadmap Phase 10 gate",
+      "status": "doing",
+      "note": "Evidence ready (docs/phase-10-console.md): tenant.mjs + verify.sh pass and fail when they should; trace-ID index gap accepted (owner 2026-11-12). Awaits owner acceptance at the Phase 10 gate."
+    },
+    {
+      "doc_id": "p10-gate-scale",
+      "group": "p10",
+      "order": 9,
+      "kind": "gate",
+      "title": "Gate: scale tests document throughput, query mix, queue lag, resource use, cost assumptions",
+      "ref": "Roadmap Phase 10 gate",
+      "status": "todo",
+      "note": "Needs M2–M3."
+    }
+  ],
+  "architecturePageUpdates": [
+    "Title says 'through Phase 6, 7 Nov 2026': Phases 7–9 are done and released in 1.2.0, Phase 10 in progress.",
+    "Build status colours: phases 5–9 done (accepted 2026-11-11/12); 10 in progress.",
+    "Pending work list is stale: Phase 5–6 review done; Slack and TLS mail tried 2026-11-12 (Teams not yet); a test-send button exists (commit f923a42).",
+    "Add Phases 7–9: Juice Agent enrollment and diagnostics, approved actions and remediation, SLOs and burn-rate alerts, correlation suggestions.",
+    "Grafana: user grafana_reader now limited to the deployment's tenant by ClickHouse row policy grafana_tenant (after 1.2.0; Phase 10 M1).",
+    "Grafana tenant boundary: row policies fail closed (access.xml); trace-ID index visible across tenants, accepted by the owner 2026-11-12."
+  ]
+}

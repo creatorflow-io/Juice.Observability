@@ -122,6 +122,49 @@ check "grafana_reader cannot read system users" \
   "$(docker compose exec -T clickhouse clickhouse client --user grafana_reader --password "$CLICKHOUSE_GRAFANA_PASSWORD" \
       -q "SELECT count() FROM system.users" </dev/null >/dev/null 2>&1 && echo readable || echo denied)" "denied"
 
+# Grafana's queries don't filter by tenant, so ClickHouse does (row policy grafana_tenant, clickhouse/init-users.sh). This
+# run's records went in as $TENANT, beside the deployment's tenant: stored, but out of Grafana's sight.
+echo "Grafana reads only the deployment's tenant ($JUICE_PLATFORM_TENANT_ID)"
+gr() { docker compose exec -T clickhouse clickhouse client --user grafana_reader --password "$CLICKHOUSE_GRAFANA_PASSWORD" -q "$1" </dev/null 2>&1; }
+# The last hour only: a whole-table scan as grafana_reader can outrun its 60 s cap on a stack with millions of rows, and the
+# hour holds this run's records and whatever else was sent lately.
+for t in otel_traces:Timestamp otel_metrics_sum:TimeUnix otel_logs:Timestamp; do
+  table=${t%%:*} at=${t#*:}
+  check "$table: this run's $TENANT record hidden from grafana_reader" "$(gr "SELECT count() FROM otel.$table WHERE $svc")" "0"
+  check "$table: grafana_reader sees no other tenant in the last hour" \
+    "$(gr "SELECT countIf(ResourceAttributes['juice.platform_tenant_id'] != '$JUICE_PLATFORM_TENANT_ID') FROM otel.$table WHERE $at > now() - INTERVAL 1 HOUR")" "0"
+done
+# The answer below is the uncovered tables, so the expected value is empty: stderr is captured, or a failed query would pass.
+# This first check makes sure the query works at all (it sees stamped tables) before an empty answer counts; which tables
+# there are is init-users.sh's stamped list, checked by the two lines after it.
+check "otel tables carrying the tenant stamp are found" \
+  "$(ch "SELECT count() > 0 FROM system.columns WHERE database = 'otel' AND name = 'ResourceAttributes'" 2>&1)" "1"
+for policy in grafana_tenant all_tenants; do
+  check "every otel table with the tenant stamp has policy $policy" \
+    "$(ch "SELECT arrayStringConcat(arraySort(groupArray(table)), ' ') FROM system.columns WHERE database = 'otel' AND name = 'ResourceAttributes'
+           AND table NOT IN (SELECT table FROM system.row_policies WHERE database = 'otel' AND short_name = '$policy')" 2>&1)" ""
+done
+# What each policy says and whom it applies to: a wrong filter (a typo in the tenant, USING 0) or the wrong user would hide
+# everything from Grafana, which the checks above can't tell from hiding the right rows. The answer is the policies that differ.
+check "grafana_tenant filters on $JUICE_PLATFORM_TENANT_ID for grafana_reader only, all_tenants lets every row through for the others" \
+  "$(ch "SELECT arrayStringConcat(arraySort(groupArray(concat(short_name, ' on ', table))), ' ') FROM system.row_policies WHERE database = 'otel'
+         AND NOT (short_name = 'grafana_tenant' AND select_filter = '(ResourceAttributes[''juice.platform_tenant_id'']) = ''$JUICE_PLATFORM_TENANT_ID'''
+                  AND apply_to_list = ['grafana_reader'] AND NOT apply_to_all
+              OR short_name = 'all_tenants' AND select_filter = '1' AND arraySort(apply_to_list) = ['admin', 'otel_writer', 'platform_reader'] AND NOT apply_to_all)" 2>&1)" ""
+# And that Grafana still sees this tenant's rows: the same count as admin, over a window that ended 5 minutes ago (so no insert
+# lands between the two reads). The platform's own telemetry is always arriving on this stack, so 0 from admin fails too:
+# a quiet stack would prove nothing.
+until=$(( $(date +%s) - 300 ))
+window="Timestamp > toDateTime($until) - INTERVAL 1 HOUR AND Timestamp < toDateTime($until)"
+own="ResourceAttributes['juice.platform_tenant_id'] = '$JUICE_PLATFORM_TENANT_ID'"
+check "spans of $JUICE_PLATFORM_TENANT_ID arrived in the last hour (so the next check can tell)" \
+  "$(ch "SELECT count() > 0 FROM otel.otel_traces WHERE $own AND $window" 2>&1)" "1"
+check "grafana_reader sees every span of $JUICE_PLATFORM_TENANT_ID in the last hour" \
+  "$(gr "SELECT count() FROM otel.otel_traces WHERE $window")" "$(ch "SELECT count() FROM otel.otel_traces WHERE $own AND $window" 2>&1)"
+check "platform_reader still reads every tenant (it filters per query)" \
+  "$(docker compose exec -T clickhouse clickhouse client --user platform_reader --password "$CLICKHOUSE_PLATFORM_PASSWORD" \
+      -q "SELECT count() FROM otel.otel_logs WHERE $svc" </dev/null 2>&1)" "1"
+
 echo "Main Collector (nothing is stored: the requests have no token)"
 for address in localhost "$PUBLIC"; do
   check "$address:4318: certificate trusted, no token → 401" \
