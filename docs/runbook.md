@@ -116,7 +116,7 @@ An invalid file keeps the API from starting, and the log names every error.
   stop the older one.
 - **One alert.** `GET /alerts/{id}/notifications` and the alert page show every delivery, escalation, silence and incident for it.
 - **Other statuses.** `Suppressed` is held by a silence, `Dropped` was held and no longer mattered, and `Grouped` went out inside the delivery named by `groupedInto`.
-- **Other errors.** `chat_url_not_allowed`: the URL behind a Slack or Teams reference isn't that service's, and isn't in `Webhooks:AdditionalChatHosts`. `secret_unavailable`: the reference isn't set on the host; it retries. `smtp_not_configured`: no `Webhooks:Smtp`. `smtp_5xx`: the mail server refused for good. `smtp_4xx` and `smtp_unavailable` retry.
+- **Other errors.** `chat_url_not_allowed`: the URL behind a Slack or Teams reference isn't that service's, and isn't in `Webhooks:AdditionalChatHosts`. `secret_unavailable`: the reference isn't set on the host; it retries. `smtp_not_configured`: no `Webhooks:Smtp`. `smtp_auth_failed`: the server refused the login (check `UsernameRef` and `PasswordRef`; for Gmail, an app password of the account in `From`); not retried. `smtp_auth_unsupported`: credentials are set but the server offers no login. `smtp_tls_unavailable`: `UseTls` is on and the server doesn't offer STARTTLS; not sent, not retried. `smtp_5xx`: the mail server refused for good. `smtp_4xx`, `smtp_tls_failed` and `smtp_unavailable` retry. Every email failure is logged as a warning with the server's reply.
 
 ## Silences and maintenance windows
 

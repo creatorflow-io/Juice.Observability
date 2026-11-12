@@ -11,6 +11,8 @@
     <PackageVersion Include="Juice.Messaging.Local" Version="10.12.0" />
     <PackageVersion Include="Juice.Messaging.Outbox.Delivery" Version="10.12.0" />
     <PackageVersion Include="Juice.Messaging.Outbox.EF" Version="10.12.0" />
+    <!-- Email channels: reports a refused login and the server's codes, which System.Net.Mail loses (Gmail closes after a 535). -->
+    <PackageVersion Include="MailKit" Version="4.18.2" />
     <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.14" />
     <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.14" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.14" />

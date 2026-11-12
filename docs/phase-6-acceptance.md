@@ -59,8 +59,8 @@ These weren't in the roadmap, so they're mine to justify and yours to overrule.
 
 ## Limits
 
-- **Slack, Teams and TLS mail haven't met the real thing.** The formats follow those services' documentation and reached local receivers only, and the mail test server has no TLS. Try each with a real channel before relying on it.
-- **Implicit TLS on port 465 isn't supported:** `System.Net.Mail` does STARTTLS only.
+- **Teams hasn't met the real thing.** Its card follows the Workflows webhook documentation and reached local receivers only. Slack and TLS mail were tried for real on 12 November: Slack test sends and a real alert firing and resolving, and a Gmail test send over STARTTLS, all delivered. That Gmail run found a bad login reported as a retryable `smtp_unavailable`; it's `smtp_auth_failed` now.
+- **Implicit TLS on port 465 isn't supported:** `UseTls` means STARTTLS. Since 12 November email goes through MailKit, which could do 465 if it's ever needed.
 - **A hand retry is one more attempt.** If it fails again for a transient reason, the delivery is `Failed` again rather than going back to the backoff schedule.
 
 Resolved on 8 November, each with a test that fails without the fix:

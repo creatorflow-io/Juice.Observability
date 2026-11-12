@@ -8,3 +8,4 @@ build/
 # Visual Studio
 .vs/
 src/*/Properties/
+deploy/local/docker-compose.override.yml

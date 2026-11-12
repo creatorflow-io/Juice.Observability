@@ -487,6 +487,36 @@ namespace Juice.Observability.Tests
             }
         }
 
+        [Theory]
+        // A refused login is final, and nothing is sent (System.Net.Mail lost Gmail's 535: it hangs up, which read as a dropped connection).
+        [InlineData(SmtpMode.RefusesLogin, 250, true, false, DeliveryStatus.Failed, "smtp_auth_failed")]
+        // A server that doesn't offer STARTTLS when TLS is required: the mail would go in the clear, so it isn't sent, and that's final.
+        [InlineData(SmtpMode.Plain, 250, false, true, DeliveryStatus.Failed, "smtp_tls_unavailable")]
+        // A dropped connection and a server's 4xx may pass: retried.
+        [InlineData(SmtpMode.Drops, 250, false, false, DeliveryStatus.Retrying, "smtp_unavailable")]
+        [InlineData(SmtpMode.Plain, 421, false, false, DeliveryStatus.Retrying, "smtp_421")]
+        public async Task An_email_channels_failures_say_why_and_whether_to_retry_Async(SmtpMode mode, int response, bool login, bool tls, DeliveryStatus expected, string error)
+        {
+            LocalStack.RequireAvailable();
+            await using var smtp = await FakeSmtp.StartAsync(response, mode);
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await EndpointAsync(database, null, kind: ChannelKind.Email, recipients: ["oncall@example.com"]);
+            await FireAsync(database);
+            Environment.SetEnvironmentVariable("JUICE_TEST_SMTP_USER", "juice@example.com");
+            Environment.SetEnvironmentVariable("JUICE_TEST_SMTP_PASSWORD", "wrong");
+
+            await Dispatcher(database, o => o.Smtp = new SmtpOptions
+            {
+                Host = "127.0.0.1", Port = smtp.Port, From = "juice@example.com", UseTls = tls,
+                UsernameRef = login ? "env:JUICE_TEST_SMTP_USER" : null, PasswordRef = login ? "env:JUICE_TEST_SMTP_PASSWORD" : null,
+            }).DispatchOnceAsync(Ct);
+
+            await using var db = database.Context();
+            var delivery = await db.WebhookDeliveries.AsNoTracking().SingleAsync(Ct);
+            Assert.Equal((expected, error, 1), (delivery.Status, delivery.LastError, delivery.Attempts));
+            if (response == 250) Assert.DoesNotContain("DATA", smtp.Conversation);
+        }
+
         [Fact]
         public async Task An_email_channel_without_a_server_fails_visibly_Async()
         {
@@ -869,22 +899,34 @@ namespace Juice.Observability.Tests
         }
 
         /// <summary>Just enough SMTP to receive one message, or refuse it at the end with the given code.</summary>
+        /// <summary>How <see cref="FakeSmtp"/> behaves besides its reply to the message.</summary>
+        public enum SmtpMode
+        {
+            /// <summary>No login asked for; replies to the message with the given code.</summary>
+            Plain,
+            /// <summary>Offers AUTH and refuses it as Gmail does: 535, then closes the connection.</summary>
+            RefusesLogin,
+            /// <summary>Greets, then closes the connection.</summary>
+            Drops,
+        }
+
         private sealed class FakeSmtp : IAsyncDisposable
         {
             private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
             private readonly StringBuilder _conversation = new();
             private readonly int _response;
+            private readonly SmtpMode _mode;
             private Task _loop = Task.CompletedTask;
 
-            private FakeSmtp(int response) => _response = response;
+            private FakeSmtp(int response, SmtpMode mode) => (_response, _mode) = (response, mode);
 
             public int Port => ((IPEndPoint)_listener.LocalEndpoint).Port;
 
             public string Conversation { get { lock (_conversation) return _conversation.ToString(); } }
 
-            public static Task<FakeSmtp> StartAsync(int response)
+            public static Task<FakeSmtp> StartAsync(int response, SmtpMode mode = SmtpMode.Plain)
             {
-                var smtp = new FakeSmtp(response);
+                var smtp = new FakeSmtp(response, mode);
                 smtp._listener.Start();
                 smtp._loop = smtp.ServeAsync();
                 return Task.FromResult(smtp);
@@ -899,10 +941,23 @@ namespace Juice.Observability.Tests
                     using var reader = new StreamReader(stream, Encoding.ASCII);
                     await using var writer = new StreamWriter(stream, Encoding.ASCII) { AutoFlush = true, NewLine = "\r\n" };
                     await writer.WriteLineAsync("220 test");
+                    if (_mode == SmtpMode.Drops) return;
                     while (await reader.ReadLineAsync() is { } line)
                     {
                         lock (_conversation) _conversation.AppendLine(line);
-                        if (line.StartsWith("EHLO", StringComparison.OrdinalIgnoreCase) || line.StartsWith("HELO", StringComparison.OrdinalIgnoreCase)) await writer.WriteLineAsync("250 test");
+                        if (line.StartsWith("EHLO", StringComparison.OrdinalIgnoreCase) && _mode == SmtpMode.RefusesLogin)
+                        {
+                            await writer.WriteLineAsync("250-test");
+                            await writer.WriteLineAsync("250 AUTH PLAIN LOGIN");
+                        }
+                        else if (line.StartsWith("AUTH", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // Gmail's answer to a wrong password, after which it hangs up.
+                            await writer.WriteLineAsync("535-5.7.8 Username and Password not accepted.");
+                            await writer.WriteLineAsync("535 5.7.8 BadCredentials");
+                            return;
+                        }
+                        else if (line.StartsWith("EHLO", StringComparison.OrdinalIgnoreCase) || line.StartsWith("HELO", StringComparison.OrdinalIgnoreCase)) await writer.WriteLineAsync("250 test");
                         else if (line.StartsWith("DATA", StringComparison.OrdinalIgnoreCase))
                         {
                             await writer.WriteLineAsync("354 go");

@@ -15,6 +15,11 @@
     <PackageReference Include="Juice.Messaging.Local" />
   </ItemGroup>
 
+  <!-- Email channels (SMTP with STARTTLS). -->
+  <ItemGroup>
+    <PackageReference Include="MailKit" />
+  </ItemGroup>
+
   <ItemGroup>
     <InternalsVisibleTo Include="Juice.Observability.Tests" />
   </ItemGroup>

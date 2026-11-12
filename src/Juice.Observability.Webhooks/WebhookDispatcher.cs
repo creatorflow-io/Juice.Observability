@@ -14,6 +14,9 @@ using Juice.Messaging;
 using Juice.Observability.Data;
 using Juice.Observability.Discovery;
 using Juice.Observability.Rules;
+using MailKit;
+using MailKit.Net.Smtp;
+using MailKit.Security;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -597,7 +600,11 @@ namespace Juice.Observability.Webhooks
             return new HttpRequestMessage(HttpMethod.Post, url) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
         }
 
-        /// <summary>The error, if any, and whether it's worth retrying: a server's 4xx and a lost connection are, its 5xx says the mail will never be accepted.</summary>
+        /// <summary>
+        /// The error, if any, and whether it's worth retrying. A refused login (<c>smtp_auth_failed</c>) and a server's 5xx say the mail will never be
+        /// accepted as configured; a 4xx, a lost connection and a failed TLS handshake may pass. Every failure is logged with its cause (the
+        /// server's reply, never the credentials), since the delivery keeps only the code.
+        /// </summary>
         private async Task<(string? Error, bool Retry)> SendEmailAsync(WebhookEndpoint endpoint, string payload, CancellationToken cancellationToken)
         {
             var smtp = options.Value.Smtp;
@@ -605,39 +612,121 @@ namespace Juice.Observability.Webhooks
             {
                 return ("smtp_not_configured", false);
             }
+            (string Error, bool Retry) Failed(Exception ex, string error, bool retry)
+            {
+                logger.LogWarning(ex, "Email to endpoint {Endpoint} through {Host}:{Port} failed: {Error}", endpoint.Key, smtp.Host, smtp.Port, error);
+                return (error, retry);
+            }
+            var replies = new SmtpReplyCodes();
+            var step = SmtpStep.Connecting;
             try
             {
                 var (subject, body) = RequestNotice.TryParse(payload) is { } notice
                     ? ChannelFormatter.Email(notice, options.Value.ConsoleUrl)
                     : ChannelFormatter.Email(NotificationView.Parse(payload), options.Value.ConsoleUrl);
-                using var message = new MailMessage { From = new MailAddress(smtp.From), Subject = subject, Body = body, IsBodyHtml = false };
-                foreach (var recipient in endpoint.Recipients) message.To.Add(recipient);
-                using var client = new SmtpClient(smtp.Host, smtp.Port) { EnableSsl = smtp.UseTls, DeliveryMethod = SmtpDeliveryMethod.Network, UseDefaultCredentials = false };
-                if (smtp.UsernameRef is { Length: > 0 } username && smtp.PasswordRef is { Length: > 0 } password)
-                {
-                    client.Credentials = new NetworkCredential(SecretReference.Resolve(username), SecretReference.Resolve(password));
-                }
+                using var message = new MimeKit.MimeMessage { Subject = subject, Body = new MimeKit.TextPart("plain") { Text = body } };
+                message.From.Add(MimeKit.MailboxAddress.Parse(smtp.From));
+                foreach (var recipient in endpoint.Recipients) message.To.Add(MimeKit.MailboxAddress.Parse(recipient));
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 timeout.CancelAfter(options.Value.RequestTimeout);
-                await client.SendMailAsync(message, timeout.Token);
+                using var client = new MailKit.Net.Smtp.SmtpClient(replies);
+                // UseTls: STARTTLS, required (the server must offer it); otherwise plain.
+                await client.ConnectAsync(smtp.Host, smtp.Port, smtp.UseTls ? SecureSocketOptions.StartTls : SecureSocketOptions.None, timeout.Token);
+                if (smtp.UsernameRef is { Length: > 0 } username && smtp.PasswordRef is { Length: > 0 } password)
+                {
+                    step = SmtpStep.Authenticating;
+                    await client.AuthenticateAsync(SecretReference.Resolve(username), SecretReference.Resolve(password), timeout.Token);
+                }
+                step = SmtpStep.Sending;
+                await client.SendAsync(message, timeout.Token);
+                await client.DisconnectAsync(true, timeout.Token);
                 return (null, false);
             }
-            catch (SmtpException ex) when ((int)ex.StatusCode is >= 500 and < 600)
+            catch (AuthenticationException ex)
             {
-                return ($"smtp_{(int)ex.StatusCode}", false);
+                return Failed(ex, "smtp_auth_failed", false);
             }
-            catch (SmtpException ex)
+            catch (NotSupportedException ex) when (step == SmtpStep.Authenticating)
             {
-                return ((int)ex.StatusCode > 0 ? $"smtp_{(int)ex.StatusCode}" : "smtp_unavailable", true);
+                // Credentials are configured but the server offers no login this client can use.
+                return Failed(ex, "smtp_auth_unsupported", false);
+            }
+            catch (Exception ex) when (ex is SmtpProtocolException or ServiceNotConnectedException or IOException && replies.Last is >= 400 and < 600)
+            {
+                // The server answered, then hung up before the client could read it as a reply to its command: Gmail refuses a login with
+                // 535 and closes, which reads as a disconnect. Its last reply says what happened.
+                var code = replies.Last!.Value;
+                return step == SmtpStep.Authenticating && code >= 500
+                    ? Failed(ex, "smtp_auth_failed", false)
+                    : Failed(ex, $"smtp_{code}", code < 500);
+            }
+            catch (SmtpCommandException ex) when ((int)ex.StatusCode is >= 500 and < 600)
+            {
+                return Failed(ex, $"smtp_{(int)ex.StatusCode}", false);
+            }
+            catch (SmtpCommandException ex)
+            {
+                return Failed(ex, $"smtp_{(int)ex.StatusCode}", true);
+            }
+            catch (SslHandshakeException ex)
+            {
+                return Failed(ex, "smtp_tls_failed", true);
+            }
+            catch (NotSupportedException ex) when (smtp.UseTls && step == SmtpStep.Connecting)
+            {
+                // The server doesn't offer STARTTLS: the mail would go in the clear, so it isn't sent.
+                return Failed(ex, "smtp_tls_unavailable", false);
+            }
+            catch (Exception ex) when (ex is SmtpProtocolException or ServiceNotConnectedException or IOException or SocketException)
+            {
+                return Failed(ex, "smtp_unavailable", true);
             }
             catch (InvalidOperationException ex) when (ex.Message.StartsWith("Webhook secret", StringComparison.Ordinal))
             {
-                return ("secret_unavailable", true);
+                return Failed(ex, "secret_unavailable", true);
             }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
             {
-                return ("timeout", true);
+                return Failed(ex, "timeout", true);
             }
+        }
+
+        private enum SmtpStep { Connecting, Authenticating, Sending }
+
+        /// <summary>
+        /// Keeps the reply code of the server's latest line, so a failure that reaches the client as a disconnect still says what the server
+        /// answered. It reads only what the server sends; what the client sends, credentials included, is never looked at.
+        /// </summary>
+        private sealed class SmtpReplyCodes : IProtocolLogger
+        {
+            private readonly StringBuilder _partial = new();
+
+            /// <summary>The code of the latest complete reply line, if any.</summary>
+            public int? Last { get; private set; }
+
+            public IAuthenticationSecretDetector? AuthenticationSecretDetector { get; set; }
+
+            public void LogConnect(Uri uri) { }
+
+            public void LogClient(byte[] buffer, int offset, int count) { }
+
+            public void LogServer(byte[] buffer, int offset, int count)
+            {
+                _partial.Append(Encoding.ASCII.GetString(buffer, offset, count));
+                var text = _partial.ToString();
+                var end = text.LastIndexOf('\n');
+                if (end < 0) return;
+                foreach (var line in text[..end].Split('\n'))
+                {
+                    if (line.Length >= 3 && char.IsAsciiDigit(line[0]) && char.IsAsciiDigit(line[1]) && char.IsAsciiDigit(line[2]))
+                    {
+                        Last = int.Parse(line.AsSpan(0, 3), CultureInfo.InvariantCulture);
+                    }
+                }
+                _partial.Clear().Append(text[(end + 1)..]);
+            }
+
+            public void Dispose() { }
         }
 
         /// <summary>Exponential backoff from <see cref="WebhookOptions.RetryBase"/>, capped, with ±20 % jitter.</summary>
