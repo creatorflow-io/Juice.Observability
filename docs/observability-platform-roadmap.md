@@ -104,7 +104,7 @@
 
 ## Phase 4 — Signed webhook and MVP investigation (MVP complete)
 
-**Status (2026-11-01):** implemented (`src/Juice.Observability.Webhooks`, alert investigation API, `Dockerfile` and the compose `platform` profile, [deployment guide](deployment.md), [runbook](runbook.md), backup and restore scripts). The §9 targets were measured under a 30-minute reference load. The [MVP acceptance record](mvp-acceptance.md) has the evidence per §11 criterion and lists what is open: the Phase 0 approvals, two D5 templates, ClickHouse backup, and the production differences.
+**Status (2026-11-01):** implemented (`src/Juice.Observability.Webhooks`, alert investigation API, `Dockerfile` and the compose `platform` profile, [deployment guide](deployment.md), [runbook](runbook.md), backup and restore scripts). The §9 targets were measured under a 30-minute reference load. The [MVP acceptance record](mvp-acceptance.md) has the evidence per §11 criterion and lists what is open: the Phase 0 approvals, two D5 templates, ClickHouse backup, and the production differences. Accepted by the owner 2026-11-05 (all ten criteria) and released as 1.0.0 on 2026-11-04; since then the Phase 0 approvals (D1–D9, 2026-11-01), the two D5 templates (MediatorErrors, ConsumerFailures) and the ClickHouse telemetry backup are done.
 
 **Goal:** finish an end-to-end operator loop with a notification channel and safe telemetry investigation.
 
@@ -131,7 +131,7 @@
 
 **Acceptance gate:** related timeline is tenant scoped; secrets are excluded; temporal proximity is labeled correlation, not proven root cause.
 
-**Status:** see [Phase 5 acceptance](phase-5-acceptance.md).
+**Status:** done; gate accepted by the owner 2026-11-12, released in 1.2.0. See [Phase 5 acceptance](phase-5-acceptance.md).
 
 ## Phase 6 — Broader notifications and incident workflow
 
@@ -141,7 +141,7 @@
 
 **Acceptance gate:** delivery failure/retry and silence behavior are visible; incident transitions are auditable; escalation stops on resolution or acknowledgement according to policy.
 
-**Status:** see [Phase 6 acceptance](phase-6-acceptance.md).
+**Status:** done; gate accepted by the owner 2026-11-12, released in 1.2.0. Slack and TLS mail tried with real services 2026-11-12; Teams not yet. See [Phase 6 acceptance](phase-6-acceptance.md).
 
 ## Phase 7 — Juice Agent enrollment and read-only diagnostics
 
@@ -151,7 +151,7 @@
 
 **Acceptance gate:** invalid signature, wrong target, expired/replayed command, disallowed action, and out-of-range parameters are rejected. Local allowlist wins over a valid platform signature. No shell execution interface exists.
 
-**Status:** see [Phase 7 acceptance](phase-7-acceptance.md).
+**Status:** done; gate accepted by the owner 2026-11-12, released in 1.2.0. See [Phase 7 acceptance](phase-7-acceptance.md).
 
 ## Phase 8 — Approved manual actions and verified remediation
 
@@ -161,7 +161,7 @@
 
 **Acceptance gate:** failure/timeout/duplicate/stale evidence/approval cases are tested; a resource is not marked recovered until independent health evidence confirms it.
 
-**Status:** done, 9 November: all three milestones (requests and approvals; remediation and verified recovery; diagnostic bundles). See the [Phase 8 plan](phase-8-plan.md).
+**Status:** done, 9 November: all three milestones (requests and approvals; remediation and verified recovery; diagnostic bundles); gate accepted by the owner 2026-11-12, released in 1.2.0. See the [Phase 8 plan](phase-8-plan.md).
 
 ## Phase 9 — Advanced correlation, SLOs, and selective streaming
 
@@ -171,7 +171,7 @@
 
 **Acceptance gate:** benchmark shows scheduled queries cannot meet an explicit requirement before streaming is introduced; new stateful components have an approved ADR, operations plan, recovery design, and cost rationale.
 
-**Status:** in progress, milestones 1 and 2 of 4 done (SLOs and budgets; burn-rate alerts). See the [Phase 9 plan](phase-9-plan.md).
+**Status:** done; all four milestones (SLOs and budgets; burn-rate alerts; correlation suggestions; streaming benchmark). Gate accepted 2026-11-11: no streaming and no new stateful component ([decision records](phase-9-decisions.md)). Released in 1.2.0. See the [Phase 9 plan](phase-9-plan.md).
 
 ## Phase 10 — Domain console and scale hardening
 
