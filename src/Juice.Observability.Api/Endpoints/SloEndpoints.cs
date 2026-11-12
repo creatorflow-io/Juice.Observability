@@ -79,9 +79,10 @@ namespace Juice.Observability.Api.Endpoints
         /// <summary>Every SLO, technical and business apart when <c>category</c> says so; retired ones only with <c>retired=true</c>.</summary>
         /// <remarks>
         /// Pages of <see cref="SloOptions.MaxSlos"/> by key, <c>next</c> naming the key to continue <c>after</c>. Active SLOs fit on one page (the file
-        /// holds at most that many); retired ones can go past it.
+        /// holds at most that many); retired ones can go past it. The statuses' sums are read once a minute per set of SLOs and shared
+        /// (<see cref="SloStatusCache"/>, DR-4): a status can be up to a minute behind a late minute's recount. An SLO's own page reads fresh.
         /// </remarks>
-        private static async Task<IResult> ListAsync(Guid tenantId, string? category, bool? retired, string? after, PlatformDbContext db, IOptions<SloOptions> options,
+        private static async Task<IResult> ListAsync(Guid tenantId, string? category, bool? retired, string? after, PlatformDbContext db, SloStatusCache cache,
             TimeProvider clock, CancellationToken ct)
         {
             var query = db.Slos.AsNoTracking().Where(s => s.TenantId == tenantId);
@@ -98,7 +99,8 @@ namespace Juice.Observability.Api.Endpoints
             var ids = slos.Select(s => s.Id).ToList();
             var versions = (await db.SloVersions.AsNoTracking().Where(v => ids.Contains(v.SloId)).OrderBy(v => v.Version).ToListAsync(ct)).ToLookup(v => v.SloId);
             var now = clock.GetUtcNow();
-            var statuses = await StatusesAsync(db, ids, id => [.. versions[id]], options.Value, now, ct);
+            IReadOnlyList<SloVersion> VersionsOf(Guid id) => [.. versions[id]];
+            var statuses = await cache.StatusesWithBurnsAsync(db, ids, VersionsOf, now, BurnVersions(VersionsOf, now), ct);
             return Results.Ok(new Page<SloSummaryDto>([.. slos.Select(slo => Summary(slo, [.. versions[slo.Id]], statuses[slo.Id], now))], next));
         }
 
@@ -110,7 +112,7 @@ namespace Juice.Observability.Api.Endpoints
             var now = clock.GetUtcNow();
             var effective = SloCounter.VersionAt(versions, now);
             var days = await SloReader.DaysAsync(db, slo.Id, now, ct);
-            var status = (await StatusesAsync(db, [slo.Id], _ => versions, options.Value, now, ct))[slo.Id];
+            var status = (await SloReader.StatusesWithBurnsAsync(db, [slo.Id], _ => versions, options.Value, now, BurnVersions(_ => versions, now), ct))[slo.Id];
             return Results.Ok(new SloDetailDto(
                 Summary(slo, versions, status, now),
                 ToDto(SloDefinition.FromJson(effective.Definition)),
@@ -122,28 +124,22 @@ namespace Juice.Observability.Api.Endpoints
         }
 
         /// <summary>
-        /// The SLOs' statuses: the 30-day budget over every version's minutes, and the burn windows as the burn alerts judge them, over the current
-        /// service's minutes only, so the page and the alerts agree after a move.
+        /// Which versions' minutes the burn windows count, as the burn alerts judge them: the current service's only, so the page and the alerts
+        /// agree after a move. The 30-day budget counts every version's, from the same read.
         /// </summary>
-        private static async Task<Dictionary<Guid, SloStatus>> StatusesAsync(PlatformDbContext db, IReadOnlyList<Guid> ids, Func<Guid, IReadOnlyList<SloVersion>> versionsOf,
-            SloOptions options, DateTimeOffset now, CancellationToken ct)
+        private static Func<Guid, IReadOnlySet<int>?> BurnVersions(Func<Guid, IReadOnlyList<SloVersion>> versionsOf, DateTimeOffset now) => id =>
         {
-            IReadOnlySet<int>? SameService(Guid id)
+            try
             {
-                try
-                {
-                    var versions = versionsOf(id);
-                    return SloBurnAlerts.SameServiceVersions(versions, SloDefinition.FromJson(SloCounter.VersionAt(versions, now).Definition));
-                }
-                catch (Exception)
-                {
-                    // The version in effect can't be read: the burn alerts hold for it, so whatever the windows show here, nothing fires on them.
-                    return null;
-                }
+                var versions = versionsOf(id);
+                return SloBurnAlerts.SameServiceVersions(versions, SloDefinition.FromJson(SloCounter.VersionAt(versions, now).Definition));
             }
-            // One read for both: the same sums, the burn windows counting only the current service's versions.
-            return await SloReader.StatusesWithBurnsAsync(db, ids, versionsOf, options, now, SameService, ct);
-        }
+            catch (Exception)
+            {
+                // The version in effect can't be read: the burn alerts hold for it, so whatever the windows show here, nothing fires on them.
+                return null;
+            }
+        };
 
         /// <summary>The SLO's burn alerts: every open one, then the ten latest resolved.</summary>
         private static async Task<List<SloAlertDto>> AlertsAsync(PlatformDbContext db, Guid tenantId, string sloKey, CancellationToken ct)

@@ -8,7 +8,7 @@
 | DR-1 | Streaming evaluation | **Not introduced.** Scheduled evaluation meets every target it can be held to; the one it misses, streaming wouldn't fix | **Approved** 2026-11-11 |
 | DR-2 | Anomaly detection | **Deferred** until there are 90 days of SLO buckets and 20 reviewed incidents | **Approved** 2026-11-11 |
 | DR-3 | Fast-burn detection target | **Keep the 2-minute settle; set the target to p95 ≤ 4 minutes** (option B below) | **Approved** 2026-11-11 |
-| DR-4 | Reading SLO status at the 200-SLO limit | **Compute the statuses once per window minute and share them** (option A below) | **Approved** 2026-11-11 |
+| DR-4 | Reading SLO status at the 200-SLO limit | **Compute the statuses once per window minute and share them** (option A below) | **Approved** 2026-11-11; done, the 200-SLO read meets its target |
 
 ## DR-1: Streaming evaluation is not introduced
 
@@ -55,6 +55,28 @@ wait is shortened, which scheduled evaluation can do as well (DR-3).
 **Decision.** No streaming evaluator and no new stateful component. Revisit if a later benchmark at a larger reference load misses a
 target that isn't explained by a deliberate wait.
 
+**Found after approval, 11 November: rule alerts a whole evaluation late.** The DR-4 benchmark run measured rule breach-to-alert at p95
+137 s: 8 of 20 alerts fired exactly one evaluation (60 s) after the others with the same timing. Each evaluation was read as of when it
+started, to the whole second, and a pending alert fires once its breach has been seen for `ForDuration`. With a 1-minute schedule and
+`ForDuration`, an evaluation that started a few milliseconds sooner after its due time than the one before read the breach as held 59 s,
+so it waited a minute more. Not new: the run above (p95 82 s) didn't happen to hit it. Fixed in scheduled evaluation: a rule's due times are the points
+of a grid of whole schedules counted from the Unix epoch (schedules rounded up to whole seconds), the same on every replica and after a
+restart or failover, and each evaluation is read as of the latest point it has reached (its due time, unless it waited past the next), never
+one already evaluated. So evaluations are whole schedules apart however soon after its point each starts. Benchmark after the fix (its first
+version, reading as of the due time), 11 November 13:15–14:10 UTC:
+
+| Measure | n | p50 | p95 | max | Target | Result |
+|---|---|---|---|---|---|---|
+| Rule breach-to-alert, after `ForDuration` | 20 | 52 s | 82 s | 82 s | p95 ≤ 2 min | **Met**, none late |
+| SLO fast-burn detection, after the rate is crossed | 20 | 142 s | 172 s | 174 s | p95 ≤ 4 min (DR-3) | **Met** |
+| First webhook dispatch | 61 | 1.1 s | 1.5 s | 1.7 s | p95 ≤ 30 s | **Met** |
+| Rule evaluation lag | 1,950 | 5.1 s | 5.3 s | 5.4 s | never above 1 min | **Met** |
+| SLO burn evaluation lag | 39 | 1.9 s | 4.6 s | 6.6 s | never above 1 min | **Met** |
+| `GET slos`, 50 SLOs, 20/s under the reference load | 1,200 | 5.2 ms | 7.8 ms | 232 ms | p95 ≤ 500 ms | **Met**, no errors |
+| `GET slos`, 200 SLOs, 20/s | 1,200 | 9.9 ms | 29 ms | 1.0 s | p95 ≤ 500 ms | **Met**, no errors (DR-4) |
+
+Every target is met. The run before the fix also had SLO burn evaluation lag up to 23 s, back to 6.6 s here.
+
 ## DR-2: Anomaly detection is deferred
 
 **Context.** R11: no anomaly detection until there's enough telemetry and incident history.
@@ -100,3 +122,19 @@ The statuses change only when the windows' end moves, once a minute (or when a l
 | C. Leave it | Nothing | At 200 SLOs, the list page is slow when many people open it at once |
 
 The 50-SLO reference, which the plan's target names, is met. Recommendation: A, as a follow-up change with its own benchmark run.
+
+**Done, 11 November.** `SloStatusCache`: the list's sums are read once per window end and set of SLOs on each replica, and shared by the
+requests in that minute; each request still computes its statuses against the versions it read. The shared read runs in its own scope,
+detached from the request that started it, on its own 30-second timeout and stopped with the host; one that fails is retried once, still
+shared, so a slow database isn't met with a read per request. At most 64 sets a minute are kept; past that, and for a request still on the
+minute before, a request reads for itself. An SLO's own page and the burn alerts read fresh.
+
+Benchmark, 11 November 01:25–02:19 UTC, the same harness and load as DR-1 (the cache before its review fixes, which change failure handling,
+not the read):
+
+| Measure | n | p50 | p95 | max | Before | Result |
+|---|---|---|---|---|---|---|
+| `GET slos`, 50 SLOs, 20/s under the reference load | 1,200 | 4.5 ms | 7.7 ms | 175 ms | p95 175 ms | **Met**, no errors |
+| `GET slos`, 200 SLOs, 20/s | 1,200 | 9.8 ms | 63 ms | 1.1 s | p95 9.3 s, 601 errors | **Met**, no errors |
+
+Again after its round-3 review fixes, beside the rule fix (DR-1, "Found after approval"): 50 SLOs p95 7.8 ms, 200 SLOs p95 29 ms, no errors.

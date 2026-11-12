@@ -34,6 +34,7 @@ namespace Juice.Observability.Rules
         /// <summary>Host key; empty for every host. Host rules only.</summary>
         public string Host { get; set; } = "";
 
+        /// <summary>How often it's evaluated; the scheduler rounds it up to whole seconds (<see cref="RuleScheduler.Schedule"/>).</summary>
         public TimeSpan Schedule { get; set; } = TimeSpan.FromMinutes(1);
         public TimeSpan Window { get; set; } = TimeSpan.FromMinutes(5);
         public double Threshold { get; set; }

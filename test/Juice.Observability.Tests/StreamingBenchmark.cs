@@ -506,7 +506,8 @@ namespace Juice.Observability.Tests
                 var rows = new List<(string Measure, Stats? Stats, string Unit, string Target, bool Met)>
                 {
                     ("Rule breach-to-alert after ForDuration", rules, "s", "p95 ≤ 120 s", rules.Count > 0 && rules.P95 <= 120),
-                    ("SLO fast-burn detection after the rate is crossed", burns, "s", "p95 ≤ 120 s", burns.Count > 0 && burns.P95 <= 120),
+                    // DR-3 (approved 11 November): the 2-minute settle kept, the target set to 4 minutes.
+                    ("SLO fast-burn detection after the rate is crossed", burns, "s", "p95 ≤ 240 s", burns.Count > 0 && burns.P95 <= 240),
                     ("First webhook dispatch", Dispatch, "s", "p95 ≤ 30 s", Dispatch is { Count: > 0, P95: <= 30 }),
                     ("Rule evaluation lag", EvaluationRules, "s", "max ≤ 60 s", EvaluationRules is { Count: > 0, Max: <= 60 }),
                     ("SLO burn evaluation lag", EvaluationSlos, "s", "max ≤ 60 s", EvaluationSlos is { Count: > 0, Max: <= 60 }),

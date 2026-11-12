@@ -47,7 +47,8 @@ enter telemetry.
   rises steadily in a healthy deployment with more rules than workers: it is the lag that matters. Raise `Rules:MaxConcurrency`, or look
   at `juice.observability.rules.duration` to find the slow template.
 - **`juice.observability.rules.skipped` rising.** Due evaluations that didn't run: `overrun`, a rule still running (or waiting) when due
-  again, so it is slower than its schedule; `released` and `disabled`, a rule that gave up waiting because another replica took the lease
+  again, so it is slower than its schedule, or one that waited so long for a worker that the next had already been read as of the same
+  point (each is read as of a point of its grid of whole schedules); `released` and `disabled`, a rule that gave up waiting because another replica took the lease
   or the rule was turned off meanwhile (occasional, around a failover or a change).
 
 ## Telemetry missing

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
+using System.Globalization;
 using Juice.Observability.Data;
 using Juice.Observability.Discovery;
 using Juice.Observability.Rules;
@@ -282,7 +283,105 @@ namespace Juice.Observability.Tests
             }
         }
 
+        /// <summary>
+        /// A rule's evaluations are read as of when they were due, so a breach held for ForDuration fires on time however the start of each
+        /// varies (benchmark, 11 November: read as of when each started, 8 of 20 alerts fired a whole evaluation late).
+        /// </summary>
+        [Fact]
+        public async Task Evaluations_as_of_their_due_time_fire_on_time_whatever_their_start_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var service = $"rules-{_run}-due";
+            // Due half a second past a whole second; the first starts 5.6 s after its due time, the next 5.4 s after.
+            var due = new DateTimeOffset(DateTimeOffset.UtcNow.UtcTicks / TimeSpan.TicksPerSecond * TimeSpan.TicksPerSecond, TimeSpan.Zero) + TimeSpan.FromMilliseconds(500);
+            var clock = new FixedClock(due + TimeSpan.FromMilliseconds(5600));
+            RuleDefinition Minutely(string key) => ErrorRate(service, r => (r.Key, r.Schedule, r.ForDuration) = (key, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1)));
+            var asOfStart = await AddRuleAsync(database, Minutely($"start-{_run}"));
+            var asOfDue = await AddRuleAsync(database, Minutely($"due-{_run}"));
+            var evaluator = Evaluator(database, clock);
+            await SendAsync(service, total: 20, failed: 10, at: due.AddMinutes(-1));
+
+            Assert.Equal(1, (await evaluator.EvaluateAsync(asOfStart, Ct)).Opened);
+            Assert.Equal(1, (await evaluator.EvaluateAsync(asOfDue, due, Ct)).Opened);
+            clock.Now = due + TimeSpan.FromMinutes(1) + TimeSpan.FromMilliseconds(5400);
+            // As of when each started, the breach looks held for 59 s: not yet.
+            Assert.Equal(0, (await evaluator.EvaluateAsync(asOfStart, Ct)).Fired);
+            // As of when each was due, exactly the schedule apart: it fires.
+            Assert.Equal(1, (await evaluator.EvaluateAsync(asOfDue, due + TimeSpan.FromMinutes(1), Ct)).Fired);
+
+            // Never as of a time still to come.
+            var evaluation = await evaluator.EvaluateAsync(asOfDue, clock.Now + TimeSpan.FromMinutes(5), Ct);
+            Assert.Equal(clock.Now - new RulesOptions().Lag, evaluation.At, TimeSpan.FromSeconds(1));
+        }
+
+        /// <summary>
+        /// The scheduler evaluates each rule as of the points of a grid of whole schedules from the epoch: a breach seen first by an evaluation
+        /// that started 0.6 s after its point, and held, fires on the next, started only 0.3 s after its own (as of their starts, 59 s apart: a
+        /// whole evaluation late). One that started late is read as of the latest point it reached; a new scheduler (a restart, another replica)
+        /// keeps the same grid.
+        /// </summary>
+        [Fact]
+        public async Task Scheduler_evaluates_as_of_its_grid_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var service = $"rules-{_run}-scheduled";
+            var minute = TimeSpan.FromMinutes(1);
+            var grid = RuleScheduler.Grid(DateTimeOffset.UtcNow, minute);
+            Assert.Equal(0, grid.Second);
+            Assert.Equal(0, grid.Millisecond);
+            var clock = new FixedClock(grid);
+            await AddRuleAsync(database, ErrorRate(service, r => (r.Schedule, r.ForDuration) = (minute, minute)));
+            var scheduler = Scheduler(database, clock: clock);
+            async Task TickAsync(double seconds, RuleScheduler? on = null)
+            {
+                clock.Now = grid + TimeSpan.FromSeconds(seconds);
+                await (on ?? scheduler).TickAsync(Ct);
+                await (on ?? scheduler).Running;
+            }
+            var lag = new RulesOptions().Lag;
+            async Task<TimeSpan> AsOfAsync() => DateTimeOffset.Parse((await AlertAsync(database)).Evidence["to"], CultureInfo.InvariantCulture) + lag - grid;
+
+            await TickAsync(0.5);                                                     // due at the grid's point; nothing to see yet
+            Assert.Null(await TryAlertAsync(database));
+            await SendAsync(service, total: 20, failed: 10, at: grid - lag + TimeSpan.FromSeconds(5));
+            await TickAsync(60.6);
+            Assert.Equal(AlertState.Pending, (await AlertAsync(database)).State);
+            await TickAsync(120.3);
+            Assert.Equal(AlertState.Firing, (await AlertAsync(database)).State);
+            Assert.Equal(TimeSpan.FromSeconds(120), await AsOfAsync());
+
+            // Started 50 s late: as of its own point. Then 65 s past the next (missed, skipped): as of the latest point it reached.
+            await TickAsync(230);
+            Assert.Equal(TimeSpan.FromSeconds(180), await AsOfAsync());
+            await TickAsync(305);
+            Assert.Equal(TimeSpan.FromSeconds(300), await AsOfAsync());
+            // Another scheduler, as after a restart or on the replica that takes over: the same points.
+            await TickAsync(362.7, Scheduler(database, clock: clock));
+            Assert.Equal(TimeSpan.FromSeconds(360), await AsOfAsync());
+        }
+
+        [Fact]
+        public void Grid_points_are_whole_schedules_from_the_epoch_or_from_a_given_point()
+        {
+            var at = new DateTimeOffset(2026, 11, 11, 9, 44, 10, 700, TimeSpan.Zero);
+            Assert.Equal(new DateTimeOffset(2026, 11, 11, 9, 44, 0, TimeSpan.Zero), RuleScheduler.Grid(at, TimeSpan.FromMinutes(1)));
+            Assert.Equal(new DateTimeOffset(2026, 11, 11, 9, 44, 10, TimeSpan.Zero), RuleScheduler.Grid(at, TimeSpan.FromSeconds(5)));
+            var due = new DateTimeOffset(2026, 11, 11, 9, 40, 0, TimeSpan.Zero);
+            Assert.Equal(new DateTimeOffset(2026, 11, 11, 9, 44, 0, TimeSpan.Zero), RuleScheduler.Grid(at, TimeSpan.FromMinutes(2), due));
+            Assert.Equal(due, RuleScheduler.Grid(due - TimeSpan.FromSeconds(1), TimeSpan.FromMinutes(2), due));   // never before its origin
+            // A fractional schedule, rounded up to whole seconds.
+            Assert.Equal(TimeSpan.FromSeconds(8), RuleScheduler.Schedule(new RuleDefinition { Schedule = TimeSpan.FromSeconds(7.5) }));
+        }
+
         // ─── helpers ──────────────────────────────────────────────────────────
+
+        private static async Task<Alert?> TryAlertAsync(ScratchDatabase database)
+        {
+            await using var db = database.Context();
+            return await db.Alerts.AsNoTracking().SingleOrDefaultAsync(Ct);
+        }
 
         private RuleDefinition ErrorRate(string service, Action<RuleDefinition>? configure = null)
         {
@@ -329,12 +428,12 @@ namespace Juice.Observability.Tests
         private static RuleEvaluator Evaluator(ScratchDatabase database, TimeProvider? clock = null, RulesOptions? options = null)
             => PlatformServices.Evaluator(database, clock, options);
 
-        private static RuleScheduler Scheduler(ScratchDatabase database, Action<RulesOptions>? configure = null)
+        private static RuleScheduler Scheduler(ScratchDatabase database, Action<RulesOptions>? configure = null, TimeProvider? clock = null)
         {
             var options = new RulesOptions();
             configure?.Invoke(options);
-            return new RuleScheduler(Services(database).GetRequiredService<IServiceScopeFactory>(), Evaluator(database, options: options),
-                Options.Create(options), Options.Create(new PlatformOptions { TenantKey = LocalStack.TenantKey }), TimeProvider.System,
+            return new RuleScheduler(Services(database).GetRequiredService<IServiceScopeFactory>(), Evaluator(database, clock, options),
+                Options.Create(options), Options.Create(new PlatformOptions { TenantKey = LocalStack.TenantKey }), clock ?? TimeProvider.System,
                 NullLogger<RuleScheduler>.Instance);
         }
 

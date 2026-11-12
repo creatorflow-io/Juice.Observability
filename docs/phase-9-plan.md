@@ -1,6 +1,7 @@
 # Phase 9 plan: SLOs, alert correlation, and selective streaming
 
-**Status:** milestones 1 to 4 done; the owner approved [the Phase 9 decision records](phase-9-decisions.md) on 11 November. Follow-up: DR-4, SLO statuses computed once per window minute. The owner's requirements and decisions are marked **Owner**; the rest are mine, for review.
+**Status:** milestones 1 to 4 done; the owner approved [the Phase 9 decision records](phase-9-decisions.md) on 11 November. DR-4's follow-up done 11 November: the SLO list's reads shared per window minute, the 200-SLO read p95 29 ms. Also found and fixed then:
+rule alerts sometimes a whole evaluation late (each now read as of its due time); the benchmark after both meets every target (DR-1). The owner's requirements and decisions are marked **Owner**; the rest are mine, for review.
 
 **Roadmap gate:**
 - a benchmark shows scheduled queries can't meet an explicit requirement before streaming is introduced;
@@ -312,8 +313,12 @@ get no evidence beyond timing, since the table has no "same service" weight.
   - **Metrics:** `juice.observability.slos.duration` (a counting pass) and `juice.observability.slos.burn_lag` (burn alerts judged after
     their windows move), as the rules have; in the runbook.
 - **Not met:** fast-burn detection (p95 172 s against 2 minutes), from the 2-minute settle by design: the target is now p95 ≤ 4 minutes
-  (DR-3, approved), which it meets. `GET slos` at the 200-SLO limit at 20 requests a second: statuses to be computed once per window
-  minute (DR-4, approved, a follow-up).
+  (DR-3, approved), which it meets. `GET slos` at the 200-SLO limit at 20 requests a second: the list's reads now shared per window
+  minute (`SloStatusCache`, DR-4, 11 November): p95 9.3 s with 601 errors, now 29 ms with none.
+- **Rule alerts a whole evaluation late** (found 11 November, after approval): each evaluation read as of when it started, to the second,
+  so one started sooner after its due time than the last saw a breach held a second short of `ForDuration`. Due times are now the points
+  of a grid of whole schedules from the epoch, the same on every replica and after a failover, and each evaluation is read as of its point
+  (DR-1, "Found after approval"); breach-to-alert p95 137 s before, 82 s after, none late.
 - **Anomaly detection:** deferred (DR-2).
 
 | Requirement | Evidence |

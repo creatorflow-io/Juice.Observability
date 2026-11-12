@@ -188,25 +188,32 @@ namespace Juice.Observability.Slos
         /// </summary>
         public static async Task<Dictionary<Guid, SloStatus>> StatusesWithBurnsAsync(PlatformDbContext db, IReadOnlyList<Guid> ids,
             Func<Guid, IReadOnlyList<SloVersion>> versionsOf, SloOptions options, DateTimeOffset now, Func<Guid, IReadOnlySet<int>?> burnVersions, CancellationToken ct)
+            => WithBurns(ids, versionsOf, options, await ReadAsync(db, ids, now, burnOnly: false, ct), burnVersions);
+
+        /// <summary><see cref="StatusesWithBurnsAsync"/> from a read already made (<see cref="SloStatusCache"/>).</summary>
+        internal static Dictionary<Guid, SloStatus> WithBurns(IReadOnlyList<Guid> ids, Func<Guid, IReadOnlyList<SloVersion>> versionsOf, SloOptions options, Read read,
+            Func<Guid, IReadOnlySet<int>?> burnVersions)
         {
-            var read = await ReadAsync(db, ids, now, burnOnly: false, ct);
             var full = Compute(ids, versionsOf, options, read, null);
             var burn = Compute(ids, versionsOf, options, read, burnVersions);
             return full.ToDictionary(p => p.Key, p => p.Value with { Windows = burn[p.Key].Windows });
         }
 
+        /// <summary>Where the windows read at <paramref name="now"/> end: the last whole minute, less <see cref="Settle"/>.</summary>
+        public static DateTimeOffset End(DateTimeOffset now) => SloCounter.Floor(now) - Settle;
+
         /// <summary>The five burn windows, then the 30 days.</summary>
         private static readonly IReadOnlyList<(string Name, TimeSpan Length)> Windows = [.. SloBudget.BurnWindows, ("30d", SloOptions.Window)];
 
         /// <summary>What a status is computed from: where the windows end and start, each SLO's first counted minute, and the sums.</summary>
-        private sealed record Read(DateTimeOffset End, DateTimeOffset[] Starts, Dictionary<Guid, DateTimeOffset> Firsts, ILookup<Guid, Sums> Sums);
+        internal sealed record Read(DateTimeOffset End, DateTimeOffset[] Starts, Dictionary<Guid, DateTimeOffset> Firsts, ILookup<Guid, Sums> Sums);
 
         /// <summary>One SLO version's SLI total, good and minutes counted, per window (indexed as <see cref="Windows"/>).</summary>
-        private sealed record Sums(int Version, long[] Total, long[] Good, long[] Minutes);
+        internal sealed record Sums(int Version, long[] Total, long[] Good, long[] Minutes);
 
-        private static async Task<Read> ReadAsync(PlatformDbContext db, IReadOnlyList<Guid> ids, DateTimeOffset now, bool burnOnly, CancellationToken ct)
+        internal static async Task<Read> ReadAsync(PlatformDbContext db, IReadOnlyList<Guid> ids, DateTimeOffset now, bool burnOnly, CancellationToken ct)
         {
-            var end = SloCounter.Floor(now) - Settle;
+            var end = End(now);
             var starts = Windows.Select(w => end - w.Length).ToArray();
             var idList = ids.Distinct().ToArray();
             // A window starts when the SLO's telemetry did: before its first counted minute there was nothing to miss. After it, a minute not

@@ -30,12 +30,14 @@ namespace Juice.Observability.Rules
         private static readonly Histogram<double> Lag = RuleEvaluator.Meter.CreateHistogram<double>("juice.observability.rules.lag",
             "s", "Delay between a rule's due time and the start of its evaluation");
         private static readonly Counter<long> Skipped = RuleEvaluator.Meter.CreateCounter<long>("juice.observability.rules.skipped",
-            "{evaluation}", "Due evaluations not run, by reason (overrun: still running or waiting when due again; released: the lease went to another replica while it waited; disabled: turned off while it waited)");
+            "{evaluation}", "Due evaluations not run, by reason (overrun: still running or waiting when due again, or late enough that the point it would be read as of was already evaluated; released: the lease went to another replica while it waited; disabled: turned off while it waited)");
         private static readonly Counter<long> Queued = RuleEvaluator.Meter.CreateCounter<long>("juice.observability.rules.queued",
             "{evaluation}", "Due evaluations that waited for a free worker before running; the wait is in rules.lag");
 
         private readonly ConcurrentDictionary<Guid, DateTimeOffset> _due = new();
         private readonly ConcurrentDictionary<Guid, Task> _running = new();
+        /// <summary>The time each rule was last evaluated as of.</summary>
+        private readonly ConcurrentDictionary<Guid, DateTimeOffset> _asOf = new();
         /// <summary>
         /// The workers. Every due rule is started on its tick and waits here for one, so a worker that frees up starts the next rule at once. Waiting
         /// for the next tick instead capped the scheduler at MaxConcurrency rules per tick (48 a minute at the defaults), however quick each was.
@@ -78,6 +80,7 @@ namespace Juice.Observability.Rules
                         _holding = new CancellationTokenSource();
                         previous.Dispose();
                         _due.Clear();
+                        _asOf.Clear();
                     }
                     held = holds;
                     if (held)
@@ -106,10 +109,19 @@ namespace Juice.Observability.Rules
             var rules = await db.Rules.AsNoTracking().Where(r => r.TenantId == tenantId && r.Enabled && r.Template != RuleTemplate.SloBurn).ToListAsync(cancellationToken);
             var now = clock.GetUtcNow();
             var hold = _holding.Token;
+            // Rules gone, disabled or turned into something else: forgotten, and due on the grid again if they come back.
+            var ids = rules.Select(r => r.Id).ToHashSet();
+            foreach (var id in _due.Keys.Where(id => !ids.Contains(id)))
+            {
+                _due.TryRemove(id, out _);
+                _asOf.TryRemove(id, out _);
+            }
             foreach (var rule in rules)
             {
-                var schedule = RuleDefinition.FromJson(rule.Definition).Schedule;
-                var due = _due.GetOrAdd(rule.Id, now);
+                var schedule = Schedule(RuleDefinition.FromJson(rule.Definition));
+                var due = _due.GetOrAdd(rule.Id, _ => Grid(now, schedule));
+                // Its schedule changed: back onto the new one's grid.
+                if (Grid(due, schedule) != due) due = _due[rule.Id] = Grid(due, schedule);
                 if (now < due)
                 {
                     continue;
@@ -122,7 +134,7 @@ namespace Juice.Observability.Rules
                 }
                 _due[rule.Id] = Next(due, schedule, now);
                 // Registered before it starts, so its own removal on completion can never come first.
-                var start = new Task<Task>(() => RunAsync(rule, due, tickAt, hold, cancellationToken));
+                var start = new Task<Task>(() => RunAsync(rule, due, schedule, tickAt, hold, cancellationToken));
                 _running[rule.Id] = start.Unwrap();
                 start.Start(TaskScheduler.Default);
             }
@@ -136,7 +148,7 @@ namespace Juice.Observability.Rules
         /// rule that had to wait runs as the rule is now, not as it was on its tick: one disabled or changed while it waited is skipped or evaluated
         /// as changed.
         /// </summary>
-        private async Task RunAsync(Rule rule, DateTimeOffset due, DateTimeOffset tickAt, CancellationToken hold, CancellationToken stoppingToken)
+        private async Task RunAsync(Rule rule, DateTimeOffset due, TimeSpan schedule, DateTimeOffset tickAt, CancellationToken hold, CancellationToken stoppingToken)
         {
             var queued = false;
             try
@@ -180,13 +192,26 @@ namespace Juice.Observability.Rules
                     }
                     rule = current;
                 }
+                var now = clock.GetUtcNow();
+                // As of a point of its grid, so its evaluations are whole schedules apart: as of when each started, one that started sooner after
+                // its due time than the last read a breach held for ForDuration as a second short, and fired a whole evaluation late (benchmark,
+                // 11 November: 8 of 20). The latest point it has reached: its due time, or a later one when it waited that long for a worker.
+                var asOf = Grid(now, schedule, due);
+                // Never as of a point already evaluated, which a late one can reach (the next, due there, may have started meanwhile).
+                if (_asOf.TryGetValue(rule.Id, out var last) && asOf <= last)
+                {
+                    counted = false;
+                    Skipped.Add(1, new KeyValuePair<string, object?>("reason", "overrun"));
+                    return;
+                }
+                _asOf[rule.Id] = asOf;
                 // The wait for a worker shows as lag; the timeout and duration count from the start.
-                Lag.Record((clock.GetUtcNow() - due).TotalSeconds, new KeyValuePair<string, object?>("template", rule.Template.ToString()),
+                Lag.Record((now - due).TotalSeconds, new KeyValuePair<string, object?>("template", rule.Template.ToString()),
                     new KeyValuePair<string, object?>("queued", queued));
                 started = Stopwatch.GetTimestamp();
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
                 timeout.CancelAfter(options.Value.EvaluationTimeout);
-                await evaluator.EvaluateAsync(rule, timeout.Token);
+                await evaluator.EvaluateAsync(rule, asOf, timeout.Token);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -242,6 +267,25 @@ namespace Juice.Observability.Rules
                 var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
                 return await db.Rules.AsNoTracking().Where(r => r.Enabled && r.Template != RuleTemplate.SloBurn).ToDictionaryAsync(r => r.Id, ct);
             }
+        }
+
+        /// <summary>
+        /// A rule's schedule in whole seconds (rounded up, at least one), so its grid points are whole seconds like the times it's evaluated as of.
+        /// </summary>
+        internal static TimeSpan Schedule(RuleDefinition definition)
+            => TimeSpan.FromSeconds(Math.Max(1, Math.Ceiling(definition.Schedule.TotalSeconds)));
+
+        /// <summary>
+        /// The latest point at or before <paramref name="at"/> of the grid of whole <paramref name="schedule"/>s, counted from the Unix epoch, or
+        /// from <paramref name="from"/> when given. From the epoch, every replica, restart and failover keeps the same grid, so a breach seen on
+        /// one is held for whole schedules on the next.
+        /// </summary>
+        internal static DateTimeOffset Grid(DateTimeOffset at, TimeSpan schedule, DateTimeOffset? from = null)
+        {
+            // In whole ticks: since the epoch is more ticks than a double holds exactly.
+            var origin = (from ?? DateTimeOffset.UnixEpoch).UtcTicks;
+            var ticks = at.UtcTicks < origin ? origin : origin + (at.UtcTicks - origin) / schedule.Ticks * schedule.Ticks;
+            return new DateTimeOffset(ticks, TimeSpan.Zero);
         }
 
         // The next due time on the rule's grid; missed slots are skipped rather than run back to back.

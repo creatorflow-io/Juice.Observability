@@ -169,6 +169,7 @@ namespace Juice.Observability.Slos
         {
             services.Configure<SloOptions>(configuration.GetSection(SloOptions.Section));
             services.AddHostedService<SloProvisioner>();
+            services.AddSingleton<SloStatusCache>();
             if (configuration.GetSection(SloOptions.Section).GetValue(nameof(SloOptions.Enabled), true))
             {
                 services.AddSingleton<SloCounter>();

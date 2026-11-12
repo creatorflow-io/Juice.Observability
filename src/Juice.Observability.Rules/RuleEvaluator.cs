@@ -55,8 +55,12 @@ namespace Juice.Observability.Rules
         }
     }
 
-    /// <summary>Evaluate one rule now. Its alert changes, and the notifications they raise, commit together through the TransactionBehavior.</summary>
-    public sealed record EvaluateRule(Rule Rule) : MessageBase, IRequest<RuleEvaluation>;
+    /// <summary>
+    /// Evaluate one rule. Its alert changes, and the notifications they raise, commit together through the TransactionBehavior. <c>AsOf</c>, from
+    /// the scheduler, is the time its window is read as of: the time it was due, so its evaluations are exactly its schedule apart however soon
+    /// after it each started (<see cref="RuleScheduler"/>). Without it, or one later than now, as of now.
+    /// </summary>
+    public sealed record EvaluateRule(Rule Rule, DateTimeOffset? AsOf = null) : MessageBase, IRequest<RuleEvaluation>;
 
     /// <summary>
     /// Runs a rule's evaluation as a command (<see cref="EvaluateRule"/>), so the mediator's TransactionBehavior saves the alerts, the domain events they raised
@@ -66,11 +70,14 @@ namespace Juice.Observability.Rules
     {
         internal static readonly Meter Meter = new("Juice.Observability");
 
-        public async Task<RuleEvaluation> EvaluateAsync(Rule rule, CancellationToken cancellationToken)
+        public Task<RuleEvaluation> EvaluateAsync(Rule rule, CancellationToken cancellationToken) => EvaluateAsync(rule, null, cancellationToken);
+
+        /// <summary>Evaluates <paramref name="rule"/> as of <paramref name="asOf"/> (<see cref="EvaluateRule"/>).</summary>
+        public async Task<RuleEvaluation> EvaluateAsync(Rule rule, DateTimeOffset? asOf, CancellationToken cancellationToken)
         {
             using var context = PlatformMessageContext.Begin("rules");
             await using var scope = scopes.CreateAsyncScope();
-            var result = await scope.ServiceProvider.GetRequiredService<IMediator>().Send(new EvaluateRule(rule), cancellationToken);
+            var result = await scope.ServiceProvider.GetRequiredService<IMediator>().Send(new EvaluateRule(rule, asOf), cancellationToken);
             if (result.Opened + result.Fired + result.Resolved > 0)
             {
                 logger.LogInformation("Rule {Rule}: {Opened} opened, {Fired} fired, {Resolved} resolved", rule.Key, result.Opened, result.Fired, result.Resolved);
@@ -80,7 +87,8 @@ namespace Juice.Observability.Rules
     }
 
     /// <summary>
-    /// Evaluates one rule: observes its template over the window ending <see cref="RulesOptions.Lag"/> before now,
+    /// Evaluates one rule: observes its template over the window ending <see cref="RulesOptions.Lag"/> before the time it's evaluated as of
+    /// (<see cref="EvaluateRule.AsOf"/>: the scheduler's due time, else now),
     /// applies <see cref="AlertLifecycle"/> to every observed subject and every open alert (an open alert whose subject
     /// returned nothing is evaluated as no data), and changes alerts and their transitions. A transition that notifies raises
     /// <see cref="AlertTransitioned"/>; nothing here saves, begins or commits, or knows who is notified.
@@ -93,7 +101,8 @@ namespace Juice.Observability.Rules
             var rule = request.Rule;
             var definition = RuleDefinition.FromJson(rule.Definition);
             var now = clock.GetUtcNow();
-            var at = new DateTimeOffset((now - options.Value.Lag).UtcTicks / TimeSpan.TicksPerSecond * TimeSpan.TicksPerSecond, TimeSpan.Zero);
+            var asOf = request.AsOf is { } given && given <= now ? given : now;
+            var at = new DateTimeOffset((asOf - options.Value.Lag).UtcTicks / TimeSpan.TicksPerSecond * TimeSpan.TicksPerSecond, TimeSpan.Zero);
             var from = at - definition.Window;
             var observations = (await templates.ObserveAsync(definition,
                 new TelemetryWindow(platform.Value.TenantKey, from, at, options.Value.RowLimit), cancellationToken))
