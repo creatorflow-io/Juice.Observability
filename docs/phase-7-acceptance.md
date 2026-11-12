@@ -1,6 +1,6 @@
 # Phase 7 acceptance: Juice Agent enrollment and read-only diagnostics
 
-**Status:** both milestones are built and verified: milestone 1 (enrollment and read-only diagnostics) and milestone 2 (signed updates with rollback, and rotation without re-enrollment). **Not yet reviewed by the owner.**
+**Status:** accepted by the owner 2026-11-12. Both milestones are built and verified: milestone 1 (enrollment and read-only diagnostics) and milestone 2 (signed updates with rollback, and rotation without re-enrollment).
 
 ## The gate
 

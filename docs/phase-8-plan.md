@@ -1,6 +1,6 @@
 # Phase 8 plan: approved manual actions and verified remediation
 
-**Status:** done, 9 November. The owner's decisions are marked in the first table; the rest are mine, for review.
+**Status:** done 9 November; gate accepted by the owner 2026-11-12. The owner's decisions are marked in the first table; the rest are mine, for review.
 
 **Roadmap gate:**
 - failure, timeout, duplicate, stale-evidence and approval cases are tested;

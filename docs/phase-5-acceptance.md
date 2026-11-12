@@ -1,6 +1,6 @@
 # Phase 5 acceptance: change events and initial correlation
 
-**Status:** the gate's checks pass on the local stack. **Not yet reviewed by the owner.**
+**Status:** accepted by the owner 2026-11-12. The gate's checks pass on the local stack.
 
 ## The gate
 

@@ -1,6 +1,6 @@
 # Phase 6 acceptance: broader notifications and incident workflow
 
-**Status:** verified, waiting for the owner's review. All 361 tests pass, both browser journeys pass on an image with the final code, and all 21 mutation checks were caught. **Not yet reviewed by the owner.** Slack, Teams and a TLS mail server have not been tried for real: see Limits.
+**Status:** accepted by the owner 2026-11-12. All 361 tests pass, both browser journeys pass on an image with the final code, and all 21 mutation checks were caught. Slack, Teams and a TLS mail server have not been tried for real: see Limits.
 
 ## How it was checked
 
