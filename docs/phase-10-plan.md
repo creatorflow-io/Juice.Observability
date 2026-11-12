@@ -55,7 +55,7 @@ Measured at every step. "Target" is the pass mark at 1×; above 1× it's the lin
 | **Health freshness** | Evidence to visible state | p95 ≤ 60 s |
 | **Rule breach-to-alert** | `breach-to-alert.sh` alongside | p95 ≤ 2 min after `ForDuration` |
 | **Webhook dispatch** | First attempt after a transition | p95 ≤ 30 s |
-| **Queue lag** | Collector queue size, rule and SLO evaluation lag, outbox and webhook backlog, discovery lag | Never above 1 min; no growing backlog |
+| **Queue lag** | Collector queue size, rule and SLO evaluation lag, outbox and webhook backlog, discovery lag | Never above 1 min; no growing backlog. **Owner, 12 November:** a lag is how far a worker is behind where its configuration says it should be (discovery past its 60 s `Discovery:Lag`, rules past their due time, SLOs past the minutes they may count, the oldest pending outbox row and webhook delivery), with the raw lag behind now shown beside |
 | **Telemetry search** | Trace and log searches over the last hour | p95 reported (no §9 target) |
 | **Resource use** | CPU and memory per container (`docker stats`, every 10 s), ClickHouse disk growth, PostgreSQL size | Reported; headroom stated |
 

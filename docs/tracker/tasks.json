@@ -55,8 +55,8 @@
       "kind": "task",
       "title": "M2 Scale harness",
       "ref": "docs/phase-10-plan.md §Milestones",
-      "status": "todo",
-      "note": "load.sh multiplier, 10 services x 10 instances, query-mix driver (P4), resource sampling, one report per run. Evidence: 1x smoke run matching Phase 4 figures. Can run in parallel with M1."
+      "status": "done",
+      "note": "Done 2026-11-12: harness in deploy/local/scale/ (generator 10 services x 10 instances OTLP protobuf; juice-scale stack with 50 rules, 50 SLOs, webhook sink; query mix; sampler; report). Review rounds 1 (16) and 2 (10) and a confirmation round (4, then re-confirmed). Owner: queue lag = past each worker's configured delay. Final 1x smoke run met every target, matches Phase 4 (docs/scale-tests.md). Finding for M3: search cost grows with data in the last hour; disk ~1 TB at full retention (upper bound)."
     },
     {
       "doc_id": "p10-m3",
@@ -66,7 +66,7 @@
       "title": "M3 Scale tests 1x/3x/5x/10x",
       "ref": "docs/scale-tests.md (to write)",
       "status": "todo",
-      "note": "Needs M2. 30 min per step, upward until a limit is found; raw data under build/scale/; resource table (P6). 1x must meet every §9 target or fix / P7 ADR."
+      "note": "Next. 30 min per step at 1x, 3x, 5x, 10x, upward until a limit; needs the working stack stopped for each step (shared ports). Raw data under build/scale/; docs/scale-tests.md."
     },
     {
       "doc_id": "p10-m4",
@@ -125,6 +125,7 @@
     "Pending work list is stale: Phase 5–6 review done; Slack and TLS mail tried 2026-11-12 (Teams not yet); a test-send button exists (commit f923a42).",
     "Add Phases 7–9: Juice Agent enrollment and diagnostics, approved actions and remediation, SLOs and burn-rate alerts, correlation suggestions.",
     "Grafana: user grafana_reader now limited to the deployment's tenant by ClickHouse row policy grafana_tenant (after 1.2.0; Phase 10 M1).",
-    "Grafana tenant boundary: row policies fail closed (access.xml); trace-ID index visible across tenants, accepted by the owner 2026-11-12."
+    "Grafana tenant boundary: row policies fail closed (access.xml); trace-ID index visible across tenants, accepted by the owner 2026-11-12.",
+    "Phase 10 M2: scale harness (deploy/local/scale/) and a 1x run meeting every §9 target with 10 services x 100 instances, 50 rules, 50 SLOs."
   ]
 }

@@ -181,7 +181,7 @@
 
 **Acceptance gate:** console does not duplicate general Grafana exploration without a product need; tenant context is preserved; scale tests document throughput, query mix, queue lag, resource use, and cost assumptions.
 
-**Status:** in progress: milestone 1 (Console scope and tenant context) done, reviewed; milestone 2 (scale harness) next. See the [Phase 10 plan](phase-10-plan.md) and [milestone 1](phase-10-console.md).
+**Status:** in progress: milestones 1 (Console scope and tenant context) and 2 (scale harness) done, reviewed; milestone 3 (scale tests) next. See the [Phase 10 plan](phase-10-plan.md), [milestone 1](phase-10-console.md) and the [scale tests](scale-tests.md).
 
 ## Explicit triggers for deferred infrastructure and SaaS
 
