@@ -9,9 +9,21 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 source scale/lib.sh
 MULTIPLIER=${1:?multiplier}; SECONDS_RUN=${2:-1800}; WARMUP=${WARMUP:-180}
+# Component ceilings (docs/phase-11-plan.md R19), with CEILING set (scale/steps.sh and stack.sh pass it on):
+#   ingest   the ClickHouse-reading workers off (overlay), no query mix and no breach runs: the step is the load's multiplier
+#   search   health, rules and SLO counting off, discovery on (the searches need the services); the load at SEARCH_LOAD× (1);
+#            the step is the searches per second (half traces, half logs; the full mix has 2), no breach runs
+CEILING=${CEILING:-}; SEARCH_RATE=2; LOAD=$MULTIPLIER; skipped=()
+case "$CEILING" in
+  '') ;;
+  ingest) skipped=(query-mix breach) ;;
+  search) SEARCH_RATE=$MULTIPLIER; LOAD=${SEARCH_LOAD:-1}; skipped=(breach) ;;
+  *) echo "unknown CEILING $CEILING" >&2; exit 2 ;;
+esac
+skips() { [[ " ${skipped[*]} " == *" $1 "* ]]; }
 # A Windows path where Git Bash runs it: Node reads /d/... as D:\d\..., and the generator and query mix write there.
 root=$(cd ../.. && { pwd -W 2>/dev/null || pwd; })
-out="$root/build/scale/$(date -u +%Y%m%dT%H%M)-${MULTIPLIER}x"
+[[ "$CEILING" == search ]] && out="$root/build/scale/$(date -u +%Y%m%dT%H%M)-search-${MULTIPLIER}per-s" || out="$root/build/scale/$(date -u +%Y%m%dT%H%M)-${CEILING:+$CEILING-}${MULTIPLIER}x"
 mkdir -p "$out"
 dc ps --status running --services 2>/dev/null | grep -qx platform-api || { echo "the scale stack isn't running: scale/stack.sh up" >&2; exit 1; }
 # Stopped or failed early: nothing keeps running behind it, and an interrupt ends the run (a trap alone would carry on after it).
@@ -24,14 +36,14 @@ BREACH_MAX=420   # tests/breach-to-alert.sh gives up on a run after 7 minutes
 # The commit, and "+changes" if anything in the repository (the platform image included) differs from it.
 commit="$(git rev-parse --short HEAD)$([[ -n "$(git -C ../.. status --porcelain)" ]] && echo '+changes')"
 cat > "$out/meta.json" <<JSON
-{ "multiplier": $MULTIPLIER, "seconds": $SECONDS_RUN, "warmup": $WARMUP, "run": "$run", "project": "$SCALE_PROJECT", "commit": "$commit",
+{ "multiplier": $LOAD, "ceiling": "$CEILING", "search_rate": $SEARCH_RATE, "skipped": [$(printf '"%s",' "${skipped[@]}" | sed 's/,$//')], "seconds": $SECONDS_RUN, "warmup": $WARMUP, "run": "$run", "project": "$SCALE_PROJECT", "commit": "$commit",
   "host_cores": $(nproc), "docker_cpus": $(docker info --format '{{.NCPU}}'), "docker_mem_bytes": $(docker info --format '{{.MemTotal}}') }
 JSON
 echo "scale step ×$MULTIPLIER: ${WARMUP} s warm-up, then ${SECONDS_RUN} s measured → $out"
 
 # The Collector's counters before any load: what it refuses or fails from here on (warm-up included) counts as lost.
 echo "time,metric,value" > "$out/collector-before.csv"; collector "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$out/collector-before.csv"
-node scale/generate.mjs --multiplier "$MULTIPLIER" --duration $((WARMUP + SECONDS_RUN + BREACH_MAX)) --out "$out" --stop-file "$out/stop" > "$out/generator.log" 2>&1 &
+node scale/generate.mjs --multiplier "$LOAD" --duration $((WARMUP + SECONDS_RUN + BREACH_MAX)) --out "$out" --stop-file "$out/stop" > "$out/generator.log" 2>&1 &
 gen=$!
 sleep "$WARMUP" & wait $!   # in the background, so a TERM stops the step at once (the trap waits for a foreground command)
 start_epoch=$(date +%s); end_epoch=$((start_epoch + SECONDS_RUN))
@@ -40,12 +52,15 @@ date -u -d "@$end_epoch" +%Y-%m-%dT%H:%M:%SZ > "$out/end"
 
 scale/sample.sh "$SECONDS_RUN" "$out" > "$out/sample.log" 2>&1 &
 sampler=$!
-node scale/query-mix.mjs --until "$end_epoch" --out "$out" > "$out/query-mix.log" 2>&1 &
-mix=$!
+if skips query-mix; then mix=""; else
+  node scale/query-mix.mjs --until "$end_epoch" --out "$out" --search-rate "$SEARCH_RATE" > "$out/query-mix.log" 2>&1 &
+  mix=$!
+fi
 # Rule breach-to-alert alongside (requirements §9), one run after another while one can still finish in the window's load: each sends
 # a failing breach-<id> service and waits for service-error-rate to fire.
 # Its own trap passes a stop on to the run in progress, which a kill of the subshell alone wouldn't reach.
 ( trap 'kill $run_pid 2>/dev/null; exit 0' TERM
+  skips breach && { echo "breach runs skipped (ceiling $CEILING)"; exit 0; }
   while (( $(date +%s) + 240 < end_epoch )) && [[ ! -e "$out/stop" ]]; do tests/breach-to-alert.sh 1 & run_pid=$!; wait $run_pid; done ) > "$out/breach.log" 2>&1 &
 breach=$!
 
@@ -72,7 +87,7 @@ while (( $(date +%s) < end_epoch )); do
 done
 
 wait "$sampler"; echo "sampler $?" > "$out/exits"
-wait "$mix"; echo "query-mix $?" >> "$out/exits"
+[[ -n "$mix" ]] && { wait "$mix"; echo "query-mix $?" >> "$out/exits"; }
 wait "$breach"; echo "breach $?" >> "$out/exits"
 # The load has done its job once the last breach run is over.
 touch "$out/stop"; wait "$gen"; echo "generator $?" >> "$out/exits"

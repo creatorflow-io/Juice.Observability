@@ -175,14 +175,28 @@ const targets = [
   ['Console journey (no §9 target)', null,
     journey.length ? `page p95 ${f(pct(pageMs, 0.95), 0)} ms, max ${f(max(pageMs), 0)} ms; ${journey.filter(r => r.ok !== 'true').length} of ${journey.length} pages failed (navigation timed out, a page error or an API answer ≥ 400)` : 'no journey ran'],
 ];
+// A component ceiling (docs/phase-11-plan.md R19) judges only the lines of what it runs; the others show, unjudged. Its own lines: the
+// Collector's queue not growing (ingest backs up there before it refuses), and for the search ceiling a search p95 ≤ 2 s (no §9
+// target exists; 2 s is the ceiling's line, Phase 11 milestone 4).
+const ceiling = meta.ceiling || null;
+if (ceiling) {
+  const keep = { ingest: ['Throughput', 'Ingestion freshness'], search: ['Throughput', 'Ingestion freshness', 'API reads'] }[ceiling] ?? [];
+  for (const t of targets) if (t[1] !== null && !keep.some(k => t[0].startsWith(k))) { t[1] = null; t[2] = `not judged (ceiling ${ceiling}): ${t[2]}`; }
+  targets.push(['Collector export queue not growing (ceiling line)', queueGrowing === null ? null : !queueGrowing,
+    `${f(pct(queue, 0.5), 0)} items median, ${f(max(queue), 0)} max, sum of the exporters${queueGrowing === null ? '; growth not judged (window under two load cycles)' : queueGrowing ? ', growing' : ''}`]);
+  if (ceiling === 'search') {
+    const t = targets.find(x => x[0].startsWith('Telemetry search'));
+    t[0] = 'Telemetry search p95 ≤ 2 s (ceiling line)'; t[1] = within(searchP95, 2000);
+  }
+}
 const parts = Object.entries(exits).filter(([, v]) => v !== 0).map(([k, v]) => `${k} exited ${v}`);
 
-const md = `# Scale step ×${m}: ${new Date(t0).toISOString().slice(0, 16).replace('T', ' ')} UTC
+const md = `# Scale step ×${m}${ceiling ? `, ${ceiling} ceiling${ceiling === 'search' ? ` at ${meta.search_rate} searches/s` : ''} (workers ${ceiling === 'ingest' ? 'reading ClickHouse off, no query mix' : 'health, rules, SLOs off'}, no breach runs)` : ''}: ${new Date(t0).toISOString().slice(0, 16).replace('T', ' ')} UTC
 
 Nominal ${f(1000 * m, 0)} spans/s, ${f(10000 * m, 0)} metric points/s, ${f(1000 * m, 0)} logs/s from 10 services × 10 instances on 20 hosts, measured for ${f(window / 60, 1)} minutes
 after ${meta.warmup ?? 0} s of warm-up. Host: ${meta.host_cores} cores; Docker VM ${cores} vCPU, ${f((meta.docker_mem_bytes ?? 0) / 2 ** 30, 1)} GiB. Commit ${meta.commit}.
 The load generator, on the same host, used ${f(genCpu, 1)} % of its ${meta.host_cores} cores.${parts.length ? `\n\n**Parts that failed:** ${parts.join(', ')} (see their logs).` : ''}
-${harnessLimit ? '**Harness limit:** the generator itself fell behind (spans given up with few sends in progress) or a worker crashed, so this step says nothing about the platform: repeat it with more workers (`--workers`) or fewer other processes on the host.\n\n' : ''}${m === 1 ? 'At 1× every target is a pass mark (P3).' : 'Above 1× there is no pass mark (P3): each line is within or over, and the first crossed is the limit.'}
+${harnessLimit ? '**Harness limit:** the generator itself fell behind (spans given up with few sends in progress) or a worker crashed, so this step says nothing about the platform: repeat it with more workers (`--workers`) or fewer other processes on the host.\n\n' : ''}${ceiling ? 'A component ceiling: no pass mark; the first line crossed is its ceiling.' : m === 1 ? 'At 1× every target is a pass mark (P3).' : 'Above 1× there is no pass mark (P3): each line is within or over, and the first crossed is the limit.'}
 
 ## Measures
 

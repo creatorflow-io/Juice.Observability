@@ -5,13 +5,14 @@
 //   - a trace search and a log search every second, over the last hour (plan: "Measures and targets"; no §9 target);
 //   - one Console journey a minute in a signed-in browser: Overview, Services, a service, Alerts, SLOs, Traces of a service.
 //   node scale/query-mix.mjs --duration 1800 --out dir    (or --until <epoch seconds>: stop then, whenever it started)
+//   --search-rate <n>: searches per second, alternately traces and logs (default 2; the search ceiling raises it, Phase 11 R19)
 // Writes queries.csv (time, class, path, status, ms), journey.csv (time, page, ms, ok) and queries.json (per class: count, errors, p50,
 // p95, max). Needs the scale stack's API on localhost:5180.
 import { writeFileSync, appendFileSync, mkdirSync } from 'node:fs';
 import { base, launch, signIn, tokenFor } from '../../../console/e2e/lib.mjs';
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((a, x, i, all) => (x.startsWith('--') ? [...a, [x.slice(2), all[i + 1]]] : a), []));
-const duration = Number(args.duration ?? 60), out = args.out ?? '.', namespace = args.namespace ?? 'shop';
+const duration = Number(args.duration ?? 60), out = args.out ?? '.', namespace = args.namespace ?? 'shop', searchRate = Number(args['search-rate'] ?? 2);
 mkdirSync(out, { recursive: true });
 writeFileSync(`${out}/queries.csv`, 'time,class,path,status,ms\n');
 writeFileSync(`${out}/journey.csv`, 'time,page,ms,ok\n');
@@ -109,12 +110,13 @@ const started = Date.now(), until = args.until ? Number(args.until) * 1000 : sta
 // A browser that can't start or sign in is a failed journey, not a crashed run.
 const browsing = journeys(until).catch(e => { console.error(`journey: ${e.message}`); errors.page++; results.page.push(Infinity); });
 const pending = [];
+let searched = 0;
 for (let i = 0; Date.now() < until; i++) {
-  // 20 API reads and 2 searches each second, on a fixed schedule (open loop: a slow answer doesn't slow the offered rate).
+  // 20 API reads and searchRate searches each second, on a fixed schedule (open loop: a slow answer doesn't slow the offered rate).
   const due = started + (i * 1000) / 20;
   await sleep(Math.max(0, due - Date.now()));
   pending.push(timed('api', reads(i)));
-  if (i % 10 === 0) pending.push(timed('search', searches(i / 10)));
+  for (; searched <= ((due - started) / 1000) * searchRate; searched++) pending.push(timed('search', searches(searched)));
   if (i % 200 === 0) { flush(); pending.splice(0, pending.length - 500); }
 }
 await Promise.all(pending);

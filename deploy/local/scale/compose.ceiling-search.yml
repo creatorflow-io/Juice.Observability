@@ -1,0 +1,9 @@
+# The search ceiling (docs/phase-11-plan.md R19), over scale/compose.scale.yml: health, rules and SLO counting are off, so the steps
+# measure the searches against ingest alone. Discovery stays on: the query mix searches the services it finds (about half a core at 1×,
+# the baseline). run.sh raises the searches per second with CEILING=search.
+services:
+  platform-api:
+    environment:
+      Health__Enabled: "false"
+      Rules__Enabled: "false"
+      Slos__Enabled: "false"

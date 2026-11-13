@@ -6,6 +6,8 @@
 # or there's no report). A refused send or a slow breach run is the platform's result, judged by the report's targets, not a harness
 # problem. Then it takes the scale stack down and, with --restore, starts the working stack again, also when interrupted or failed.
 #   scale/steps.sh [--restore] [--through] [multipliers...]      default: 1 3 5 10 15 20 30 40
+#   CEILING=ingest|search scale/steps.sh ...   a component ceiling (docs/phase-11-plan.md R19, see run.sh); for search the steps are
+#                                              searches per second. A 1× miss doesn't stop a ceiling.
 # Needs the working stack stopped (scale/stack.sh up refuses otherwise). Each step is about 35 minutes.
 # Exit 0: every step held, or a limit was found. 1: a 1× miss, a harness problem, or the stacks not brought back as asked.
 # 2: a wrong option. 130: interrupted (INT, TERM or HUP; the running step is stopped first).
@@ -66,7 +68,7 @@ for m in "${steps[@]}"; do
     try {
       if (!dir) throw 0;
       const s = require(dir + "/summary.json");
-      const parts = ["sampler", "query-mix"].filter(k => (s.exits || {})[k] !== 0).map(k => k + " exited " + ((s.exits || {})[k] ?? "-"));
+      const parts = ["sampler", "query-mix"].filter(k => !((s.meta || {}).skipped || []).includes(k) && (s.exits || {})[k] !== 0).map(k => k + " exited " + ((s.exits || {})[k] ?? "-"));
       const why = [s.harnessLimit && "the generator itself fell short", !existsSync(dir + "/generator.json") && "no generator summary",
         ...parts, s.lagCovered === false && "lag samples missing", s.acceptedCovered === false && "Collector samples missing"].filter(Boolean);
       console.log(why.length ? "harness problem: " + why.join(", ") : "");
@@ -74,7 +76,7 @@ for m in "${steps[@]}"; do
   say "step ×$m done: report exit $result${kind:+ ($kind)}${dir:+; $dir/report.md}"
   if [[ -n "$kind" ]]; then say "stopping on a $kind"; status=1; break; fi
   if (( result != 0 )); then
-    if [[ "$m" == 1 ]]; then say "stopping: 1× missed a target (P7: fix or ADR before going on)"; status=1; break; fi
+    if [[ "$m" == 1 && -z "${CEILING:-}" ]]; then say "stopping: 1× missed a target (P7: fix or ADR before going on)"; status=1; break; fi
     say "×$m crossed a line"
     $through || { say "stopping: the limit"; break; }
   fi
