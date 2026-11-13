@@ -181,7 +181,7 @@
 
 **Acceptance gate:** console does not duplicate general Grafana exploration without a product need; tenant context is preserved; scale tests document throughput, query mix, queue lag, resource use, and cost assumptions.
 
-**Status:** in progress: milestones 1 (Console scope and tenant context) and 2 (scale harness) done, reviewed; milestone 3 (scale tests) run 12 November, in review: 1× met every target, 3× crossed the SLO-lag line; milestones 4–5 wait for Phase 11 (draft). See the [Phase 10 plan](phase-10-plan.md), [milestone 1](phase-10-console.md) and the [scale tests](scale-tests.md).
+**Status:** in progress: milestones 1 (Console scope and tenant context), 2 (scale harness) and 3 (scale tests, 1× and 3×) done, reviewed; 1× met every target, 3× crossed the SLO-lag line once (cause not measured), and 5× and 10× moved to the Phase 11 baseline; milestones 4–5 wait for Phase 11 (draft). See the [Phase 10 plan](phase-10-plan.md), [milestone 1](phase-10-console.md) and the [scale tests](scale-tests.md).
 
 ## Phase 11 — Platform self-observability, capacity, and performance
 
@@ -191,7 +191,7 @@
 
 **Acceptance gate:** every §9 operational metric is exported and documented; the Overview shows each worker's state and the platform's headroom and keeps working while ClickHouse is slow or down; the capacity estimate is checked against measured scale steps; the rerun steps show where the first limit moved and why; no new infrastructure without an ADR.
 
-**Status:** planned; split from Phase 10 by the owner 2026-11-13. See the [Phase 11 plan](phase-11-plan.md) (draft).
+**Status:** planned; split from Phase 10 by the owner 2026-11-13. **Phase-order exception (owner, 2026-11-13):** Phase 11 runs before Phase 10's milestones 4 (drills) and 5 (gate), so the upgrade drill also covers 1.2.0 → 1.3.0. See the [Phase 11 plan](phase-11-plan.md) (approved 2026-11-13).
 
 ## Explicit triggers for deferred infrastructure and SaaS
 
@@ -201,6 +201,7 @@
 | NATS JetStream for platform internals | Concrete durable fan-out/replay/decoupling need that PostgreSQL outbox and direct calls cannot meet; benchmark, operational owner, and decision to use only one platform broker. Existing NATS in application telemetry propagation is not a trigger. |
 | OpenSearch | Representative ClickHouse log search benchmark proves a material search, ingestion, or retention gap; a second store's cost and operational burden are accepted. |
 | Object storage | Quantified need for low-cost long-term archive or diagnostic bundle retention; encryption, access, retention, deletion, restore, and volume are specified. |
+| ClickHouse replica or sharding | A measured search or worker limit that ClickHouse workload isolation and query fixes could not move (Phase 11 R11–R12); ADR covering replication or sharding topology, consistency of reads, failover, backup and restore, operations owner, and resource cost. Added 2026-11-13 (owner). |
 | Shared SaaS tenancy | Product/business decision plus complete control-plane identity, credential lifecycle, tenant quotas, query enforcement, Grafana backend isolation, deletion, audit, and cross-tenant isolation evidence. A tenant ID column alone is insufficient. |
 
 ## Phase order at a glance
