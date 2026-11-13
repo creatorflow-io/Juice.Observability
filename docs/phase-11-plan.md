@@ -126,6 +126,13 @@ As built in milestone 2 (13 November), after its review:
 - **R6, outbox delivery:** it is judged by how overdue its most overdue message is, not by busy slots. The framework's delivery has no
   slots the platform can read.
 - **Milestone 2 drill:** the status shows a store down within one sample (15 s) plus the store's timeout (10 s), not within 15 s.
+- **Milestone 2 drill, run 13 November on the working stack** (ClickHouse stopped three times, 20–60 s each):
+  - **Status:** degraded, with `clickhouse: down` and `/health/platform` 503, after 4 s and 19 s, depending on where the sample cycle stood.
+  - **Recovery:** `ok` 7–32 s after ClickHouse started.
+  - **Console:** the page, `/health/ready`, and the Overview's health, alerts and resources (PostgreSQL) answered 200 throughout, in under 10 ms.
+  - **Gap, for milestone 5:** trace search answers 500 after about 4 s while ClickHouse is down, not a clear "unavailable, try again".
+  - **The operator's tenant:** the detailed status needs the deployment's tenant claim. The test client `juice-platform-test` stamps
+    `local-test`, so erin through it gets 403 on the working stack, as designed. Through `juice-platform-cli` (the deployment's tenant) it answers.
 
 ## Milestones
 

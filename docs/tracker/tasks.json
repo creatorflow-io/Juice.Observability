@@ -28,7 +28,7 @@
     },
     "p11": {
       "status": "doing",
-      "note": "Plan revision 3 approved 2026-11-13: focus on the data path throughput (Collector, ClickHouse, PostgreSQL). M1 done, M2 built (drill owed); next M3 baseline steps."
+      "note": "Plan revision 3 approved 2026-11-13 (data-path throughput). M1 and M2 done; M3 baseline steps running."
     }
   },
   "tasks": [
@@ -149,8 +149,8 @@
       "kind": "task",
       "title": "M2 Heartbeats and /health/platform (R6-R7)",
       "ref": "docs/platform-metrics.md#the-platforms-status",
-      "status": "doing",
-      "note": "Built and reviewed 2026-11-13 (round 1, round 2, confirmation, two re-checks; last findings low and fixed). worker_heartbeats (every known worker per replica, DB time), status states ok/starting/handing_over/off/stale/stuck/unheld/gone, /health/platform (anonymous, 503 when degraded), /api/v1/platform/status (operators of this tenant). Tests 707 pass. Committed; the ClickHouse-stop drill waits for owner permission, then done."
+      "status": "done",
+      "note": "Done 2026-11-13 after review rounds 1, 2, confirmation and two re-checks. worker_heartbeats, status states, /health/platform, /api/v1/platform/status. Tests 707 pass. Drill on the working stack: ClickHouse stopped -> degraded within 4-19 s, ok 7-32 s after start; Console and PostgreSQL-backed Overview calls 200 throughout. Gap for M5: trace search 500 while ClickHouse is down."
     },
     {
       "doc_id": "p11-m3",
@@ -159,7 +159,7 @@
       "kind": "task",
       "title": "M3 Baseline steps 1x/3x/5x/10x, per component (R14)",
       "ref": "docs/scale-tests.md",
-      "status": "todo",
+      "status": "doing",
       "note": "Fresh scale stack (needs owner permission to stop the working stack). Collector in/out/refused and queue; ClickHouse insert rate, parts, CPU, query time by caller; PostgreSQL tx, connections, outbox age."
     },
     {
