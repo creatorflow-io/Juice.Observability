@@ -228,6 +228,8 @@ services:
       Telemetry__Otlp__Endpoint: https://otel-collector:4319
       Telemetry__Otlp__TokenFile: /secrets/platform-otlp-token
       Telemetry__Otlp__CaFile: /secrets/ca.crt
+      # The Collector's health check, for the platform's status (/health/platform, /api/v1/platform/status).
+      Telemetry__CollectorHealthUrl: http://otel-collector:13133/
       Platform__TenantKey: ${JUICE_PLATFORM_TENANT_ID}
       # Metadata and keys over the compose network; the issuer stays http://PUBLIC_HOST:8080/realms/juice (KC_HOSTNAME).
       Auth__Authority: http://keycloak:8080/realms/juice

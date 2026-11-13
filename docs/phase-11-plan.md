@@ -102,6 +102,20 @@ Two decisions above were built differently, for the reasons given, and are put t
 
 [Platform metrics](platform-metrics.md) describes both.
 
+As built in milestone 2 (13 November), after its review:
+- **R6, upgrades:** there is no `unknown` worker state. A worker whose 1.2.0 holder writes no row reads `starting` until a new
+  replica takes the lease over at its first pass, which is how the lease works.
+- **R6, the rule scheduler:** it counts its tick. Each evaluation has `Rules:EvaluationTimeout`, so busy slots are reported in the
+  metrics (`rules.busy`), not in the status.
+- **R6, the webhook dispatcher:** each batch is a pass.
+- **R6, a worker no live replica runs:** `gone` when a replica gone within the hour had it enabled, so a stopped worker replica is never
+  read as switched off.
+- **R6, the rows:** they are written every 5 s from each worker's in-process state, not at each pass start and end. A pass start
+  shows within 5 s.
+- **R6, outbox delivery:** it is judged by how overdue its most overdue message is, not by busy slots. The framework's delivery has no
+  slots the platform can read.
+- **Milestone 2 drill:** the status shows a store down within one sample (15 s) plus the store's timeout (10 s), not within 15 s.
+
 ## Milestones
 
 | # | Milestone | Delivers | Evidence |

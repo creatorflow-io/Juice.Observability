@@ -316,6 +316,7 @@ namespace Juice.Observability.Health
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             PlatformCaller.Set("health", stoppingToken);
+            WorkerPulse.Register("health", options.Value.Interval, stopping: stoppingToken);
             await using var lease = WorkerLease.For(scopes, "health", logger);
             using var timer = new PeriodicTimer(options.Value.Interval);
             do

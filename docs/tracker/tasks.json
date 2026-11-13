@@ -148,9 +148,9 @@
       "order": 3,
       "kind": "task",
       "title": "M2 Heartbeats and /health/platform (R6-R7)",
-      "ref": "",
-      "status": "todo",
-      "note": ""
+      "ref": "docs/platform-metrics.md#the-platforms-status",
+      "status": "doing",
+      "note": "Built and reviewed 2026-11-13 (round 1, round 2, confirmation, two re-checks; last findings low and fixed). worker_heartbeats (every known worker per replica, DB time), status states ok/starting/handing_over/off/stale/stuck/unheld/gone, /health/platform (anonymous, 503 when degraded), /api/v1/platform/status (operators of this tenant). Tests 707 pass. Committed; the ClickHouse-stop drill waits for owner permission, then done."
     },
     {
       "doc_id": "p11-m3",
@@ -204,6 +204,7 @@
     "Phase 10 M3: 1x holds every target; first limit at 3x is SLO counting under ClickHouse contention; ClickHouse is the CPU (2.65 vCPU at 1x); disk ~1 TB at full retention at 1x, ~3 TB at 3x.",
     "Phase 11 (planned 2026-11-13): platform self-observability, Overview platform panel and capacity estimate, ClickHouse workload isolation; Phase 10 M4-M5 wait for it.",
     "Roadmap trigger table: new row for a ClickHouse replica or sharding (2026-11-13); Phase 11 runs before Phase 10 M4-M5 by owner exception.",
-    "Phase 11 M1: platform self-metrics exported under reserved tenant juice-platform (Collector platform pipeline :4319, own token); ClickHouse user platform_monitor; docs/platform-metrics.md."
+    "Phase 11 M1: platform self-metrics exported under reserved tenant juice-platform (Collector platform pipeline :4319, own token); ClickHouse user platform_monitor; docs/platform-metrics.md.",
+    "Phase 11 M2: worker heartbeats in PostgreSQL; /health/platform (alerting probes, not liveness/readiness) and /api/v1/platform/status (operators)."
   ]
 }

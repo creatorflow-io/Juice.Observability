@@ -2854,6 +2854,78 @@ namespace Juice.Observability.Data.Migrations
                     b.ToTable("webhook_endpoints", (string)null);
                 });
 
+            modelBuilder.Entity("Juice.Observability.Data.WorkerHeartbeat", b =>
+                {
+                    b.Property<string>("Worker")
+                        .HasMaxLength(63)
+                        .HasColumnType("character varying(63)")
+                        .HasColumnName("worker");
+
+                    b.Property<string>("Replica")
+                        .HasMaxLength(253)
+                        .HasColumnType("character varying(253)")
+                        .HasColumnName("replica");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("boolean")
+                        .HasColumnName("enabled");
+
+                    b.Property<bool>("Held")
+                        .HasColumnType("boolean")
+                        .HasColumnName("held");
+
+                    b.Property<DateTimeOffset?>("HeldSince")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("held_since");
+
+                    b.Property<double>("IntervalSeconds")
+                        .HasColumnType("double precision")
+                        .HasColumnName("interval_seconds");
+
+                    b.Property<DateTimeOffset?>("LastEndedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_ended_at");
+
+                    b.Property<string>("LastOutcome")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("last_outcome");
+
+                    b.Property<bool>("Leased")
+                        .HasColumnType("boolean")
+                        .HasColumnName("leased");
+
+                    b.Property<DateTimeOffset?>("RegisteredAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("registered_at");
+
+                    b.Property<DateTimeOffset?>("ReplicaStartedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("replica_started_at");
+
+                    b.Property<DateTimeOffset?>("RunningSince")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("running_since");
+
+                    b.Property<DateTimeOffset>("SeenAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("seen_at");
+
+                    b.Property<string>("Version")
+                        .IsRequired()
+                        .HasMaxLength(63)
+                        .HasColumnType("character varying(63)")
+                        .HasColumnName("version");
+
+                    b.HasKey("Worker", "Replica")
+                        .HasName("pk_worker_heartbeats");
+
+                    b.HasIndex("SeenAt")
+                        .HasDatabaseName("ix_worker_heartbeats_seen_at");
+
+                    b.ToTable("worker_heartbeats", (string)null);
+                });
+
             modelBuilder.Entity("Juice.Messaging.Outbox.OutboxDelivery", b =>
                 {
                     b.HasOne("Juice.Messaging.Outbox.OutboxEvent", "OutboxEvent")

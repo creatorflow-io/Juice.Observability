@@ -27,6 +27,7 @@ namespace Juice.Observability.Webhooks
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             PlatformCaller.Set("notifications", stoppingToken);
+            WorkerPulse.Register("notifications", options.Value.Interval, stopping: stoppingToken);
             await using var lease = WorkerLease.For(scopes, "notifications", logger);
             using var timer = new PeriodicTimer(options.Value.Interval);
             do

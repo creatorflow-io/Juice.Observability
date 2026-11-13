@@ -37,6 +37,9 @@ namespace Juice.Observability.Api
     {
         /// <summary>Read inventory, health and alerts: any platform role.</summary>
         public const string Read = "platform.read";
+
+        /// <summary>Run the platform: operators and admins (the platform's own status, Phase 11 R7).</summary>
+        public const string Operate = "platform.operate";
     }
 
     public static class HostingExtensions
@@ -60,7 +63,8 @@ namespace Juice.Observability.Api
                 });
             services.AddAuthorizationBuilder()
                 .SetFallbackPolicy(new Microsoft.AspNetCore.Authorization.AuthorizationPolicyBuilder().RequireAuthenticatedUser().Build())
-                .AddPolicy(Policies.Read, p => p.RequireRole(Roles.Viewer, Roles.Operator, Roles.Admin));
+                .AddPolicy(Policies.Read, p => p.RequireRole(Roles.Viewer, Roles.Operator, Roles.Admin))
+                .AddPolicy(Policies.Operate, p => p.RequireRole(Roles.Operator, Roles.Admin));
             return services;
         }
 

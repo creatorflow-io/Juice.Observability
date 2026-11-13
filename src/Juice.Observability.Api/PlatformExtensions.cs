@@ -62,6 +62,10 @@ namespace Juice.Observability.Api
             services.AddHealthChecks().AddCheck<DatabaseHealthCheck>("database", tags: ["ready"]);
             // The platform's own metrics (Phase 11, docs/platform-metrics.md): on by default, exported when Telemetry:Otlp:Endpoint is set.
             services.AddPlatformTelemetry(configuration);
+            // The workers' heartbeats and the platform's status (Phase 11 R6, R7): /health/platform and /api/v1/platform/status.
+            services.AddSingleton<HeartbeatWriter>();
+            services.AddHostedService(sp => sp.GetRequiredService<HeartbeatWriter>());
+            services.AddSingleton<PlatformStatusService>();
             return services;
         }
 
@@ -110,11 +114,15 @@ namespace Juice.Observability.Api
             public ValueTask<IReadOnlyCollection<PublishRoute>> ResolveAsync(PolicyResolveContext context) => ValueTask.FromResult(Routes);
         }
 
-        /// <summary><c>/health/live</c>, <c>/health/ready</c> (anonymous) and the platform API under <c>/api/v1</c>.</summary>
+        /// <summary>
+        /// <c>/health/live</c>, <c>/health/ready</c> and <c>/health/platform</c> (anonymous), the platform API under <c>/api/v1</c>, and the platform's
+        /// own status at <c>/api/v1/platform/status</c> (operators).
+        /// </summary>
         public static IEndpointRouteBuilder MapJuiceObservability(this IEndpointRouteBuilder app)
         {
             app.MapHealthChecks("/health/live", new() { Predicate = _ => false }).AllowAnonymous();
             app.MapHealthChecks("/health/ready", new() { Predicate = check => check.Tags.Contains("ready") }).AllowAnonymous();
+            app.MapPlatformStatus();
             app.MapInventoryEndpoints();
             // Answers only on the agent listener, and only when agents are enabled (Agents:Enabled).
             app.MapAgentApi();

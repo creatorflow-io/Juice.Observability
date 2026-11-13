@@ -312,15 +312,21 @@ namespace Juice.Observability.Webhooks
         {
             PlatformCaller.Set("webhooks", stoppingToken);
             // Every replica dispatches (deliveries are claimed one by one), so there is no lease to report.
-            WorkerPulse.Unleased("webhooks");
+            WorkerPulse.Register("webhooks", options.Value.Interval, leased: false, stopping: stoppingToken);
             using var timer = new PeriodicTimer(options.Value.Interval);
             do
             {
                 try
                 {
-                    using var pass = WorkerPulse.Begin("webhooks", stoppingToken);
-                    while (await DispatchOnceAsync(stoppingToken) == options.Value.BatchSize) { }
-                    pass.Succeeded();
+                    // A pass per batch: under a sustained backlog the loop runs on, and each batch, not the whole run, is judged against the threshold.
+                    int sent;
+                    do
+                    {
+                        using var pass = WorkerPulse.Begin("webhooks", stoppingToken);
+                        sent = await DispatchOnceAsync(stoppingToken);
+                        pass.Succeeded();
+                    }
+                    while (sent == options.Value.BatchSize);
                 }
                 catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
                 {

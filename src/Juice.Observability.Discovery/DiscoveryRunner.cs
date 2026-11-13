@@ -158,6 +158,7 @@ namespace Juice.Observability.Discovery
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             PlatformCaller.Set("discovery", stoppingToken);
+            WorkerPulse.Register("discovery", options.Value.Interval, stopping: stoppingToken);
             await using var lease = WorkerLease.For(scopes, "discovery", logger);
             using var timer = new PeriodicTimer(options.Value.Interval);
             do

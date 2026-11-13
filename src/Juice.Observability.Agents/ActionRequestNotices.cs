@@ -85,6 +85,7 @@ namespace Juice.Observability.Agents
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             PlatformCaller.Set("action-requests", stoppingToken);
+            WorkerPulse.Register("action-requests", options.Value.SweepInterval, stopping: stoppingToken);
             await using var lease = WorkerLease.For(scopes, "action-requests", logger);
             using var timer = new PeriodicTimer(options.Value.SweepInterval);
             do

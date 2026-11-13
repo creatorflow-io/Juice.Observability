@@ -25,6 +25,12 @@ namespace Juice.Observability.Api
         public OtlpOptions Otlp { get; set; } = new();
 
         /// <summary>
+        /// The Collector's health check (its <c>health_check</c> extension, such as <c>http://otel-collector:13133/</c>), which the platform sampler
+        /// asks every 15 s for the platform's status (Phase 11 R7). Unset: the Collector isn't checked.
+        /// </summary>
+        public string? CollectorHealthUrl { get; set; }
+
+        /// <summary>
         /// Where the metrics go: the Collector's platform pipeline (<c>otlp/platform</c>), which stamps them with the reserved tenant
         /// <c>juice-platform</c>, so they never enter the tenant's own data.
         /// </summary>
@@ -133,7 +139,8 @@ namespace Juice.Observability.Api
             catch (InvalidOperationException ex)
             {
                 // A value that doesn't convert (Telemetry:ExportInterval=15s, Telemetry:Enabled=yes): no export, the platform still starts.
-                options = new TelemetryOptions { Enabled = false };
+                // The Collector's health check is a plain string, kept so the platform's status still checks it.
+                options = new TelemetryOptions { Enabled = false, CollectorHealthUrl = configuration[$"{TelemetryOptions.Section}:CollectorHealthUrl"] };
                 unreadable = $"not exported: the Telemetry settings can't be read ({ex.InnerException?.Message ?? ex.Message})";
             }
             services.AddSingleton(Microsoft.Extensions.Options.Options.Create(options));

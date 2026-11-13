@@ -43,6 +43,7 @@ namespace Juice.Observability.Data
         public DbSet<WebhookDelivery> WebhookDeliveries => Set<WebhookDelivery>();
         public DbSet<WebhookAttempt> WebhookAttempts => Set<WebhookAttempt>();
         public DbSet<LoadRun> LoadRuns => Set<LoadRun>();
+        public DbSet<WorkerHeartbeat> WorkerHeartbeats => Set<WorkerHeartbeat>();
         public DbSet<ChangeEvent> ChangeEvents => Set<ChangeEvent>();
         public DbSet<Silence> Silences => Set<Silence>();
         public DbSet<EscalationPolicy> EscalationPolicies => Set<EscalationPolicy>();
@@ -198,6 +199,7 @@ namespace Juice.Observability.Data
 
             ConfigureAlerts(model);
             ConfigureLoadRuns(model);
+            ConfigureHeartbeats(model);
             ConfigureChanges(model);
             ConfigureWebhooks(model);
             ConfigureNotifications(model);
@@ -512,6 +514,20 @@ namespace Juice.Observability.Data
                 e.HasIndex(x => new { x.TenantId, x.OccurredAt });
                 e.HasIndex(x => new { x.TenantId, x.ServiceId, x.OccurredAt });
                 e.HasIndex(x => new { x.TenantId, x.Source, x.ExternalKey }).IsUnique().HasFilter("external_key IS NOT NULL");
+            });
+        }
+
+        private static void ConfigureHeartbeats(ModelBuilder model)
+        {
+            model.Entity<WorkerHeartbeat>(e =>
+            {
+                e.ToTable("worker_heartbeats");
+                e.HasKey(x => new { x.Worker, x.Replica });
+                e.Property(x => x.Worker).HasMaxLength(63);
+                e.Property(x => x.Replica).HasMaxLength(253);
+                e.Property(x => x.Version).HasMaxLength(63);
+                e.Property(x => x.LastOutcome).HasMaxLength(20);
+                e.HasIndex(x => x.SeenAt);
             });
         }
 

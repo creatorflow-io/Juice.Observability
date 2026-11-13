@@ -16,3 +16,39 @@ namespace Juice.Observability.Data
         public required string StartedBy { get; init; }
     }
 }
+
+namespace Juice.Observability.Data
+{
+    /// <summary>
+    /// One worker in one replica, as that replica last reported it (Phase 11 R6): written every few seconds by the replica's heartbeat writer, so
+    /// the platform's status reads PostgreSQL, not ClickHouse. Not a tenant's: the platform's own. Every replica reports every worker the platform
+    /// has, enabled or not. Times are the database's (the writer turns each replica's monotonic ages into them), so replicas' clocks don't matter.
+    /// A replica not seen for an hour is pruned.
+    /// </summary>
+    public sealed class WorkerHeartbeat
+    {
+        public required string Worker { get; init; }
+        /// <summary>The replica: its host name (the metrics' <c>service.instance.id</c>).</summary>
+        public required string Replica { get; init; }
+        public required string Version { get; set; }
+        /// <summary>The worker is enabled in this replica (<c>*:Enabled</c>).</summary>
+        public bool Enabled { get; set; }
+        /// <summary>Runs under a lease (one replica at a time); false for a worker that runs in every replica.</summary>
+        public bool Leased { get; set; }
+        /// <summary>This replica holds the worker's lease.</summary>
+        public bool Held { get; set; }
+        /// <summary>When this replica took the lease it holds: the latest taker is the holder, should a replica that lost it not know yet.</summary>
+        public DateTimeOffset? HeldSince { get; set; }
+        public double IntervalSeconds { get; set; }
+        /// <summary>When the pass in progress started; null between passes.</summary>
+        public DateTimeOffset? RunningSince { get; set; }
+        public DateTimeOffset? LastEndedAt { get; set; }
+        public string? LastOutcome { get; set; }
+        /// <summary>When the worker was registered in this replica (its loop started); null while it isn't enabled.</summary>
+        public DateTimeOffset? RegisteredAt { get; set; }
+        /// <summary>When this replica's process started: a replica that started after another was last seen replaced it (a redeploy).</summary>
+        public DateTimeOffset? ReplicaStartedAt { get; set; }
+        /// <summary>When this replica last wrote the row.</summary>
+        public DateTimeOffset SeenAt { get; set; }
+    }
+}

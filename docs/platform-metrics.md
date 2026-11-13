@@ -37,6 +37,7 @@ Settings, under `Telemetry` (all optional):
 | `Telemetry:Otlp:CaFile` | none | A CA certificate to trust for the receiver's TLS, besides the system's |
 | `Telemetry:ExportInterval` | `00:00:15` | A .NET time span (`hh:mm:ss`), at least 1 s; `15` alone means 15 days |
 | `ClickHouse:MonitorConnectionString` | none | The sampler's ClickHouse user, `platform_monitor`. Without it ClickHouse isn't sampled |
+| `Telemetry:CollectorHealthUrl` | none | The Collector's health check, such as `http://otel-collector:13133/`. Without it the Collector isn't checked |
 
 **Configuration problems stop the export, never the platform.** Nothing is exported, and the startup log says why
 (`Platform metrics: ...`), when:
@@ -169,6 +170,7 @@ Every 15 s, every replica samples the platform database and ClickHouse. Pages an
 | `juice.observability.webhooks.backlog` | gauge | state (`pending`, `retrying`) | Pending growing: dispatch is behind |
 | `juice.observability.webhooks.oldest_age` | gauge, s | – | Past a minute: dispatch is behind |
 | `juice.observability.clickhouse.up` | gauge | – | 0: ClickHouse didn't answer the sampler |
+| `juice.observability.collector.up` | gauge | – | 0: the Collector's health check (`Telemetry:CollectorHealthUrl`) didn't answer; absent when it isn't checked |
 | `juice.observability.clickhouse.cpu` | gauge, cores | – | Near the cores it has: ClickHouse is the limit (Phase 10 scale tests) |
 | `juice.observability.clickhouse.memory` | gauge, By | – | Near its memory |
 | `juice.observability.clickhouse.running_queries` | gauge | user | Many at once for one user |
@@ -196,6 +198,71 @@ Every 15 s, every replica samples the platform database and ClickHouse. Pages an
   - **Missed windows:** a window that fails to read is read again next time, up to 5 minutes back.
   - **The count** is cumulative, so it reads right at any export interval.
   - **The p95** is the last window's (15 s, longer after a missed sample). For merged `other` groups it's the highest of their p95s, not a p95.
+
+## The platform's status
+
+Milestone 2 (plan R6, R7) builds the status from PostgreSQL, so it never waits on ClickHouse.
+
+**Heartbeats.** Every 5 s each replica writes, in one statement, a row for every worker the platform has to `worker_heartbeats`. The
+workers are action-requests, discovery, health, notifications, rules, sampler, slos and webhooks. A row says:
+- whether the worker is enabled in that replica (`*:Enabled`), and its interval;
+- whether it runs under a lease, holds it, and since when;
+- when the pass in progress started;
+- when the last pass ended, and its outcome.
+
+**Times:**
+- **Whose clock:** every time in a row is the database's. The replica sends ages on its own monotonic clock, and the database subtracts
+  them from its `now()`, so the replicas' clocks needn't agree.
+- **Pruning:** rows of a replica not seen for an hour are pruned.
+- **Workers without a single pass:**
+  - The rule scheduler counts its 5 s tick. Its evaluations each have `Rules:EvaluationTimeout` (20 s), so a wedged one frees its slot.
+  - The webhook dispatcher counts each batch as a pass, so a long backlog isn't read as a stuck pass.
+- **A stop:** once the host starts stopping, the replica writes no more, so its last rows leave its workers enabled. A worker no other
+  live replica runs then reads as `gone`, whatever order the host stops its services in. A worker whose loop dies without the host
+  stopping stays enabled in a live row, and goes stale.
+- **A fresh replica:** its first write waits a second for its workers to register. Until that write, for at most 30 s, its own missing
+  row reads `starting`, not down, and so does a worker only a replica it may have replaced had enabled. A writer that hasn't
+  succeeded 30 s after it started (after the host's own startup, migrations included) is `down`.
+
+**How a worker is judged,** across the replicas that wrote within the last 30 s and have it enabled. Its threshold is 3 intervals,
+never under 60 s.
+
+| State | When | Degrades |
+|---|---|---|
+| `ok` | the holder (the replica that took the lease last) or, without a lease, every replica, passed within the threshold, or is in a pass shorter than it | no |
+| `starting` | no pass yet, and every replica with it enabled registered it (a holder: took the lease) within the threshold. This includes a rolling upgrade from 1.2.0, whose holder writes no row, until a new replica takes the lease over at its first pass | no |
+| `handing_over` | nobody holds the lease, but some replica, live or gone within the hour, passed within the threshold: a takeover, such as after a holder crashed and before its standby takes over | no |
+| `off` | every live replica has it disabled | no |
+| `stale` | the holder's last pass ended longer ago; or, without a lease, any replica's did | yes |
+| `stuck` | a pass has run longer than the threshold | yes |
+| `unheld` | nobody has held the lease for longer than the threshold | yes |
+| `gone` | a replica gone within the hour had it enabled, and no live replica has: its replicas stopped. Not after a redeploy that switched it off: when a live replica with it disabled started after the old ones did, within 10 minutes either side of when they were last seen (a stop-then-start or a rolling redeploy, of every replica or only the worker replicas), it is `off`. The cost: a worker replica that crashes within 10 minutes of another replica starting reads `off` | yes |
+
+**Dependencies and backlogs:**
+- **The replica's last sample, read on every request:**
+  - **Dependencies:** PostgreSQL, ClickHouse and the Collector, each `up`, `down`, `not_configured` or `unknown`.
+  - **When the status shows a store down:** within one sample of it going down, at most 15 s plus the store's 10 s timeout.
+  - **`unknown`:** the sample is older than a minute. That alone doesn't degrade, since the sampler's own heartbeat says whether it
+    stopped.
+- **`heartbeats`:** `down` when the replica answering has written but has no live row of its own. Its heartbeat writer is failing, so nobody's status can
+  be trusted.
+- **Backlogs** are `behind` when past their line:
+  - **Outbox:** the most overdue message, 60 s. A new message counts from when it was written (a deferred one from when it falls due), a
+    failed one from when its retry fell due, and a retry in progress from when it started.
+  - **Webhooks:** the most overdue pending delivery, 60 s. A grouped delivery waits for its window on purpose.
+  - **Discovery:** its watermark, at `Discovery:Lag` plus `Discovery:Interval` plus 60 s. It is `off` when discovery runs nowhere.
+
+**The status** is `degraded` when any worker is stale, stuck, unheld or gone, any dependency is down, or any backlog is behind;
+otherwise `ok`. The heartbeats are read at most every 15 s, so many requests cost one read.
+
+**The endpoints** (both `Cache-Control: no-store`):
+- **`/health/platform`**, anonymous: `{"status":"ok"}` with 200, or `{"status":"degraded"}` with 503, and nothing else. It's for alerting
+  probes (an uptime checker, a load balancer's monitor), not a Kubernetes liveness or readiness probe. Every replica gives the same answer,
+  so that would restart or remove them all at once. `/health/ready` stays the readiness probe (PostgreSQL only).
+- **`/api/v1/platform/status`:** the whole report. That's each worker (state, holder, threshold, last pass, every live replica's row),
+  each dependency, each backlog, and each replica with its version.
+  - **Who can read it:** operators and admins of this deployment, so their tenant claim must name this deployment's tenant. One IdP may
+    serve several deployments.
 
 ## Volume
 

@@ -238,14 +238,22 @@ namespace Juice.Observability.Tests
         {
             var worker = $"unleased-{_run}";
             var (provider, exported) = Provider();
+            using var stopping = new CancellationTokenSource();
             using (provider)
             {
-                WorkerPulse.Unleased(worker);
-                using (var pass = WorkerPulse.Begin(worker))
+                WorkerPulse.Register(worker, TimeSpan.FromSeconds(2), leased: false, stopping: stopping.Token);
+                try
                 {
-                    pass.Succeeded();
+                    using (var pass = WorkerPulse.Begin(worker))
+                    {
+                        pass.Succeeded();
+                    }
+                    exported = Flush(provider, exported);
                 }
-                exported = Flush(provider, exported);
+                finally
+                {
+                    stopping.Cancel();
+                }
             }
             bool Mine(MetricPoint p) => Equals(Tags(p)["worker"], worker);
             Assert.Single(Points(exported, "juice.observability.worker.since_last_pass"), p => Mine(p.Point));

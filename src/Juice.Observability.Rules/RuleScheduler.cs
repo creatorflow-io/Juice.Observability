@@ -72,6 +72,7 @@ namespace Juice.Observability.Rules
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             PlatformCaller.Set("rules", stoppingToken);
+            WorkerPulse.Register("rules", options.Value.Tick, stopping: stoppingToken);
             s_live = this;
             await using var lease = WorkerLease.For(scopes, "rules", logger);
             var held = false;
@@ -103,6 +104,8 @@ namespace Juice.Observability.Rules
                     if (held)
                     {
                         await TickAsync(stoppingToken);
+                        // No pass to time (each rule is its own evaluation): the tick tells the platform's status the scheduler is alive.
+                        WorkerPulse.Tick("rules");
                     }
                 }
                 catch (Exception ex) when (!stoppingToken.IsCancellationRequested)

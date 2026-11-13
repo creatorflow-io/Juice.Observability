@@ -22,6 +22,7 @@ here=$(pwd -W 2>/dev/null || pwd)
 export Telemetry__Otlp__Endpoint=https://127.0.0.1:4319
 export Telemetry__Otlp__TokenFile="$here/secrets/platform-otlp-token"
 export Telemetry__Otlp__CaFile="$here/secrets/tls/ca.crt"
+export Telemetry__CollectorHealthUrl=http://127.0.0.1:13133/
 export ClickHouse__MonitorConnectionString="Host=127.0.0.1;Port=8123;Username=platform_monitor;Password=${CLICKHOUSE_MONITOR_PASSWORD:-}"
 
 exec dotnet run --project ../../src/Juice.Observability.Host --no-launch-profile -- "$@"

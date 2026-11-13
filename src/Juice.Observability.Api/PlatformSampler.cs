@@ -27,7 +27,7 @@ namespace Juice.Observability.Api
     /// replica (or the max across them), never summed across them.</para>
     /// </summary>
     public sealed class PlatformSampler(IServiceScopeFactory scopes, IOptions<ClickHouseOptions> clickHouse, IOptions<PlatformOptions> platform,
-        TimeProvider clock, ILogger<PlatformSampler> logger) : BackgroundService
+        TimeProvider clock, ILogger<PlatformSampler> logger, IOptions<TelemetryOptions>? telemetry = null) : BackgroundService
     {
         public static readonly TimeSpan Interval = TimeSpan.FromSeconds(15);
         /// <summary>How long each store has to answer one sample.</summary>
@@ -58,13 +58,15 @@ namespace Juice.Observability.Api
                 s => s.Postgres is { Up: true, WatermarkLag: { } lag } ? [new(lag)] : []);
             Gauge("juice.observability.outbox.backlog", "{message}", "Outbox messages still to deliver, by state (pending: not yet tried or in progress; retrying: failed, a retry due)",
                 s => s.Postgres is { Up: true } p ? [new(p.OutboxPending, Tag("state", "pending")), new(p.OutboxRetrying, Tag("state", "retrying"))] : []);
-            Gauge("juice.observability.outbox.oldest_age", "s", "Age of the oldest outbox message still to deliver; 0 when none",
+            Gauge("juice.observability.outbox.oldest_age", "s", "How overdue the most overdue outbox message is (new: since written; failed: since its retry fell due); 0 when none",
                 s => s.Postgres is { Up: true } p ? [new(p.OutboxOldest ?? 0)] : []);
             Gauge("juice.observability.webhooks.backlog", "{delivery}", "Webhook deliveries not yet done, by state (pending, retrying)",
                 s => s.Postgres is { Up: true } p ? [new(p.WebhookPending, Tag("state", "pending")), new(p.WebhookRetrying, Tag("state", "retrying"))] : []);
-            Gauge("juice.observability.webhooks.oldest_age", "s", "Age of the oldest pending (not retrying) webhook delivery; 0 when none",
+            Gauge("juice.observability.webhooks.oldest_age", "s", "How overdue the most overdue pending webhook delivery is (since it fell due: a grouped one after its window); 0 when none",
                 s => s.Postgres is { Up: true } p ? [new(p.WebhookOldest ?? 0)] : []);
 
+            Gauge("juice.observability.collector.up", "{up}", "1 when the Collector's health check answered the last sample, else 0 (absent when it isn't checked)",
+                s => s.Collector is { } c ? [new(c.Up ? 1 : 0)] : []);
             Gauge("juice.observability.clickhouse.up", "{up}", "1 when ClickHouse answered the last sample, else 0 (absent when it isn't sampled)",
                 s => s.ClickHouse is { } c ? [new(c.Up ? 1 : 0)] : []);
             Gauge("juice.observability.clickhouse.cpu", "{cpu}", "CPU ClickHouse's query and background threads used since the previous sample, in cores (a lower bound: threads without profile events aren't counted)",
@@ -103,8 +105,11 @@ namespace Juice.Observability.Api
             IReadOnlyList<FinishedQueries> Finished, IReadOnlyList<(string Name, double Free, double Total)> Disks,
             IReadOnlyList<(string Name, double Bytes, double Rows)> Tables);
 
-        /// <summary>One sample: <see cref="ClickHouse"/> is null when ClickHouse isn't sampled.</summary>
-        public sealed record Sample(DateTimeOffset At, PostgresSample Postgres, ClickHouseSample? ClickHouse);
+        /// <summary>The Collector's health check: answered with a success status within the timeout.</summary>
+        public sealed record CollectorSample(bool Up, double Duration);
+
+        /// <summary>One sample: <see cref="ClickHouse"/> is null when ClickHouse isn't sampled, <see cref="Collector"/> when the Collector isn't checked.</summary>
+        public sealed record Sample(DateTimeOffset At, PostgresSample Postgres, ClickHouseSample? ClickHouse, CollectorSample? Collector = null);
 
         /// <summary>The last sample taken, or null before the first.</summary>
         public Sample? Latest { get; private set; }
@@ -127,7 +132,7 @@ namespace Juice.Observability.Api
         {
             s_live = this;
             PlatformCaller.Set("sampler", stoppingToken);
-            WorkerPulse.Unleased("sampler");
+            WorkerPulse.Register("sampler", Interval, leased: false, stopping: stoppingToken);
             using var timer = new PeriodicTimer(Interval, _clock);
             try
             {
@@ -137,8 +142,8 @@ namespace Juice.Observability.Api
                     {
                         using var pass = WorkerPulse.Begin("sampler", stoppingToken);
                         Latest = await SampleOnceAsync(stoppingToken);
-                        var answered = (Latest.Postgres.Up ? 1 : 0) + (Latest.ClickHouse is { Up: true } ? 1 : 0);
-                        var sampled = 1 + (Latest.ClickHouse is null ? 0 : 1);
+                        var answered = (Latest.Postgres.Up ? 1 : 0) + (Latest.ClickHouse is { Up: true } ? 1 : 0) + (Latest.Collector is { Up: true } ? 1 : 0);
+                        var sampled = 1 + (Latest.ClickHouse is null ? 0 : 1) + (Latest.Collector is null ? 0 : 1);
                         if (answered == sampled) pass.Succeeded(); else if (answered > 0) pass.Partial();   // none answered: a failure
                     }
                     catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
@@ -160,7 +165,25 @@ namespace Juice.Observability.Api
             var at = _clock.GetUtcNow();
             var postgres = WithinAsync(SamplePostgresAsync, cancellationToken);
             var clickHouseSample = string.IsNullOrWhiteSpace(clickHouse.Value.MonitorConnectionString) ? null : WithinAsync(SampleClickHouseAsync, cancellationToken);
-            return new Sample(at, await postgres, clickHouseSample is null ? null : await clickHouseSample);
+            var collector = telemetry?.Value.CollectorHealthUrl is { Length: > 0 } url ? WithinAsync(ct => SampleCollectorAsync(url, ct), cancellationToken) : null;
+            return new Sample(at, await postgres, clickHouseSample is null ? null : await clickHouseSample, collector is null ? null : await collector);
+        }
+
+        private static readonly HttpClient Http = new() { Timeout = Timeout };
+
+        private async Task<CollectorSample> SampleCollectorAsync(string url, CancellationToken cancellationToken)
+        {
+            var started = Stopwatch.GetTimestamp();
+            try
+            {
+                using var response = await Http.GetAsync(url, cancellationToken);
+                return new CollectorSample(response.IsSuccessStatusCode, Stopwatch.GetElapsedTime(started).TotalSeconds);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !StoppingNow(cancellationToken))
+            {
+                logger.LogWarning(ex, "The Collector's health check didn't answer the sample");
+                return new CollectorSample(false, Stopwatch.GetElapsedTime(started).TotalSeconds);
+            }
         }
 
         private static async Task<T> WithinAsync<T>(Func<CancellationToken, Task<T>> sample, CancellationToken cancellationToken)
@@ -177,10 +200,15 @@ namespace Juice.Observability.Api
                 WHERE c.source = 'telemetry' AND t.key = @tenant))::float8,
               (SELECT count(*) FROM outbox_deliveries WHERE state IN (0, 1)),
               (SELECT count(*) FROM outbox_deliveries WHERE state = 3 AND next_attempt_on IS NOT NULL),
-              extract(epoch FROM now() - (SELECT min(creation_time) FROM outbox_deliveries WHERE state IN (0, 1) OR (state = 3 AND next_attempt_on IS NOT NULL)))::float8,
+              -- Overdue: a new message from when it was written (a deferred one from when it falls due), a failed one from when its retry fell due,
+              -- a retry in progress from when it started; one waiting for a later retry or its deferred time isn't.
+              extract(epoch FROM now() - (SELECT min(CASE WHEN state = 3 THEN next_attempt_on WHEN state = 1 AND retry_count > 0 THEN processed_on
+                ELSE coalesce(next_attempt_on, creation_time) END) FROM outbox_deliveries
+                WHERE (state = 0 AND (next_attempt_on IS NULL OR next_attempt_on <= now())) OR state = 1 OR (state = 3 AND next_attempt_on <= now())))::float8,
               (SELECT count(*) FROM webhook_deliveries WHERE status = 'Pending'),
               (SELECT count(*) FROM webhook_deliveries WHERE status = 'Retrying'),
-              extract(epoch FROM now() - (SELECT min(created_at) FROM webhook_deliveries WHERE status = 'Pending'))::float8
+              -- Overdue: a pending delivery from when it fell due (a grouped one waits for its window on purpose).
+              extract(epoch FROM now() - (SELECT min(next_attempt_at) FROM webhook_deliveries WHERE status = 'Pending' AND next_attempt_at <= now()))::float8
             """;
 
         private async Task<PostgresSample> SamplePostgresAsync(CancellationToken cancellationToken)

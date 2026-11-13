@@ -37,6 +37,19 @@ enter telemetry.
 
 ## Is the platform itself working?
 
+First `/health/platform` (`ok` or `degraded`), then, as an operator, `GET /api/v1/platform/status`. It names the worker, dependency or
+backlog at fault ([the platform's status](platform-metrics.md#the-platforms-status)):
+- **`stuck`:** a pass has run past its threshold, most likely in a ClickHouse query (see `clickhouse.query.duration` for that caller).
+- **`stale`:** the holder stopped passing; its log says why.
+- **`unheld`:** no replica holds the worker's lease. Is any replica running with it enabled?
+- **`gone`:** the replicas that ran the worker stopped (in a layout with worker replicas apart from API replicas, the worker replica is down).
+  If you stopped that worker on purpose and the status still says `gone`, the old replica's rows clear within the hour, or delete them now:
+  `DELETE FROM worker_heartbeats WHERE replica = '<the old replica>'`.
+- **A dependency `down`:** that store didn't answer the last sample; `heartbeats` down means this replica's own heartbeat writer is failing.
+- **A backlog `behind`:** the outbox (alert notifications), webhook deliveries, or discovery is late.
+
+Point an uptime checker at `/health/platform`, not Kubernetes' liveness or readiness probes: every replica answers the same.
+
 The platform exports its own metrics to ClickHouse under the reserved tenant `juice-platform` ([platform metrics](platform-metrics.md)),
 every 15 s. In ClickHouse (as `admin`), the latest value of each:
 

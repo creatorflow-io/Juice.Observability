@@ -216,6 +216,12 @@ if docker compose ps --status running --services 2>/dev/null | grep -qx platform
   check "discovery doesn't list the platform or the Collector as the tenant's services" \
     "$(docker compose exec -T postgres psql -U juice -d juice_observability -tAc "SELECT count(*) FROM services WHERE name IN ('juice-observability-platform', 'otelcol-contrib')" </dev/null)" "0"
 fi
+if docker compose ps --status running --services 2>/dev/null | grep -qx platform-api; then
+  check "/health/platform answers the status alone, ok" "$(curl -s -m 30 http://localhost:5180/health/platform)" '{"status":"ok"}'
+  check "/api/v1/platform/status needs a sign-in" "$(curl -s -m 30 -o /dev/null -w '%{http_code}' http://localhost:5180/api/v1/platform/status)" "401"
+  check "every worker is enabled on a live replica" \
+    "$(docker compose exec -T postgres psql -U juice -d juice_observability -tAc "SELECT string_agg(w, ' ' ORDER BY w) FROM unnest(ARRAY['action-requests','discovery','health','notifications','rules','sampler','slos','webhooks']) w WHERE NOT EXISTS (SELECT 1 FROM worker_heartbeats h WHERE h.worker = w AND h.enabled AND h.seen_at > now() - interval '30 seconds')" </dev/null)" ""
+fi
 check "grafana_reader sees none of the platform's telemetry" "$(gr "SELECT count() FROM otel.otel_metrics_gauge WHERE $platform AND $recent")" "0"
 
 echo "Main Collector (nothing is stored: the requests have no token)"

@@ -100,6 +100,7 @@ namespace Juice.Observability.Slos
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             PlatformCaller.Set(CloseSloBurnAlertsHandler.CounterLease, stoppingToken);
+            WorkerPulse.Register(CloseSloBurnAlertsHandler.CounterLease, options.Value.Interval, stopping: stoppingToken);
             await using var lease = WorkerLease.For(scopes, CloseSloBurnAlertsHandler.CounterLease, logger);
             using var timer = new PeriodicTimer(options.Value.Interval);
             var generation = 0;
