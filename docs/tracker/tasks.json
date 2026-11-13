@@ -4,7 +4,7 @@
     "tracker": "https://claude.ai/artifact/PPUBLFLKaTKePJDu6fKbrP",
     "architecture": "https://claude.ai/artifact/5GuMPfEX4FojS3oxoTTxGC"
   },
-  "asOf": "2026-11-12",
+  "asOf": "2026-11-13",
   "groupStatus": {
     "p5": {
       "status": "done",
@@ -28,7 +28,7 @@
     },
     "p11": {
       "status": "doing",
-      "note": "Plan approved 2026-11-13; milestone 1 (self-metrics) started."
+      "note": "Plan revision 3 approved 2026-11-13: focus on the data path throughput (Collector, ClickHouse, PostgreSQL). M1 done, M2 built (drill owed); next M3 baseline steps."
     }
   },
   "tasks": [
@@ -130,7 +130,7 @@
       "title": "Phase 11 plan: platform self-observability, capacity and performance",
       "ref": "docs/phase-11-plan.md",
       "status": "done",
-      "note": "Approved by the owner 2026-11-13 (revision 2, owner-edited). Milestones 1-6."
+      "note": "Approved 2026-11-13 (revision 2, owner-edited). Revision 3 the same day: rest of the phase toward Collector/ClickHouse/PostgreSQL throughput; component ceilings (R19), ingest tuning (R12a), PostgreSQL (R12b); Overview moved after the fixes. Milestones 1-7."
     },
     {
       "doc_id": "p11-m1",
@@ -157,37 +157,47 @@
       "group": "p11",
       "order": 4,
       "kind": "task",
-      "title": "M3 Overview platform panel and capacity view (R8-R9)",
-      "ref": "",
+      "title": "M3 Baseline steps 1x/3x/5x/10x, per component (R14)",
+      "ref": "docs/scale-tests.md",
       "status": "todo",
-      "note": ""
+      "note": "Fresh scale stack (needs owner permission to stop the working stack). Collector in/out/refused and queue; ClickHouse insert rate, parts, CPU, query time by caller; PostgreSQL tx, connections, outbox age."
     },
     {
       "doc_id": "p11-m4",
       "group": "p11",
       "order": 5,
       "kind": "task",
-      "title": "M4 Baseline steps 1x/3x/5x/10x (R14)",
+      "title": "M4 Component ceilings: ingest, ClickHouse queries, workers, PostgreSQL (R19)",
       "ref": "docs/scale-tests.md",
       "status": "todo",
-      "note": ""
+      "note": "Each component pushed on its own until a line is crossed; generator sent rate checked against its target."
     },
     {
       "doc_id": "p11-m5",
       "group": "p11",
       "order": 6,
       "kind": "task",
-      "title": "M5 ClickHouse isolation and query fixes (R11-R12)",
-      "ref": "",
+      "title": "M5 Fixes: ingest path, ClickHouse isolation, queries, PostgreSQL if needed (R11, R12, R12a, R12b)",
+      "ref": "docs/scale-tests.md",
       "status": "todo",
-      "note": ""
+      "note": "One change at a time, before and after; final rerun with held-out 4x/6x for the ±25 % check."
     },
     {
       "doc_id": "p11-m6",
       "group": "p11",
       "order": 7,
       "kind": "task",
-      "title": "M6 Sizing guide, gate, 1.3.0 (R18)",
+      "title": "M6 Overview platform panel and capacity view (R8-R9)",
+      "ref": "",
+      "status": "todo",
+      "note": "Built from the final rerun and the ceilings (not provisional)."
+    },
+    {
+      "doc_id": "p11-m7",
+      "group": "p11",
+      "order": 8,
+      "kind": "task",
+      "title": "M7 Sizing guide, gate, 1.3.0 (R18)",
       "ref": "docs/phase-11-acceptance.md",
       "status": "todo",
       "note": ""
@@ -205,6 +215,7 @@
     "Phase 11 (planned 2026-11-13): platform self-observability, Overview platform panel and capacity estimate, ClickHouse workload isolation; Phase 10 M4-M5 wait for it.",
     "Roadmap trigger table: new row for a ClickHouse replica or sharding (2026-11-13); Phase 11 runs before Phase 10 M4-M5 by owner exception.",
     "Phase 11 M1: platform self-metrics exported under reserved tenant juice-platform (Collector platform pipeline :4319, own token); ClickHouse user platform_monitor; docs/platform-metrics.md.",
-    "Phase 11 M2: worker heartbeats in PostgreSQL; /health/platform (alerting probes, not liveness/readiness) and /api/v1/platform/status (operators)."
+    "Phase 11 M2: worker heartbeats in PostgreSQL; /health/platform (alerting probes, not liveness/readiness) and /api/v1/platform/status (operators).",
+    "Phase 11 revision 3 (2026-11-13): focus on Collector/ClickHouse/PostgreSQL throughput; milestones now 1 self-metrics, 2 heartbeats, 3 baseline, 4 component ceilings, 5 fixes, 6 Overview, 7 guide/release."
   ]
 }

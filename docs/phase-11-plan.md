@@ -1,6 +1,8 @@
 # Phase 11 plan: platform self-observability, capacity and performance
 
 **Status:** approved by the owner 13 November (revision 2, revised after an independent review against the code, then edited by the owner).
+Revision 3, approved the same day after milestone 2, turns the rest of the phase toward the data path's throughput (the Collector,
+ClickHouse, PostgreSQL), adds component ceilings (R19), and moves the Overview after the fixes (see "The owner's answer on revision 3").
 - The owner answered four questions on revision 1 and Q1–Q3 on revision 2 (end of this file).
 - Decisions marked **Owner** are the owner's; the rest are mine, for review.
 - The owner split this out of Phase 10 on 13 November, to be done carefully, as a phase of its own: "this time is for optimizing the
@@ -10,12 +12,17 @@
 **Goal:** the platform shows how it is working and how close it is to its measured limits, its own limits move up with evidence, and an
 operator knows how to size and scale it.
 
+**Focus (revision 3):** the data path's throughput. Telemetry has to get in (Collector → ClickHouse inserts) before anything reads it,
+and the workers and searches are slow mainly when ClickHouse is busy. So the steps are reported per component, each component's own
+ceiling is measured apart from the others, and the fixes are chosen from those measurements.
+
 **Deliverables:**
-- the platform's own metrics exported, and the Collector's and ClickHouse's;
-- worker heartbeats and a platform health check;
-- platform status and a capacity view on the Console Overview;
-- ClickHouse workload isolation and measured query fixes;
+- the platform's own metrics exported, and the Collector's and ClickHouse's (done);
+- worker heartbeats and a platform health check (done);
+- the scale steps with each component's throughput, and each component's ceiling measured on its own;
+- ingest-path tuning, ClickHouse workload isolation and measured query fixes, PostgreSQL where it shows;
 - the scale steps rerun before and after;
+- platform status and a capacity view on the Console Overview, from the measured limits;
 - a sizing and scaling guide.
 
 **Gate:**
@@ -24,8 +31,9 @@ operator knows how to size and scale it.
    ClickHouse is slow or down.
 3. The capacity view's predicted limit is checked against steps held out from its calibration.
 4. The rerun steps show where the first limit moved and why.
-5. `docs/deployment.md` says how to size and scale each part.
-6. No new infrastructure without a trigger-table row and an ADR.
+5. Each component's ceiling (ingest, ClickHouse queries, workers, PostgreSQL) is measured on its own, with what limited it (R19).
+6. `docs/deployment.md` says how to size and scale each part.
+7. No new infrastructure without a trigger-table row and an ADR.
 
 ## Why: where Phase 10 left it
 
@@ -68,7 +76,7 @@ The cause couldn't be measured: the platform has 21 instruments of its own, but 
 | # | Decision | By |
 |---|---|---|
 | R8 | **Overview, "Platform" panel**, for operators.<ul><li>**Workers:** for each, state, last pass and utilisation (pass time against interval, or busy slots), and lag past its configured delay.</li><li>**Ingestion:** received, refused and dropped per signal, and each export queue against its bound.</li><li>**ClickHouse:** CPU, running queries, and query and insert latency p95 by caller.</li><li>**Disk:** used and free, the steady-state need at the configured retention, and the days until full.</li></ul> Each figure is green, amber or red against the scale steps' lines. Everything comes from the heartbeats and the 15 s server-side samples. | Mine |
-| R9 | **Capacity view: measured, labelled, not extrapolated.**<ul><li>**Current load:** a multiple of the §9 reference, per signal (spans, points, logs).</li><li>**Utilisation and knee:** each resource's utilisation (each worker, ClickHouse CPU, each Collector queue), each beside the knee where the calibration steps first crossed a line.</li><li>**Calibration file:** written by `steps.sh`. It names its host and its mix (rules, SLOs, services, search rate). Rules, SLOs and services also drive cost, so they're shown next to the load.</li><li>**Labels:** the view says "calibrated on <host>, <mix>". Without a calibration for the host it's running on, it shows utilisation only, and says so.</li><li>**Disk:** a figure of its own (days until full), not part of the headroom.</li><li>**Provisional:** until milestone 4. Then it is recalibrated after the final rerun.</li></ul> No prices (Phase 10 P6). | Mine |
+| R9 | **Capacity view: measured, labelled, not extrapolated.**<ul><li>**Current load:** a multiple of the §9 reference, per signal (spans, points, logs).</li><li>**Utilisation and knee:** each resource's utilisation (each worker, ClickHouse CPU, each Collector queue), each beside the knee where the calibration steps first crossed a line.</li><li>**Calibration file:** written by `steps.sh`. It names its host and its mix (rules, SLOs, services, search rate). Rules, SLOs and services also drive cost, so they're shown next to the load.</li><li>**Labels:** the view says "calibrated on <host>, <mix>". Without a calibration for the host it's running on, it shows utilisation only, and says so.</li><li>**Disk:** a figure of its own (days until full), not part of the headroom.</li><li>**From measurement (revision 3):** built after the fixes (milestone 6), from the final rerun and the ceilings, so it is never provisional.</li></ul> No prices (Phase 10 P6). | Mine |
 | R10 | **The aim** (owner, revision 1):<ul><li>1× meets every §9 target;</li><li>every line holds at 3×;</li><li>the next limit is named with its measured cause;</li><li>the capacity view's predicted knee is within ±25 % of the measured one.</li></ul> **How the ±25 % is checked:** calibration on 1×, 3×, 5× and 10×, then finer steps held out near the knee (for example 4× and 6×), on the reference host and mix. The check isn't a claim about other hardware. The 3× aim goes beyond Phase 10 P7 ("results above 1× only inform"). It's a Phase 11 aim, not a change to Phase 10. | Owner (aim; method, Q2) |
 
 ### Performance
@@ -76,6 +84,8 @@ The cause couldn't be measured: the platform has 21 instruments of its own, but 
 | # | Decision | By |
 |---|---|---|
 | R11 | **Workload isolation in ClickHouse, in three steps, each measured.**<ol><li>**Per-query settings** on the existing user, through the driver: a `log_comment` naming the caller, and tighter `max_execution_time` and `max_threads` for searches. The profile's three existing limits are already pinned with `MAX` constraints (`init-users.sh`). Any limit added here, such as `max_threads` or a rows-read limit, gets the same constraint, because `readonly = 2` lets a client raise an unpinned setting, Grafana included.</li><li>**ClickHouse workload scheduling** (`CREATE WORKLOAD`, with weights and priority, selected by the `workload` setting). This gives the workers a CPU share. `priority` alone only ranks queries running at the same time, and would starve searches under a steady worker load.</li><li>**Separate users** (`platform_worker`, `platform_search`), only if a per-user concurrency cap is needed. Each new user is added to the `all_tenants` row policy and to `verify.sh`: without a policy, `access.xml` makes a user silently read nothing. The code falls back to `ClickHouse:ConnectionString` when the new ones are unset. `init.sh` adds missing secrets to an existing `.env`, the compose access service passes them, and `deployment.md` gets the upgrade SQL.</li></ol> A refused or timed-out search shows in the Console as "busy, try again", and the harness counts it as failed. | Mine |
+| R12a | **Ingest-path tuning, chosen from the ceilings (R19), not guessed.** Candidates, to confirm or drop:<ul><li>**Collector:** the batch processor's size and timeout, the exporter's consumers and queue, `memory_limiter`; which of them bounds the received rate;</li><li>**ClickHouse inserts:** rows per insert, parts created per second and merge backlog ("too many parts"), `async_insert` against the Collector's batching, compression codecs and TTL merges on the exporter tables;</li><li>**ClickHouse tables:** `ORDER BY` and skip indexes on the exporter tables. The exporter owns their schema (`create_schema`), so a change there means creating the tables ourselves, an upgrade cost for 1.3.0, stated with its gain.</li></ul> | Mine |
+| R12b | **PostgreSQL, where it shows.** Its load (state, leases, heartbeats, outbox, notifications) is small at 1×. It gets fixes (indexes, pool sizes, statement batching) only if the steps or ceilings show it near a line: transactions, connections against the pool, lock waits, outbox age. | Mine |
 | R12 | **Query fixes are chosen from measurement, not guessed.** Candidates from the code, to confirm or drop:<ul><li>SLO counting reads raw spans one SLO after another, and re-reads the last 5–6 minutes each pass (batch by service);</li><li>rule templates that read the window plus 1 h;</li><li>trace search's second scan over ±1 h;</li><li>`/dependencies`, up to 8 scans per request.</li></ul> A materialised tenant column is a later candidate: in a single-tenant deployment it saves only the map reads, and adding it to existing data is a heavy mutation, an upgrade cost for 1.3.0, on tables the exporter owns. Each change ships with its before and after on the same step. | Mine |
 | R13 | **No new infrastructure** (Phase 10 P7 carries over). If the fixes can't meet R10, the roadmap's trigger table applies, with an ADR first. A ClickHouse replica for searches, or sharding, is new infrastructure: its trigger-table row was added on 13 November (Q3). | Mine |
 
@@ -83,11 +93,12 @@ The cause couldn't be measured: the platform has 21 instruments of its own, but 
 
 | # | Decision | By |
 |---|---|---|
-| R14 | **Baseline** (owner, R11 of revision 1). Phase 10's 5× and 10× run here, after milestone 1, on a fresh scale stack: `stack.sh destroy`, then `WARMUP=300 scale/steps.sh --through 1 3 5 10`. | Owner |
+| R14 | **Baseline** (owner, R11 of revision 1). Phase 10's 5× and 10× run here, after milestone 1, on a fresh scale stack: `stack.sh destroy`, then `WARMUP=300 scale/steps.sh --through 1 3 5 10`. **Reported per component** (revision 3): the Collector's received, exported and refused rows per second and its queue fill; ClickHouse insert rows per second and latency, parts and merges, CPU, query time by caller; PostgreSQL transactions per second, connections and outbox age. | Owner |
+| R19 | **Component ceilings, each measured on its own** (revision 3), on the same host and scale stack, each raised in steps until a line is crossed, the cause recorded:<ul><li>**Ingest:** every worker off (`*:Enabled=false`) and no query mix; the generator's multiplier raised until the Collector refuses or its queue grows, or ClickHouse inserts fall behind. The ceiling is rows per second per signal. The generator's own sent rate is checked against its target, so a limit in the generator isn't read as the platform's.</li><li>**ClickHouse queries:** ingest held at 1×, workers off; the query mix's concurrency raised until a search's p95 crosses its line.</li><li>**Workers:** ingest at 1×, no query mix; the rule and SLO counts raised until a worker's pass time reaches its interval or its lag crosses its line.</li><li>**PostgreSQL:** watched in all of the above; a test of its own only if it nears a line.</li></ul> The ceilings say which part bends first, and by how much each must grow for the next step. | Mine |
 | R15 | **Same harness, same host and same target source** as Phase 10 (P4, P5). The targets are still read from PostgreSQL, as in Phase 10, so the figures compare. The new metrics are used for causes. | Mine |
 | R16 | **Each milestone ends with the review loop** (two fix rounds and a confirmation round), as Phase 10 D3. | Mine |
 | R17 | **Release 1.3.0** (owner, R14 of revision 1: self-metrics on by default).<ul><li>**Upgrade from 1.2.0:** the heartbeat migration; the platform pipeline and token in the Collector; the `platform_monitor` user and its grants; any users R11 adds.</li><li>**Where the steps go:** `init.sh` and `clickhouse-access` for the compose stack, and `deployment.md` for customer installs.</li><li>**Drill:** Phase 10's upgrade drill (milestone 4) covers 1.2.0 → 1.3.0.</li></ul> | Owner, Mine (steps) |
-| R18 | **Sizing and scaling guide** in `docs/deployment.md`, the answer to "how can I deploy the platform if it's the bottleneck". What scales out:<ul><li>the API, with more replicas;</li><li>webhook and outbox delivery, which run in every replica.</li></ul> What doesn't: each leased worker runs on one replica. Its levers are:<ul><li>its own settings (`Rules:MaxConcurrency`, `Slos:Interval` and `MaxMinutesPerPass`, rule and SLO counts);</li><li>separating worker replicas from API replicas (`*:Enabled`);</li><li>the fixes in R12.</li></ul> ClickHouse scales up on one node: CPU per 1× of load, from the steps. Isolation (R11) protects the workers from searches. The Collector is one instance, with its queue bounds. Each Overview figure (R8) maps to its action. The ceilings come from milestones 4 and 5. | Mine |
+| R18 | **Sizing and scaling guide** in `docs/deployment.md`, the answer to "how can I deploy the platform if it's the bottleneck". What scales out:<ul><li>the API, with more replicas;</li><li>webhook and outbox delivery, which run in every replica.</li></ul> What doesn't: each leased worker runs on one replica. Its levers are:<ul><li>its own settings (`Rules:MaxConcurrency`, `Slos:Interval` and `MaxMinutesPerPass`, rule and SLO counts);</li><li>separating worker replicas from API replicas (`*:Enabled`);</li><li>the fixes in R12.</li></ul> ClickHouse scales up on one node: CPU per 1× of load, from the steps. Isolation (R11) protects the workers from searches. The Collector is one instance, with its queue bounds. Each Overview figure (R8) maps to its action. The ceilings come from milestones 3–5 (revision 3: each component's own ceiling, R19). | Mine |
 
 ### As built (milestone 1, 13 November)
 
@@ -121,16 +132,19 @@ As built in milestone 2 (13 November), after its review:
 | # | Milestone | Delivers | Evidence |
 |---|---|---|---|
 | 1 | **Self-metrics** | R1–R5; `docs/platform-metrics.md`, mapping every requirements :254 item to its instrument and source, with what a bad value means; runbook entries using the exported names | Unit tests that drive each instrument, event-driven ones included; on the local stack, every instrument in ClickHouse within two export intervals (30 s); only allowlisted attribute keys exported; nothing under the reserved tenant on any tenant page or in Grafana |
-| 2 | **Heartbeats and health** | R6, R7: the heartbeat migration, a platform status endpoint (operator role), `/health/platform` | API tests (stale worker, standby replica, disabled worker, ClickHouse down, Collector down); a local drill: stop ClickHouse, then check that the status says so within 15 s and the Console still loads |
-| 3 | **Overview panel and capacity view** | R8, R9: the panel, and the calibration file written by `steps.sh` (provisional, from Phase 10's 1× and 3×) | A Playwright journey: the panel is present, and a worker turns red when its lease is held from `psql`. `WorkerLease.KeyOf` gives the key, and the takeover won't end a session that isn't a worker's. A unit test for the view from a known calibration |
-| 4 | **Baseline steps** | R14: 1×, 3×, 5×, 10× with the self-metrics, the cause of each crossed line measured; the calibration rewritten | A Phase 11 baseline section in `docs/scale-tests.md`; raw data under `build/scale/` |
-| 5 | **Isolation and fixes** | R11 step by step, then R12 one change at a time, each with its step rerun | Before and after per change; a final rerun against R10, with held-out steps for the ±25 % check |
-| 6 | **Guide, gate and release** | R18; `deployment.md` corrected (all six leased workers); `docs/phase-11-acceptance.md`; the 1.3.0 upgrade path | Owner acceptance |
+| 2 | **Heartbeats and health** | R6, R7: the heartbeat migration, a platform status endpoint (operator role), `/health/platform` | API tests (stale worker, standby replica, disabled worker, ClickHouse down, Collector down); a local drill: stop ClickHouse, then check that the status says so within 25 s (see "As built") and the Console still loads |
+| 3 | **Baseline steps** | R14: 1×, 3×, 5×, 10× with the self-metrics, reported per component, the cause of each crossed line measured | A Phase 11 baseline section in `docs/scale-tests.md`; raw data under `build/scale/` |
+| 4 | **Component ceilings** | R19: ingest, ClickHouse queries, workers, PostgreSQL, each on its own; the harness switches that make them (workers off, query mix off or raised, rule and SLO counts) | A ceilings section in `docs/scale-tests.md`: each ceiling, its limiting resource, and the generator's sent rate against its target |
+| 5 | **Fixes** | R12a (ingest path), R11 step by step, R12 one change at a time, R12b if PostgreSQL shows; each with its step or ceiling rerun | Before and after per change; a final rerun against R10, with held-out steps for the ±25 % check |
+| 6 | **Overview panel and capacity view** | R8, R9: the panel, and the calibration file written by `steps.sh` from the final rerun and the ceilings | A Playwright journey: the panel is present, and a worker turns red when its lease is held from `psql`. `WorkerLease.KeyOf` gives the key, and the takeover won't end a session that isn't a worker's. A unit test for the view from a known calibration |
+| 7 | **Guide, gate and release** | R18, with each component's ceiling and lever; `deployment.md` corrected (all six leased workers); `docs/phase-11-acceptance.md`; the 1.3.0 upgrade path | Owner acceptance |
 
-- **Order:** 1 → 2 → 3 → 4 → 5 → 6.
-- **The baseline (4) waits for the metrics (1),** so it measures causes, not only symptoms.
-- **The Overview (3) comes before the steps,** so the panel can be watched during them and checked against them. Its capacity view
-  is provisional until 4.
+- **Order (revision 3):** 1 → 2 → 3 → 4 → 5 → 6 → 7. Milestones 1 and 2 are built; 2's drill is still owed.
+- **The baseline (3) waits for the metrics (1),** so it measures causes, not only symptoms.
+- **The ceilings (4) follow the baseline,** which shows which component to push first.
+- **The Overview (6) comes after the fixes,** so its limits are the measured ones, not a provisional calibration rewritten later. The
+  steps are watched through Grafana and the platform status meanwhile.
+- **Milestones 3–5 run on a fresh scale stack,** which needs the owner's permission to stop the working stack each time.
 
 ## Phase 10 meanwhile
 
@@ -138,6 +152,13 @@ Phase 10's milestone 3 closes on 1× and 3×, and its 5× and 10× move here (R1
 is done, so the upgrade drill covers 1.2.0 → 1.3.0 as well.
 
 That goes against the roadmap rule "Dependencies must follow the phase order". It is recorded as an owner exception in the roadmap (Q3, 13 November).
+
+## The owner's answer on revision 3, 13 November
+
+After milestone 2 the owner asked whether Phase 11 should focus on the ClickHouse, Collector and PostgreSQL throughput instead of the
+platform itself. Agreed ("ok"): the rest of the phase is reordered to baseline → component ceilings → fixes → Overview → guide, R19
+(component ceilings), R12a (ingest path) and R12b (PostgreSQL) are added, and the baseline is reported per component. Milestones 1
+and 2 stay as built.
 
 ## The owner's answers on revision 2, 13 November
 

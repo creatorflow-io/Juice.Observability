@@ -187,11 +187,11 @@
 
 **Goal:** the platform shows how it is working and how much more it can take, and its own limits move up with evidence.
 
-**Deliverables:** the platform's own metrics exported (requirements §9 operational metrics); worker heartbeats and a platform health check; platform status and a capacity estimate on the Console Overview; ClickHouse workload isolation and measured query fixes; scale steps rerun before and after.
+**Deliverables:** the platform's own metrics exported (requirements §9 operational metrics); worker heartbeats and a platform health check; platform status and a capacity estimate on the Console Overview; each component's throughput and ceiling measured (Collector, ClickHouse, PostgreSQL); ingest tuning, ClickHouse workload isolation and measured query fixes; scale steps rerun before and after.
 
 **Acceptance gate:** every §9 operational metric is exported and documented; the Overview shows each worker's state and the platform's headroom and keeps working while ClickHouse is slow or down; the capacity estimate is checked against measured scale steps; the rerun steps show where the first limit moved and why; no new infrastructure without an ADR.
 
-**Status:** planned; split from Phase 10 by the owner 2026-11-13. **Phase-order exception (owner, 2026-11-13):** Phase 11 runs before Phase 10's milestones 4 (drills) and 5 (gate), so the upgrade drill also covers 1.2.0 → 1.3.0. See the [Phase 11 plan](phase-11-plan.md) (approved 2026-11-13).
+**Status:** planned; split from Phase 10 by the owner 2026-11-13. **Phase-order exception (owner, 2026-11-13):** Phase 11 runs before Phase 10's milestones 4 (drills) and 5 (gate), so the upgrade drill also covers 1.2.0 → 1.3.0. See the [Phase 11 plan](phase-11-plan.md) (approved 2026-11-13; revision 3 the same day turns it toward the data path's throughput). Milestones 1 (self-metrics) and 2 (heartbeats and platform status) built.
 
 ## Explicit triggers for deferred infrastructure and SaaS
 
