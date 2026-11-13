@@ -342,3 +342,132 @@ The plan's milestone 3 lists them. The owner moved them to the [Phase 11](phase-
 happens once the platform exports its own metrics, so each crossed line has a measured cause. It goes on a fresh scale stack
 (`stack.sh destroy`) with `WARMUP=300 scale/steps.sh --through 1 3 5 10` (the first step after a reset needs the longer warm-up,
 see the confirmation round above). Phase 10's milestone 3 closes on 1× and 3×.
+
+## Phase 11 baseline: 1×, 3×, 5×, 10×, 13 November
+
+Phase 11 milestone 3 ([plan](phase-11-plan.md) R14, revision 3), on a fresh scale stack:
+- **Run:** `stack.sh destroy`, then `WARMUP=300 scale/steps.sh --through 1 3 5 10`, commit 2da8d59 (clean), 5 minutes of warm-up and 30 measured per step.
+- **Host:** 24 cores; Docker VM with 24 vCPU and 31 GiB.
+- **Reports:** `build/scale/20261113T0732-1x`, `…0807-3x`, `…0843-5x`, `…0919-10x` (`report.md`).
+- **Per-component figures:** `components.json` in each step's directory, and `build/scale/components-p11-baseline.md`. They come from
+  `scale/components.mjs`, which reads the scale stack's ClickHouse after the steps:
+  - `system.query_log` by user and by caller (`log_comment`), CPU included;
+  - `system.part_log`;
+  - `system.asynchronous_metric_log`;
+  - the platform's own metrics under the reserved tenant.
+
+| Measure | Line | 1× | 3× | 5× | 10× |
+|---|---|---|---|---|---|
+| Throughput (stored, spans / points / logs) | ≥ 98 % each, nothing lost | 100 / 100 / 100 %, 0 lost | 100 / 100 / 100 %, 0 lost | 100 / **77.9** / 100 %, **20.1 M points refused** | 99 / **17.1** / 100 %, **164 M points refused** |
+| Ingestion freshness p95 | ≤ 30 s | 1.45 s | 1.96 s | 3.28 s | 15.2 s |
+| API reads p95 (20/s) | ≤ 500 ms | 24.8 ms | 54 ms | 89.7 ms | 86.6 ms |
+| Health freshness p95 | ≤ 60 s | 39.2 s | 47.1 s | **65 s** | **265 s** |
+| Rule breach-to-alert p95 | ≤ 2 min after `ForDuration` | 62 s | 70 s | 65 s | 119 s |
+| Webhook first dispatch p95 | ≤ 30 s | 1.92 s | 2 s | 2 s | 1.67 s |
+| Queue lag, past each configured delay | ≤ 60 s, nothing growing | within | within | **discovery 148 s, rules 136 s, SLOs 248 s (growing); Collector queue growing** | **discovery 1,264 s, rules 527 s, SLOs 1,268 s** |
+| Telemetry search p95 (reported) | – | 292 ms | 2.6 s | 10.6 s | 46.4 s, 73 of 3,595 failed |
+| Console page p95 (reported) | – | 696 ms | 1.26 s | 5.8 s | 30 s, 10 of 174 failed |
+
+- **1× meets every §9 target. Every line holds at 3×,** this time: Phase 10's single SLO-lag crossing didn't recur.
+- **5× is the first step that crosses,** on throughput, health freshness and queue lag. At 10× everything that reads ClickHouse is
+  minutes behind.
+
+### Per component
+
+CPU is in cores, from docker stats unless marked. ClickHouse's share is taken from `system.query_log`. A query counts whole in the
+window it ended in, and failed queries are included: a timeout still spent its CPU.
+
+| | 1× | 3× | 5× | 10× |
+|---|---|---|---|---|
+| **Docker VM CPU busy, user + system (24 vCPU, from ClickHouse's `/proc` view)** | 4.6 | 11.8 | 19.2 | 21.6 |
+| Docker VM load average | 4.8 | 27.7 | 66.8 | 127.7 |
+| **ClickHouse container CPU, mean** | 2.5 | 8.3 | 15.1 | 16.0 |
+| …the platform's reads (`platform_reader`) | 1.90 | 6.98 | 11.23 | 12.34 |
+| …inserts (`otel_writer`, async flushes included) | 0.09 | 0.34 | 0.71 | 0.62 |
+| …not in `query_log` (background work, presumably mostly merges, which belong to ingest; the remainder of two methods) | 0.5 | 1.0 | 3.1 | 3.0 |
+| Rows written per second | 12,200 | 36,500 | 49,600 | 38,500 |
+| Insert p50, the Collector's wait (async insert) | 206 ms | 155 ms | 302 ms | 695 ms |
+| Async insert flush p95 | 36 ms | 169 ms | 557 ms | 1,212 ms |
+| Rows read per second by the platform | 3.2 M | 12.1 M | 20.8 M | 32.1 M |
+| Most parts in one partition | 15 | 31 | 53 | 56 |
+| **Collector CPU, mean** | 0.2 | 0.8 | 2.3 | 3.8 |
+| Collector export queues, max (sum of 3 exporters, bound 3 × 200,000) | 10,056 | 161,850 | 238,354 | 595,653 |
+| **PostgreSQL CPU, mean** | 0.09 | 0.13 | 0.24 | 0.24 |
+| PostgreSQL commands per second (platform, client side), mean time | 133, 0.9 ms | 132, 1.8 ms | 127, 3.9 ms | 118, 4.1 ms |
+| **Platform API CPU, mean** | 0.18 | 0.27 | 0.46 | 0.46 |
+
+The platform's reads by caller: CPU in cores, the mean rows each query read, and the query count where it fell:
+
+| Caller | 1× | 3× | 5× | 10× |
+|---|---|---|---|---|
+| discovery | 0.53 (4.5 M rows) | 1.86 (14.5 M) | 2.57 (18.4 M) | 0.81 (23.8 M; 41 queries, most cut at 60 s) |
+| SLO counting | 0.52 (0.4 M) | 2.01 (1.2 M) | 1.56 (1.6 M; 1,927 queries) | 0.26 (1.6 M; 269 queries) |
+| health | 0.30 (2.4 M) | 0.98 (7.2 M) | 1.25 (8.2 M) | 0.59 (6.9 M; 99 queries) |
+| trace search | 0.23 (0.4 M) | 1.25 (1.5 M) | 4.08 (3.4 M) | 7.60 (6.4 M) |
+| log search | 0.25 (1.2 M) | 0.68 (5.7 M) | 1.33 (12.6 M) | 2.41 (23.8 M) |
+| rules | 0.07 (0.1 M) | 0.20 (0.3 M) | 0.41 (0.6 M) | 0.63 (1.0 M) |
+
+The searches run at the same rate at every step, about 1,800 of each in the window. The workers' queries fall as their passes slow.
+
+Each worker's mean pass time against its interval, in seconds, from the platform's own histogram (the SDK's max covers the
+process's life, so it isn't given):
+
+| Worker (interval) | 1× | 3× | 5× | 10× |
+|---|---|---|---|---|
+| discovery (30) | 1.8 | 7.8 | 22.5 | 64.7 (27 passes) |
+| health (30) | 1.5 | 5.7 | 14.0 | 44.6 (38 passes) |
+| SLO counting (30) | 5.8 | 16.3 | 53.6 (32 passes) | 390 (4 passes) |
+
+### The cause of the first limit: what is measured, and what is a hypothesis
+
+**Measured: the reads use most of ClickHouse, and their cost grows with the load.**
+- **The host's CPU is near full from 5× on.** The Docker VM is busy on about 19 of its 24 vCPU at 5× and 22 at 10×. ClickHouse
+  holds 15–16 of them. It is not pinned at 24, but it shares a nearly full machine with the Collector and the harness.
+- **The platform's reads take 11–12 of ClickHouse's cores at 5× and 10×.** Inserts take under one. The rest, about 3, isn't in `query_log`; background
+  merges, which belong to ingest, are the likely part.
+- **Every reader scans a window whose row count grows with the load.** Discovery reads 18 M rows a query at 5×, health 8 M, log
+  search 13 M and trace search 3.4 M.
+- **The workers fall behind their interval.** SLO counting passes its 30 s interval at 5×. Discovery and health are well past theirs
+  at 10× (65 s and 45 s against 30 s).
+
+**Measured: ingest loses metric points first.**
+- **Inserts slow down.** The Collector's insert wait rises from about 200 ms to 695 ms at 10×, and flushes from 36 ms to 1.2 s.
+- **The queues fill.** At 5× the Collector refuses metric points, about four fifths of the rows, while spans and logs still get
+  through. At 10× all three exporter queues reach their bound at peak (sum 595,653 of 600,000): 164 M points, 171,413 spans and 4,706 logs are refused.
+- **Fewer rows are written at 10× than at 5×:** 38,500 a second against 49,600. The reads' CPU barely changes between the two (11.2
+  and 12.3 cores), so what slowed inserts further isn't shown by these figures.
+- **Parts are not the limit:** at most 56 parts in one partition, against ClickHouse's default of 300 before it delays inserts.
+
+**Hypothesis, for milestone 4 to test: ingest is capped by the exporter as much as by ClickHouse's CPU.**
+- **What caps the exporter.** Each exporter has 4 consumers sending batches of up to 20,000 items (`collector/config.yaml`), and
+  each insert waits for ClickHouse's async-insert flush. That wait is about 200 ms even at 1×, where the flush itself takes 7 ms. So
+  throughput is bounded by consumers × batch ÷ insert wait, and a slower ClickHouse lowers that bound.
+- **CPU starvation and that bound fit the data equally well.**
+- **The test:** milestone 4's ingest-only run, with the workers and the query mix off, tells them apart.
+
+**Not near a limit:**
+- **The Collector:** 2.3–3.8 cores.
+- **The platform API:** under half a core.
+- **The generator:** 3.2 % of the host at 5×.
+- **PostgreSQL:** a quarter of a core, about 120–130 commands a second.
+  - **Its connections:** at most one in use at any sampled moment. At 10× that connection is busy about half of each second
+    (118 commands × 4.1 ms).
+  - **The ceilings:** it doesn't limit the platform here; the ceilings (R19) check it.
+
+**Still to measure, in milestone 4 (component ceilings, R19):**
+- ingest alone;
+- the workers alone;
+- the searches alone, each against its own line.
+
+**For the fixes (milestone 5):**
+- **R12:** the readers' row counts above: discovery, SLO counting, health, and the trace and log searches' scans.
+- **R11:** a CPU share for inserts and workers against searches.
+- **R12a:** the exporter's consumers, batch and async-insert settings, if milestone 4 confirms the hypothesis.
+- **The Collector's overflow:** a refused point is lost, while a slower export only delays it.
+
+**Not met by this baseline:**
+- **R10, "every line holds at 3×":** met.
+- **R10, the ±25 % capacity check:** needs the final rerun.
+
+**Seen during the run:** trace search answers 500 while ClickHouse is down (milestone 2 drill). It goes with the "busy, try again"
+work in R11.

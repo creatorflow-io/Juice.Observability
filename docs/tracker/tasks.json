@@ -28,7 +28,7 @@
     },
     "p11": {
       "status": "doing",
-      "note": "Plan revision 3 approved 2026-11-13 (data-path throughput). M1 and M2 done; M3 baseline steps running."
+      "note": "Plan revision 3 (data-path throughput). M1-M3 done; next M4 component ceilings (needs the working stack stopped)."
     }
   },
   "tasks": [
@@ -159,8 +159,8 @@
       "kind": "task",
       "title": "M3 Baseline steps 1x/3x/5x/10x, per component (R14)",
       "ref": "docs/scale-tests.md",
-      "status": "doing",
-      "note": "Fresh scale stack (needs owner permission to stop the working stack). Collector in/out/refused and queue; ClickHouse insert rate, parts, CPU, query time by caller; PostgreSQL tx, connections, outbox age."
+      "status": "done",
+      "note": "Done 2026-11-13 after review round 1 (13 findings fixed) and confirmation (3 wording fixes). Fresh scale stack, commit 2da8d59. 1x meets every target; 3x holds every line; 5x first crossing (metric points refused 22 %, health freshness, queue lag); 10x points 17 % stored. Measured: ClickHouse CPU goes mostly to the platform reads (11-12 cores at 5x/10x; discovery 18 M rows/query), VM ~19/24 cores busy at 5x. Hypothesis for M4: ingest also capped by the exporter (4 consumers, ~200 ms async-insert wait). PostgreSQL, Collector, API not near a limit. docs/scale-tests.md \"Phase 11 baseline\"; scale/components.mjs."
     },
     {
       "doc_id": "p11-m4",
@@ -170,7 +170,7 @@
       "title": "M4 Component ceilings: ingest, ClickHouse queries, workers, PostgreSQL (R19)",
       "ref": "docs/scale-tests.md",
       "status": "todo",
-      "note": "Each component pushed on its own until a line is crossed; generator sent rate checked against its target."
+      "note": "Each component pushed on its own until a line is crossed; generator sent rate checked against its target. Test first: ingest alone (workers and query mix off) to tell CPU starvation from the exporter bound (4 consumers x 20k batch / ~200 ms insert wait)."
     },
     {
       "doc_id": "p11-m5",
