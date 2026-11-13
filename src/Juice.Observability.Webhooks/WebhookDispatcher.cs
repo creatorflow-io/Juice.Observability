@@ -310,12 +310,17 @@ namespace Juice.Observability.Webhooks
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
+            PlatformCaller.Set("webhooks", stoppingToken);
+            // Every replica dispatches (deliveries are claimed one by one), so there is no lease to report.
+            WorkerPulse.Unleased("webhooks");
             using var timer = new PeriodicTimer(options.Value.Interval);
             do
             {
                 try
                 {
+                    using var pass = WorkerPulse.Begin("webhooks", stoppingToken);
                     while (await DispatchOnceAsync(stoppingToken) == options.Value.BatchSize) { }
+                    pass.Succeeded();
                 }
                 catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
                 {

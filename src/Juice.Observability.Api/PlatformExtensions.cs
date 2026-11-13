@@ -38,7 +38,8 @@ namespace Juice.Observability.Api
 
         /// <summary>
         /// The platform database, tenant provisioning, the discovery, health, rule and webhook workers (each switched by
-        /// its own <c>Enabled</c> setting), OIDC authentication, problem details and the <c>ready</c> health check.
+        /// its own <c>Enabled</c> setting), OIDC authentication, problem details, the <c>ready</c> health check, and the platform's own metrics
+        /// (<see cref="PlatformTelemetry.AddPlatformTelemetry"/>).
         /// </summary>
         public static IServiceCollection AddJuiceObservability(this IServiceCollection services, IConfiguration configuration)
         {
@@ -59,6 +60,8 @@ namespace Juice.Observability.Api
             services.AddPlatformAuthentication(configuration);
             services.AddPlatformProblemDetails();
             services.AddHealthChecks().AddCheck<DatabaseHealthCheck>("database", tags: ["ready"]);
+            // The platform's own metrics (Phase 11, docs/platform-metrics.md): on by default, exported when Telemetry:Otlp:Endpoint is set.
+            services.AddPlatformTelemetry(configuration);
             return services;
         }
 

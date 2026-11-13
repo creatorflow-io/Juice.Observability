@@ -84,6 +84,7 @@ namespace Juice.Observability.Agents
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
+            PlatformCaller.Set("action-requests", stoppingToken);
             await using var lease = WorkerLease.For(scopes, "action-requests", logger);
             using var timer = new PeriodicTimer(options.Value.SweepInterval);
             do
@@ -92,10 +93,12 @@ namespace Juice.Observability.Agents
                 {
                     if (await lease.TryHoldAsync(stoppingToken))
                     {
+                        using var pass = WorkerPulse.Begin("action-requests", stoppingToken);
                         while (await SweepOnceAsync(stoppingToken) == Batch) { }
                         // Once a pass: most of what's watched is still waiting for its evidence.
                         await VerifyOnceAsync(stoppingToken);
                         await DropExpiredBundlesAsync(stoppingToken);
+                        pass.Succeeded();
                     }
                 }
                 catch (Exception ex) when (!stoppingToken.IsCancellationRequested)

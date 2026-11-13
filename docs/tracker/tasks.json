@@ -139,8 +139,8 @@
       "kind": "task",
       "title": "M1 Self-metrics (R1-R5)",
       "ref": "docs/platform-metrics.md",
-      "status": "doing",
-      "note": ""
+      "status": "done",
+      "note": "Done 2026-11-13 after review rounds 1, 2 and a clean confirmation round. Own MeterProvider exporting to the Collector platform pipeline (otlp/platform :4319, own token, reserved tenant juice-platform) + Collector self-scrape; allowlist; worker passes/lease; ClickHouse per-caller timing (timeout vs canceled); sampler (PG, ClickHouse via platform_monitor). Tests 677 pass; verify.sh platform checks 14/14 (one older check needs app traffic). As-built deviations on R2/R5 noted in the plan for the gate."
     },
     {
       "doc_id": "p11-m2",
@@ -203,6 +203,7 @@
     "Phase 10 M2: scale harness (deploy/local/scale/) and a 1x run meeting every §9 target with 10 services x 100 instances, 50 rules, 50 SLOs.",
     "Phase 10 M3: 1x holds every target; first limit at 3x is SLO counting under ClickHouse contention; ClickHouse is the CPU (2.65 vCPU at 1x); disk ~1 TB at full retention at 1x, ~3 TB at 3x.",
     "Phase 11 (planned 2026-11-13): platform self-observability, Overview platform panel and capacity estimate, ClickHouse workload isolation; Phase 10 M4-M5 wait for it.",
-    "Roadmap trigger table: new row for a ClickHouse replica or sharding (2026-11-13); Phase 11 runs before Phase 10 M4-M5 by owner exception."
+    "Roadmap trigger table: new row for a ClickHouse replica or sharding (2026-11-13); Phase 11 runs before Phase 10 M4-M5 by owner exception.",
+    "Phase 11 M1: platform self-metrics exported under reserved tenant juice-platform (Collector platform pipeline :4319, own token); ClickHouse user platform_monitor; docs/platform-metrics.md."
   ]
 }

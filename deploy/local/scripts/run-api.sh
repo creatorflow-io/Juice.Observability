@@ -17,5 +17,11 @@ export Database__Migrate=true
 export Rules__File="$(pwd -W 2>/dev/null || pwd)/rules.json"
 export Webhooks__File="$(pwd -W 2>/dev/null || pwd)/webhooks.json"
 export Integrations__Grafana__BaseUrl=http://localhost:3000
+# The platform's own metrics (docs/platform-metrics.md): the Collector's platform receiver, published on loopback, and the sampler's user.
+here=$(pwd -W 2>/dev/null || pwd)
+export Telemetry__Otlp__Endpoint=https://127.0.0.1:4319
+export Telemetry__Otlp__TokenFile="$here/secrets/platform-otlp-token"
+export Telemetry__Otlp__CaFile="$here/secrets/tls/ca.crt"
+export ClickHouse__MonitorConnectionString="Host=127.0.0.1;Port=8123;Username=platform_monitor;Password=${CLICKHOUSE_MONITOR_PASSWORD:-}"
 
 exec dotnet run --project ../../src/Juice.Observability.Host --no-launch-profile -- "$@"

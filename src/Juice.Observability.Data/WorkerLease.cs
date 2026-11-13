@@ -68,8 +68,15 @@ namespace Juice.Observability.Data
         /// </summary>
         public int Generation { get; private set; }
 
-        /// <summary>Whether this replica holds the lease now, taking it if it is free.</summary>
+        /// <summary>Whether this replica holds the lease now, taking it if it is free. Reported as <c>juice.observability.worker.lease</c> (<see cref="WorkerPulse"/>).</summary>
         public async Task<bool> TryHoldAsync(CancellationToken cancellationToken)
+        {
+            var held = await TryHoldCoreAsync(cancellationToken);
+            WorkerPulse.Lease(_name, held);
+            return held;
+        }
+
+        private async Task<bool> TryHoldCoreAsync(CancellationToken cancellationToken)
         {
             if (_connection is not null)
             {
@@ -198,7 +205,11 @@ namespace Juice.Observability.Data
             }
         }
 
-        public ValueTask DisposeAsync() => CloseAsync();
+        public ValueTask DisposeAsync()
+        {
+            WorkerPulse.Lease(_name, false);
+            return CloseAsync();
+        }
 
         private async ValueTask CloseAsync()
         {

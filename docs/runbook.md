@@ -35,6 +35,31 @@ neither form was written without an active trace, so the platform has no telemet
 The audit records themselves stay in Juice.Audit's database: before and after values are business data and never
 enter telemetry.
 
+## Is the platform itself working?
+
+The platform exports its own metrics to ClickHouse under the reserved tenant `juice-platform` ([platform metrics](platform-metrics.md)),
+every 15 s. In ClickHouse (as `admin`), the latest value of each:
+
+```sql
+SELECT ResourceAttributes['service.instance.id'] AS replica, MetricName, Attributes, argMax(Value, TimeUnix) FROM otel.otel_metrics_gauge
+WHERE ResourceAttributes['juice.platform_tenant_id'] = 'juice-platform' AND ServiceName = 'juice-observability-platform'
+  AND TimeUnix > now() - INTERVAL 2 MINUTE
+GROUP BY replica, MetricName, Attributes ORDER BY MetricName, replica
+```
+
+- **A worker stopped:** `juice.observability.worker.since_last_pass{worker}` past a few intervals on the replica holding it
+  (`juice.observability.worker.lease = 1`), or no replica holding it at all.
+- **A pass is stuck:** `juice.observability.worker.pass.age` growing. A ClickHouse query is the usual place: look at
+  `juice.observability.clickhouse.query.duration` for that `caller`, and `juice.observability.clickhouse.running_queries`.
+- **A worker can't keep up:** `juice.observability.worker.pass.duration` near its interval (30 s for discovery, health and SLOs); for rules,
+  `juice.observability.rules.busy` at `rules.slots` with `rules.waiting` growing.
+- **ClickHouse is the limit:** `juice.observability.clickhouse.cpu` near the cores it has, and query durations rising for every caller
+  at once. One caller slow alone points at its own queries.
+- **Notifications are late:** `juice.observability.outbox.oldest_age` or `juice.observability.webhooks.oldest_age` past a minute.
+- **Disk:** `juice.observability.clickhouse.disk.free` against `juice.observability.clickhouse.table.size`'s daily growth.
+- **No platform metrics at all:** the API's startup log says `Platform metrics: ...` (no endpoint, an unreadable token file, or off).
+  Then check the Collector's platform receiver (`otlp/platform`, port 4319) and `secrets/platform-otlp-token`.
+
 ## Health is stale or rules stop
 
 - **Symptom:** `stale: true` on health. Check the API log for `Health evaluation failed` or `Rule ... evaluation
@@ -56,13 +81,19 @@ enter telemetry.
 1. Start the test Collector (`docker compose --profile test up -d --wait otel-collector-test`) and run `tests/verify.sh`: it
    checks authentication, the tenant stamp and storage end to end through that Collector, which has the main one's
    configuration, and checks that the main one answers with a trusted certificate.
-2. Check the Collector's metrics at `http://127.0.0.1:8888/metrics`:
+2. Check the Collector's metrics at `http://127.0.0.1:8888/metrics`, or in ClickHouse under the tenant `juice-platform`, service
+   `otelcol-contrib` ([platform metrics](platform-metrics.md)):
    - `otelcol_receiver_refused_*` means clients are rejected (token or TLS);
    - `otelcol_exporter_enqueue_failed_*` means the queue was full and data was dropped;
    - `otelcol_exporter_queue_size` means data is waiting for ClickHouse.
 3. A client getting 401 has the wrong token; a TLS error means it lacks `OTEL_EXPORTER_OTLP_CERTIFICATE` or the CA.
 
 ## Rotate an OTLP token
+
+The platform's own token (`secrets/platform-otlp-token`, one line) is read by the Collector and the API: write the new one and restart
+both (`docker compose --profile platform restart otel-collector platform-api`). Its metrics pause for that minute.
+
+For the application tokens:
 
 1. Add the new token on a new line of `secrets/otlp-tokens`, then run `docker compose restart otel-collector`.
 2. Switch clients to the new token.
@@ -285,6 +316,9 @@ it. The agent's log says `The platform refused this agent's action report` when 
 ## Upgrade
 
 1. Back up first.
+   - **Coming from 1.2.0 or earlier,** run `scripts/init.sh` first. It keeps everything already there and adds what 1.3.0 needs:
+     `CLICKHOUSE_MONITOR_PASSWORD` in `.env` and `secrets/platform-otlp-token`. Then `docker compose up -d --wait otel-collector`
+     picks up the Collector's platform pipeline. Compose refuses to start without the new `.env` key.
 2. Build and start the new API: `docker compose --profile platform up -d --build platform-api`. It applies pending
    migrations on start.
    - **Then run `scripts/apply-clickhouse-access.sh`.** It applies `clickhouse/init-users.sh` (ClickHouse users, grants and row

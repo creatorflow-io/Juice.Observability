@@ -4,6 +4,11 @@
 #
 # Security order in every OTLP pipeline (a security property, do not reorder):
 #   memory_limiter → transform/strip_untrusted_tenant → resource/stamp_tenant → transform/redact → exporter
+#
+# The platform's own telemetry (Phase 11 R1, R5) has a pipeline of its own: the platform's exporter on otlp/platform (port 4319, its own
+# token) and this Collector's own metrics (scraped from :8888). It is stamped with the reserved tenant juice-platform instead of the
+# deployment's, so it never enters the tenant's inventory, health, rules, SLOs or Grafana (all filter on the deployment's tenant).
+#
 # Batching happens inside the ClickHouse exporter's sending_queue (the exporter's recommended setup), so it always
 # runs after the strip and stamp steps. There is no batch processor.
 
@@ -13,6 +18,10 @@ extensions:
   bearertokenauth/otlp:
     scheme: Bearer
     filename: /etc/otelcol/secrets/otlp-tokens
+  # The platform's own exporter: a token of its own, so an application token can't write as the platform (scripts/init.sh writes it).
+  bearertokenauth/platform:
+    scheme: Bearer
+    filename: /etc/otelcol/secrets/platform-otlp-token
   health_check:
     endpoint: 0.0.0.0:13133
 
@@ -32,6 +41,26 @@ receivers:
         tls: *tls
         auth:
           authenticator: bearertokenauth/otlp
+
+  # The platform's own metrics exporter (Telemetry:Otlp:Endpoint): the API reaches it on the compose network; docker-compose.yml also
+  # publishes it on loopback, for scripts/run-api.sh and tests/verify.sh (not on other interfaces).
+  otlp/platform:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4319
+        tls: *tls
+        auth:
+          authenticator: bearertokenauth/platform
+
+  # This Collector's own metrics (received, refused, exported, failed per signal; each exporter's queue; memory), from its
+  # Prometheus page below, into the platform pipeline. Scraped rather than pushed, so it needs no token or TLS to itself.
+  prometheus/self:
+    config:
+      scrape_configs:
+        - job_name: otel-collector
+          scrape_interval: 15s
+          static_configs:
+            - targets: ["127.0.0.1:8888"]
 
   # Host metrics of the machine the Collector container runs on (with Docker Desktop: the Linux VM).
   host_metrics:
@@ -98,6 +127,20 @@ processors:
         value: ${env:JUICE_PLATFORM_TENANT_ID}
         action: upsert
 
+  # The platform's own telemetry: the reserved tenant, after the strip (Phase 11 R1). Never the deployment's tenant key.
+  resource/stamp_platform:
+    attributes:
+      - key: juice.platform_tenant_id
+        value: juice-platform
+        action: upsert
+
+  # Which Collector a self-scrape came from (the test Collector shares this file): instead of the scrape target, 127.0.0.1:8888.
+  resource/collector_instance:
+    attributes:
+      - key: service.instance.id
+        value: ${env:JUICE_COLLECTOR_INSTANCE:-otel-collector}
+        action: upsert
+
   # Redaction (requirements §10). Drops credential-like attributes on every record, and the message payload of Juice
   # log categories as a second line behind the Juice log processor (which already drops it unless IncludePayloads).
   transform/redact:
@@ -161,7 +204,7 @@ exporters:
     ttl: ${env:JUICE_LOGS_TTL}
 
 service:
-  extensions: [bearertokenauth/otlp, health_check]
+  extensions: [bearertokenauth/otlp, bearertokenauth/platform, health_check]
   telemetry:
     metrics:
       level: normal
@@ -183,6 +226,14 @@ service:
     metrics/host:
       receivers: [host_metrics]
       processors: [memory_limiter, resource_detection/host, resource/stamp_tenant]
+      exporters: [clickhouse/metrics]
+    metrics/platform:
+      receivers: [otlp/platform]
+      processors: [memory_limiter, transform/strip_untrusted_tenant, resource/stamp_platform, transform/redact]
+      exporters: [clickhouse/metrics]
+    metrics/collector:
+      receivers: [prometheus/self]
+      processors: [memory_limiter, resource/collector_instance, resource/stamp_platform]
       exporters: [clickhouse/metrics]
     logs:
       receivers: [otlp]

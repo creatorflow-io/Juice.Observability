@@ -1,0 +1,213 @@
+# Platform metrics
+
+What Juice Observability measures about itself (Phase 11 milestone 1, [plan](phase-11-plan.md) R1–R5).
+
+## Where the metrics go
+
+The platform exports its metrics over OTLP every 15 s to the Collector's **platform pipeline**:
+- **The route:** receiver `otlp/platform` on port 4319, with a token of its own (`secrets/platform-otlp-token`). An application's token is
+  refused there.
+- **The tenant:** the pipeline stamps the reserved tenant `juice-platform` instead of the deployment's.
+- **Why:** they never enter the tenant's own data. Discovery, health, rules, SLOs, the Console's tenant pages and Grafana's
+  `grafana_tenant` policy all filter on the deployment's tenant (owner, Q1).
+- **The reserved key:** a deployment can't take `juice-platform` as its own. `scripts/init.sh`, `clickhouse/init-users.sh` and the API at
+  startup all refuse it. A test checks the API; `tests/verify.sh` checks `init-users.sh`.
+- **The Collector's own metrics:** scraped from its `:8888` page every 15 s into the same pipeline. They report received, refused,
+  exported and failed per signal, each exporter's queue against its capacity, and memory.
+  - **Service name:** its own, `otelcol-contrib`, with its compose service as `service.instance.id`.
+  - **Scraped, not pushed,** so the Collector needs no token or TLS connection to itself.
+  - **The test Collector** (`--profile test`) shares the configuration, so its metrics are there too, as instance
+    `otel-collector-test`. Leave it out when reading the deployment's Collector.
+- **Where they land:** ClickHouse's `otel_metrics_*` tables, beside the tenant's, with
+  `ResourceAttributes['juice.platform_tenant_id'] = 'juice-platform'`.
+  - The platform's service name is `juice-observability-platform`.
+  - Each replica is its `service.instance.id`, the container's host name.
+
+**A meter provider of its own.** The platform's exporter isn't part of the host's OpenTelemetry setup. A host that uses OpenTelemetry for
+its own metrics keeps its instruments, views and exporters, and neither side sees the other's metrics. The platform's allowlist applies only
+to the platform's meters.
+
+Settings, under `Telemetry` (all optional):
+
+| Setting | Default | |
+|---|---|---|
+| `Telemetry:Enabled` | `true` | Off: nothing is exported (owner, R14: on by default) |
+| `Telemetry:Otlp:Endpoint` | none | The platform receiver, such as `https://otel-collector:4319` |
+| `Telemetry:Otlp:TokenFile` | none | A file holding the platform token; required |
+| `Telemetry:Otlp:CaFile` | none | A CA certificate to trust for the receiver's TLS, besides the system's |
+| `Telemetry:ExportInterval` | `00:00:15` | A .NET time span (`hh:mm:ss`), at least 1 s; `15` alone means 15 days |
+| `ClickHouse:MonitorConnectionString` | none | The sampler's ClickHouse user, `platform_monitor`. Without it ClickHouse isn't sampled |
+
+**Configuration problems stop the export, never the platform.** Nothing is exported, and the startup log says why
+(`Platform metrics: ...`), when:
+- a `Telemetry` value doesn't convert (`Telemetry:Enabled=yes`, `Telemetry:ExportInterval=15s`);
+- the endpoint is missing or isn't an absolute http or https URL;
+- the export interval is under 1 s;
+- the token file is missing or can't be read;
+- the CA file can't be read.
+
+The exporter starts before the workers and stops after them, so a worker's last pass on shutdown is still exported. Without the monitor connection string, ClickHouse
+isn't sampled. The compose stack (`docker-compose.yml`) and `scripts/run-api.sh` set all of them.
+
+**A host that wants the platform's metrics in its own pipeline:**
+1. Set `Telemetry:Enabled=false`.
+2. Call `AddJuiceObservabilityMeters()` on its own `MeterProviderBuilder`.
+3. Export them to the platform receiver, not to the tenant's.
+
+**What is exported:**
+- **Meters:**
+  - the platform's own, `Juice.Observability`;
+  - the Juice framework's, `Juice` and `delivery.metrics`;
+  - ASP.NET Core (`Microsoft.AspNetCore.Hosting`), HttpClient (`System.Net.Http`), the .NET runtime (`System.Runtime`) and `Npgsql`, which
+    .NET 10 and Npgsql publish themselves.
+- **Attribute keys** are cut to an allowlist on every one of those meters' instruments (`PlatformTelemetry.AllowedKeys`, R3):
+  - **Kept:** the platform's own fixed sets (`worker`, `caller`, `outcome`, `kind`, `state`, `user`, `disk`, `table`, `subject_type`,
+    `template`, `queued`, `reason`) and the standard instruments' bounded keys (`http.request.method`, `http.response.status_code`,
+    `http.route`, `error.type`, `gc.heap.generation`, `cpu.mode`, `db.client.connection.state`).
+  - **Dropped:** everything else, such as a webhook receiver's host (`server.address`), URLs, and a connection pool's name (it comes
+    from its connection string).
+- **Histogram buckets:** the platform's own duration histograms use buckets from 5 ms to 5 min. The standard instruments keep their own.
+
+## Requirements §9 against what measures it
+
+Requirements line 254 asks for these. "Platform" is meter `Juice.Observability`; "Collector" is the scraped `otelcol_*` metrics.
+
+| Requirement | Metric | Source |
+|---|---|---|
+| Received, exported, dropped telemetry | `otelcol_receiver_accepted_*`, `otelcol_receiver_refused_*`, `otelcol_exporter_sent_*`, `otelcol_exporter_send_failed_*`, `otelcol_exporter_enqueue_failed_*` (a series appears once it moves) | Collector |
+| Collector queue and memory | `otelcol_exporter_queue_size` and `otelcol_exporter_queue_capacity` (per exporter); `otelcol_process_memory_rss` | Collector |
+| ClickHouse query latency | `juice.observability.clickhouse.query.duration` {caller, outcome}, with `juice.observability.clickhouse.query.read_rows` and `juice.observability.clickhouse.query.read_bytes`; ClickHouse's own view, `juice.observability.clickhouse.server.query.p95` {user, kind} | Platform; sampler |
+| ClickHouse insert latency | `juice.observability.clickhouse.server.query.p95{user=otel_writer, kind=Insert}`; and the count, `juice.observability.clickhouse.server.queries` | Sampler |
+| PostgreSQL health | `juice.observability.postgres.up`, `juice.observability.postgres.sample.duration`, `juice.observability.postgres.size`; Npgsql's `db.client.*` | Sampler; Npgsql |
+| Evaluation lag | `juice.observability.rules.lag`; `juice.observability.slos.burn_lag`; `juice.observability.discovery.watermark_lag`; `juice.observability.health.evidence_age`; each worker's `juice.observability.worker.since_last_pass` and `juice.observability.worker.pass.age` | Platform; sampler |
+| Alert transitions | `juice.observability.alerts.transitions` {template, state} | Platform |
+| Webhook retries | `juice.observability.webhooks.attempts` {outcome}; `juice.observability.webhooks.backlog` {state = pending, retrying} and `juice.observability.webhooks.oldest_age` | Platform; sampler |
+| API latency | `http.server.request.duration` {http.route, http.request.method, http.response.status_code} | ASP.NET Core |
+| Availability (§9, measured) | `juice.observability.process.uptime`; `/health/ready` | Platform |
+
+## The platform's own instruments
+
+Meter `Juice.Observability`. A test checks that every instrument declared in code is in these tables, and that each goes through the
+exporter.
+
+### Workers
+
+Each pass of discovery, health, SLO counting, notifications, action requests, webhook dispatch and the sampler is reported. Its outcome is
+one of:
+- `success`;
+- `partial`: done, but part failed, such as some SLOs of many, or one store of the sampler's two;
+- `failure`: including a pass in which every SLO, or every store, failed;
+- `canceled`: the host stopping.
+
+The rule scheduler has no single pass: it shows as busy slots instead.
+
+| Instrument | Type, unit | Attributes | A bad value means |
+|---|---|---|---|
+| `juice.observability.worker.passes` | counter | worker, outcome | `failure` or `partial` rising: the worker's log says why |
+| `juice.observability.worker.pass.duration` | histogram, s | worker | A pass near or past its interval: the worker can't keep up (R18) |
+| `juice.observability.worker.pass.age` | gauge, s | worker | Growing: a pass is stuck, most likely in a query |
+| `juice.observability.worker.since_last_pass` | gauge, s | worker | Past a few intervals: the worker stopped. Reported while the replica holds the lease (from its first pass after taking it), and always for the webhook dispatcher and the sampler, which run in every replica |
+| `juice.observability.worker.lease` | gauge | worker | No replica at 1 for a worker: nobody runs it. Not reported for workers without a lease |
+| `juice.observability.rules.busy` | gauge | – | At `rules.slots` with `rules.waiting` growing: raise `Rules:MaxConcurrency`, or find the slow template (`rules.duration`) |
+| `juice.observability.rules.waiting` | gauge | – | Due evaluations waiting for a slot |
+| `juice.observability.rules.slots` | gauge | – | `Rules:MaxConcurrency` |
+| `juice.observability.discovery.runs` | counter | outcome | `failure` rising |
+| `juice.observability.discovery.duration` | histogram, s | – | Near `Discovery:Interval` (30 s) |
+| `juice.observability.discovery.created` | counter | kind | – |
+| `juice.observability.discovery.truncated` | counter | kind | Rising: windows or values cut at their limits |
+| `juice.observability.discovery.watermark_lag` | gauge, s | – | Past `Discovery:Lag` (60 s) by a minute or more: discovery is behind |
+| `juice.observability.health.evaluations` | counter | outcome | `failure` rising |
+| `juice.observability.health.duration` | histogram, s | – | Near `Health:Interval` (30 s) |
+| `juice.observability.health.evidence_age` | histogram, s | subject_type | Past a minute: health freshness at risk |
+| `juice.observability.health.transitions` | counter | subject_type, state | – |
+| `juice.observability.rules.evaluations` | counter | template, outcome | `failure` or `timeout` rising |
+| `juice.observability.rules.duration` | histogram, s | – | Near a rule's schedule |
+| `juice.observability.rules.lag` | histogram, s | template, queued | More than a few seconds: rules wait too long for a slot |
+| `juice.observability.rules.skipped` | counter | reason | `overrun` rising: a rule is slower than its schedule |
+| `juice.observability.rules.queued` | counter | template | Rises in a healthy deployment; the lag matters |
+| `juice.observability.alerts.transitions` | counter | template, state | – |
+| `juice.observability.slos.counted` | counter | outcome (`counted`, `idle`, `failed`) | `failed` rising |
+| `juice.observability.slos.duration` | histogram, s | – | Near `Slos:Interval` (30 s) |
+| `juice.observability.slos.burn_lag` | histogram, s | – | Past a minute: passes take longer than the minute they have |
+| `juice.observability.webhooks.attempts` | counter | outcome | `failed` or `retry` rising |
+| `juice.observability.webhooks.dispatch_delay` | histogram, s | – | Past 30 s (§9 webhook dispatch) |
+| `juice.observability.notifications.held` | counter | outcome | `dropped` rising |
+| `juice.observability.notifications.escalations` | counter | outcome | `unreachable` rising |
+| `juice.observability.process.uptime` | gauge, s | – | Resets: the process restarted |
+
+### ClickHouse queries the platform makes
+
+| Instrument | Type, unit | Attributes | A bad value means |
+|---|---|---|---|
+| `juice.observability.clickhouse.query.duration` | histogram, s | caller, outcome | One caller slow: its queries. Every caller slow: ClickHouse itself. `timeout` rising: queries cut by the caller's own deadline (`Rules:EvaluationTimeout`, `Slos:QueryTimeout`), ClickHouse too slow. `canceled`: the host or the request stopping |
+| `juice.observability.clickhouse.query.read_rows` | counter | caller | A caller reading far more than the others |
+| `juice.observability.clickhouse.query.read_bytes` | counter, By | caller | Same |
+
+**The `caller` attribute:**
+- **Values:** a worker (`discovery`, `health`, `rules`, `slos`), or an API endpoint by its route template below the tenant, such as
+  `api:/telemetry/traces`. It never carries a request's values. `other` means code that didn't name itself.
+- **In ClickHouse:** the same caller is in `system.query_log` as `log_comment = 'juice:<caller>'`, the authoritative cross-check. The
+  driver's read statistics come from a response header that can be partial for a streamed result. The sampler's own queries are there as
+  `juice:sampler`, and aren't timed here.
+
+### The sampler
+
+Every 15 s, every replica samples the platform database and ClickHouse. Pages and probes read the last sample, never the stores.
+- **Timeout:** each store has 10 s to answer, at the same time as the other. A store that doesn't answer is down for that sample, and its
+  `up` gauge goes to 0.
+- **Staleness:** a gauge shows only while its sample is under a minute old.
+- **Replicas:** every replica samples the same stores. Read a figure from one replica, or take the max across them. Never sum across
+  `service.instance.id`.
+
+| Instrument | Type, unit | Attributes | A bad value means |
+|---|---|---|---|
+| `juice.observability.postgres.up` | gauge | – | 0: the database didn't answer the sample |
+| `juice.observability.postgres.sample.duration` | gauge, s | – | Rising: the database is slow |
+| `juice.observability.postgres.size` | gauge, By | – | Growth per day |
+| `juice.observability.outbox.backlog` | gauge | state (`pending`, `retrying`) | `pending` growing: delivery is behind; `retrying`: a consumer keeps failing |
+| `juice.observability.outbox.oldest_age` | gauge, s | – | Past a minute: notifications are late |
+| `juice.observability.webhooks.backlog` | gauge | state (`pending`, `retrying`) | Pending growing: dispatch is behind |
+| `juice.observability.webhooks.oldest_age` | gauge, s | – | Past a minute: dispatch is behind |
+| `juice.observability.clickhouse.up` | gauge | – | 0: ClickHouse didn't answer the sampler |
+| `juice.observability.clickhouse.cpu` | gauge, cores | – | Near the cores it has: ClickHouse is the limit (Phase 10 scale tests) |
+| `juice.observability.clickhouse.memory` | gauge, By | – | Near its memory |
+| `juice.observability.clickhouse.running_queries` | gauge | user | Many at once for one user |
+| `juice.observability.clickhouse.server.queries` | counter (from this process's start) | user, kind, outcome | Failures rising |
+| `juice.observability.clickhouse.server.query.p95` | gauge, s (the last sample's window: 15 s, up to 5 min after a missed one) | user, kind | Rising for `platform_reader` (the platform) or `otel_writer` (inserts) |
+| `juice.observability.clickhouse.disk.free` | gauge, By | disk | Falling toward what retention still needs |
+| `juice.observability.clickhouse.disk.total` | gauge, By | disk | – |
+| `juice.observability.clickhouse.table.size` | gauge, By | table | Growth per day, for the disk budget |
+| `juice.observability.clickhouse.table.rows` | gauge | table | – |
+
+**ClickHouse access:**
+- **User:** `platform_monitor`.
+- **Grants:** `SELECT` on `system.events`, `asynchronous_metrics`, `processes`, `query_log`, `disks` and `parts`, plus `SHOW TABLES ON otel.*`
+  so `system.parts` lists the telemetry tables. It can't read a row of telemetry; `tests/verify.sh` checks that.
+- **What it can see:** those system tables show every user's queries, query text included. The sampler reads only counts and timings.
+  Users outside the platform's own (`otel_writer`, `platform_reader`, `grafana_reader`, `platform_monitor`) count as `other`, and kinds
+  outside Select, Insert and AsyncInsertFlush as `other`.
+
+**How each ClickHouse figure is read:**
+- **CPU:** the change in ClickHouse's `OSCPUVirtualTimeMicroseconds` (the CPU time of its threads) over the wall time between samples.
+  It's a lower bound: threads that keep no profile events aren't counted. On the local stack it read about two thirds of what
+  `docker stats` showed for the container.
+- **Query and insert timings:** from `system.query_log`, one window after another on ClickHouse's own clock, each ending 10 s back
+  (ClickHouse flushes that log every 7.5 s).
+  - **Missed windows:** a window that fails to read is read again next time, up to 5 minutes back.
+  - **The count** is cumulative, so it reads right at any export interval.
+  - **The p95** is the last window's (15 s, longer after a missed sample). For merged `other` groups it's the highest of their p95s, not a p95.
+
+## Volume
+
+Measured on the local stack on 13 November, over 5 minutes. Gauges and cumulative sums are written for every series at every export
+(5,760 a day at 15 s).
+
+| Source | Series | Rows a day |
+|---|---|---|
+| The platform, one replica | about 175 | about 1.0 M |
+| The deployment's Collector | about 66 | about 0.38 M |
+| The test Collector (`--profile test` only) | about 94 | about 0.54 M |
+
+- **Share of the load:** the platform and the deployment's Collector come to about 0.16 % of the §9 reference load's 860 M metric points a
+  day. Each further API replica adds about 0.11 %.
+- **Retention:** these rows are kept by the metrics tables' TTL (90 days), like the tenant's.

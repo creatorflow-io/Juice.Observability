@@ -34,6 +34,20 @@ namespace Juice.Observability.Rules
         private static readonly Counter<long> Queued = RuleEvaluator.Meter.CreateCounter<long>("juice.observability.rules.queued",
             "{evaluation}", "Due evaluations that waited for a free worker before running; the wait is in rules.lag");
 
+        /// <summary>The scheduler running in this process, for the gauges below (one per host).</summary>
+        private static RuleScheduler? s_live;
+
+        static RuleScheduler()
+        {
+            // Phase 11 R4: the scheduler has no single pass; how busy it is shows as evaluations running out of its slots, and those waiting.
+            RuleEvaluator.Meter.CreateObservableGauge("juice.observability.rules.busy", () => s_live is { } live ? [new Measurement<int>(Volatile.Read(ref live._inFlight))] : Array.Empty<Measurement<int>>(),
+                "{evaluation}", "Rule evaluations running now, out of rules.slots");
+            RuleEvaluator.Meter.CreateObservableGauge("juice.observability.rules.waiting", () => s_live is { } live ? [new Measurement<int>(Math.Max(0, live._running.Count - Volatile.Read(ref live._inFlight)))] : Array.Empty<Measurement<int>>(),
+                "{evaluation}", "Due rule evaluations waiting for a free slot");
+            RuleEvaluator.Meter.CreateObservableGauge("juice.observability.rules.slots", () => s_live is { } live ? [new Measurement<int>(live._slots)] : Array.Empty<Measurement<int>>(),
+                "{evaluation}", "Rule evaluations that may run at once (Rules:MaxConcurrency)");
+        }
+
         private readonly ConcurrentDictionary<Guid, DateTimeOffset> _due = new();
         private readonly ConcurrentDictionary<Guid, Task> _running = new();
         /// <summary>The time each rule was last evaluated as of.</summary>
@@ -43,6 +57,7 @@ namespace Juice.Observability.Rules
         /// for the next tick instead capped the scheduler at MaxConcurrency rules per tick (48 a minute at the defaults), however quick each was.
         /// </summary>
         private readonly SemaphoreSlim _workers = new(Math.Max(1, options.Value.MaxConcurrency));
+        private readonly int _slots = Math.Max(1, options.Value.MaxConcurrency);
         /// <summary>Cancelled when this replica loses the lease, so rules it queued don't run beside the replica that took over.</summary>
         private CancellationTokenSource _holding = new();
         private int _inFlight;
@@ -56,6 +71,8 @@ namespace Juice.Observability.Rules
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
+            PlatformCaller.Set("rules", stoppingToken);
+            s_live = this;
             await using var lease = WorkerLease.For(scopes, "rules", logger);
             var held = false;
             var generation = 0;

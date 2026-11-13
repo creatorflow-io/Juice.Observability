@@ -99,6 +99,7 @@ namespace Juice.Observability.Slos
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
+            PlatformCaller.Set(CloseSloBurnAlertsHandler.CounterLease, stoppingToken);
             await using var lease = WorkerLease.For(scopes, CloseSloBurnAlertsHandler.CounterLease, logger);
             using var timer = new PeriodicTimer(options.Value.Interval);
             var generation = 0;
@@ -118,7 +119,10 @@ namespace Juice.Observability.Slos
                     if (holds)
                     {
                         var started = Stopwatch.GetTimestamp();
+                        using var pass = WorkerPulse.Begin(CloseSloBurnAlertsHandler.CounterLease, stoppingToken);
                         await PassAsync(stoppingToken);
+                        // Every SLO failed (ClickHouse unreachable, say): left unfinished, the pass is a failure.
+                        if (LastPassFailures == 0) pass.Succeeded(); else if (LastPassFailures < LastPassAttempted) pass.Partial();
                         PassDuration.Record(Stopwatch.GetElapsedTime(started).TotalSeconds);
                     }
                 }
@@ -132,9 +136,17 @@ namespace Juice.Observability.Slos
 
         public static DateTimeOffset Floor(DateTimeOffset t) => new(t.UtcTicks - t.UtcTicks % TimeSpan.TicksPerMinute, TimeSpan.Zero);
 
+        /// <summary>How many SLOs the last <see cref="PassAsync"/> failed to count (each logged); the worker reports such a pass as partial.</summary>
+        public int LastPassFailures { get; private set; }
+
+        /// <summary>How many SLOs the last <see cref="PassAsync"/> tried to count.</summary>
+        public int LastPassAttempted { get; private set; }
+
         /// <summary>Counts every active SLO once, and drops buckets past retention. Exposed for tests.</summary>
         public async Task PassAsync(CancellationToken ct)
         {
+            LastPassFailures = 0;
+            LastPassAttempted = 0;
             await using var scope = scopes.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
             var tenantId = await db.Tenants.Where(t => t.Key == platform.Value.TenantKey).Select(t => t.Id).SingleAsync(ct);
@@ -146,6 +158,7 @@ namespace Juice.Observability.Slos
             var lookback = Lookback(options.Value);
             foreach (var id in ids)
             {
+                LastPassAttempted++;
                 // Each SLO on its own: one that can't be read (a stored definition this build can't parse) doesn't hold back the others.
                 try
                 {
@@ -171,6 +184,7 @@ namespace Juice.Observability.Slos
                 {
                     logger.LogWarning(ex, "SLO {Slo}: can't be counted; the other SLOs carry on", id);
                     Passes.Add(1, new KeyValuePair<string, object?>("outcome", "failed"));
+                    LastPassFailures++;
                 }
             }
             await EvaluateBurnsAsync(ct);

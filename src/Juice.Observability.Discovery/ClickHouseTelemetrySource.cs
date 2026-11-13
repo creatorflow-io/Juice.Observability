@@ -1,5 +1,8 @@
 using System.Data.Common;
+using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using ClickHouse.Driver.ADO;
+using Juice.Observability.Data;
 using ClickHouse.Driver.Utility;
 using Microsoft.Extensions.Options;
 
@@ -37,6 +40,20 @@ namespace Juice.Observability.Discovery
         /// <summary>A span's environment key, as rules and SLOs match it: lowercase and trimmed, <c>unspecified</c> when missing or blank.</summary>
         public const string EnvironmentKey = "if(trim(BOTH ' ' FROM ResourceAttributes['deployment.environment.name']) = '', 'unspecified', lower(trim(BOTH ' ' FROM ResourceAttributes['deployment.environment.name'])))";
         public const string CountFrom = "{count_from:DateTime64(9)}";
+
+        // Phase 11 R4: every platform query, timed and sized per caller (PlatformCaller: a worker, or an API endpoint). The same caller is in
+        // ClickHouse's own system.query_log as log_comment = juice:<caller>, the authoritative cross-check (the summary header the driver reads
+        // its statistics from can be partial for a streamed result).
+        private static readonly Meter Meter = new(WorkerPulse.MeterName);
+        private static readonly Histogram<double> QueryDuration = Meter.CreateHistogram<double>("juice.observability.clickhouse.query.duration", "s",
+            "A platform query to ClickHouse, by caller and outcome (success, failure, timeout: cut by the caller's own deadline, canceled: the host or request stopping)");
+        private static readonly Counter<long> QueryReadRows = Meter.CreateCounter<long>("juice.observability.clickhouse.query.read_rows", "{row}",
+            "Rows ClickHouse read for platform queries, by caller");
+        private static readonly Counter<long> QueryReadBytes = Meter.CreateCounter<long>("juice.observability.clickhouse.query.read_bytes", "By",
+            "Bytes ClickHouse read for platform queries, by caller");
+
+        /// <summary>What a platform query is tagged with in ClickHouse's <c>system.query_log</c>: <c>juice:</c> and the caller.</summary>
+        public static string LogComment(string caller) => $"juice:{caller}";
 
         /// <summary>One service (<c>{svc}</c>, <c>{ns}</c>) in one environment (<c>{env}</c>), in any of <see cref="ResourceTables"/>.</summary>
         public const string ServiceMatch = $"ServiceName = {{svc:String}} AND ResourceAttributes['service.namespace'] = {{ns:String}} AND {EnvironmentKey} = {{env:String}}";
@@ -187,10 +204,44 @@ namespace Juice.Observability.Discovery
         public async Task<IReadOnlyList<T>> QueryAsync<T>(string sql, TelemetryWindow window, Func<DbDataReader, T> map,
             CancellationToken cancellationToken, IReadOnlyDictionary<string, object>? parameters = null)
         {
+            var caller = PlatformCaller.Current;
+            var started = Stopwatch.GetTimestamp();
+            var outcome = "failure";
+            ClickHouseCommand? command = null;
+            try
+            {
+                var rows = await RunAsync(sql, window, map, parameters, caller, c => command = c, cancellationToken);
+                outcome = "success";
+                return rows;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Cancelled while what stops the caller (the host, or the request) isn't: the caller's own deadline cut it, a timeout. A caller
+                // that didn't say what stops it is counted as canceled, the cautious reading.
+                outcome = PlatformCaller.Stopping is { IsCancellationRequested: false } stopping && stopping.CanBeCanceled ? "timeout" : "canceled";
+                throw;
+            }
+            finally
+            {
+                var tag = new KeyValuePair<string, object?>("caller", caller);
+                QueryDuration.Record(Stopwatch.GetElapsedTime(started).TotalSeconds, tag, new KeyValuePair<string, object?>("outcome", outcome));
+                if (command?.QueryStats is { } stats)
+                {
+                    QueryReadRows.Add(stats.ReadRows, tag);
+                    QueryReadBytes.Add(stats.ReadBytes, tag);
+                }
+            }
+        }
+
+        private async Task<IReadOnlyList<T>> RunAsync<T>(string sql, TelemetryWindow window, Func<DbDataReader, T> map,
+            IReadOnlyDictionary<string, object>? parameters, string caller, Action<ClickHouseCommand> created, CancellationToken cancellationToken)
+        {
             await using var connection = new ClickHouseConnection(options.Value.ConnectionString);
             await connection.OpenAsync(cancellationToken);
             await using var command = connection.CreateCommand();
+            created(command);
             command.CommandText = sql;
+            command.CustomSettings["log_comment"] = LogComment(caller);
             command.AddParameter("tenant", window.TenantKey);
             command.AddParameter("from", window.From.UtcDateTime);
             command.AddParameter("to", window.To.UtcDateTime);

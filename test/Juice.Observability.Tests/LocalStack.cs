@@ -55,6 +55,10 @@ namespace Juice.Observability.Tests
         public static string ClickHouseReader
             => $"Host=127.0.0.1;Port=8123;Username=platform_reader;Password={Secret("CLICKHOUSE_PLATFORM_PASSWORD")};Database=otel";
 
+        /// <summary>The platform sampler's ClickHouse user (Phase 11): a few system tables only.</summary>
+        public static string ClickHouseMonitor
+            => $"Host=127.0.0.1;Port=8123;Username=platform_monitor;Password={Secret("CLICKHOUSE_MONITOR_PASSWORD")}";
+
         public const string Authority = "http://localhost:8080/realms/juice";
 
         private static bool Listening(int port)

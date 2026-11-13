@@ -49,6 +49,7 @@ The API applies database migrations on start (`Database:Migrate`). It creates th
 | Users and roles | the IdP | Console and API: client `juice-console` (public, PKCE) issuing tokens for `juice-platform` with roles `admin`, `operator`, `viewer` and the `platform_tenant` claim; Grafana (optional): client `grafana` roles `admin`, `editor`, `viewer` |
 | Console sign-in | `wwwroot/config.json` in the API image | `{"apiBase": "", "auth": {"issuer": "<IdP>", "clientId": "juice-console", "scope": "openid profile email"}}`; mount your own file over it. `auth.requireHttps` (default `"remoteOnly"`: plain HTTP only for localhost) is `false` only for a local stack |
 | Grafana links | `Integrations:Grafana:BaseUrl` | optional; unset means no links |
+| The platform's own metrics | `Telemetry:Otlp:Endpoint` (the Collector's platform receiver, `https://otel-collector:4319`), `Telemetry:Otlp:TokenFile` (`secrets/platform-otlp-token`), `Telemetry:Otlp:CaFile`; `ClickHouse:MonitorConnectionString` (user `platform_monitor`) | on by default (`Telemetry:Enabled`); stored under the reserved tenant `juice-platform`, never the deployment's; see [platform metrics](platform-metrics.md) |
 | Grafana's data | ClickHouse user `grafana_reader` with the row policy `grafana_tenant` (`clickhouse/init-users.sh`, applied by the `clickhouse-access` service, which the Collectors, the API and Grafana wait for; needs `JUICE_PLATFORM_TENANT_ID`) | Grafana sees only this deployment's tenant, even when one ClickHouse holds more than one; except on the trace-ID index (`otel_traces_trace_id_ts`), which Grafana's trace view needs and which has no tenant: from it a Grafana user can list every tenant's trace IDs and times (no span content), so share one ClickHouse between deployments only if that is acceptable; `tests/verify.sh` checks every table with the tenant stamp has the policy |
 
 Every one of these files lives in version control (requirements §6.1). Changes take effect on the next API start, with
@@ -187,6 +188,7 @@ The local profile cuts these corners on purpose. Each one changes for a producti
 | secrets in `.env` | the platform's secret store |
 | backups on the host disk | scheduled `scripts/backup.sh` and `scripts/backup-telemetry.sh` copied off the host |
 | the agent CA and command key as files from `init.sh` | kept in the secret store, the CA key offline where the deployment allows it |
+| the platform receiver (4319) published on loopback for `tests/verify.sh` | not published: the API reaches it on the internal network |
 
 The pinned versions, the rules and the webhook configuration stay the same.
 

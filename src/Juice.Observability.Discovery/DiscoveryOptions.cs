@@ -73,5 +73,11 @@ namespace Juice.Observability.Discovery
 
         /// <summary>For example <c>Host=localhost;Port=8123;Username=platform_reader;Password=...;Database=otel</c>.</summary>
         public string ConnectionString { get; set; } = "";
+
+        /// <summary>
+        /// The platform sampler's ClickHouse user (Phase 11 R5), <c>platform_monitor</c>: a few system tables, no otel data. Empty: ClickHouse
+        /// isn't sampled (its CPU, memory, queries and disks don't show), and everything else works.
+        /// </summary>
+        public string MonitorConnectionString { get; set; } = "";
     }
 }

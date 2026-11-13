@@ -7,11 +7,18 @@
 #   grafana_reader  Grafana data source: read-only, otel database only, bounded queries, this deployment's tenant only.
 #   platform_reader Platform discovery/health/rules workers (Track B): read-only, otel database only, bounded queries.
 #                   The platform filters by tenant in every query (the API's tenant scope); its row policy lets every row through.
+#   platform_monitor The platform's ClickHouse sampler (Phase 11 R5): CPU, memory, running queries, query and insert timings, disks and
+#                   part sizes, from a few system tables only; no otel data. Those tables show every user's queries: the sampler
+#                   reads counts and timings, never query text.
 set -euo pipefail
 # The deployment tenant, for the Grafana row policy below. The same rule as scripts/init.sh, so only a plain key reaches the SQL.
 tenant=${JUICE_PLATFORM_TENANT_ID:-}
 if [[ ! "$tenant" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
   echo "JUICE_PLATFORM_TENANT_ID must be set to a plain key (a letter or digit, then letters, digits, . _ -), not '$tenant'" >&2
+  exit 1
+fi
+if [[ "${tenant,,}" == juice-platform ]]; then
+  echo "JUICE_PLATFORM_TENANT_ID juice-platform is reserved for the platform's own telemetry" >&2
   exit 1
 fi
 
@@ -80,6 +87,14 @@ CREATE USER IF NOT EXISTS platform_reader IDENTIFIED WITH sha256_password BY '${
     SETTINGS PROFILE bounded_reader;
 ALTER USER platform_reader IDENTIFIED WITH sha256_password BY '${CLICKHOUSE_PLATFORM_PASSWORD}' SETTINGS PROFILE bounded_reader;
 GRANT SELECT ON otel.* TO platform_reader;
+
+CREATE USER IF NOT EXISTS platform_monitor IDENTIFIED WITH sha256_password BY '${CLICKHOUSE_MONITOR_PASSWORD}'
+    SETTINGS PROFILE bounded_reader;
+ALTER USER platform_monitor IDENTIFIED WITH sha256_password BY '${CLICKHOUSE_MONITOR_PASSWORD}' SETTINGS PROFILE bounded_reader;
+GRANT SELECT ON system.events, SELECT ON system.asynchronous_metrics, SELECT ON system.processes, SELECT ON system.query_log,
+    SELECT ON system.disks, SELECT ON system.parts TO platform_monitor;
+-- system.parts lists only tables a user may see: SHOW TABLES lets the sampler size the otel tables without reading a row of them.
+GRANT SHOW TABLES ON otel.* TO platform_monitor;
 
 ${policies}
 SQL

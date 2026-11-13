@@ -16,6 +16,8 @@ x-clickhouse-access-env: &clickhouse-access-env
   CLICKHOUSE_OTEL_PASSWORD: ${CLICKHOUSE_OTEL_PASSWORD}
   CLICKHOUSE_GRAFANA_PASSWORD: ${CLICKHOUSE_GRAFANA_PASSWORD}
   CLICKHOUSE_PLATFORM_PASSWORD: ${CLICKHOUSE_PLATFORM_PASSWORD}
+  # The platform's ClickHouse sampler (Phase 11 R5): a few system tables, nothing in otel.
+  CLICKHOUSE_MONITOR_PASSWORD: ${CLICKHOUSE_MONITOR_PASSWORD:?run scripts/init.sh}
   # Grafana's row policy (clickhouse/init-users.sh): grafana_reader sees only this tenant.
   JUICE_PLATFORM_TENANT_ID: ${JUICE_PLATFORM_TENANT_ID:?run scripts/init.sh}
 
@@ -52,15 +54,19 @@ services:
       JUICE_LOGS_TTL: ${JUICE_LOGS_TTL}
       # host.name for host_metrics (read by the env detector); otherwise it would be the container id.
       OTEL_RESOURCE_ATTRIBUTES: host.name=${JUICE_HOST_NAME:-local-docker-host}
+      # Names this Collector in its own metrics (the platform pipeline, collector/config.yaml).
+      JUICE_COLLECTOR_INSTANCE: otel-collector
     volumes:
       - ./collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
       - ./secrets/tls/server.crt:/etc/otelcol/tls/server.crt:ro
       - ./secrets/tls/server.key:/etc/otelcol/tls/server.key:ro
       - ./secrets/otlp-tokens:/etc/otelcol/secrets/otlp-tokens:ro
+      - ./secrets/platform-otlp-token:/etc/otelcol/secrets/platform-otlp-token:ro
       - /:/hostfs:ro
     ports:
       - "4317:4317"
       - "4318:4318"
+      - "127.0.0.1:4319:4319"     # the platform's own metrics (its own token; loopback only, for tests/verify.sh)
       - "127.0.0.1:8888:8888"     # Collector's own metrics (queue size, refused, dropped)
       - "127.0.0.1:13133:13133"   # health check
     depends_on:
@@ -77,6 +83,7 @@ services:
     profiles: [test]
     environment:
       JUICE_PLATFORM_TENANT_ID: local-test
+      JUICE_COLLECTOR_INSTANCE: otel-collector-test
     ports: !override
       - "127.0.0.1:14318:4318"
       - "127.0.0.1:18888:8888"    # its own metrics, read by tests/verify.sh --outage and tests/load.sh
@@ -215,6 +222,12 @@ services:
     environment:
       ConnectionStrings__Platform: Host=postgres;Port=5432;Database=juice_observability;Username=juice;Password=${POSTGRES_PASSWORD}
       ClickHouse__ConnectionString: Host=clickhouse;Port=8123;Username=platform_reader;Password=${CLICKHOUSE_PLATFORM_PASSWORD};Database=otel
+      # The platform's own metrics (Phase 11, docs/platform-metrics.md): ClickHouse sampled through platform_monitor, and everything
+      # exported to the Collector's platform pipeline, under the reserved tenant juice-platform.
+      ClickHouse__MonitorConnectionString: Host=clickhouse;Port=8123;Username=platform_monitor;Password=${CLICKHOUSE_MONITOR_PASSWORD}
+      Telemetry__Otlp__Endpoint: https://otel-collector:4319
+      Telemetry__Otlp__TokenFile: /secrets/platform-otlp-token
+      Telemetry__Otlp__CaFile: /secrets/ca.crt
       Platform__TenantKey: ${JUICE_PLATFORM_TENANT_ID}
       # Metadata and keys over the compose network; the issuer stays http://PUBLIC_HOST:8080/realms/juice (KC_HOSTNAME).
       Auth__Authority: http://keycloak:8080/realms/juice
@@ -242,6 +255,8 @@ services:
       - ./slos.json:/config/slos.json:ro
       - ./secrets/agents:/secrets/agents:ro
       - ./secrets/release/release.pub:/secrets/release.pub:ro
+      - ./secrets/platform-otlp-token:/secrets/platform-otlp-token:ro
+      - ./secrets/tls/ca.crt:/secrets/ca.crt:ro
       - ./packages:/packages:ro
     configs:
       - source: console-config

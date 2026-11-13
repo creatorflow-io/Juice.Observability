@@ -12,6 +12,9 @@
     <!-- The platform's messaging: outbox delivery and the in-process guard against handling a message twice at once. -->
     <PackageReference Include="Juice.Messaging.Outbox.Delivery" />
     <PackageReference Include="Juice.Messaging.Idempotency.Caching" />
+    <!-- The platform's own metrics, exported over OTLP (PlatformTelemetry). -->
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" />
   </ItemGroup>
 
   <!-- the implicit usings of Microsoft.NET.Sdk.Web, which this project was -->

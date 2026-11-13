@@ -112,6 +112,10 @@ namespace Juice.Observability.Api
             {
                 throw new InvalidOperationException($"Platform:TenantKey '{key}' must match {TenantKey()}");
             }
+            if (string.Equals(key, ReservedTenant.Key, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException($"Platform:TenantKey '{key}' is reserved for the platform's own telemetry (docs/platform-metrics.md)");
+            }
             await using var scope = scopes.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
             if (configuration.GetValue("Database:Migrate", false))

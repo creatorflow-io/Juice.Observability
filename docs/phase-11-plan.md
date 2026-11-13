@@ -89,6 +89,19 @@ The cause couldn't be measured: the platform has 21 instruments of its own, but 
 | R17 | **Release 1.3.0** (owner, R14 of revision 1: self-metrics on by default).<ul><li>**Upgrade from 1.2.0:** the heartbeat migration; the platform pipeline and token in the Collector; the `platform_monitor` user and its grants; any users R11 adds.</li><li>**Where the steps go:** `init.sh` and `clickhouse-access` for the compose stack, and `deployment.md` for customer installs.</li><li>**Drill:** Phase 10's upgrade drill (milestone 4) covers 1.2.0 → 1.3.0.</li></ul> | Owner, Mine (steps) |
 | R18 | **Sizing and scaling guide** in `docs/deployment.md`, the answer to "how can I deploy the platform if it's the bottleneck". What scales out:<ul><li>the API, with more replicas;</li><li>webhook and outbox delivery, which run in every replica.</li></ul> What doesn't: each leased worker runs on one replica. Its levers are:<ul><li>its own settings (`Rules:MaxConcurrency`, `Slos:Interval` and `MaxMinutesPerPass`, rule and SLO counts);</li><li>separating worker replicas from API replicas (`*:Enabled`);</li><li>the fixes in R12.</li></ul> ClickHouse scales up on one node: CPU per 1× of load, from the steps. Isolation (R11) protects the workers from searches. The Collector is one instance, with its queue bounds. Each Overview figure (R8) maps to its action. The ceilings come from milestones 4 and 5. | Mine |
 
+### As built (milestone 1, 13 November)
+
+Two decisions above were built differently, for the reasons given, and are put to the owner at the gate:
+- **R2:** there is no separate `AddJuiceObservabilityTelemetry()` call.
+  - **How it's wired:** `AddJuiceObservability` adds the export itself (`AddPlatformTelemetry`), so a customer host still makes the
+    same three calls, and on by default needs no fourth.
+  - **For a host with its own OpenTelemetry:** `AddJuiceObservabilityMeters()` on its own pipeline.
+  - **Separation:** the export has a meter provider of its own, so it never changes the host's.
+- **R5:** the Collector's own metrics are scraped from its `:8888` page into the platform pipeline (`prometheus/self`), not pushed by
+  an OTLP reader in `service.telemetry`, so the Collector needs no token or TLS connection to itself.
+
+[Platform metrics](platform-metrics.md) describes both.
+
 ## Milestones
 
 | # | Milestone | Delivers | Evidence |

@@ -46,9 +46,27 @@ namespace Juice.Observability.Api.Endpoints
         };
         private static readonly Dictionary<string, ResourceType> TypesByName = TypeNames.ToDictionary(kv => kv.Value, kv => kv.Key);
 
+        /// <summary>
+        /// Names the endpoint as the caller of the ClickHouse queries it makes (Phase 11 R4, <see cref="PlatformCaller"/>): <c>api:</c> and its route
+        /// template below the tenant, such as <c>api:/telemetry/traces</c>. A template, never a request's values, so the set stays fixed.
+        /// </summary>
+        internal static string CallerOf(string? routePattern)
+        {
+            const string tenant = "/api/v1/tenants/{tenantId:guid}";
+            var pattern = routePattern ?? "?";
+            pattern = pattern.StartsWith(tenant, StringComparison.Ordinal) ? pattern[tenant.Length..] : pattern.StartsWith("/api/v1", StringComparison.Ordinal) ? pattern["/api/v1".Length..] : pattern;
+            return $"api:{(pattern.Length == 0 ? "/" : pattern)}";
+        }
+
+        private static ValueTask<object?> NameCallerAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
+        {
+            PlatformCaller.Set(CallerOf((context.HttpContext.GetEndpoint() as RouteEndpoint)?.RoutePattern.RawText), context.HttpContext.RequestAborted);
+            return next(context);
+        }
+
         public static IEndpointRouteBuilder MapInventoryEndpoints(this IEndpointRouteBuilder app)
         {
-            var api = app.MapGroup("/api/v1").RequireAuthorization(Policies.Read);
+            var api = app.MapGroup("/api/v1").RequireAuthorization(Policies.Read).AddEndpointFilter(NameCallerAsync);
 
             api.MapGet("/tenants", ListTenantsAsync);
 

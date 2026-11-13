@@ -165,6 +165,59 @@ check "platform_reader still reads every tenant (it filters per query)" \
   "$(docker compose exec -T clickhouse clickhouse client --user platform_reader --password "$CLICKHOUSE_PLATFORM_PASSWORD" \
       -q "SELECT count() FROM otel.otel_logs WHERE $svc" </dev/null 2>&1)" "1"
 
+echo "The platform's own telemetry (Phase 11, docs/platform-metrics.md)"
+mon() { docker compose exec -T clickhouse clickhouse client --user platform_monitor --password "$CLICKHOUSE_MONITOR_PASSWORD" -q "$1" </dev/null 2>&1; }
+check "clickhouse/init-users.sh refuses the reserved tenant juice-platform (before connecting)" \
+  "$(docker compose exec -T -e JUICE_PLATFORM_TENANT_ID=juice-platform -e CLICKHOUSE_HOST=nowhere.invalid clickhouse bash /docker-entrypoint-initdb.d/init-users.sh </dev/null 2>&1 | grep -c 'is reserved')" "1"
+check "platform_monitor cannot read telemetry" "$(mon "SELECT count() FROM otel.otel_logs" | grep -c ACCESS_DENIED)" "1"
+check "platform_monitor cannot write" "$(mon "CREATE TABLE otel.verify_$RUN (x UInt8) ENGINE = Memory" | grep -cE 'ACCESS_DENIED|READONLY')" "1"
+check "platform_monitor sizes the otel tables" "$(mon "SELECT count() > 0 FROM system.parts WHERE active AND database = 'otel'")" "1"
+PLATFORM_TOKEN=$(head -1 secrets/platform-otlp-token)
+platform_post() {
+  curl -s -m 30 -o /dev/null -w '%{http_code}' --ssl-no-revoke --cacert "$CA" -H 'Content-Type: application/json' "$@" \
+    -d '{"resourceMetrics":[]}' https://localhost:4319/v1/metrics
+}
+check "platform receiver: no token → 401" "$(platform_post)" "401"
+check "platform receiver: an application token → 401" "$(platform_post -H "Authorization: Bearer $TOKEN")" "401"
+check "platform receiver: the platform token → 200" "$(platform_post -H "Authorization: Bearer $PLATFORM_TOKEN")" "200"
+recent="TimeUnix > now() - INTERVAL 5 MINUTE"
+platform="ResourceAttributes['juice.platform_tenant_id'] = 'juice-platform'"
+check "the Collector's own metrics arrive under juice-platform" \
+  "$(ch "SELECT count() > 0 FROM otel.otel_metrics_sum WHERE $platform AND ServiceName = 'otelcol-contrib' AND $recent")" "1"
+if docker compose ps --status running --services 2>/dev/null | grep -qx platform-api; then
+  check "the platform's metrics arrive under juice-platform" \
+    "$(ch "SELECT count() > 0 FROM otel.otel_metrics_gauge WHERE $platform AND ServiceName = 'juice-observability-platform' AND MetricName = 'juice.observability.process.uptime' AND $recent")" "1"
+  # Every instrument that reports without anything happening (gauges, and each pass) is in ClickHouse within two export intervals (30 s);
+  # the event-driven ones (transitions, escalations, attempts...) are driven through the exporter by PlatformMetricsTests.
+  always="juice.observability.process.uptime juice.observability.worker.passes juice.observability.worker.pass.duration
+    juice.observability.worker.pass.age juice.observability.worker.since_last_pass juice.observability.worker.lease
+    juice.observability.rules.busy juice.observability.rules.waiting juice.observability.rules.slots
+    juice.observability.discovery.watermark_lag juice.observability.outbox.backlog juice.observability.outbox.oldest_age
+    juice.observability.webhooks.backlog juice.observability.webhooks.oldest_age juice.observability.postgres.up
+    juice.observability.postgres.sample.duration juice.observability.postgres.size juice.observability.clickhouse.up
+    juice.observability.clickhouse.cpu juice.observability.clickhouse.memory juice.observability.clickhouse.running_queries
+    juice.observability.clickhouse.server.queries juice.observability.clickhouse.disk.free juice.observability.clickhouse.disk.total
+    juice.observability.clickhouse.table.size juice.observability.clickhouse.table.rows juice.observability.clickhouse.query.duration
+    juice.observability.discovery.runs juice.observability.health.evaluations juice.observability.slos.counted
+    juice.observability.clickhouse.server.query.p95 juice.observability.clickhouse.query.read_rows juice.observability.clickhouse.query.read_bytes
+    juice.observability.discovery.duration juice.observability.discovery.created juice.observability.health.duration
+    juice.observability.health.evidence_age juice.observability.slos.duration juice.observability.rules.duration
+    juice.observability.rules.lag juice.observability.rules.evaluations
+    http.server.request.duration dotnet.process.cpu.time db.client.connection.count"
+  seen=$(ch "SELECT arrayStringConcat(groupUniqArray(MetricName), ' ') FROM merge('otel', '^otel_metrics_') WHERE $platform AND ServiceName = 'juice-observability-platform' AND TimeUnix > now() - INTERVAL 60 SECOND")
+  missing=""
+  for name in $always; do [[ " $seen " == *" $name "* ]] || missing+="$name "; done
+  check "every always-reporting platform instrument arrived in the last minute" "$missing" ""
+  check "none of the platform's metrics under $JUICE_PLATFORM_TENANT_ID" \
+    "$(ch "SELECT count() FROM merge('otel', '^otel_metrics_') WHERE ServiceName IN ('juice-observability-platform', 'otelcol-contrib') AND ResourceAttributes['juice.platform_tenant_id'] != 'juice-platform' AND $recent")" "0"
+  check "only allowlisted attribute keys on the platform's metrics" \
+    "$(ch "SELECT arrayStringConcat(arraySort(groupUniqArrayArray(mapKeys(Attributes))), ',') FROM merge('otel', '^otel_metrics_') WHERE $platform AND ServiceName = 'juice-observability-platform' AND $recent" \
+      | tr ',' '\n' | grep -vxE 'worker|caller|outcome|kind|state|user|disk|table|subject_type|template|queued|reason|http\.request\.method|http\.response\.status_code|http\.route|error\.type|gc\.heap\.generation|cpu\.mode|db\.client\.connection\.state|' | tr '\n' ' ')" ""
+  check "discovery doesn't list the platform or the Collector as the tenant's services" \
+    "$(docker compose exec -T postgres psql -U juice -d juice_observability -tAc "SELECT count(*) FROM services WHERE name IN ('juice-observability-platform', 'otelcol-contrib')" </dev/null)" "0"
+fi
+check "grafana_reader sees none of the platform's telemetry" "$(gr "SELECT count() FROM otel.otel_metrics_gauge WHERE $platform AND $recent")" "0"
+
 echo "Main Collector (nothing is stored: the requests have no token)"
 for address in localhost "$PUBLIC"; do
   check "$address:4318: certificate trusted, no token → 401" \

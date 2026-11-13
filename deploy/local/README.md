@@ -35,6 +35,7 @@ sets it without asking, and otherwise it is `local-dev`. It is set once, when `.
 | ClickHouse HTTP | http://127.0.0.1:8123 (admin user `admin`, `CLICKHOUSE_ADMIN_PASSWORD`) |
 | PostgreSQL | `127.0.0.1:5433`, database `juice_observability`, user `juice`, `POSTGRES_PASSWORD` |
 | Collector self-metrics / health | http://127.0.0.1:8888/metrics, http://127.0.0.1:13133 |
+| The platform's own metrics (OTLP/HTTP) | `https://127.0.0.1:4319`, token in `secrets/platform-otlp-token`; the API sends here, `tests/verify.sh` checks it |
 
 `.env` and `secrets/` are generated, git-ignored and local only. `docker compose down -v` deletes all data.
 
@@ -119,8 +120,9 @@ with `resource_detection` so application telemetry never gets the Collector's ho
   | `otel_writer` | Collector: create tables, insert |
   | `grafana_reader` | Grafana: SELECT on `otel` only, and only this deployment's tenant (row policy `grafana_tenant`) |
   | `platform_reader` | Track B workers: SELECT on `otel` only |
+  | `platform_monitor` | The platform's sampler: SELECT on a few system tables (events, asynchronous metrics, processes, query log, disks, parts) and SHOW TABLES on `otel`; no telemetry rows ([platform metrics](../../docs/platform-metrics.md)) |
 
-  The two readers share the `bounded_reader` profile: `readonly = 2` (no writes or DDL), with execution time 60 s,
+  The readers (and `platform_monitor`) share the `bounded_reader` profile: `readonly = 2` (no writes or DDL), with execution time 60 s,
   result rows 1,000,000 and memory 4 GB, each capped with `MAX` so a client cannot raise it. The Grafana data source
   sets `queryTimeout` 50 s to stay under the cap.
 
@@ -206,7 +208,7 @@ index (above).
 
 | Script | Checks |
 |---|---|
-| `tests/verify.sh` | Plain HTTP refused; missing and unknown token give 401; untrusted certificate refused. Forged tenant at resource, scope and record level, on traces, metrics and logs, is stored as only the trusted tenant. Redaction. TTL present. `grafana_reader` cannot write or read `system.users`, can't see this run's `local-test` records or any other tenant in the last hour, and every table with the tenant stamp has both row policies; `platform_reader` still reads every tenant. Grafana data source healthy; anonymous access refused. OIDC sign-in, run headless with curl through Keycloak: alice → Admin, erin → Editor, victor → Viewer, nora and a wrong password refused, no OIDC user is server admin; a Grafana access token carries no platform audience or roles. Prints this run's ingestion freshness. |
+| `tests/verify.sh` | Plain HTTP refused; missing and unknown token give 401; untrusted certificate refused. Forged tenant at resource, scope and record level, on traces, metrics and logs, is stored as only the trusted tenant. Redaction. TTL present. `grafana_reader` cannot write or read `system.users`, can't see this run's `local-test` records or any other tenant in the last hour, and every table with the tenant stamp has both row policies; `platform_reader` still reads every tenant. The platform's own telemetry: `platform_monitor` can't read or write telemetry; the platform receiver refuses no token and an application token; the platform's and the Collector's metrics arrive under `juice-platform`, none under the deployment's tenant, with only allowlisted attribute keys; discovery doesn't list them as services; `grafana_reader` sees none of it. Grafana data source healthy; anonymous access refused. OIDC sign-in, run headless with curl through Keycloak: alice → Admin, erin → Editor, victor → Viewer, nora and a wrong password refused, no OIDC user is server admin; a Grafana access token carries no platform audience or roles. Prints this run's ingestion freshness. |
 | `tests/verify.sh --outage` | Also: ClickHouse stopped, a record accepted and held in the exporter queue, then stored after ClickHouse returns. |
 | `tests/breach-to-alert.sh [runs]` | Through the running platform: sends a failing service and times rule `service-error-rate` firing after its ForDuration (§9: ≤ 2 min). |
 | `node tests/api-latency.mjs [seconds]` | Platform API reads at 20 requests/s, p50/p95 (§9: p95 ≤ 500 ms). |
@@ -226,7 +228,8 @@ Hardware: Windows 11 developer workstation, Docker Desktop 29.9.1.
 
 - **Forged-attempt counting.** A `count` connector before the strip step (§4 step 3) is optional and not configured.
   Forged values are deleted silently.
-- **Collector self-metrics** are exposed only on the Prometheus endpoint (`:8888`), not stored in ClickHouse.
+- **Collector self-metrics** are on the Prometheus endpoint (`:8888`), and scraped every 15 s into ClickHouse under the reserved tenant
+  `juice-platform` with the platform's own metrics (Phase 11, [platform metrics](../../docs/platform-metrics.md)).
 - **Persistent queue.** The queue is not on `file_storage`, and the Collector is not highly available.
 - **Production deployment.** HTTPS for Grafana and Keycloak, Keycloak on a real database, OIDC for OTLP clients, credential rotation, real certificates, backups and an SBOM belong to the
   deployable profile.

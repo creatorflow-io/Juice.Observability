@@ -30,6 +30,8 @@ choose_tenant() {
   [[ "$tenant" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo "invalid tenant id: $tenant" >&2; exit 1; }
   # The integration test Collector stamps this one; sharing it would mix test data into the deployment.
   [[ "$tenant" != local-test ]] || { echo "local-test is reserved for the integration tests" >&2; exit 1; }
+  # The Collector stamps this one on the platform's own telemetry (docs/platform-metrics.md).
+  [[ "${tenant,,}" != juice-platform ]] || { echo "juice-platform is reserved for the platform's own telemetry" >&2; exit 1; }
   echo "$tenant"
 }
 
@@ -92,12 +94,19 @@ ensure GRAFANA_OIDC_CLIENT_SECRET "$(secret)"
 ensure KEYCLOAK_DEMO_PASSWORD "$(openssl rand -hex 8)"
 # Host name or IP that browsers use for the Console, Keycloak and Grafana (README.md, "Another machine").
 ensure PUBLIC_HOST localhost
+# The platform's ClickHouse sampler user (clickhouse/init-users.sh, Phase 11).
+ensure CLICKHOUSE_MONITOR_PASSWORD "$(secret)"
 
 if $force || [[ ! -f secrets/otlp-tokens ]]; then
   {
     echo "$(secret) juice-sample"
   } > secrets/otlp-tokens
   echo "wrote secrets/otlp-tokens"
+fi
+# The platform's own exporter token (the Collector's platform pipeline): one token, read by both. Added when missing.
+if $force || [[ ! -f secrets/platform-otlp-token ]]; then
+  secret > secrets/platform-otlp-token
+  echo "wrote secrets/platform-otlp-token"
 fi
 
 if $force || [[ ! -f secrets/tls/server.crt ]]; then
