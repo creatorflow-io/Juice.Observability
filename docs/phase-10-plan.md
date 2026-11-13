@@ -77,3 +77,7 @@ Milestones 1 and 2 can run in parallel; 3 needs 2; 4 can start after 2 (its data
 2. **Scale steps (P3):** the steps are there to find the limit; only 1× has a pass mark.
 3. **Host (P5, P8):** this machine, for the scale tests and every drill.
 4. **Cost (P6):** resources only, no prices.
+
+## The owner's answers, 13 November
+
+5. **Scale steps (P3, milestone 3):** 1× met every target and 3× crossed the SLO-lag line. The 5× and 10× steps move to the [Phase 11](phase-11-plan.md) baseline (its R11), run once the platform exports its own metrics so each limit's cause is measured. Milestone 3 closes on 1× and 3×. Milestones 4 and 5 wait until Phase 11 is done.

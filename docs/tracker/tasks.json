@@ -25,6 +25,10 @@
     "p9": {
       "status": "done",
       "note": "Four milestones done; gate accepted 2026-11-11 (no streaming, no new stateful component, docs/phase-9-decisions.md); released in 1.2.0."
+    },
+    "p11": {
+      "status": "todo",
+      "note": "New phase split from Phase 10 by the owner 2026-11-13: platform self-observability, Overview indicators, capacity estimate, performance. Plan first."
     }
   },
   "tasks": [
@@ -64,9 +68,9 @@
       "order": 4,
       "kind": "task",
       "title": "M3 Scale tests 1x/3x/5x/10x",
-      "ref": "docs/scale-tests.md (to write)",
-      "status": "todo",
-      "note": "Next. 30 min per step at 1x, 3x, 5x, 10x, upward until a limit; needs the working stack stopped for each step (shared ports). Raw data under build/scale/; docs/scale-tests.md."
+      "ref": "docs/scale-tests.md (Milestone 3 section); deploy/local/scale/steps.sh",
+      "status": "done",
+      "note": "Done 2026-11-13 after review rounds 1, 2, confirmation and re-confirmation. 1x met every §9 target; 3x crossed the SLO-lag line once (64 s vs 60 s; no SLO pass ~60 s; cause not measured, ClickHouse contention likelier). 5x/10x moved to the Phase 11 baseline (owner, 13 Nov). Resource/disk table: 987 GB (1x) / 3,019 GB (3x) table data at full retention."
     },
     {
       "doc_id": "p10-m4",
@@ -116,7 +120,17 @@
       "title": "Gate: scale tests document throughput, query mix, queue lag, resource use, cost assumptions",
       "ref": "Roadmap Phase 10 gate",
       "status": "todo",
-      "note": "Needs M2–M3."
+      "note": "Evidence in docs/scale-tests.md (M2 harness, M3 steps 1x and 3x). Gate itself waits for Phase 10 M5, after Phase 11."
+    },
+    {
+      "doc_id": "p11-plan",
+      "group": "p11",
+      "order": 1,
+      "kind": "task",
+      "title": "Phase 11 plan: platform self-observability, capacity and performance",
+      "ref": "docs/phase-11-plan.md",
+      "status": "doing",
+      "note": "Revision 2 written 2026-11-13 after an independent review (self-telemetry under a reserved tenant, capacity view calibrated and labelled, ClickHouse isolation via workload scheduling, heartbeat semantics, sizing guide). Owner answered R4/R10/R11/R14 on rev 1; Q1-Q3 open. Not committed until approved."
     }
   ],
   "architecturePageUpdates": [
@@ -126,6 +140,8 @@
     "Add Phases 7–9: Juice Agent enrollment and diagnostics, approved actions and remediation, SLOs and burn-rate alerts, correlation suggestions.",
     "Grafana: user grafana_reader now limited to the deployment's tenant by ClickHouse row policy grafana_tenant (after 1.2.0; Phase 10 M1).",
     "Grafana tenant boundary: row policies fail closed (access.xml); trace-ID index visible across tenants, accepted by the owner 2026-11-12.",
-    "Phase 10 M2: scale harness (deploy/local/scale/) and a 1x run meeting every §9 target with 10 services x 100 instances, 50 rules, 50 SLOs."
+    "Phase 10 M2: scale harness (deploy/local/scale/) and a 1x run meeting every §9 target with 10 services x 100 instances, 50 rules, 50 SLOs.",
+    "Phase 10 M3: 1x holds every target; first limit at 3x is SLO counting under ClickHouse contention; ClickHouse is the CPU (2.65 vCPU at 1x); disk ~1 TB at full retention at 1x, ~3 TB at 3x.",
+    "Phase 11 (planned 2026-11-13): platform self-observability, Overview platform panel and capacity estimate, ClickHouse workload isolation; Phase 10 M4-M5 wait for it."
   ]
 }

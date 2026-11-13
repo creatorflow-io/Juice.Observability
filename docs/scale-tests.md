@@ -2,7 +2,7 @@
 
 **Status:** milestone 2 (the harness) done 12 November: two review rounds and a confirmation round, then the 1× smoke run on the final
 harness (below) met every target.
-The 1×, 3×, 5× and 10× steps (milestone 3) next. Part of the [Phase 10 plan](phase-10-plan.md) (P3–P8, D1–D2). Raw data of every
+Milestone 3 (the steps) run 12 November: 1× met every target, 3× crossed the SLO-lag line once (one sample, 64 s against 60 s; cause not measured), so the driver stopped there; 5× and 10× moved to the Phase 11 baseline. Part of the [Phase 10 plan](phase-10-plan.md) (P3–P8, D1–D2). Raw data of every
 run stays in `build/scale/<UTC time>-<multiplier>x/`.
 
 ## The harness (milestone 2)
@@ -195,3 +195,150 @@ milestone 3 will see the second figure or more, and searches are the likeliest f
 **Disk, first look (P6):** about 16 GB a day, about 1 TB at full retention, 90 days of metrics most of it (864 M points a day). A
 10-minute figure before ClickHouse's later merges, so an upper bound; milestone 3's 30-minute steps give the figures for the cost table.
 
+
+## Milestone 3: the scale steps, 12 November
+
+`deploy/local/scale/steps.sh --restore` ran the steps back to back on one scale stack:
+- 30 minutes measured after 3 minutes of warm-up each;
+- every part exited 0;
+- the Collector drained in 11–12 s after each load.
+
+The driver stopped after the first step that crossed a line: **3× crossed one, so 5× and 10× did not run.** The plan (P3, milestone 3)
+asks for 1×, 3×, 5× and 10× and a resource table at each step, so this is short of the deliverable. The missing steps moved to Phase 11 (below).
+- **Reports:** `build/scale/20261112T1147-1x/report.md` and `build/scale/20261112T1221-3x/report.md`.
+- **Driver log:** `build/scale/steps-20261112T1147.log`.
+
+That log is from the first version of `steps.sh`. Review then changed the script:
+- a clean-up trap that also stops a running step;
+- harness problems told apart from platform results;
+- `--through`;
+- exit codes.
+
+The changed script was checked against stub stacks, not rerun on the real one.
+
+**The steps didn't start on empty storage.** The stack wasn't reset with `stack.sh destroy` first:
+- 1× ran on volumes that still held the 11:16 smoke run;
+- 3× followed 1×, so its last-hour searches covered partly 1×-rate data (3×-rate rows outnumbered them from about 12:32).
+
+The 3× search and ClickHouse figures are therefore lower than a 3× steady state would give. At 1× the milestone 2 expectation
+(ClickHouse 4.0 vCPU and search p95 542 ms, once the hour fills) didn't hold: 2.65 vCPU and 332 ms, with about 20 minutes of data in
+the searched hour at the window's start and about 45 at its end (search means flat at 98–126 ms).
+
+| Measure | Target (line above 1×) | 1× | 1× verdict | 3× | 3× verdict |
+|---|---|---|---|---|---|
+| Throughput | nothing refused or dropped | sent 100.1 / 100 / 100.1 %, stored 100 % of each, 0 lost | met | sent 100.1 / 100 / 100.1 %, stored 100 % of each, 0 lost | within |
+| Ingestion freshness | p95 ≤ 30 s | p95 1.63 s (160 probes) | met | p95 2.27 s (156 probes) | within |
+| API reads at 20/s | p95 ≤ 500 ms | p95 20.8 ms, 0 of 35,966 failed | met | p95 53.4 ms, 0 of 35,975 failed | within |
+| Health freshness | p95 ≤ 60 s | p95 40.1 s | met | p95 47.4 s | within |
+| Rule breach-to-alert | p95 ≤ 2 min after `ForDuration` | p95 66 s (9 runs) | met | p95 62 s (9 runs) | within |
+| Webhook first dispatch | p95 ≤ 30 s | p95 1.93 s (37, all delivered) | met | p95 1.91 s (48, all delivered) | within |
+| Queue lag | ≤ 1 min past each configured delay, no growing backlog | discovery 32 s past, rules 0.2 s, SLOs 33 s; nothing growing, nothing given up | met | discovery 40 s, rules 25 s, **SLOs 64 s**; nothing growing, nothing given up | **over** |
+| Telemetry search, last hour | reported | p95 332 ms, max 1.6 s (3,597, none failed) | – | p95 2.78 s, max 8.3 s (3,598, none failed) | – |
+| Console journey | reported | page p95 850 ms (174 pages, none failed) | – | page p95 1.69 s (174 pages, none failed) | – |
+
+**1× meets every §9 target** over 30 minutes and two full 15-minute failure cycles. So P7 doesn't apply, and nothing new is added.
+
+### The first line crossed at 3×: the SLO lag, once
+
+**What crossed.** At 12:48:13 the oldest SLO was 64 s past the moment its next minute became countable, against a 60 s line. That
+was 1 of 177 samples in the window: the samples either side were 52.9 s (12:48:02) and 12.0 s (12:48:22), so the lag was over the
+line for under 20 s. No SLO pass was seen for about 60 s: the lag climbed steadily from 1.5 s at 12:47:11.
+
+**3× is slower than 1× all through the window, not only at that sample.**
+- Samples over 30 s: 47 of 177 at 3×, against 12 of 179 at 1× (whose highest was 33 s).
+- The SLO lag p95: 41.9 s at 3×, against 30.4 s at 1×.
+- Each minute's highest sample crept from 35 s to 44 s by 12:41. It fell to 36 s, was 47–50 s over 12:44–12:46 and 42 s at 12:47, then hit the 64 s.
+- After that it fell back: 47, 39, 30, 32 and 42 s.
+
+The report's growth test (last 15-minute cycle against the first) found no growing backlog.
+
+**The rules worker ran late at the same time, but didn't stop.**
+- Between its passes (due every 60 s) the oldest open alert's last evaluation always climbs 10 s per 10 s sample. In most minutes its
+  per-minute highest was 55–62 s.
+- Around the crossing it went 31 → 42 → 50 → 61 → 72 s (12:47:32–12:48:13), then 20.8 s at 12:48:22. So the pass due at 12:48:01
+  started on time and finished 12–21 s late.
+- It also ran late at 12:37 (81 s) and 12:42 (85 s) with no SLO stall (the SLO lag's highest in those minutes: 41 and 36 s).
+- Its line allows 60 s past its due time, so it stayed within.
+
+**The cause isn't measured.** The platform exports no metrics of its own, so pass durations, ClickHouse query times and the process's
+own state weren't recorded. Two explanations fit:
+- **ClickHouse query contention.** Every worker and every Console search reads ClickHouse as the same user, `platform_reader`, with
+  no priority between them.
+  - ClickHouse went from about 5 vCPU to 8–11 vCPU from about 12:32, with dips to 7–8 at 12:43–12:45 and 12:50, and a peak of
+    21.5 of the VM's 24 vCPU.
+  - Last-hour searches ran 8 times slower than at 1× (p95 2.78 s against 0.33 s). By clock 10-minute bucket (the first and last
+    partial), the search mean was 439, 617, 822 and 559 ms.
+  - **For:**
+    - 12:47 had the highest full-minute ClickHouse mean of the window, 11.4 vCPU.
+    - The window's two slowest searches (8.35 s at 12:46:44, 8.08 s at 12:47:44) came as the SLO stall began.
+  - **Against:** at 12:48:09 ClickHouse used 10.8 vCPU, not a peak; the lag fell in the last minutes while ClickHouse stayed at 8–11; and searches of 4–8 s came in most minutes, mostly without a late pass.
+- **A stall in the platform process.** Both workers run in it, along with the API, on a shared connection pool and runtime.
+  **Against:** the API's reads, served by the same process, stayed fast throughout (10 s means of 19–39 ms, a maximum of 285 ms over
+  12:47–12:48:30).
+
+On this evidence ClickHouse contention is the likelier, but it isn't measured.
+
+So the first limit is **the SLO worker's lag, with the cause not yet measured**. [Phase 11](phase-11-plan.md) measures it with the
+platform's own metrics and reruns the steps.
+
+**Margins at 3×:**
+
+| Area | At 3× | Line or bound | At 1× | Left at 3× |
+|---|---|---|---|---|
+| Health freshness | p95 47.4 s | 60 s | 40.1 s | 12.6 s |
+| Discovery | 40.2 s past its delay | 60 s | 31.7 s | 19.8 s |
+| Rules | 24.8 s past due | 60 s | 0.2 s | 35.2 s |
+| Collector export queues | max 88,391 items, median 15,984 (three exporters summed) | 200,000 per exporter; beyond that data is dropped, a throughput loss | max 11,047, median 6,045 | not judged, growth only |
+| Collector CPU | 0.95 vCPU | – | 0.20 vCPU | – |
+| Ingestion freshness, API reads, webhooks, outbox | p95 2.27 s, 53 ms, 1.91 s, empty | 30 s, 500 ms, 30 s | 1.63 s, 21 ms, 1.93 s | wide |
+
+- **Health freshness** had the narrowest relative margin.
+- **The Collector's queues and CPU** grew faster than the load: queue max 8×, CPU 4.7×.
+
+**Possible fixes, not made in Phase 10.** Results above 1× only inform (P7). None of these needs new infrastructure.
+- Give the workers' ClickHouse queries their own user and settings profile, with priority over interactive searches.
+- Bound searches under load.
+- Export the platform's own meters, so a pass and its queries can be timed.
+
+### Resources and disk (P6), for the steps run
+
+Docker VM 24 vCPU, 31.1 GiB. CPU is in vCPU: the window's mean, then its peak. Memory is the window's maximum. The harness's own
+containers (`webhook-sink`, `clickhouse-access`) are left out.
+
+| | 1× | 3× |
+|---|---|---|
+| ClickHouse | 2.65 vCPU, peak 18.7; 2.9 GiB | 8.45 vCPU, peak 21.5; 5.5 GiB |
+| OpenTelemetry Collector | 0.20 vCPU, peak 0.48; 121 MiB | 0.95 vCPU, peak 1.99; 246 MiB |
+| Platform API (all workers) | 0.16 vCPU, peak 0.49; 228 MiB | 0.29 vCPU, peak 0.58; 211 MiB |
+| PostgreSQL | 0.08 vCPU, peak 0.21; 67 MiB | 0.15 vCPU, peak 0.40; 79 MiB |
+| Keycloak | 0.01 vCPU, peak 0.14; 1.0 GiB | 0.02 vCPU, peak 0.21; 1.2 GiB |
+| **Headroom on the 24 vCPU / 31.1 GiB VM** | 20.9 vCPU mean, 4.8 at ClickHouse's peak; 27 GiB | 14.1 vCPU mean, 1.1 at ClickHouse's peak; 24 GiB |
+| **Table data per day:** traces (with the trace-ID index) | 4.5 GB | 13.3 GB |
+| logs | 4.2 GB | 12.6 GB |
+| metrics | 8.1 GB | 24.9 GB |
+| PostgreSQL | 0.07 GB | 0.06 GB |
+| **Table data at full retention** (30 d traces and logs, 90 d metrics) | **987 GB** | **3,019 GB** |
+
+- **The headroom row** is the VM's 24 vCPU and 31.1 GiB, less every container's mean CPU (or ClickHouse's peak) and maximum memory.
+- **The disk figures are a table-data estimate, not a disk size.**
+  - They take 30 minutes of growth in the six otel tables' active parts, scaled to a day. That's before ClickHouse's later merges,
+    so the data itself is likely overstated.
+  - They leave out:
+    - ClickHouse's system log tables;
+    - the free space merges need;
+    - PostgreSQL's growth (it has no retention, and 0.06–0.07 GB a day from 30 minutes is noisy);
+    - backups.
+  - Size a disk well above them.
+- **Table data scaled with load,** 3.06× for 3×, though that's only two points. Metrics are about three quarters of it at full
+  retention: the sum table alone is 700 GB at 1×, 846 M points a day kept for 90 days. Keeping metrics 30 days instead of 90 brings the
+  1× estimate to about 500 GB.
+- **CPU is ClickHouse.** At 1× the rest of the stack used under half a vCPU together.
+- **The harness on the host:** the generator process used 0.3 % of the host's 24 cores at 1× and 1.6 % at 3×, with no harness limit
+  at either step. The other harness parts weren't measured: the query mix, the Chromium journey, the samplers and the breach tests.
+
+### 5× and 10×: moved to Phase 11
+
+The plan's milestone 3 lists them. The owner moved them to the [Phase 11](phase-11-plan.md) baseline on 13 November (R11). That run
+happens once the platform exports its own metrics, so each crossed line has a measured cause. It goes on a fresh scale stack
+(`stack.sh destroy`) with `WARMUP=300 scale/steps.sh --through 1 3 5 10` (the first step after a reset needs the longer warm-up,
+see the confirmation round above). Phase 10's milestone 3 closes on 1× and 3×.

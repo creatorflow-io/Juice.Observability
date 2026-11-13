@@ -181,7 +181,17 @@
 
 **Acceptance gate:** console does not duplicate general Grafana exploration without a product need; tenant context is preserved; scale tests document throughput, query mix, queue lag, resource use, and cost assumptions.
 
-**Status:** in progress: milestones 1 (Console scope and tenant context) and 2 (scale harness) done, reviewed; milestone 3 (scale tests) next. See the [Phase 10 plan](phase-10-plan.md), [milestone 1](phase-10-console.md) and the [scale tests](scale-tests.md).
+**Status:** in progress: milestones 1 (Console scope and tenant context) and 2 (scale harness) done, reviewed; milestone 3 (scale tests) run 12 November, in review: 1× met every target, 3× crossed the SLO-lag line; milestones 4–5 wait for Phase 11 (draft). See the [Phase 10 plan](phase-10-plan.md), [milestone 1](phase-10-console.md) and the [scale tests](scale-tests.md).
+
+## Phase 11 — Platform self-observability, capacity, and performance
+
+**Goal:** the platform shows how it is working and how much more it can take, and its own limits move up with evidence.
+
+**Deliverables:** the platform's own metrics exported (requirements §9 operational metrics); worker heartbeats and a platform health check; platform status and a capacity estimate on the Console Overview; ClickHouse workload isolation and measured query fixes; scale steps rerun before and after.
+
+**Acceptance gate:** every §9 operational metric is exported and documented; the Overview shows each worker's state and the platform's headroom and keeps working while ClickHouse is slow or down; the capacity estimate is checked against measured scale steps; the rerun steps show where the first limit moved and why; no new infrastructure without an ADR.
+
+**Status:** planned; split from Phase 10 by the owner 2026-11-13. See the [Phase 11 plan](phase-11-plan.md) (draft).
 
 ## Explicit triggers for deferred infrastructure and SaaS
 
@@ -207,4 +217,5 @@
   → 8 Approved actions + verified remediation
   → 9 Advanced correlation + SLOs + selective streaming
   → 10 Domain console + scale hardening
+  → 11 Platform self-observability + capacity + performance
 ```

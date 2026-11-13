@@ -33,7 +33,7 @@ echo "scale step ×$MULTIPLIER: ${WARMUP} s warm-up, then ${SECONDS_RUN} s measu
 echo "time,metric,value" > "$out/collector-before.csv"; collector "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$out/collector-before.csv"
 node scale/generate.mjs --multiplier "$MULTIPLIER" --duration $((WARMUP + SECONDS_RUN + BREACH_MAX)) --out "$out" --stop-file "$out/stop" > "$out/generator.log" 2>&1 &
 gen=$!
-sleep "$WARMUP"
+sleep "$WARMUP" & wait $!   # in the background, so a TERM stops the step at once (the trap waits for a foreground command)
 start_epoch=$(date +%s); end_epoch=$((start_epoch + SECONDS_RUN))
 date -u -d "@$start_epoch" +%Y-%m-%dT%H:%M:%SZ > "$out/start"
 date -u -d "@$end_epoch" +%Y-%m-%dT%H:%M:%SZ > "$out/end"
@@ -68,7 +68,7 @@ probe() {
 }
 i=0
 while (( $(date +%s) < end_epoch )); do
-  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ),$(probe "p$i")" >> "$out/freshness.csv"; i=$((i + 1)); sleep 10
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ),$(probe "p$i")" >> "$out/freshness.csv"; i=$((i + 1)); sleep 10 & wait $!
 done
 
 wait "$sampler"; echo "sampler $?" > "$out/exits"
