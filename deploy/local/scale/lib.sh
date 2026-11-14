@@ -6,6 +6,8 @@ SCALE_PROJECT=${SCALE_PROJECT:-juice-scale}
 # rule and SLO files), for docs/phase-11-plan.md R19.
 SCALE_FILES=(-f docker-compose.yml -f scale/compose.scale.yml)
 [[ -n "${CEILING:-}" ]] && SCALE_FILES+=(-f "scale/compose.ceiling-$CEILING.yml")
+# SCALE_OVERRIDE=<file> adds one more compose file last, for a one-off (crash dumps, a setting tried before it's committed).
+[[ -n "${SCALE_OVERRIDE:-}" ]] && SCALE_FILES+=(-f "$SCALE_OVERRIDE")
 # The workers overlay mounts these; a missing file would be mounted as an empty directory.
 WORKERS_CONFIG=../../build/scale/workers-config
 if [[ "${CEILING:-}" == workers && ! -f $WORKERS_CONFIG/rules.json ]]; then node scale/config.mjs --factor 1 --out "$WORKERS_CONFIG" >/dev/null; fi

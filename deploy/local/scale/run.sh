@@ -139,6 +139,12 @@ pg "SELECT count(*) FROM outbox_deliveries WHERE state = 3 AND next_attempt_on I
     echo "points_$t,$(ch "SELECT count() FROM otel.otel_metrics_$t WHERE (ResourceAttributes['service.namespace'] = 'shop' OR startsWith(ResourceAttributes['host.name'], 'host-')) AND TimeUnix >= parseDateTimeBestEffort('$start') AND TimeUnix < parseDateTimeBestEffort('$stop')")"
   done
 } > "$out/stored.csv"
+# The platform's own state and log, kept with the step: steps.sh removes the containers after the last step, and a platform that
+# exited during the step (a crash) would otherwise leave nothing to read.
+docker inspect "$SCALE_PROJECT-platform-api-1" --format '{{.State.Status}} exit={{.State.ExitCode}} started={{.State.StartedAt}} finished={{.State.FinishedAt}} oom={{.State.OOMKilled}}' > "$out/platform-api.state" 2>&1
+dc logs --no-color --since "$(date -u -d "@$((start_epoch - WARMUP - 120))" +%Y-%m-%dT%H:%M:%SZ)" platform-api > "$out/platform-api.log" 2>&1
+# Not running at the end is a part that failed (its exit code, 139 for a crash), shown in the report.
+grep -q '^running ' "$out/platform-api.state" || echo "platform-api $(sed -n 's/.*exit=\([0-9]*\).*/\1/p' "$out/platform-api.state")" >> "$out/exits"
 
 trap - EXIT
 node scale/report.mjs "$out"
