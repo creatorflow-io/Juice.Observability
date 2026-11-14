@@ -180,7 +180,8 @@ const targets = [
 // target exists; 2 s is the ceiling's line, Phase 11 milestone 4).
 const ceiling = meta.ceiling || null;
 if (ceiling) {
-  const keep = { ingest: ['Throughput', 'Ingestion freshness'], search: ['Throughput', 'Ingestion freshness', 'API reads'] }[ceiling] ?? [];
+  const keep = { ingest: ['Throughput', 'Ingestion freshness'], search: ['Throughput', 'Ingestion freshness', 'API reads'],
+    workers: ['Throughput', 'Ingestion freshness', 'Health freshness', 'Rule breach-to-alert', 'Webhook first dispatch', 'Queue lag'] }[ceiling] ?? [];
   for (const t of targets) if (t[1] !== null && !keep.some(k => t[0].startsWith(k))) { t[1] = null; t[2] = `not judged (ceiling ${ceiling}): ${t[2]}`; }
   targets.push(['Collector export queue not growing (ceiling line)', queueGrowing === null ? null : !queueGrowing,
     `${f(pct(queue, 0.5), 0)} items median, ${f(max(queue), 0)} max, sum of the exporters${queueGrowing === null ? '; growth not judged (window under two load cycles)' : queueGrowing ? ', growing' : ''}`]);
@@ -191,7 +192,10 @@ if (ceiling) {
 }
 const parts = Object.entries(exits).filter(([, v]) => v !== 0).map(([k, v]) => `${k} exited ${v}`);
 
-const md = `# Scale step ×${m}${ceiling ? `, ${ceiling} ceiling${ceiling === 'search' ? ` at ${meta.search_rate} searches/s` : ''} (workers ${ceiling === 'ingest' ? 'reading ClickHouse off, no query mix' : 'health, rules, SLOs off'}, no breach runs)` : ''}: ${new Date(t0).toISOString().slice(0, 16).replace('T', ' ')} UTC
+const ceilingTitle = { ingest: ' (workers reading ClickHouse off, no query mix, no breach runs)',
+  search: ` at ${meta.search_rate} searches/s (workers health, rules, SLOs off, no breach runs)`,
+  workers: ` at ${meta.rules} rules and ${meta.slos} SLOs (every worker on, no query mix)` }[ceiling] ?? '';
+const md = `# Scale step ×${m}${ceiling ? `, ${ceiling} ceiling${ceilingTitle}` : ''}: ${new Date(t0).toISOString().slice(0, 16).replace('T', ' ')} UTC
 
 Nominal ${f(1000 * m, 0)} spans/s, ${f(10000 * m, 0)} metric points/s, ${f(1000 * m, 0)} logs/s from 10 services × 10 instances on 20 hosts, measured for ${f(window / 60, 1)} minutes
 after ${meta.warmup ?? 0} s of warm-up. Host: ${meta.host_cores} cores; Docker VM ${cores} vCPU, ${f((meta.docker_mem_bytes ?? 0) / 2 ** 30, 1)} GiB. Commit ${meta.commit}.

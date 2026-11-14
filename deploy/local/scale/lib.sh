@@ -2,9 +2,13 @@
 export MSYS_NO_PATHCONV=1
 source .env
 SCALE_PROJECT=${SCALE_PROJECT:-juice-scale}
-# CEILING=ingest|search adds that ceiling's overlay (scale/compose.ceiling-<name>.yml: which workers are off), for docs/phase-11-plan.md R19.
+# CEILING=ingest|search|workers adds that ceiling's overlay (scale/compose.ceiling-<name>.yml: which workers are off, or for workers the
+# rule and SLO files), for docs/phase-11-plan.md R19.
 SCALE_FILES=(-f docker-compose.yml -f scale/compose.scale.yml)
 [[ -n "${CEILING:-}" ]] && SCALE_FILES+=(-f "scale/compose.ceiling-$CEILING.yml")
+# The workers overlay mounts these; a missing file would be mounted as an empty directory.
+WORKERS_CONFIG=../../build/scale/workers-config
+if [[ "${CEILING:-}" == workers && ! -f $WORKERS_CONFIG/rules.json ]]; then node scale/config.mjs --factor 1 --out "$WORKERS_CONFIG" >/dev/null; fi
 dc() { docker compose -p "$SCALE_PROJECT" "${SCALE_FILES[@]}" --profile platform "$@"; }
 # Each query gives up after 20 s: a stalled stack leaves a missing sample, which the report judges, rather than a hung run.
 ch() { timeout 20 docker compose -p "$SCALE_PROJECT" "${SCALE_FILES[@]}" --profile platform exec -T clickhouse clickhouse client --user admin --password "$CLICKHOUSE_ADMIN_PASSWORD" -q "$1" </dev/null; }

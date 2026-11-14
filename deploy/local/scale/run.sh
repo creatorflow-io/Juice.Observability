@@ -13,11 +13,16 @@ MULTIPLIER=${1:?multiplier}; SECONDS_RUN=${2:-1800}; WARMUP=${WARMUP:-180}
 #   ingest   the ClickHouse-reading workers off (overlay), no query mix and no breach runs: the step is the load's multiplier
 #   search   health, rules and SLO counting off, discovery on (the searches need the services); the load at SEARCH_LOAD× (1);
 #            the step is the searches per second (half traces, half logs; the full mix has 2), no breach runs
-CEILING=${CEILING:-}; SEARCH_RATE=2; LOAD=$MULTIPLIER; skipped=()
+#   workers  every worker on, the load at 1×, no query mix, breach runs on; the step is k copies of the 50 rules and 50 SLOs
+#            (SLOs at most 200), written by scale/config.mjs before the step, platform-api then recreated to load them
+CEILING=${CEILING:-}; SEARCH_RATE=2; LOAD=$MULTIPLIER; skipped=(); RULES=50; SLOS=50
 case "$CEILING" in
   '') ;;
   ingest) skipped=(query-mix breach) ;;
   search) SEARCH_RATE=$MULTIPLIER; LOAD=${SEARCH_LOAD:-1}; skipped=(breach) ;;
+  workers) LOAD=1; skipped=(query-mix)
+    read -r RULES SLOS < <(node scale/config.mjs --factor "$MULTIPLIER" --out "$WORKERS_CONFIG") || { echo "config.mjs failed" >&2; exit 1; }
+    dc up -d --wait --no-deps --force-recreate platform-api >/dev/null 2>&1 || { echo "platform-api didn't restart with $RULES rules" >&2; exit 1; } ;;
   *) echo "unknown CEILING $CEILING" >&2; exit 2 ;;
 esac
 skips() { [[ " ${skipped[*]} " == *" $1 "* ]]; }
@@ -36,7 +41,7 @@ BREACH_MAX=420   # tests/breach-to-alert.sh gives up on a run after 7 minutes
 # The commit, and "+changes" if anything in the repository (the platform image included) differs from it.
 commit="$(git rev-parse --short HEAD)$([[ -n "$(git -C ../.. status --porcelain)" ]] && echo '+changes')"
 cat > "$out/meta.json" <<JSON
-{ "multiplier": $LOAD, "ceiling": "$CEILING", "search_rate": $SEARCH_RATE, "skipped": [$(printf '"%s",' "${skipped[@]}" | sed 's/,$//')], "seconds": $SECONDS_RUN, "warmup": $WARMUP, "run": "$run", "project": "$SCALE_PROJECT", "commit": "$commit",
+{ "multiplier": $LOAD, "ceiling": "$CEILING", "search_rate": $SEARCH_RATE, "rules": $RULES, "slos": $SLOS, "skipped": [$(printf '"%s",' "${skipped[@]}" | sed 's/,$//')], "seconds": $SECONDS_RUN, "warmup": $WARMUP, "run": "$run", "project": "$SCALE_PROJECT", "commit": "$commit",
   "host_cores": $(nproc), "docker_cpus": $(docker info --format '{{.NCPU}}'), "docker_mem_bytes": $(docker info --format '{{.MemTotal}}') }
 JSON
 echo "scale step ×$MULTIPLIER: ${WARMUP} s warm-up, then ${SECONDS_RUN} s measured → $out"

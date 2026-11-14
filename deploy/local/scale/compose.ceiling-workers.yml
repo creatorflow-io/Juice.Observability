@@ -1,0 +1,8 @@
+# The workers ceiling (docs/phase-11-plan.md R19), over scale/compose.scale.yml: every worker on, the load at 1×, no query mix; the
+# rules and SLOs are k copies of the scale set (scale/config.mjs --factor), written by run.sh to build/scale/workers-config before
+# each step, which then recreates platform-api (rules and SLOs load at startup). lib.sh writes the 1× set there if it's missing.
+services:
+  platform-api:
+    volumes:
+      - ../../build/scale/workers-config/rules.json:/config/rules.json:ro
+      - ../../build/scale/workers-config/slos.json:/config/slos.json:ro

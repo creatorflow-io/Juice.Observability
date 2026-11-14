@@ -6,8 +6,9 @@
 # or there's no report). A refused send or a slow breach run is the platform's result, judged by the report's targets, not a harness
 # problem. Then it takes the scale stack down and, with --restore, starts the working stack again, also when interrupted or failed.
 #   scale/steps.sh [--restore] [--through] [multipliers...]      default: 1 3 5 10 15 20 30 40
-#   CEILING=ingest|search scale/steps.sh ...   a component ceiling (docs/phase-11-plan.md R19, see run.sh); for search the steps are
-#                                              searches per second. A 1× miss doesn't stop a ceiling.
+#   CEILING=ingest|search|workers scale/steps.sh ...   a component ceiling (docs/phase-11-plan.md R19, see run.sh); for search the
+#                                              steps are searches per second, for workers copies of the rules and SLOs. A 1× miss
+#                                              doesn't stop a ceiling.
 # Needs the working stack stopped (scale/stack.sh up refuses otherwise). Each step is about 35 minutes.
 # Exit 0: every step held, or a limit was found. 1: a 1× miss, a harness problem, or the stacks not brought back as asked.
 # 2: a wrong option. 130: interrupted (INT, TERM or HUP; the running step is stopped first).

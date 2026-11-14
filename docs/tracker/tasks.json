@@ -169,8 +169,8 @@
       "kind": "task",
       "title": "M4 Component ceilings: ingest, ClickHouse queries, workers, PostgreSQL (R19)",
       "ref": "docs/scale-tests.md",
-      "status": "todo",
-      "note": "Each component pushed on its own until a line is crossed; generator sent rate checked against its target. Test first: ingest alone (workers and query mix off) to tell CPU starvation from the exporter bound (4 consumers x 20k batch / ~200 ms insert wait)."
+      "status": "doing",
+      "note": "Harness ceiling modes committed (b3c6720). Ingest ceiling: 5x held with the ClickHouse-reading workers and searches off (0 lost, ClickHouse 1.2 cores vs 15 in the baseline); 10x crossed on points only (90 % stored, 20 M refused): the metrics exporter queue full at ~200k, ~92k points/s sent, ClickHouse 2.3 cores, so the Collector exporter bounds ingest at 10x. Search ceiling at 1x: 2/4/8 per s held (8/s p95 614 ms, ClickHouse 5.8 cores mean); 16/s collapsed (5,218 queries timed out at 60 s, 428 running at once, 23 GB, ingest refused). Workers ceiling: harness mode added (rules and SLOs x k, up to 800 rules and 200 SLOs), running."
     },
     {
       "doc_id": "p11-m5",
