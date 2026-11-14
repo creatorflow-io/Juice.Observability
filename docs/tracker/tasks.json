@@ -169,8 +169,8 @@
       "kind": "task",
       "title": "M4 Component ceilings: ingest, ClickHouse queries, workers, PostgreSQL (R19)",
       "ref": "docs/scale-tests.md",
-      "status": "doing",
-      "note": "Harness ceiling modes committed (b3c6720). Ingest ceiling: 5x held with the ClickHouse-reading workers and searches off (0 lost, ClickHouse 1.2 cores vs 15 in the baseline); 10x crossed on points only (90 % stored, 20 M refused): the metrics exporter queue full at ~200k, ~92k points/s sent, ClickHouse 2.3 cores, so the Collector exporter bounds ingest at 10x. Search ceiling at 1x: 2/4/8 per s held (8/s p95 614 ms, ClickHouse 5.8 cores mean); 16/s collapsed (5,218 queries timed out at 60 s, 428 running at once, 23 GB, ingest refused). Workers ceiling: harness mode added (rules and SLOs x k, up to 800 rules and 200 SLOs), running."
+      "status": "done",
+      "note": "Ceilings measured (docs/scale-tests.md, Phase 11 component ceilings). Ingest: 5x held with readers off; 10x crossed on points only, the Collector metrics exporter flat at ~90k points/s with its queue full and ClickHouse at 2.3 cores. Search at 1x: 8/s held (p95 614 ms), 16/s collapsed (unbounded concurrency, 428 queries at once, ingest lost ~40 % of points). Workers: 1x and 2x (100 rules/100 SLOs) held; at 4x (200/200) platform-api segfaulted (exit 139) in the burst of 102 SLO burn alerts after PostgreSQL refused connections (53300 too many clients); core dump taken, not analysed. Reviewed (two rounds, 21 fixes, confirmation clean). The workers ceiling at 4x is unmeasured: the crash is first in milestone 5."
     },
     {
       "doc_id": "p11-m5",

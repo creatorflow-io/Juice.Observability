@@ -471,3 +471,174 @@ process's life, so it isn't given):
 
 **Seen during the run:** trace search answers 500 while ClickHouse is down (milestone 2 drill). It goes with the "busy, try again"
 work in R11.
+
+## Phase 11 component ceilings, 13–14 November
+
+Phase 11 milestone 4 ([plan](phase-11-plan.md) R19). Each ceiling runs on the scale stack with one part of the platform under load and
+the rest off or held at 1×, raised in steps until a line is crossed:
+- **Harness:** `CEILING=ingest|search|workers scale/steps.sh` (commits b3c6720, f74a813 and 124a8ad). The overlay
+  `scale/compose.ceiling-<name>.yml` sets which workers run. `report.mjs` judges only the lines of what the ceiling runs and adds its
+  own lines: the Collector's export queue not growing, and for searches a p95 of at most 2 s. There is no §9 target for searches, so 2 s is the ceiling's
+  line, not a requirement.
+- **Host:** as the baseline, 24 cores and a Docker VM with 24 vCPU and 31 GiB, 5 minutes of warm-up and 30 measured per step.
+  The `dev-infra` and `juice-notifications` stacks were stopped during the runs to free memory. A first attempt on 13 November was
+  stopped by Claude Code for low host memory during the ingest 10× step. Its 5× step had finished and is kept. Its 10× step
+  (`20261113T1125-ingest-10x`) is void: steps.sh flagged it as a harness problem (lag samples missing). The 10× step was run again.
+- **Reports:** `build/scale/20261113T1050-ingest-5x`, `20261114T0058-ingest-10x`, `20261114T0135-search-2per-s` to
+  `…0321-search-16per-s`, and the workers steps below. Each report gives its commit: b3c6720 for the ingest and search steps, the
+  ingest 5× clean, the rest `+changes`. The changes were docs only: the tracker for ingest 10× and the searches, which ran before the
+  workers mode was written. Then this section as well for the workers steps after f74a813.
+- **Per-component figures:** for the search steps, `components.json` in each step and `build/scale/components-p11-ceilings.md`.
+  The ingest steps' ClickHouse was removed for the next ceiling before `components.mjs` read it. Their figures come from each
+  report (docker stats and the Collector's own counters).
+
+### Ingest: the Collector's metrics exporter, at about 90,000 points a second
+
+Every worker that reads ClickHouse is off (discovery, health, rules, SLO counting), with no query mix and no breach runs. The step
+is the generator's multiplier.
+
+| | Baseline 5× (everything on) | Ingest 5× | Ingest 10× |
+|---|---|---|---|
+| Stored, spans / points / logs | 100 / 77.9 / 100 % | 100 / 100 / 100 %, 0 lost | 100 / **90.3** / 100 %, **20.3 M points refused** |
+| Ingestion freshness p95 | 3.28 s | 1.39 s | 0.79 s |
+| Metric points the exporter sent, per second | – | 50,024 | **90,315** (offered about 100,000) |
+| Collector export queues (sum of 3), median / max (report) | – / 238,354 | 16,436 / 36,567 | **194,456 / 209,476** |
+| ClickHouse CPU, mean | 15.1 | 1.2 | 2.3 |
+| Collector CPU, mean | 2.3 | 0.8 | 2.1 |
+
+- **5× holds whole without the reads.** Nothing is lost and ClickHouse uses 1.2 cores, against 15 in the baseline at 5×. So the
+  baseline's 5× loss came from the reads crowding out inserts, not from the ingest path.
+- **10× crosses on metric points only.** Spans and logs are all stored at 10,000 a second each. The metrics exporter sends a
+  steady 90,000 points a second, and the queues' sum stays near one exporter's 200,000 bound all the window. Only the sum is
+  sampled. Spans and logs refuse nothing, so their queues were under their bound, and the metrics queue, the one refusing, is
+  inferred to hold most of it. Past the bound the Collector refuses about a tenth of the points (`block_on_overflow: false`).
+- **ClickHouse's CPU is not the limit at 10×:** 2.3 cores of 24, the VM far from full.
+- **What bounds the exporter, measured and not:** its rate stays flat while its queue is full and ClickHouse's CPU is mostly idle.
+  The likely bound is the exporter's pipeline: 4 consumers, batches of up to 20,000 points, each waiting for its async-insert
+  flush on ClickHouse. The consumers and batches are in `collector/config.yaml`. Async insert is the exporter's own default, not
+  set there, and shows as `AsyncInsertFlush` in `query_log`. 90,000 points a second is what 4 × 20,000 gives at about 0.9 s an insert. That
+  fits, but this run didn't measure the insert wait: `query_log` wasn't read before the stack was removed. So the wait could
+  equally be on ClickHouse's side (the flush), and it is the hypothesis for R12a. The baseline's hypothesis ("the exporter bounds
+  ingest as much as ClickHouse's CPU") is narrowed: at 5× the limit was the CPU, taken by the reads; at 10× without the reads it
+  is in the insert path, not the CPU.
+- **The ceiling:** between 5× and 10× for metric points (50,000 held, 90,000 a second the most sent). Spans and logs are above 10×;
+  their own ceiling wasn't reached, since the steps stop at the first line crossed.
+
+### Searches: between 8 and 16 a second, at 1× ingest
+
+Health, rules and SLO counting off; discovery on (the searches use the services it finds), ingest at 1×, no breach runs. The
+step is searches a second, half traces and half logs, each over the last hour. The 20 API reads a second and the Console journey
+run as in the full mix.
+
+| Searches a second | 2 | 4 | 8 | 16 |
+|---|---|---|---|---|
+| Search p50 / p95 | 54 / 168 ms | 83 / 225 ms | 102 / 614 ms | 2.3 s / **no answer**, **6,028 of 28,785 failed** |
+| Trace search p95 / mean rows read | 176 ms / 0.37 M | 239 ms / 0.90 M | 890 ms / 1.20 M | 60.9 s / 1.11 M |
+| Log search p95 / mean rows read | 66 ms / 1.24 M | 89 ms / 3.27 M | 373 ms / 3.88 M | 60.1 s / 3.93 M |
+| ClickHouse CPU, mean (`platform_reader` from `query_log`) | 1.8 (1.02) | 2.1 (2.40) | 5.8 (6.10) | **18.9 (16.69)** |
+| ClickHouse queries running at once, max | 5 | 5 | 8 | **428** |
+| ClickHouse memory, max | 2.3 GiB | 2.8 GiB | 3.5 GiB | **22.8 GiB** |
+| API reads p95 (20/s, PostgreSQL) | 10.9 ms | 15.3 ms | 30 ms | 67.9 ms |
+| Console page p95 | 645 ms | 739 ms | 1.7 s | **30 s, 12 of 174 failed** |
+| Ingest | all stored | all stored | all stored | **points 64.8 % stored; 7.6 M refused (points 7.3 M, spans 0.2 M, logs 0.1 M); freshness p95 at the probe's 60 s cap** |
+| Discovery: pass mean / watermark past its delay | 1.2 s / within | 1.5 s / within | 2.9 s / within | **21.3 s / 882 s** |
+
+ClickHouse's CPU is docker stats' mean; the reads' share is from `query_log`, which counts a query whole in the window it ended,
+so the two can differ by a few tenths (at 4 a second the share is above the mean).
+
+- **8 a second holds, 16 collapses.** At 8 the p95 is 614 ms and ClickHouse uses about 6 cores. At 16 the searches' p50 is 2.3 s
+  and most of the slow ones run to ClickHouse's 60 s limit. 5,218 queries time out (code 159), and 145 are refused for too many
+  queries at once (202).
+- **The collapse looks like a pile-up that then uses up the cores.** At 8 a second a trace search costs about 0.7 CPU-seconds and a
+  log search about 0.5. At that cost sixteen a second would want about 10 cores, and 24 were there. But nothing limits how many
+  searches run at once: the query mix sends on schedule whether the last ones answered or not, as impatient users would. The
+  queries running at once go from 8 to 428 and ClickHouse's memory from 3.5 to 22.8 GiB. A trace search's cost rises to about 1.3
+  CPU-seconds, and ClickHouse ends up on 19 cores on average (max 22), with the VM's load average at 105. So the cores did run
+  short, but only once the searches had piled up. Unbounded concurrency is the likely trigger, not shown directly.
+- **The pile-up reaches ingest and discovery.** At 16 a second inserts wait up to 38 s, the Collector refuses about a third
+  of the points the generator offered (7.3 M of 21.6 M), and discovery falls 15 minutes behind. Searches and ingest share ClickHouse with nothing between them: the R11 case.
+- **Each search reads a lot for one hour at 1×.** A log search reads 3.9 M rows, a trace search 1.2 M. At 2 and 4 a second the
+  rows read are lower because the stack started empty: the last hour wasn't full until about 02:35, in the 4 a second step. So 8
+  and 16 a second are the steady-state figures.
+- **PostgreSQL-backed API reads stay fast throughout:** 68 ms p95 at 16 a second, with ClickHouse saturated.
+- **The ceiling:** between 8 and 16 searches a second at 1× ingest, on this host. The likely cause: unbounded concurrency on a
+  scan of a few million rows a search.
+
+### Workers: steady at 100 rules and 100 SLOs; the API crashed on bursts of alerts, at 100 and at 200
+
+Every worker on, ingest at 1×, no query mix, breach runs on. The step is k copies of the scale set's 50 rules and 50 SLOs
+(`scale/config.mjs --factor k`; SLOs stop at 200, `SloOptions.MaxSlos`). Each copy has the same query as its original, so it has the same cost.
+`run.sh` writes the files and recreates `platform-api` before the step, since rules and SLOs load at startup.
+
+| Copies (rules / SLOs) | 1 (50 / 50) | 2 (100 / 100) | 4 (200 / 200) |
+|---|---|---|---|
+| Health freshness p95 | 38.9 s | 41.8 s | **`platform-api` down** |
+| Rule breach-to-alert p95 | 64 s (9 runs) | 67 s (9 runs) | **4 runs, none fired** |
+| Webhook first dispatch p95 | 1.5 s (101) | 1.7 s (194) | **none** |
+| SLO lag past its next countable minute, max | 29.9 s | 10.3 s | **1,973 s** |
+| Rules: oldest evaluation of an open alert, past due | 0.1 s | 0 s | **1,918 s** |
+| ClickHouse CPU, mean | 1.1 | 1.0 | 0.4 (ingest only) |
+| PostgreSQL CPU, mean | 0.02 | 0.03 | 0.01 |
+
+- **Runs:** `build/scale/20261114T0403-workers-1x`, `…0542-workers-2x` and `…0618-workers-4x`, commits f74a813 and 124a8ad.
+- **The 1× step:** its report marks Throughput missed and flags a harness limit: the generator fell 898 spans (0.04 %) behind its
+  schedule, and steps.sh stopped there. Everything was stored and every other line held. It is kept as the reference, with that
+  caveat. The next run removed its ClickHouse, so it has no `components.json`.
+- **A first 2× attempt** (`…0441-workers-2x`) is void: `platform-api` crashed before its window (below), and nothing then
+  recorded why.
+- **Per component at 2×** (`build/scale/components-p11-workers.md`):
+  - **ClickHouse:** the reads use 1.2 cores (discovery 0.48, SLO counting 0.40, health 0.25, rules 0.08), and the 100 rules make 3,000 queries in the window.
+  - **Worker passes:** mean SLO counting pass 4.0 s, discovery 1.3 s, health 1.1 s, against 30 s intervals.
+  - **PostgreSQL:** 41 commands a second.
+- **In steady state the workers are far from their ceiling.** Doubling the rules and SLOs keeps every line near its 1× value. SLO
+  counting's mean pass is 4.0 s, under a seventh of its 30 s interval.
+
+**The crash, three times, each soon after a start.** `platform-api` stopped:
+- in the first 2× attempt (100 rules and SLOs), at an unknown time before the window. It kept no log or exit code; it was
+  missing from every docker stats sample;
+- in a reproduction by hand on that step's data straight after (100 and 100), about 15 s after starting, with exit code 139
+  (`docker compose ps`);
+- in the 4× step (200 and 200), 2 min 24 s after starting: exit 139, `oom=false` (`platform-api.state`).
+
+139 is a segmentation fault (signal 11), and in the 4× step not an out-of-memory kill.
+
+The last two came just after a burst of alerts the new SLOs opened together: 62 burn alerts fired at once in the reproduction,
+and 102 in the 4× step.
+- **In the 4× step's log** (`build/scale/20261114T0618-workers-4x/platform-api.log`), the process faults at the first error that follows
+  the burst. EF Core reports a failure using the connection to PostgreSQL, and the next lines are the runtime's `createdump`:
+  `Crashing thread 00b3 signal 11`. While the dump is being written, the rest of that failure is logged: `53300: sorry, too many
+  clients already`, in an `AlertTransitionedConsumer` handler planning notifications (`PlanNotificationsHandler`,
+  `WebhookDispatcher.cs:184`), one event logged at four layers.
+- **Measured:** the burst, the refused connection, the segfault, and nothing restarting it. `platform-api` has no restart policy in
+  `docker-compose.yml` or `compose.scale.yml` (Compose's default is none), so every worker stays down for the rest of the step:
+  the 1,900 s lags above.
+- **Inferred, to confirm in milestone 5:** each alert transition is handled concurrently, each handler holding its own connection
+  in a transaction. PostgreSQL's `max_connections` defaults to 100. Npgsql's pool also defaults to 100, and the worker leases
+  hold connections of their own outside it (`WorkerLease.cs:49`, `Pooling = false`, one per leased worker). So the pool at its
+  limit plus the leases can ask for more than the server allows, and a large enough burst exhausts it. Nothing in the platform bounds that. Steady state uses one connection at a sampled
+  moment, every 15 s, which the burst falls between.
+- **Not known: why the process segfaults.** The connection error is the last thing before it, but a refused connection
+  should be an exception the handler retries, not a fault. Whether the fault is in the error path, in another thread, or
+  just coincides with it, the dump has to show. A core dump of the 4× crash was taken (`DOTNET_DbgEnableMiniDump`, through
+  `SCALE_OVERRIDE`) and has not been analysed yet.
+- **Not reproduced on demand.** Thirteen more starts by hand, after the reproduction, didn't crash. They ran on the same data
+  without the generator: platform-api restarted twice, recreated with 150 to 400 rules four times, and the whole stack restarted
+  seven times. None was logged to a file. In the one start whose log was read, the SLO burn alerts line was "0 fired, 2 resolved".
+- **What it means for the ceiling:** the workers' ceiling at 4× isn't measured, and the 2× step held only on its second try. What bends first is not a worker's pass but the
+  alert burst on PostgreSQL's connections. A deployment that adds many SLOs at once, or an incident that opens many alerts at once,
+  would meet it.
+
+### What the ceilings say for the fixes (milestone 5)
+
+- **The crash first.** Bound the alert-transition handlers' concurrency, or their connections (a pool `Maximum Pool Size` under
+  the server's limit), so a burst queues instead of failing. Find the segfault from the dump. Restart a crashed platform: the
+  compose file and the deployment guide.
+- **R11: bound the searches.** A cap on searches running at once (per user in ClickHouse, `max_concurrent_queries_for_user`,
+  and in the API, answering "busy, try again" past it) should turn the 16 a second collapse into slower or refused searches,
+  and leave ingest and the workers alone. To verify in milestone 5 by rerunning the step. Inserts and workers need their own share.
+- **R12: smaller search scans.** 3.9 M rows for a one-hour log search at 1×, and 1.2 M for traces: the time and service filters
+  don't narrow what ClickHouse reads enough.
+- **R12a: the metrics exporter.** More consumers, or larger batches, and the insert wait measured, against the 90,000 points a
+  second it reaches now. Spans and logs have headroom.
+- **R12b, PostgreSQL:** its CPU and command rate are nowhere near a line: API reads under 70 ms p95, under a quarter of a core.
+  Its connections are, in a burst: see the crash above.
