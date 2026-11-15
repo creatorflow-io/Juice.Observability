@@ -893,3 +893,35 @@ A new test covers a service quiet for 5 minutes (still counted) and a minute wit
   the time). The query log, which counts a query when it ends, doesn't place them either. Across the three 4× runs the container's
   median went 0.51, 0.47, 0.42 cores and its p90 6.24, 2.29, 1.85 cores. So R12's claim is the queries' measured cost. Container
   bursts are left to the final rerun.
+
+### 7. The Collector sends metrics with 16 inserts at once, not 4 (R12a)
+
+**Measured first** (`query_log`, ingest ceiling at 10×, `20261115T1230`, the same config as milestone 4): the metrics exporter sends
+each batch, about 5,650 points, as one insert per metric table, and each insert returns only once ClickHouse's async insert has
+flushed it: about 210 ms for the gauge and histogram tables and 260 ms for the sum table (p50), almost all of it the busy timeout
+(the flush itself takes about 10 ms at 1×). With 4 consumers the sum table had 3.75 inserts in flight on average, so the exporter
+was waiting on ClickHouse nearly all the time, at 15 batches a second: 84,600 points/s stored of 100,000. ClickHouse's container
+used 1.8 cores of 24.
+
+**The change:** `num_consumers` 4 → 16 on every exporter (`collector/config.yaml`). Async insert gathers concurrent inserts into one
+part, so the part count doesn't grow with it.
+
+| Ingest ceiling | 10×, 4 consumers (`20261115T1230`) | 10×, 16 consumers (`20261115T1304`) | 20×, 16 consumers (`20261115T1338`) |
+|---|---|---|---|
+| Points stored of nominal | **86.5 %** (53.3 M lost) | **100 %**, 0 lost | **55.1 %** (357 M lost) |
+| Spans, logs stored | 100 %, 100 % | 100 %, 100 % | 100 %, 100 % |
+| Metric points inserted per second (`query_log`) | 86,500 | 100,000 | 110,100 |
+| Metric batches per second; sum-table insert p50 / p95 | 15.0; 262 / 282 ms | 17.3; 219 / 278 ms | 19.0; 226 / 307 ms |
+| Sum-table inserts in flight, mean | 3.75 (of 4) | 3.70 (of 16) | 4.42 (of 16) |
+| Collector export queues, median / max (bound 3 × 200,000) | 195,452 / 212,070 | 36,514 / 65,798 | 201,343 / 213,274 |
+| Ingestion freshness p95 | 0.79 s | 0.79 s | 0.63 s |
+| ClickHouse container CPU, mean / max | 1.8 / 4.0 cores | 1.9 / 4.4 | 3.1 / 7.4 |
+| Collector container CPU, mean / max | 1.7 / 2.2 cores | 1.5 / 2.0 | 3.1 / 4.6 |
+
+- **10× now holds:** every point stored, the queue at a sixth of its bound and draining, at the same ClickHouse cost.
+- **At 20× the limit has moved into the Collector.** The metrics exporter sends about 110,000 points/s with 16 consumers, but only
+  4.4 of them are inserting at a time on average; ClickHouse uses 3.1 of 24 cores and the inserts are no slower. The consumers wait
+  on something before the insert, in the Collector. Not measured: where. Its CPU is 3.1 cores on a host with room, so one serial
+  stage (the queue's batcher, or turning OTLP into rows) is the likely candidate, a hypothesis for a profile of the Collector at 20×.
+- **The ingest ceiling is now between 10× and 20×,** about 110,000 metric points/s (with 10,000 spans and logs/s at 10×, 20,000 at
+  20×) on one Collector, against about 85,000 before.
