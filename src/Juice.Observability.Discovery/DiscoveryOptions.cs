@@ -11,6 +11,14 @@ namespace Juice.Observability.Discovery
         public TimeSpan Interval { get; set; } = TimeSpan.FromSeconds(30);
 
         /// <summary>
+        /// How often the metric tables are read for resources, on their own checkpoint (Phase 11 R12). Metric points are
+        /// most of the rows, and re-reading their <see cref="Overlap"/> every <see cref="Interval"/> read each point about 20
+        /// times. A resource seen only through metrics appears, and its last-seen time moves, up to this much later. Zero
+        /// reads them with every window, as before.
+        /// </summary>
+        public TimeSpan MetricsInterval { get; set; } = TimeSpan.FromMinutes(5);
+
+        /// <summary>
         /// How far behind now a window ends, so telemetry still in the Collector's queue is not skipped.
         /// </summary>
         public TimeSpan Lag { get; set; } = TimeSpan.FromSeconds(60);

@@ -12,9 +12,23 @@ namespace Juice.Observability.Discovery
     /// <summary>Reads what discovery needs from the Collector's ClickHouse tables.</summary>
     public interface ITelemetrySource
     {
-        Task<IReadOnlyList<ResourceObservation>> ReadResourcesAsync(TelemetryWindow window, CancellationToken cancellationToken);
+        Task<IReadOnlyList<ResourceObservation>> ReadResourcesAsync(TelemetryWindow window, CancellationToken cancellationToken)
+            => ReadResourcesAsync(window, TelemetrySignals.All, cancellationToken);
+        /// <summary>The resources seen in the tables of <paramref name="signals"/> only.</summary>
+        Task<IReadOnlyList<ResourceObservation>> ReadResourcesAsync(TelemetryWindow window, TelemetrySignals signals, CancellationToken cancellationToken);
         Task<IReadOnlyList<ServiceLinkObservation>> ReadServiceLinksAsync(TelemetryWindow window, CancellationToken cancellationToken);
         Task<IReadOnlyList<ResourceUseObservation>> ReadResourceUsesAsync(TelemetryWindow window, CancellationToken cancellationToken);
+    }
+
+    /// <summary>Which of the exporter's tables a resource read covers.</summary>
+    [Flags]
+    public enum TelemetrySignals
+    {
+        /// <summary><c>otel_traces</c> and <c>otel_logs</c>.</summary>
+        SpansAndLogs = 1,
+        /// <summary>The <c>otel_metrics_*</c> tables.</summary>
+        Metrics = 2,
+        All = SpansAndLogs | Metrics,
     }
 
     /// <summary>A bounded, tenant-scoped read: [<see cref="From"/>, <see cref="To"/>), at most <see cref="Limit"/> rows.</summary>
@@ -100,10 +114,18 @@ namespace Juice.Observability.Discovery
 
         private const string ResourceKeys = "ns, svc, inst, env, ver, host_name, host_id, container_id, pod_uid, pod_ns, pod_name, pid";
 
-        private static readonly string ResourcesQuery = $"""
+        /// <summary>The resource read over the tables of each set of signals.</summary>
+        private static readonly IReadOnlyDictionary<TelemetrySignals, string> ResourcesQueries =
+            new[] { TelemetrySignals.SpansAndLogs, TelemetrySignals.Metrics, TelemetrySignals.All }
+                .ToDictionary(s => s, s => ResourcesQueryOf(ResourceTables.Where(t => s.HasFlag(SignalOf(t.Table)))));
+
+        private static TelemetrySignals SignalOf(string table)
+            => table.StartsWith("otel_metrics_", StringComparison.Ordinal) ? TelemetrySignals.Metrics : TelemetrySignals.SpansAndLogs;
+
+        private static string ResourcesQueryOf(IEnumerable<(string Table, string Time)> tables) => $"""
             SELECT {ResourceKeys}, min(first_seen) AS first_seen, max(last_seen) AS last_seen, sum(records) AS records
             FROM (
-            {string.Join("\nUNION ALL\n", ResourceTables.Select(t => $"""
+            {string.Join("\nUNION ALL\n", tables.Select(t => $"""
                 SELECT {ResourceColumns}, min({t.Time}) AS first_seen, max({t.Time}) AS last_seen, count() AS records
                 FROM otel.{t.Table}
                 WHERE {Tenant} AND {t.Time} >= {From} AND {t.Time} < {To}
@@ -157,7 +179,10 @@ namespace Juice.Observability.Discovery
             """;
 
         public Task<IReadOnlyList<ResourceObservation>> ReadResourcesAsync(TelemetryWindow window, CancellationToken cancellationToken)
-            => QueryAsync(ResourcesQuery, window, r => new ResourceObservation
+            => ReadResourcesAsync(window, TelemetrySignals.All, cancellationToken);
+
+        public Task<IReadOnlyList<ResourceObservation>> ReadResourcesAsync(TelemetryWindow window, TelemetrySignals signals, CancellationToken cancellationToken)
+            => QueryAsync(ResourcesQueries[signals], window, r => new ResourceObservation
             {
                 ServiceNamespace = r.GetString(0),
                 ServiceName = r.GetString(1),

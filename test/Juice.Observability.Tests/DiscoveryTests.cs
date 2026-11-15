@@ -353,6 +353,54 @@ namespace Juice.Observability.Tests
             Assert.Equal(LocalStack.TenantKey, (await db.Tenants.SingleAsync()).Key);
         }
 
+        [Fact]
+        public async Task Metric_tables_are_read_on_their_own_checkpoint_every_metrics_interval_Async()
+        {
+            // Phase 11 R12: spans and logs every pass, the metric tables once MetricsInterval has passed since their checkpoint.
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var (early, later) = ($"disc-{_run}-metrics-early", $"disc-{_run}-metrics-later");
+            var ct = TestContext.Current.CancellationToken;
+            async Task SendAsync(string service)
+            {
+                var at = DateTimeOffset.UtcNow.AddMinutes(-1);
+                await LocalStack.SendAsync("metrics", Otlp.Sum([("service.name", service), ("service.instance.id", "m1")], $"disc_{_run}_work", at.AddMinutes(-1), [],
+                    (at.AddSeconds(-30), 1), (at, 2)));
+                for (var i = 0; i < 50 && int.Parse(await LocalStack.ClickHouseAsync($"SELECT count() FROM otel.otel_metrics_sum WHERE ServiceName = '{service}'")) < 2; i++)
+                {
+                    await Task.Delay(200, ct);
+                }
+            }
+            async Task<bool> FoundAsync(string service)
+            {
+                await using var db = database.Context();
+                return await db.Services.AnyAsync(s => s.Name == service, ct);
+            }
+            var runner = Runner(database, o => o.MetricsInterval = TimeSpan.FromMinutes(5));
+
+            // No metrics checkpoint yet: the first pass reads the metric tables too.
+            await SendAsync(early);
+            await runner.RunOnceAsync(ct);
+            Assert.True(await FoundAsync(early));
+
+            // A metrics-only service sent now isn't read until the metrics checkpoint is MetricsInterval old.
+            await SendAsync(later);
+            await runner.RunOnceAsync(ct);
+            Assert.False(await FoundAsync(later));
+            await using (var db = database.Context())
+            {
+                await db.Checkpoints.Where(c => c.Source == DiscoveryRunner.MetricsCheckpointSource)
+                    .ExecuteUpdateAsync(s => s.SetProperty(c => c.Watermark, c => c.Watermark - TimeSpan.FromMinutes(5)), ct);
+            }
+            await runner.RunOnceAsync(ct);
+            Assert.True(await FoundAsync(later));
+            await using (var db = database.Context())
+            {
+                Assert.Equal([DiscoveryRunner.CheckpointSource, DiscoveryRunner.MetricsCheckpointSource],
+                    (await db.Checkpoints.Select(c => c.Source).ToListAsync(ct)).Order());
+            }
+        }
+
         private static async Task<(int, int, int, int, int)> CountsAsync(ScratchDatabase database)
         {
             await using var db = database.Context();

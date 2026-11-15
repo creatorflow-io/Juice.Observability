@@ -779,3 +779,33 @@ trace search's span fetch by `otel_traces_trace_id_ts` instead read more rows (1
 
 **Next candidate, a worker query:** discovery's instance pass reads about 21.8 M rows and 24 CPU-seconds each time, across traces,
 logs and metrics over its 10-minute window, about 0.8 of a core all the time at 1×. It isn't a search, and is measured on its own.
+
+### 4. Discovery reads the metric tables every 5 minutes (R12)
+
+**Measured first** (`query_log`, the 16 a second step `20261115T0813`): discovery's resource read ran every 30 s over its 10½-minute
+window, 13.6 M rows and 15.5 CPU-seconds a pass, about half a core. Split by table on one window, `otel_metrics_sum` was 17.1 M of
+the rows and 16.1 of the CPU-seconds. Each metric point was read about 20 times. The cost is the `ResourceAttributes` map: the
+same rows without it cost 0.12 CPU-seconds, the tenant filter alone 8.3, and grouping by the whole map before extracting still 10.1.
+A bound on the table's `toStartOfHour(TimeUnix)` key column pruned nothing. So no rewrite of the query helps. The levers are reading
+the metric rows less often, or materialised resource columns on the exporter's tables (a schema change, deferred).
+
+**The change (the owner's choice of the two):** discovery reads spans and logs every pass, as before, and the metric tables on their
+own checkpoint (`telemetry-metrics`) once `Discovery:MetricsInterval` (5 min) has passed since it. A resource seen only through
+metrics appears, and its last-seen time moves, up to 5 minutes later: inside the 15 minutes before an instance goes inactive.
+Reconciling never moves a first-seen time later or a last-seen time earlier, so the two checkpoints can't undo each other.
+
+**The searches ceiling at 8 a second again** (`20261115T0904`, against `20261115T0739`), from `query_log`, as a share of the
+30-minute window:
+
+| | Before | After |
+|---|---|---|
+| Discovery's resource read | 60 passes, 12.4 M rows each, 0.447 cores | spans and logs: 60 passes, 1.7 M rows, 0.057 cores; metrics: 6 passes, 9.9 M rows, 0.037 cores |
+| Discovery, all its queries | 0.52 cores | 0.16 cores |
+| `platform_reader`, every query (searches included) | 1.34 cores | 0.98 cores |
+| ClickHouse container CPU, mean (docker stats) | 1.56 cores | 1.58 cores |
+| Search p95; discovery past its delay, max | 119 ms; 29.5 s | 119 ms; 30.3 s |
+
+- **Discovery's queries cost a third of what they did,** and the reader's queries in all 0.36 cores less.
+- **The container's CPU didn't move,** so that saving didn't show in docker stats. The rest of ClickHouse's CPU (about 0.2 cores
+  before, 0.55 after) isn't attributed by what the harness records. Merges were similar in both windows (439 M and 564 M rows
+  merged). So the R12 claim is the measured query cost, not the container's total.

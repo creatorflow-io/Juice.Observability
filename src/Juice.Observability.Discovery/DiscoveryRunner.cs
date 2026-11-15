@@ -22,6 +22,9 @@ namespace Juice.Observability.Discovery
     {
         public const string CheckpointSource = "telemetry";
 
+        /// <summary>The metric tables' own checkpoint (<see cref="DiscoveryOptions.MetricsInterval"/>).</summary>
+        public const string MetricsCheckpointSource = "telemetry-metrics";
+
         internal static readonly Meter Meter = new("Juice.Observability");
         private static readonly Counter<long> Runs = Meter.CreateCounter<long>("juice.observability.discovery.runs", "{run}",
             "Discovery passes, by outcome");
@@ -55,29 +58,56 @@ namespace Juice.Observability.Discovery
         private async Task<DiscoveryRunResult> RunAsync(CancellationToken cancellationToken)
         {
             var settings = options.Value;
-            var totals = new ReconcileResult(0, 0, 0, 0, 0, 0);
-            var windows = 0;
             await using var scope = scopes.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
             var tenant = await db.Tenants.AsNoTracking().SingleAsync(t => t.Key == platform.Value.TenantKey, cancellationToken);
             var end = clock.GetUtcNow() - settings.Lag;
-            var watermark = await db.Checkpoints.AsNoTracking()
-                .Where(c => c.TenantId == tenant.Id && c.Source == CheckpointSource)
-                .Select(c => (DateTimeOffset?)c.Watermark).SingleOrDefaultAsync(cancellationToken)
-                ?? end - settings.InitialLookback;
+            var separate = settings.MetricsInterval > TimeSpan.Zero;
 
+            var (windows, watermark, totals) = await AdvanceAsync(db, tenant, CheckpointSource,
+                separate ? TelemetrySignals.SpansAndLogs : TelemetrySignals.All, end, cancellationToken);
+            // The metric tables on their own checkpoint, read once at least MetricsInterval has passed since it.
+            if (separate && end - await WatermarkAsync(db, tenant.Id, MetricsCheckpointSource, end, cancellationToken) >= settings.MetricsInterval)
+            {
+                totals = Add(totals, (await AdvanceAsync(db, tenant, MetricsCheckpointSource, TelemetrySignals.Metrics, end, cancellationToken)).Totals);
+            }
+
+            if (totals.Services + totals.Instances + totals.Resources + totals.Dependencies > 0)
+            {
+                logger.LogInformation("Discovery created {Services} services, {Instances} instances, {Resources} resources, {Dependencies} dependencies",
+                    totals.Services, totals.Instances, totals.Resources, totals.Dependencies);
+            }
+            return new DiscoveryRunResult(windows, watermark, totals);
+        }
+
+        private async Task<DateTimeOffset> WatermarkAsync(PlatformDbContext db, Guid tenantId, string checkpointSource, DateTimeOffset end,
+            CancellationToken cancellationToken)
+            => await db.Checkpoints.AsNoTracking()
+                .Where(c => c.TenantId == tenantId && c.Source == checkpointSource)
+                .Select(c => (DateTimeOffset?)c.Watermark).SingleOrDefaultAsync(cancellationToken)
+                ?? end - options.Value.InitialLookback;
+
+        // Reads the signals' tables from the checkpoint up to end, window by window, applying each window and moving the
+        // checkpoint in one transaction. Service links and resource uses come from spans, so a metrics-only read has none.
+        private async Task<(int Windows, DateTimeOffset Watermark, ReconcileResult Totals)> AdvanceAsync(PlatformDbContext db, PlatformTenant tenant,
+            string checkpointSource, TelemetrySignals signals, DateTimeOffset end, CancellationToken cancellationToken)
+        {
+            var settings = options.Value;
+            var totals = new ReconcileResult(0, 0, 0, 0, 0, 0);
+            var windows = 0;
+            var watermark = await WatermarkAsync(db, tenant.Id, checkpointSource, end, cancellationToken);
             while (watermark < end && windows < settings.MaxWindowsPerRun)
             {
                 var to = Min(watermark + settings.MaxWindow, end);
-                var (resources, links, uses) = await ReadAsync(tenant.Key, watermark - settings.Overlap, to, watermark, cancellationToken);
+                var (resources, links, uses) = await ReadAsync(tenant.Key, watermark - settings.Overlap, to, watermark, signals, cancellationToken);
 
                 var normalizer = new Normalizer(settings.Aliases);
                 await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
                 var result = await new Reconciler(db, normalizer, settings, clock).ApplyAsync(tenant.Id, resources, links, uses, cancellationToken);
-                var checkpoint = await db.Checkpoints.SingleOrDefaultAsync(c => c.TenantId == tenant.Id && c.Source == CheckpointSource, cancellationToken);
+                var checkpoint = await db.Checkpoints.SingleOrDefaultAsync(c => c.TenantId == tenant.Id && c.Source == checkpointSource, cancellationToken);
                 if (checkpoint is null)
                 {
-                    db.Checkpoints.Add(new ReconciliationCheckpoint { TenantId = tenant.Id, Source = CheckpointSource, Watermark = to, UpdatedAt = clock.GetUtcNow() });
+                    db.Checkpoints.Add(new ReconciliationCheckpoint { TenantId = tenant.Id, Source = checkpointSource, Watermark = to, UpdatedAt = clock.GetUtcNow() });
                 }
                 else
                 {
@@ -92,28 +122,23 @@ namespace Juice.Observability.Discovery
                 totals = Add(totals, result);
                 watermark = to;
                 windows++;
-                logger.LogDebug("Discovery window up to {Watermark}: {Resources} resource sets, {Links} service links, {Uses} resource uses",
-                    to, resources.Count, links.Count, uses.Count);
+                logger.LogDebug("Discovery window ({Checkpoint}) up to {Watermark}: {Resources} resource sets, {Links} service links, {Uses} resource uses",
+                    checkpointSource, to, resources.Count, links.Count, uses.Count);
             }
-
-            if (totals.Services + totals.Instances + totals.Resources + totals.Dependencies > 0)
-            {
-                logger.LogInformation("Discovery created {Services} services, {Instances} instances, {Resources} resources, {Dependencies} dependencies",
-                    totals.Services, totals.Instances, totals.Resources, totals.Dependencies);
-            }
-            return new DiscoveryRunResult(windows, watermark, totals);
+            return (windows, watermark, totals);
         }
 
         // A window that fills the row limit may be missing rows: split it, down to the minimum window. Spans count from
         // countFrom, the checkpoint the window's overlap reaches back before.
         private async Task<(List<ResourceObservation>, List<ServiceLinkObservation>, List<ResourceUseObservation>)> ReadAsync(
-            string tenantKey, DateTimeOffset from, DateTimeOffset to, DateTimeOffset countFrom, CancellationToken cancellationToken)
+            string tenantKey, DateTimeOffset from, DateTimeOffset to, DateTimeOffset countFrom, TelemetrySignals signals, CancellationToken cancellationToken)
         {
             var settings = options.Value;
             var window = new TelemetryWindow(tenantKey, from, to, settings.RowLimit) { CountFrom = countFrom };
-            var resources = await source.ReadResourcesAsync(window, cancellationToken);
-            var links = await source.ReadServiceLinksAsync(window, cancellationToken);
-            var uses = await source.ReadResourceUsesAsync(window, cancellationToken);
+            var resources = await source.ReadResourcesAsync(window, signals, cancellationToken);
+            var spans = signals.HasFlag(TelemetrySignals.SpansAndLogs);
+            IReadOnlyList<ServiceLinkObservation> links = spans ? await source.ReadServiceLinksAsync(window, cancellationToken) : [];
+            IReadOnlyList<ResourceUseObservation> uses = spans ? await source.ReadResourceUsesAsync(window, cancellationToken) : [];
             var full = resources.Count >= settings.RowLimit || links.Count >= settings.RowLimit || uses.Count >= settings.RowLimit;
             if (!full)
             {
@@ -127,8 +152,8 @@ namespace Juice.Observability.Discovery
                 return ([.. resources], [.. links], [.. uses]);
             }
             var middle = from + (to - from) / 2;
-            var first = await ReadAsync(tenantKey, from, middle, countFrom, cancellationToken);
-            var second = await ReadAsync(tenantKey, middle, to, countFrom, cancellationToken);
+            var first = await ReadAsync(tenantKey, from, middle, countFrom, signals, cancellationToken);
+            var second = await ReadAsync(tenantKey, middle, to, countFrom, signals, cancellationToken);
             return ([.. first.Item1, .. second.Item1], [.. first.Item2, .. second.Item2], [.. first.Item3, .. second.Item3]);
         }
 
