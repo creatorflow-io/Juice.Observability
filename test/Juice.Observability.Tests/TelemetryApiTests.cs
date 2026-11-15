@@ -241,6 +241,55 @@ namespace Juice.Observability.Tests
             Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
         }
 
+        [Fact]
+        public async Task A_search_finds_matches_older_than_its_newest_slice_newest_first_and_once_Async()
+        {
+            // Searches read the newest 5 minutes first and widen (Phase 11 R12): matches 1 minute, 30 minutes and 3 hours old
+            // sit in three slices, and pages of 2 cross them.
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var (service, operation, marker) = ($"tel-{_run}-sliced", $"sliced op {_run}", $"sliced-{_run}");
+            var ages = new[] { 60, 70, 80, 1800, 1810, 10800, 10810 };
+            var traces = ages.Select(age => (Trace: Otlp.TraceId(), Age: age)).ToList();
+            foreach (var (trace, age) in traces)
+            {
+                await LocalStack.ClickHouseAsync($"""
+                    INSERT INTO otel.otel_traces (Timestamp, TraceId, SpanId, ServiceName, SpanName, SpanKind, StatusCode, ResourceAttributes)
+                    VALUES (toDateTime64(now() - {age}, 9), '{trace}', '{Otlp.SpanId()}', '{service}', '{operation}', 'Server', 'Ok',
+                            map('juice.platform_tenant_id', '{LocalStack.TenantKey}'))
+                    """);
+                await LocalStack.ClickHouseAsync($"""
+                    INSERT INTO otel.otel_logs (Timestamp, TraceId, SpanId, ServiceName, Body, SeverityNumber, ResourceAttributes)
+                    VALUES (toDateTime64(now() - {age}, 9), '{trace}', '', '{service}', '{marker} {trace}', 9,
+                            map('juice.platform_tenant_id', '{LocalStack.TenantKey}'))
+                    """);
+            }
+            await LocalStack.WaitForSpansAsync(service, ages.Length);
+
+            await using var factory = new ApiFactory(database);
+            using var client = factory.CreateClient();
+            var token = await LocalStack.TokenAsync("victor");
+            var tenant = (await JsonAsync(await Get(client, "/api/v1/tenants", token))).GetProperty("items")[0].GetProperty("id").GetGuid();
+            var window = $"from={Uri.EscapeDataString(DateTimeOffset.UtcNow.AddHours(-4).ToString("O"))}&to={Uri.EscapeDataString(DateTimeOffset.UtcNow.ToString("O"))}";
+            async Task<List<string>> AllAsync(string path, Func<JsonElement, string> id)
+            {
+                var (seen, cursor, pages) = (new List<string>(), (string?)null, 0);
+                do
+                {
+                    var page = await JsonAsync(await Get(client,
+                        $"/api/v1/tenants/{tenant}{path}&{window}&limit=2{(cursor is null ? "" : $"&cursor={cursor}")}", token));
+                    seen.AddRange(page.GetProperty("items").EnumerateArray().Select(id));
+                    cursor = page.GetProperty("nextCursor").GetString();
+                }
+                while (cursor is not null && ++pages < 10);
+                return seen;
+            }
+
+            var newestFirst = traces.OrderBy(t => t.Age).Select(t => t.Trace).ToList();
+            Assert.Equal(newestFirst, await AllAsync($"/telemetry/traces?operation={Uri.EscapeDataString(operation)}", t => t.GetProperty("traceId").GetString()!));
+            Assert.Equal(newestFirst, await AllAsync($"/telemetry/logs?q={marker}", l => l.GetProperty("traceId").GetString()!));
+        }
+
         [Theory]
         [InlineData("/telemetry/traces/not-a-trace", HttpStatusCode.BadRequest)]
         [InlineData("/telemetry/traces?spanId=xyz", HttpStatusCode.BadRequest)]

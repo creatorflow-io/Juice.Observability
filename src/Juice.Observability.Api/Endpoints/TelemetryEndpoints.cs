@@ -85,6 +85,8 @@ namespace Juice.Observability.Api.Endpoints
         private static readonly Regex MetricNamePattern = new(@"^[A-Za-z_:][A-Za-z0-9_.:/\-]{0,254}$", RegexOptions.Compiled);
 
         private const string Environment = "ResourceAttributes['deployment.environment.name']";
+        /// <summary>A newest-first search's lower bound for the slice being read (ClickHouseTelemetrySource.QueryNewestFirstAsync).</summary>
+        private const string SliceFrom = "{slice_from:DateTime64(9)}";
         private const string Instance = "ResourceAttributes['service.instance.id']";
         private const string Host = "ResourceAttributes['host.name']";
         private const string DbSystem = "lowerUTF8(if(SpanAttributes['db.system.name'] != '', SpanAttributes['db.system.name'], SpanAttributes['db.system']))";
@@ -154,6 +156,11 @@ namespace Juice.Observability.Api.Endpoints
         private readonly record struct Position(long Nanos, string Key)
         {
             public string Encode() => Base64Url.EncodeToString(Encoding.UTF8.GetBytes($"{Nanos}:{Key}"));
+
+            /// <summary>The position's time, rounded up to a tick; a time out of range is the latest one, so a search reads from the window's end.</summary>
+            public DateTimeOffset Time => Nanos >= 0 && Nanos / 100 < DateTimeOffset.MaxValue.Ticks - DateTimeOffset.UnixEpoch.Ticks - 1
+                ? DateTimeOffset.UnixEpoch.AddTicks(Nanos / 100 + 1)
+                : DateTimeOffset.MaxValue;
 
             public static bool TryParse(string? text, out Position? position)
             {
@@ -379,10 +386,12 @@ namespace Juice.Observability.Api.Endpoints
                 : "";
             // The matching traces in a stable order (latest matching span, then trace id), then every span of those traces
             // near the window (a trace may start before it). status=ok is applied after paging, so the cursor still moves on.
+            // The matching is read newest slice first (QueryNewestFirstAsync); the spans are still read around the whole window.
             const string Root = "ParentSpanId = ''";
             var sql = $"""
                 WITH matched AS (
-                    SELECT TraceId, max(Timestamp) AS last FROM otel.otel_traces WHERE {scope.Where("Timestamp", spans: true)}
+                    SELECT TraceId, max(Timestamp) AS last FROM otel.otel_traces
+                    WHERE {scope.Where("Timestamp", spans: true)} AND Timestamp >= {SliceFrom}
                     GROUP BY TraceId {afterCondition}
                     ORDER BY last DESC, TraceId DESC LIMIT {ClickHouseTelemetrySource.Limit}
                 )
@@ -402,10 +411,10 @@ namespace Juice.Observability.Api.Endpoints
                 ) AS s INNER JOIN matched AS m ON s.TraceId = m.TraceId
                 ORDER BY m.last DESC, s.TraceId DESC
                 """;
-            var rows = await clickHouse.QueryAsync(sql, scope.Window, r => (Trace: new TraceSummaryDto(r.GetString(0), Utc(r.GetValue(1)),
+            var rows = await clickHouse.QueryNewestFirstAsync(sql, scope.Window, r => (Trace: new TraceSummaryDto(r.GetString(0), Utc(r.GetValue(1)),
                 Ms(r.GetValue(2)), r.GetString(3), r.GetString(4), NonEmpty(r.GetString(5)), NonEmpty(r.GetString(6)), NonEmpty(r.GetString(7)),
                 Convert.ToInt64(r.GetValue(8)), Convert.ToInt64(r.GetValue(9)), ((string[])r.GetValue(10)).Order(StringComparer.Ordinal).ToList()),
-                Position: new Position(Convert.ToInt64(r.GetValue(11)), r.GetString(0))), ct, scope.Parameters);
+                Position: new Position(Convert.ToInt64(r.GetValue(11)), r.GetString(0))), scope.Window.Limit, ct, scope.Parameters, after?.Time);
             var page = rows.Take(take).ToList();
             var next = rows.Count > take ? page[^1].Position.Encode() : null;
             return Results.Ok(new TelemetryPage<TraceSummaryDto>(
@@ -532,19 +541,22 @@ namespace Juice.Observability.Api.Endpoints
                 var (nanos, tie) = (scope.Add("Int64", a.Nanos), scope.Add("UInt64", ulong.Parse(a.Key)));
                 scope.Conditions.Add($"Timestamp <= fromUnixTimestamp64Nano({nanos}) AND (toUnixTimestamp64Nano(Timestamp), {Tie}) < ({nanos}, {tie})");
             }
-            var rows = await clickHouse.QueryAsync($"""
+            // The exporter's logs table is ordered by (toStartOfFiveMinutes(Timestamp), ServiceName, Timestamp), and ClickHouse
+            // doesn't derive the first column's bound from Timestamp's: without it, a slice inside a large merged part reads most of
+            // the part (Phase 11 R12). On a table ordered otherwise the bound is still true, and only prunes less.
+            var rows = await clickHouse.QueryNewestFirstAsync($"""
                 SELECT Timestamp, SeverityText, SeverityNumber, ServiceName, {Environment}, {Instance},
                        substringUTF8(Body, 1, {MaxBody}), lengthUTF8(Body) > {MaxBody}, TraceId, SpanId, LogAttributes,
                        toUnixTimestamp64Nano(Timestamp), {Tie} AS tie
                 FROM otel.otel_logs
-                WHERE {scope.Where("Timestamp")}
+                WHERE {scope.Where("Timestamp")} AND Timestamp >= {SliceFrom} AND toStartOfFiveMinutes(Timestamp) >= toStartOfFiveMinutes({SliceFrom})
                 ORDER BY Timestamp DESC, tie DESC
                 LIMIT {ClickHouseTelemetrySource.Limit}
                 """, scope.Window, x => (Log: new LogDto(Utc(x.GetValue(0)), x.GetString(1), Convert.ToInt32(x.GetValue(2)), x.GetString(3),
                     NonEmpty(x.GetString(4)), NonEmpty(x.GetString(5)), x.GetString(6), Convert.ToBoolean(x.GetValue(7)),
                     NonEmpty(x.GetString(8)), NonEmpty(x.GetString(9)), Bounded(x.GetValue(10))),
                     Position: new Position(Convert.ToInt64(x.GetValue(11)), Convert.ToUInt64(x.GetValue(12)).ToString())),
-                ct, scope.Parameters);
+                scope.Window.Limit, ct, scope.Parameters, after?.Time);
             var page = rows.Take(take).ToList();
             var next = rows.Count > take ? page[^1].Position.Encode() : null;
             return Results.Ok(new TelemetryPage<LogDto>(page.Select(r => r.Log).ToList(), next is not null, next));

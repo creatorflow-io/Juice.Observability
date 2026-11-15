@@ -734,3 +734,48 @@ milestone 4:
 **Step 2 (workload scheduling in ClickHouse) is deferred.** Step 1 kept ingest whole at twice the search rate that broke it.
 What's left is the workers' share of the cores while searches fill their 16. That shows only in the full mix with every worker on,
 so the final rerun checks it. If the workers lag there, step 2 comes in.
+
+### 3. Searches read the newest slice first (R12)
+
+**Measured first, on the 16 a second step's data** (each query alone, `max_threads` 2). A log search for `failed` over the last
+hour read every log in it, 3.63 M rows and 0.35 CPU-seconds, to return the newest 51. A trace search for one service read 1.66 M
+rows and 0.47 CPU-seconds: 0.67 M to find the matching traces, the rest fetching their spans over the window ± 1 h.
+
+**The changes:**
+- **Newest slice first.** Trace and log searches read the newest 5 minutes of the window (from the cursor's position on a later
+  page), then 1 hour, 12 hours and the whole window, until a page is full
+  (`ClickHouseTelemetrySource.QueryNewestFirstAsync`). The answer is the same as one read of the whole window: when a slice holds
+  a full page, nothing older can rank above it. A search that matches nothing reads about 8 % more than before. A search holds
+  one query slot (R11) for all its slices. The trace search still fetches the matched traces' spans over the window ± 1 h.
+- **The logs table's first key column bounded.** The exporter orders `otel_logs` by `(toStartOfFiveMinutes(Timestamp),
+  ServiceName, Timestamp)`, and ClickHouse doesn't derive the first column's bound from a bound on `Timestamp`. So a slice was
+  cheap only while the newest minutes sat in small parts that their own time range pruned. The log search now bounds
+  `toStartOfFiveMinutes(Timestamp)` too.
+
+Measured alone on the same data: a log slice 0.42 M rows and 0.09 CPU-seconds; a trace search 0.52 M rows and 0.16. Bounding the
+trace search's span fetch by `otel_traces_trace_id_ts` instead read more rows (1.6 M), so it was dropped.
+
+**The searches ceiling, 8 and 16 a second:**
+
+| | 8, R11 | 8, slices | 8, slices + key bound | 16, R11 | 16, slices | 16, slices + key bound |
+|---|---|---|---|---|---|---|
+| Step | `20261115T0202` | `20261115T0626` | `20261115T0739` | `20261115T0235` | `20261115T0659` | `20261115T0813` |
+| Search p50 / p95 | 125 / 314 ms | 55 / 138 ms | 69 / 119 ms | 5.4 s / no answer | 76 ms / no answer | **78 / 148 ms** |
+| Trace / log search p95 | 316 / 312 ms | 101 / 147 ms | 129 / 68 ms | 6.0 / 5.7 s | 5.2 / 6.5 s | 176 / 85 ms |
+| Refused (503) | 0 | 0 | 0 | 3,308 of 28,777 | 1,716 of 28,777 | **0 of 28,777** |
+| ClickHouse CPU, mean | 3.3 | 1.7 | 1.6 | 15.7 | 5.0 | **3.1** |
+| ClickHouse memory, max | 2.9 GiB | 2.5 GiB | 2.5 GiB | 3.7 GiB | 3.5 GiB | 3.0 GiB |
+| Console page p95 | 757 ms | 671 ms | 720 ms | 6.3 s, 16 failed | 854 ms, 6 failed | 739 ms, none failed |
+| Ingest | all stored | all stored | all stored | all stored | all stored | all stored |
+
+- **16 a second now meets the 2 s line, with no refusals,** on about 3 of the 24 cores: the step where milestone 4's searches
+  collapsed. The ceiling is above 16 a second. The steps stop at 16, so how far above isn't measured.
+- **Slices alone left a 3¾-minute episode at 16 a second** (07:27:45–07:31:30), with all 1,716 refusals. From `query_log`: in it,
+  every log search read 3.05–3.13 M rows and 2.9 CPU-seconds in one query, against 0.4–0.6 M before. Its part had just been merged
+  into one of 10.3 M rows, covering the day up to 07:26. Replayed on that data, the same slice read 3.18 M rows without the key
+  bound and 0.53 M with it.
+- **With the key bound, a merge didn't show.** A 2.5 M-row logs merge came at 08:40, inside the 16 a second step, and log slices
+  read at most 0.46 M rows throughout (0.37–0.40 M mean every 5 minutes).
+
+**Next candidate, a worker query:** discovery's instance pass reads about 21.8 M rows and 24 CPU-seconds each time, across traces,
+logs and metrics over its 10-minute window, about 0.8 of a core all the time at 1×. It isn't a search, and is measured on its own.

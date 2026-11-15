@@ -213,8 +213,67 @@ namespace Juice.Observability.Discovery
         /// Runs a platform query template with the window's tenant, time bounds and row limit as parameters, plus any
         /// template-specific ones. Values are only ever passed as parameters, never formatted into the SQL.
         /// </summary>
-        public async Task<IReadOnlyList<T>> QueryAsync<T>(string sql, TelemetryWindow window, Func<DbDataReader, T> map,
+        public Task<IReadOnlyList<T>> QueryAsync<T>(string sql, TelemetryWindow window, Func<DbDataReader, T> map,
             CancellationToken cancellationToken, IReadOnlyDictionary<string, object>? parameters = null)
+            => QueryCoreAsync(sql, window, map, parameters, takeSlot: true, cancellationToken);
+
+        /// <summary>The newest slice a newest-first search reads first (Phase 11 R12).</summary>
+        public static readonly TimeSpan NewestSlice = TimeSpan.FromMinutes(5);
+
+        /// <summary>How much wider each next slice is: 5 minutes, 1 hour, 12 hours, then the whole window.</summary>
+        public const int SliceGrowth = 12;
+
+        /// <summary>
+        /// A newest-first search, read in widening slices (Phase 11 R12). The template bounds its search below by
+        /// <c>{slice_from:DateTime64(9)}</c> as well as <c>{from}</c>, and orders newest first. A slice ends at
+        /// <paramref name="newest"/> (a cursor's position) or the window's end, starts <see cref="NewestSlice"/> before it, and
+        /// widens <see cref="SliceGrowth"/> times until it returns <paramref name="enough"/> rows or covers the window. The
+        /// answer is the same as one read of the whole window: when a slice already holds enough rows, nothing older can
+        /// rank above them. An API caller holds one query slot for every slice.
+        /// </summary>
+        public async Task<IReadOnlyList<T>> QueryNewestFirstAsync<T>(string sql, TelemetryWindow window, Func<DbDataReader, T> map, int enough,
+            CancellationToken cancellationToken, IReadOnlyDictionary<string, object>? parameters = null, DateTimeOffset? newest = null)
+        {
+            var caller = PlatformCaller.Current;
+            var holding = false;
+            if (IsApi(caller))
+            {
+                var started = Stopwatch.GetTimestamp();
+                if (!await apiSlots.WaitAsync(options.Value.Api.QueueTimeout, cancellationToken))
+                {
+                    QueryDuration.Record(Stopwatch.GetElapsedTime(started).TotalSeconds,
+                        new KeyValuePair<string, object?>("caller", caller), new KeyValuePair<string, object?>("outcome", "busy"));
+                    throw new TelemetryBusyException($"{options.Value.Api.MaxConcurrent} telemetry queries are already running on this replica");
+                }
+                holding = true;
+                ApiRunning.Add(1);
+            }
+            try
+            {
+                var top = newest is { } at && at < window.To ? at : window.To;
+                for (var slice = NewestSlice; ; slice *= SliceGrowth)
+                {
+                    var whole = top - slice <= window.From;
+                    var sliced = new Dictionary<string, object>(parameters ?? new Dictionary<string, object>())
+                    {
+                        ["slice_from"] = (whole ? window.From : top - slice).UtcDateTime,
+                    };
+                    var rows = await QueryCoreAsync(sql, window, map, sliced, takeSlot: false, cancellationToken);
+                    if (whole || rows.Count >= enough) return rows;
+                }
+            }
+            finally
+            {
+                if (holding)
+                {
+                    ApiRunning.Add(-1);
+                    apiSlots.Release();
+                }
+            }
+        }
+
+        private async Task<IReadOnlyList<T>> QueryCoreAsync<T>(string sql, TelemetryWindow window, Func<DbDataReader, T> map,
+            IReadOnlyDictionary<string, object>? parameters, bool takeSlot, CancellationToken cancellationToken)
         {
             var caller = PlatformCaller.Current;
             var api = IsApi(caller);
@@ -224,7 +283,7 @@ namespace Juice.Observability.Discovery
             var holding = false;
             try
             {
-                if (api)
+                if (api && takeSlot)
                 {
                     if (!await apiSlots.WaitAsync(options.Value.Api.QueueTimeout, cancellationToken))
                     {
