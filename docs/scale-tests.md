@@ -925,3 +925,37 @@ part, so the part count doesn't grow with it.
   stage (the queue's batcher, or turning OTLP into rows) is the likely candidate, a hypothesis for a profile of the Collector at 20×.
 - **The ingest ceiling is now between 10× and 20×,** about 110,000 metric points/s (with 10,000 spans and logs/s at 10×, 20,000 at
   20×) on one Collector, against about 85,000 before.
+
+### 8. Resource attributes as columns: measured, not shipped (R12)
+
+**Asked by the owner** after R12a: would a tenant column be cheaper than filtering on `ResourceAttributes['juice.platform_tenant_id']`?
+
+**Method:** one hour of the workers 4× run's data (11:00–12:10, `20261115T1129`) copied into a scratch database on the scale volume,
+and 380 of that run's own worker queries replayed, sampled at random from `query_log` (150 rules, 150 SLO counting, 40 discovery,
+40 health), each once to warm and once measured, in four variants on the same copy:
+- **A:** as now, every key read from the map;
+- **B:** the tenant from a `LowCardinality(String)` column materialised from the map;
+- **C:** B, plus `service.namespace` and `deployment.environment.name`;
+- **D:** C, plus every other key the workers read (instance, host name and id, pid, version, container, three Kubernetes keys).
+
+Results were the same in every variant (sorted output hashed per query), except four rules' p95: ClickHouse's `quantile` is
+approximate and depends on read order (1,360 against 1,409 ms on one; the counts the same). A second run of A cost the same as the
+first (382 CPU-seconds both).
+
+| CPU-seconds, ClickHouse (`query_log`) | A: map | B: tenant column | C: + namespace, environment | D: every key |
+|---|---|---|---|---|
+| Rules (150) | 4.9 | 4.0 | 1.2 | 1.2 (−75 %) |
+| SLO counting (150) | 41.2 | 34.5 | 5.9 | 6.1 (−85 %) |
+| Discovery (40) | 52.0 | 29.8 | 25.6 | 19.2 (−63 %) |
+| Health (40) | 283.7 | 172.4 | 161.0 | 80.0 (−72 %) |
+| **All 380** | **381.8** | **240.8 (−37 %)** | **193.7 (−49 %)** | **106.5 (−72 %)** |
+
+- **The cost is each key looked up, row by row, not only decompressing the map.** The tenant column alone saves 37 %, even in
+  discovery and health, which read the map for other keys anyway. Rules and SLOs repeat the environment key three or four times a
+  query (trimmed and lowered), which is why C saves them three quarters and more.
+- **The columns are nearly free to store:** about 90 KiB each on the copy's 19.5 M sum rows, against 128 MiB for the map.
+- **No backfill is needed for the workers.** Parts written before a column existed compute it from the map when read, so they cost
+  what they cost today; the workers read only the last 5–15 minutes, all in new parts within minutes of the upgrade.
+- **Caveats.** The copy was merged into one part per table, so time-bounded queries prune less than on live data: health read 7.5 M
+  rows a query here against 2.65 M live. The percentages are the comparison; the absolute CPU-seconds aren't the live cost. The cost
+  at insert (each key looked up once per row) isn't measured yet, nor are the searches (they filter on the tenant and namespace).
