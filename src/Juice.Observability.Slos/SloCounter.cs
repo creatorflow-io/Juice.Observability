@@ -76,9 +76,21 @@ namespace Juice.Observability.Slos
         /// The minutes in which the SLO's service sent any telemetry, of any signal (a running service exports its metrics every minute, busy or not).
         /// A minute without any is a gap, the service or the pipeline down, not a quiet minute: it isn't counted, so it stays unknown.
         /// </summary>
-        internal static readonly string PresenceQuery = $"""
+        internal static readonly string PresenceQuery = PresenceQueryOf(ResourceTables);
+
+        /// <summary>
+        /// <see cref="PresenceQuery"/> over spans and logs, and over the metric tables (Phase 11 R12): a service with requests has spans in every
+        /// minute, so the metric tables, most of the rows, are read only for a stretch the spans and logs don't cover.
+        /// </summary>
+        internal static readonly string SpansAndLogsPresenceQuery = PresenceQueryOf(ResourceTables.Where(t => !IsMetricTable(t.Table)));
+
+        internal static readonly string MetricsPresenceQuery = PresenceQueryOf(ResourceTables.Where(t => IsMetricTable(t.Table)));
+
+        private static bool IsMetricTable(string table) => table.StartsWith("otel_metrics_", StringComparison.Ordinal);
+
+        private static string PresenceQueryOf(IEnumerable<(string Table, string Time)> tables) => $"""
             SELECT DISTINCT minute FROM (
-                {string.Join("\n    UNION ALL\n    ", ResourceTables.Select(s => $"SELECT toStartOfMinute({s.Time}) AS minute FROM otel.{s.Table} WHERE {Tenant} AND {ServiceMatch} AND {s.Time} >= {From} AND {s.Time} < {To}"))})
+                {string.Join("\n    UNION ALL\n    ", tables.Select(s => $"SELECT toStartOfMinute({s.Time}) AS minute FROM otel.{s.Table} WHERE {Tenant} AND {ServiceMatch} AND {s.Time} >= {From} AND {s.Time} < {To}"))})
             LIMIT {Limit}
             """;
 
@@ -287,6 +299,12 @@ namespace Juice.Observability.Slos
             return needed > TimeSpan.FromMinutes(15) ? needed : TimeSpan.FromMinutes(15);
         }
 
+        /// <summary>How far back a service's newest telemetry is looked for: the newest 2 minutes, then the whole lookback.</summary>
+        internal static IEnumerable<TimeSpan> NewestFirst(TimeSpan lookback)
+            => lookback > NewestWatermarkSlice ? [NewestWatermarkSlice, lookback] : [lookback];
+
+        internal static readonly TimeSpan NewestWatermarkSlice = TimeSpan.FromMinutes(2);
+
         private async Task<DateTimeOffset?> WatermarkAsync(ServiceKey service, DateTimeOffset now, PassCache cache, CancellationToken ct)
         {
             if (cache.Watermarks.TryGetValue(service, out var known)) return known;
@@ -294,10 +312,16 @@ namespace Juice.Observability.Slos
             DateTimeOffset? newest = null;
             try
             {
-                var rows = await clickHouse.QueryAsync(WatermarkQuery, new TelemetryWindow(platform.Value.TenantKey, now - lookback, now + TimeSpan.FromMinutes(1), 1),
-                    r => Utc(r.GetValue(0)), ct, service.Parameters());
-                // max() over nothing is the epoch.
-                newest = rows.Count == 1 && rows[0] > now - lookback ? rows[0] : null;
+                // The newest few minutes first (Phase 11 R12): anything there is newer than anything older, so the answer is the same as one read
+                // of the lookback, at a fraction of the rows. Only a service quiet that long is read over the whole lookback.
+                foreach (var back in NewestFirst(lookback))
+                {
+                    var rows = await clickHouse.QueryAsync(WatermarkQuery, new TelemetryWindow(platform.Value.TenantKey, now - back, now + TimeSpan.FromMinutes(1), 1),
+                        r => Utc(r.GetValue(0)), ct, service.Parameters());
+                    // max() over nothing is the epoch.
+                    newest = rows.Count == 1 && rows[0] > now - back ? rows[0] : null;
+                    if (newest is not null) break;
+                }
             }
             catch (Exception ex) when (!ct.IsCancellationRequested)
             {
@@ -429,9 +453,13 @@ namespace Juice.Observability.Slos
         private async Task<HashSet<DateTimeOffset>> PresenceAsync(ServiceKey service, DateTimeOffset from, DateTimeOffset to, CancellationToken ct)
         {
             var minutes = (int)(to - from).TotalMinutes;
-            var rows = await clickHouse.QueryAsync(PresenceQuery, new TelemetryWindow(platform.Value.TenantKey, from, to, minutes + 10), r => Utc(r.GetValue(0)), ct,
-                service.Parameters());
-            return [.. rows];
+            var window = new TelemetryWindow(platform.Value.TenantKey, from, to, minutes + 10);
+            HashSet<DateTimeOffset> present = [.. await clickHouse.QueryAsync(SpansAndLogsPresenceQuery, window, r => Utc(r.GetValue(0)), ct, service.Parameters())];
+            if (present.Count < minutes)
+            {
+                present.UnionWith(await clickHouse.QueryAsync(MetricsPresenceQuery, window, r => Utc(r.GetValue(0)), ct, service.Parameters()));
+            }
+            return present;
         }
 
         /// <summary>A stretch of minutes counted for one definition, by minute.</summary>

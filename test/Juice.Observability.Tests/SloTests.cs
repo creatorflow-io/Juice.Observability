@@ -440,6 +440,43 @@ namespace Juice.Observability.Tests
         }
 
         /// <summary>
+        /// Phase 11 R12: the newest telemetry is looked for in the newest 2 minutes, then the whole lookback; minutes with telemetry in spans and
+        /// logs, then in the metric tables only if they leave some uncovered. A service quiet for 5 minutes is still counted, and a minute with
+        /// only metrics is still a counted, quiet minute.
+        /// </summary>
+        [Fact]
+        public async Task A_quiet_service_is_counted_and_a_minute_with_only_metrics_is_present_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var service = $"slo-quiet-{_run}";
+            (string, string)[] resource = [("service.name", service), ("service.namespace", "slo-tests"), ("deployment.environment.name", "production")];
+            var now = DateTimeOffset.UtcNow;
+            var (spanMinute, metricMinute) = (SloCounter.Floor(now) - TimeSpan.FromMinutes(7), SloCounter.Floor(now) - TimeSpan.FromMinutes(6));
+            await LocalStack.SendAsync("traces", Otlp.Traces(resource, [Request("GET /orders", "/orders", "200", spanMinute.AddSeconds(20), TimeSpan.FromMilliseconds(5))]));
+            await LocalStack.SendAsync("metrics", Otlp.Sum(resource, $"slo_{_run}_work", metricMinute, [], (metricMinute.AddSeconds(20), 1)));
+            await LocalStack.WaitForSpansAsync(service, 1);
+            for (var i = 0; i < 50 && int.Parse(await LocalStack.ClickHouseAsync($"SELECT count() FROM otel.otel_metrics_sum WHERE ServiceName = '{service}'")) < 1; i++)
+            {
+                await Task.Delay(200, Ct);
+            }
+            await using (var db = database.Context())
+            {
+                await SloProvisioner.ProvisionAsync(db, [Availability(service: $"slo-tests/{service}")], LocalStack.TenantKey, now, Ct);
+                await db.SaveChangesAsync(Ct);
+                await db.Slos.ExecuteUpdateAsync(s => s.SetProperty(x => x.CountedThrough, spanMinute - TimeSpan.FromMinutes(2)), Ct);
+            }
+
+            await Counter(database, new SloOptions()).PassAsync(Ct);
+
+            await using var check = database.Context();
+            var buckets = await check.SloBuckets.ToDictionaryAsync(b => b.Minute, Ct);
+            Assert.Equal([spanMinute, metricMinute], buckets.Keys.Order());
+            Assert.Equal((1, 1), (buckets[spanMinute].Total, buckets[spanMinute].Good));
+            Assert.Equal(0, buckets[metricMinute].Total);
+        }
+
+        /// <summary>
         /// Versions: a changed definition is the next version from its effective date, never one in the past; measuring something else needs a new key;
         /// a key the file drops is retired and comes back when listed again. Each step is audited and on the timeline.
         /// </summary>

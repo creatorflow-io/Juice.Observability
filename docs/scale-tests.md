@@ -850,3 +850,46 @@ metrics cadence (section 4) also in place. From `query_log`, as a share of the 3
 - **The SLO figure isn't a like-for-like change.** In the before step, 150 of the 200 SLOs were new to the database and counted 30
   days at once (the burst it was run to test). Here they were already counted. Rules and SLO counting are unchanged by R12 so far.
 - **The workers' lines hold as before.** Breach-to-alert and webhook figures differ with the breach runs' timing, not their cost.
+
+### 6. SLO counting: the newest telemetry and the minutes with telemetry, read narrower (R12)
+
+**Measured first** (`query_log`, `20261115T1006`): counting itself was cheap, 2,400 queries and 0.058 cores. The cost was in the two
+"is the service sending" reads, each over every table, the metric tables included:
+- the watermark, each service's newest telemetry over the 15-minute lookback: 600 queries, 1.3 M rows each, 0.206 cores;
+- presence, the minutes with any telemetry in the stretch counted: 600 queries, 0.68 M rows each, 0.118 cores.
+
+On one service, a 2-minute watermark read cost 0.13 CPU-seconds against 0.80 for 15 minutes; on `otel_metrics_sum`, 0.05 against
+0.65.
+
+**The changes** (both give the same answer as before):
+- **Watermark newest first.** The newest 2 minutes are read first, and the whole lookback only when they hold nothing. Anything in
+  them is newer than anything older.
+- **Presence from spans and logs first.** The metric tables are read only when spans and logs leave a minute of the stretch
+  uncovered. A service taking requests has spans every minute.
+
+A new test covers a service quiet for 5 minutes (still counted) and a minute with only metrics (still present, counted as quiet).
+
+**Workers ceiling at 4× again** (`20261115T1129`, the same set as `20261115T1006`):
+
+| `platform_reader` queries (`query_log`) | Before | After |
+|---|---|---|
+| SLO watermark | 600, 1.3 M rows each, 0.206 cores | 600, 0.38 M rows each, 0.040 cores |
+| SLO presence | 600, 0.68 M rows each, 0.118 cores | spans and logs 600, 0.16 M rows, 0.013 cores; metrics 40, 0.3 M rows, 0.002 cores |
+| SLO counting | 2,400, 0.058 cores | 2,400, 0.056 cores |
+| **SLO worker, all** | **0.382 cores** | **0.111 cores** |
+| Rules | 0.275 cores | 0.178 cores (unchanged code: the run's breach timing) |
+| **Every reader query** | **0.955 cores** | **0.569 cores** |
+
+| Step result | Before | After |
+|---|---|---|
+| ClickHouse container CPU (docker stats, 10 s samples): median / p90 / p99 | 0.47 / 2.29 / 4.43 cores | 0.42 / 1.85 / 7.96 cores |
+| Mean | 0.87 cores | 1.07 cores |
+| Health freshness p95; rule breach-to-alert p95; webhook first dispatch p95 | 40.7 s; 67 s; 1.9 s | 41.2 s; 62 s; 1.92 s |
+| Every worker within 60 s of its delay; ingest all stored; API restarts | yes; yes; 0 | yes; yes; 0 |
+
+- **The SLO worker reads at a third of its cost,** and the reader's queries in all at 60 %.
+- **The container's mean went up, not down.** Its median and p90 fell, but a few 10-second samples in the top 1 % reached 8–12
+  cores, and they lift the mean. Merges don't explain them (383 M rows merged against 317 M, ClickHouse busy merging 26 % and 24 % of
+  the time). The query log, which counts a query when it ends, doesn't place them either. Across the three 4× runs the container's
+  median went 0.51, 0.47, 0.42 cores and its p90 6.24, 2.29, 1.85 cores. So R12's claim is the queries' measured cost. Container
+  bursts are left to the final rerun.
