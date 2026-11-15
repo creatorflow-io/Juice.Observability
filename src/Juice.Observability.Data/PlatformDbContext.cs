@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
+using Npgsql;
 
 namespace Juice.Observability.Data
 {
@@ -66,8 +67,25 @@ namespace Juice.Observability.Data
 
         /// <summary>Applies the snake_case naming used by every table. Call it when configuring the context.</summary>
         public static void Configure(DbContextOptionsBuilder options, string connectionString)
-            => options.UseNpgsql(connectionString, npgsql => npgsql.MigrationsHistoryTable("__ef_migrations_history"))
+            => options.UseNpgsql(WithoutGssProbe(connectionString), npgsql => npgsql.MigrationsHistoryTable("__ef_migrations_history"))
                 .UseSnakeCaseNamingConvention();
+
+        /// <summary>
+        /// GSS encryption off unless the connection string sets it. Npgsql's default (<c>Prefer</c>) asks the native GSSAPI library for a Kerberos
+        /// context on every new physical connection. The process crashed inside that call (SIGSEGV in <c>InitSecContext</c>, with a second thread in
+        /// the same call; the core dump of the workers ceiling at 4×, docs/scale-tests.md), in a burst opening many connections together. The platform doesn't
+        /// use Kerberos; a deployment that does sets <c>GSS Encryption Mode</c> itself. Kerberos authentication, if the server asks, is unaffected.
+        /// </summary>
+        public static string WithoutGssProbe(string connectionString)
+        {
+            var builder = new NpgsqlConnectionStringBuilder(connectionString);
+            var given = new System.Data.Common.DbConnectionStringBuilder { ConnectionString = connectionString };
+            if (!given.Keys.Cast<string>().Any(k => k.Replace(" ", "").Equals("GssEncryptionMode", StringComparison.OrdinalIgnoreCase)))
+            {
+                builder.GssEncryptionMode = GssEncryptionMode.Disable;
+            }
+            return builder.ConnectionString;
+        }
 
         protected override void OnModelCreating(ModelBuilder model)
         {

@@ -219,6 +219,8 @@ services:
       context: ../..
     # The host user that owns secrets/agents (scripts/init.sh writes JUICE_UID), so keys readable by their owner only can be read here.
     user: "${JUICE_UID:-1654}"
+    # A crashed API is started again: without it every worker stays down until someone notices (docs/scale-tests.md, the workers ceiling).
+    restart: unless-stopped
     environment:
       ConnectionStrings__Platform: Host=postgres;Port=5432;Database=juice_observability;Username=juice;Password=${POSTGRES_PASSWORD}
       ClickHouse__ConnectionString: Host=clickhouse;Port=8123;Username=platform_reader;Password=${CLICKHOUSE_PLATFORM_PASSWORD};Database=otel

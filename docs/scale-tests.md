@@ -604,8 +604,8 @@ Every worker on, ingest at 1×, no query mix, breach runs on. The step is k copi
 
 The last two came just after a burst of alerts the new SLOs opened together: 62 burn alerts fired at once in the reproduction,
 and 102 in the 4× step.
-- **In the 4× step's log** (`build/scale/20261114T0618-workers-4x/platform-api.log`), the process faults at the first error that follows
-  the burst. EF Core reports a failure using the connection to PostgreSQL, and the next lines are the runtime's `createdump`:
+- **In the 4× step's log** (`build/scale/20261114T0618-workers-4x/platform-api.log`), the process faults right after the first error
+  that follows the burst (the dump, below, shows the fault was elsewhere). EF Core reports a failure using the connection to PostgreSQL, and the next lines are the runtime's `createdump`:
   `Crashing thread 00b3 signal 11`. While the dump is being written, the rest of that failure is logged: `53300: sorry, too many
   clients already`, in an `AlertTransitionedConsumer` handler planning notifications (`PlanNotificationsHandler`,
   `WebhookDispatcher.cs:184`), one event logged at four layers.
@@ -617,10 +617,16 @@ and 102 in the 4× step.
   hold connections of their own outside it (`WorkerLease.cs:49`, `Pooling = false`, one per leased worker). So the pool at its
   limit plus the leases can ask for more than the server allows, and a large enough burst exhausts it. Nothing in the platform bounds that. Steady state uses one connection at a sampled
   moment, every 15 s, which the burst falls between.
-- **Not known: why the process segfaults.** The connection error is the last thing before it, but a refused connection
-  should be an exception the handler retries, not a fault. Whether the fault is in the error path, in another thread, or
-  just coincides with it, the dump has to show. A core dump of the 4× crash was taken (`DOTNET_DbgEnableMiniDump`, through
-  `SCALE_OVERRIDE`) and has not been analysed yet.
+- **Why the process segfaults, from the core dump** (read in milestone 5: `dotnet-dump` in an Alpine SDK container, since the
+  image's runtime is a musl build). The fault isn't in the refused connection's error path. The crashing thread (`0xb3`) was
+  planning notifications (`NotificationPlan.Plan`), opening a new physical connection. Npgsql's default `GSS Encryption Mode`
+  (`Prefer`) first asks the native GSSAPI library for a Kerberos context, and the thread faulted inside that call
+  (`Interop+NetSecurityNative.InitSecContext`). A second thread (`0xb5`) was in the same call at the same moment, and a third
+  (`0xb6`) was throwing the 53300 refusal. Both come from the burst opening many new connections at once. Steady state reuses
+  pooled connections, so it rarely reaches that call, and two at once even less often. That would explain why the crash
+  didn't repeat on demand. The platform doesn't use Kerberos.
+- **Confirmed in milestone 5:** the alert-transition handlers run unbounded. The Juice local channel starts a task per message
+  and sets no limit unless `LocalChannelOptions.MaxConcurrency` is set, which it wasn't.
 - **Not reproduced on demand.** Thirteen more starts by hand, after the reproduction, didn't crash. They ran on the same data
   without the generator: platform-api restarted twice, recreated with 150 to 400 rules four times, and the whole stack restarted
   seven times. None was logged to a file. In the one start whose log was read, the SLO burn alerts line was "0 fired, 2 resolved".
@@ -642,3 +648,46 @@ and 102 in the 4× step.
   second it reaches now. Spans and logs have headroom.
 - **R12b, PostgreSQL:** its CPU and command rate are nowhere near a line: API reads under 70 ms p95, under a quarter of a core.
   Its connections are, in a burst: see the crash above.
+
+## Phase 11 fixes (milestone 5), from 15 November
+
+One change at a time, each with its step rerun.
+
+### 1. The crash on bursts of alerts
+
+**What the dump showed** (above, under the workers ceiling): the fault was in Npgsql's GSS encryption probe, on new physical
+connections opened during the burst. It was not in the 53300 error path.
+
+**The changes:**
+- **Alert handling bounded.** The local channel handles at most 8 messages at once (`Messaging:Local:MaxConcurrency`,
+  `PlatformExtensions.DefaultLocalConcurrency`). Before, a burst of 102 transitions started 102 handlers together.
+- **The GSS probe off.** `GSS Encryption Mode` is `Disable` unless the connection string sets it
+  (`PlatformDbContext.WithoutGssProbe`, used by the context and so by the worker leases).
+- **A crashed API restarts.** `platform-api` has `restart: unless-stopped`. The harness records `restarts=` in
+  `platform-api.state`, and a restart during a step is a part that failed ("crashed and restarted N×").
+
+**Verification, the workers ceiling at 4× (200 rules, 200 SLOs), twice:**
+
+| Step | What changed | The burst | Result |
+|---|---|---|---|
+| `20261114T2340-workers-4x` | the concurrency bound alone | none: the 200 SLOs were already in the database from the crashed step ("200 configured, 0 changed"), so nothing counted 30 days at once | every line held; no restart, no 53300. Not a test of the fix |
+| `20261115T0019-workers-4x` | both fixes; `COPY_FROM=5`, so 150 of the 200 SLOs were new to the database | "200 configured, 300 changed" (150 new, 150 retired); one pass resolved 142 burn alerts, then 24 fired, 4, 4, and 24 resolved | every line held; no restart, no 53300, no fault |
+
+In the second step:
+- health freshness p95 40.7 s;
+- rule breach-to-alert p95 63 s;
+- webhook first dispatch p95 1.81 s over 207 deliveries, from 378 alert transitions;
+- every worker within 60 s of its delay;
+- at most 1 outbox row and 24 webhook deliveries waiting.
+
+**What this does and doesn't show.** The burst went through without a fault, but the crash never reproduced on demand before
+the fixes either (thirteen starts by hand). So this is evidence, not proof. Neither cause is left in place:
+- the bound keeps a burst from opening 100 connections together;
+- with the probe off, the native call that faulted isn't made at all.
+
+The first step, at 4×, also showed the first sample after a restart on kept volumes: discovery 5,007 s behind for 20 s while it
+caught up a watermark from the previous session. That is an artefact of the start, not lag under load.
+
+**Also fixed:** `SloTests.The_api_shows_slos_by_category_and_an_uncounted_window_as_unknown_Async` failed in the first hour after
+midnight UTC, because the last counted hour then starts the day before. The test now dates the older hour from the day the last
+hour starts in. A time-of-day test bug, not the platform's.

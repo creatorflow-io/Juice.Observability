@@ -1,4 +1,5 @@
 using Juice.MediatR;
+using Juice.Messaging.Local;
 using Juice.Messaging.Outbox.Delivery.Internal;
 using Juice.Messaging.Policies;
 using Juice.Observability.Agents;
@@ -50,6 +51,7 @@ namespace Juice.Observability.Api
             services.AddHostedService<TenantProvisioner>();
             // After it, since the provisioner applies migrations: the outbox's delivery starts reading its tables at once.
             services.AddPlatformMessaging();
+            services.Configure<LocalChannelOptions>(configuration.GetSection(LocalChannelSection));
             services.AddPlatformDiscovery(configuration);
             services.AddPlatformHealth(configuration);
             services.AddPlatformRules(configuration);
@@ -69,6 +71,12 @@ namespace Juice.Observability.Api
             return services;
         }
 
+        /// <summary>Configuration section of the local channel: <c>MaxConcurrency</c>, how many messages are handled at once.</summary>
+        public const string LocalChannelSection = "Messaging:Local";
+
+        /// <summary>Messages handled at once on the local channel unless <c>Messaging:Local:MaxConcurrency</c> sets another bound.</summary>
+        public const int DefaultLocalConcurrency = 8;
+
         /// <summary>
         /// The mediator, with <see cref="PlatformTransactionBehavior{TRequest, TResponse}"/> around every command, and the outbox in the platform database.
         /// Every message goes on the <c>local</c> route: dispatched in this process right after its transaction commits, and delivered from the outbox, with
@@ -86,6 +94,11 @@ namespace Juice.Observability.Api
             var messaging = services.AddMessaging();
             messaging.AddOutbox();
             messaging.AddLocalChannel();
+            // The channel starts a handler for every message, with no bound unless one is set. 102 SLO burn alerts opened at once were 102
+            // handlers planning notifications together, each holding a PostgreSQL connection, past the server's limit (docs/scale-tests.md,
+            // the workers ceiling). Bounded, the rest wait in the channel. Messaging:Local:MaxConcurrency changes it.
+            services.PostConfigure<LocalChannelOptions>(options =>
+                options.MaxConcurrency = options.MaxConcurrency is > 0 ? options.MaxConcurrency : DefaultLocalConcurrency);
             messaging.AddLocalPublisher();
             messaging.AddIdempotencyInMemory();
             messaging.AddMessageService<PlatformDbContext>();

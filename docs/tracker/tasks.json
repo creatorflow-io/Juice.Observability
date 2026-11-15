@@ -179,8 +179,8 @@
       "kind": "task",
       "title": "M5 Fixes: ingest path, ClickHouse isolation, queries, PostgreSQL if needed (R11, R12, R12a, R12b)",
       "ref": "docs/scale-tests.md",
-      "status": "todo",
-      "note": "One change at a time, before and after; final rerun with held-out 4x/6x for the ±25 % check."
+      "status": "doing",
+      "note": "One change at a time, before and after; final rerun with held-out 4x/6x for the ±25 % check. 1, the crash: the local channel ran a handler per alert transition with no bound (Juice LocalChannelOptions.MaxConcurrency unset), now 8 (Messaging:Local:MaxConcurrency); platform-api restart: unless-stopped; the harness counts restarts as a crash. Core dump read (dotnet-dump, Alpine SDK container): the segfault is in Npgsql's GSS encryption probe (native GSSAPI InitSecContext, two threads at once) on new physical connections in the burst, not in the 53300 path; GSS Encryption Mode now Disable unless the connection string sets it (PlatformDbContext.WithoutGssProbe). Verified at workers 4x (docs/scale-tests.md, Phase 11 fixes): with the bound alone no burst happened (SLOs already in the database); with both and COPY_FROM=5 (150 new SLOs) the burst came (142 burn alerts resolved in one pass, then 24 fired) and every line held, no restart, no 53300. Also a midnight-UTC test bug fixed in SloTests. Next: R11, bounding searches."
     },
     {
       "doc_id": "p11-m6",

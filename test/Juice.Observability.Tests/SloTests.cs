@@ -662,9 +662,10 @@ namespace Juice.Observability.Tests
             {
                 var slo = await db.Slos.SingleAsync(s => s.Key == "orders-availability", Ct);
                 var end = SloCounter.Floor(DateTimeOffset.UtcNow) - SloReader.Settle;
-                // The older hour at midday two days back, so a whole day lies between it and the last hour whatever the time of the run (just
-                // after midnight, "two days ago" reached into the middle day).
-                foreach (var from in new[] { SloDays.Day(end) - TimeSpan.FromDays(2) + TimeSpan.FromHours(12), end - TimeSpan.FromHours(1) })
+                // The older hour at midday two days before the day the last hour starts in, so a whole day lies between them whatever the time
+                // of the run (just after midnight, "two days ago" reached into the middle day; in the first hour after midnight the last hour
+                // itself starts the day before).
+                foreach (var from in new[] { SloDays.Day(end - TimeSpan.FromHours(1)) - TimeSpan.FromDays(2) + TimeSpan.FromHours(12), end - TimeSpan.FromHours(1) })
                 {
                     for (var minute = from; minute < from + TimeSpan.FromHours(1); minute += TimeSpan.FromMinutes(1))
                     {
@@ -673,7 +674,7 @@ namespace Juice.Observability.Tests
                 }
                 await db.SaveChangesAsync(Ct);
                 // Their daily totals, as the counter keeps them with what it writes.
-                await SloDays.RecomputeAsync(db, slo.Id, SloDays.Day(end) - TimeSpan.FromDays(2), end, Ct);
+                await SloDays.RecomputeAsync(db, slo.Id, SloDays.Day(end - TimeSpan.FromHours(1)) - TimeSpan.FromDays(2), end, Ct);
             }
 
             var list = (await Caller.JsonAsync(await viewer.GetAsync($"/api/v1/tenants/{tenant}/slos?category=Technical"))).GetProperty("items");

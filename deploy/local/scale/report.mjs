@@ -190,7 +190,8 @@ if (ceiling) {
     t[0] = 'Telemetry search p95 ≤ 2 s (ceiling line)'; t[1] = within(searchP95, 2000);
   }
 }
-const parts = Object.entries(exits).filter(([, v]) => v !== 0).map(([k, v]) => `${k} exited ${v}`);
+const parts = Object.entries(exits).filter(([, v]) => v !== 0)
+  .map(([k, v]) => k.endsWith('-restarts') ? `${k.slice(0, -'-restarts'.length)} crashed and restarted ${v}×` : `${k} exited ${v}`);
 
 const ceilingTitle = { ingest: ' (workers reading ClickHouse off, no query mix, no breach runs)',
   search: ` at ${meta.search_rate} searches/s (workers health, rules, SLOs off, no breach runs)`,

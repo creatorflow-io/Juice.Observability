@@ -14,14 +14,15 @@ MULTIPLIER=${1:?multiplier}; SECONDS_RUN=${2:-1800}; WARMUP=${WARMUP:-180}
 #   search   health, rules and SLO counting off, discovery on (the searches need the services); the load at SEARCH_LOAD× (1);
 #            the step is the searches per second (half traces, half logs; the full mix has 2), no breach runs
 #   workers  every worker on, the load at 1×, no query mix, breach runs on; the step is k copies of the 50 rules and 50 SLOs
-#            (SLOs at most 200), written by scale/config.mjs before the step, platform-api then recreated to load them
+#            (SLOs at most 200), written by scale/config.mjs before the step, platform-api then recreated to load them; COPY_FROM=<n>
+#            numbers the copies from n, so they're new to the database (the alert burst of new SLOs)
 CEILING=${CEILING:-}; SEARCH_RATE=2; LOAD=$MULTIPLIER; skipped=(); RULES=50; SLOS=50
 case "$CEILING" in
   '') ;;
   ingest) skipped=(query-mix breach) ;;
   search) SEARCH_RATE=$MULTIPLIER; LOAD=${SEARCH_LOAD:-1}; skipped=(breach) ;;
   workers) LOAD=1; skipped=(query-mix)
-    read -r RULES SLOS < <(node scale/config.mjs --factor "$MULTIPLIER" --out "$WORKERS_CONFIG") || { echo "config.mjs failed" >&2; exit 1; }
+    read -r RULES SLOS < <(node scale/config.mjs --factor "$MULTIPLIER" --copy-from "${COPY_FROM:-2}" --out "$WORKERS_CONFIG") || { echo "config.mjs failed" >&2; exit 1; }
     dc up -d --wait --no-deps --force-recreate platform-api >/dev/null 2>&1 || { echo "platform-api didn't restart with $RULES rules" >&2; exit 1; } ;;
   *) echo "unknown CEILING $CEILING" >&2; exit 2 ;;
 esac
@@ -48,6 +49,8 @@ echo "scale step ×$MULTIPLIER: ${WARMUP} s warm-up, then ${SECONDS_RUN} s measu
 
 # The Collector's counters before any load: what it refuses or fails from here on (warm-up included) counts as lost.
 echo "time,metric,value" > "$out/collector-before.csv"; collector "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$out/collector-before.csv"
+# Its restarts so far: compose starts a crashed platform-api again, so a crash during the step shows as a restart, not as an exit.
+restarts_before=$(docker inspect "$SCALE_PROJECT-platform-api-1" --format '{{.RestartCount}}' 2>/dev/null || echo 0)
 node scale/generate.mjs --multiplier "$LOAD" --duration $((WARMUP + SECONDS_RUN + BREACH_MAX)) --out "$out" --stop-file "$out/stop" > "$out/generator.log" 2>&1 &
 gen=$!
 sleep "$WARMUP" & wait $!   # in the background, so a TERM stops the step at once (the trap waits for a foreground command)
@@ -141,10 +144,13 @@ pg "SELECT count(*) FROM outbox_deliveries WHERE state = 3 AND next_attempt_on I
 } > "$out/stored.csv"
 # The platform's own state and log, kept with the step: steps.sh removes the containers after the last step, and a platform that
 # exited during the step (a crash) would otherwise leave nothing to read.
-docker inspect "$SCALE_PROJECT-platform-api-1" --format '{{.State.Status}} exit={{.State.ExitCode}} started={{.State.StartedAt}} finished={{.State.FinishedAt}} oom={{.State.OOMKilled}}' > "$out/platform-api.state" 2>&1
+docker inspect "$SCALE_PROJECT-platform-api-1" --format '{{.State.Status}} exit={{.State.ExitCode}} started={{.State.StartedAt}} finished={{.State.FinishedAt}} oom={{.State.OOMKilled}} restarts={{.RestartCount}}' > "$out/platform-api.state" 2>&1
 dc logs --no-color --since "$(date -u -d "@$((start_epoch - WARMUP - 120))" +%Y-%m-%dT%H:%M:%SZ)" platform-api > "$out/platform-api.log" 2>&1
 # Not running at the end is a part that failed (its exit code, 139 for a crash), shown in the report.
 grep -q '^running ' "$out/platform-api.state" || echo "platform-api $(sed -n 's/.*exit=\([0-9]*\).*/\1/p' "$out/platform-api.state")" >> "$out/exits"
+# Restarted during the step is a crash too: how many times, shown in the report as a part that failed.
+restarts=$(( $(sed -n 's/.*restarts=\([0-9]*\).*/\1/p' "$out/platform-api.state") + 0 - restarts_before ))
+(( restarts > 0 )) && echo "platform-api-restarts $restarts" >> "$out/exits"
 
 trap - EXIT
 node scale/report.mjs "$out"
