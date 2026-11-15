@@ -1,6 +1,7 @@
 using System.Data.Common;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
+using ClickHouse.Driver;
 using ClickHouse.Driver.ADO;
 using Juice.Observability.Data;
 using ClickHouse.Driver.Utility;
@@ -46,11 +47,22 @@ namespace Juice.Observability.Discovery
         // its statistics from can be partial for a streamed result).
         private static readonly Meter Meter = new(WorkerPulse.MeterName);
         private static readonly Histogram<double> QueryDuration = Meter.CreateHistogram<double>("juice.observability.clickhouse.query.duration", "s",
-            "A platform query to ClickHouse, by caller and outcome (success, failure, timeout: cut by the caller's own deadline, canceled: the host or request stopping)");
+            "A platform query to ClickHouse, by caller and outcome (success, failure, timeout: cut by the caller's own deadline, canceled: the host or request stopping, busy: an API query refused for load, by the API or by ClickHouse, unavailable: ClickHouse not reached)");
         private static readonly Counter<long> QueryReadRows = Meter.CreateCounter<long>("juice.observability.clickhouse.query.read_rows", "{row}",
             "Rows ClickHouse read for platform queries, by caller");
         private static readonly Counter<long> QueryReadBytes = Meter.CreateCounter<long>("juice.observability.clickhouse.query.read_bytes", "By",
             "Bytes ClickHouse read for platform queries, by caller");
+
+        // Phase 11 R11: the API's queries, at most ClickHouse:Api:MaxConcurrent at once on this replica. The workers' aren't bounded here.
+        private readonly SemaphoreSlim apiSlots = new(options.Value.Api.MaxConcurrent, options.Value.Api.MaxConcurrent);
+        private static readonly UpDownCounter<long> ApiRunning = Meter.CreateUpDownCounter<long>("juice.observability.clickhouse.api.running", "{query}",
+            "API queries to ClickHouse running now on this replica, against ClickHouse:Api:MaxConcurrent");
+
+        /// <summary>Whether a caller is the API answering a request (<c>api:</c> and its route), not a worker.</summary>
+        public static bool IsApi(string caller) => caller.StartsWith("api:", StringComparison.Ordinal);
+
+        // ClickHouse's codes for a query it refused or cut under load: TIMEOUT_EXCEEDED, TOO_MANY_SIMULTANEOUS_QUERIES, MEMORY_LIMIT_EXCEEDED.
+        private static readonly int[] BusyCodes = [159, 202, 241];
 
         /// <summary>What a platform query is tagged with in ClickHouse's <c>system.query_log</c>: <c>juice:</c> and the caller.</summary>
         public static string LogComment(string caller) => $"juice:{caller}";
@@ -205,14 +217,36 @@ namespace Juice.Observability.Discovery
             CancellationToken cancellationToken, IReadOnlyDictionary<string, object>? parameters = null)
         {
             var caller = PlatformCaller.Current;
+            var api = IsApi(caller);
             var started = Stopwatch.GetTimestamp();
             var outcome = "failure";
             ClickHouseCommand? command = null;
+            var holding = false;
             try
             {
-                var rows = await RunAsync(sql, window, map, parameters, caller, c => command = c, cancellationToken);
+                if (api)
+                {
+                    if (!await apiSlots.WaitAsync(options.Value.Api.QueueTimeout, cancellationToken))
+                    {
+                        outcome = "busy";
+                        throw new TelemetryBusyException($"{options.Value.Api.MaxConcurrent} telemetry queries are already running on this replica");
+                    }
+                    holding = true;
+                    ApiRunning.Add(1);
+                }
+                var rows = await RunAsync(sql, window, map, parameters, caller, api, c => command = c, cancellationToken);
                 outcome = "success";
                 return rows;
+            }
+            catch (ClickHouseServerException e) when (api && BusyCodes.Contains(e.ErrorCode))
+            {
+                outcome = "busy";
+                throw new TelemetryBusyException("ClickHouse refused or cut the query under load", e);
+            }
+            catch (HttpRequestException e) when (api && !cancellationToken.IsCancellationRequested)
+            {
+                outcome = "unavailable";
+                throw new TelemetryUnavailableException("ClickHouse can't be reached", e);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -223,6 +257,11 @@ namespace Juice.Observability.Discovery
             }
             finally
             {
+                if (holding)
+                {
+                    ApiRunning.Add(-1);
+                    apiSlots.Release();
+                }
                 var tag = new KeyValuePair<string, object?>("caller", caller);
                 QueryDuration.Record(Stopwatch.GetElapsedTime(started).TotalSeconds, tag, new KeyValuePair<string, object?>("outcome", outcome));
                 if (command?.QueryStats is { } stats)
@@ -234,7 +273,7 @@ namespace Juice.Observability.Discovery
         }
 
         private async Task<IReadOnlyList<T>> RunAsync<T>(string sql, TelemetryWindow window, Func<DbDataReader, T> map,
-            IReadOnlyDictionary<string, object>? parameters, string caller, Action<ClickHouseCommand> created, CancellationToken cancellationToken)
+            IReadOnlyDictionary<string, object>? parameters, string caller, bool api, Action<ClickHouseCommand> created, CancellationToken cancellationToken)
         {
             await using var connection = new ClickHouseConnection(options.Value.ConnectionString);
             await connection.OpenAsync(cancellationToken);
@@ -242,6 +281,12 @@ namespace Juice.Observability.Discovery
             created(command);
             command.CommandText = sql;
             command.CustomSettings["log_comment"] = LogComment(caller);
+            if (api)
+            {
+                // Tighter than the reader profile's, which caps every query (60 s): a search gives up sooner and takes fewer cores.
+                command.CustomSettings["max_execution_time"] = options.Value.Api.MaxExecutionSeconds;
+                command.CustomSettings["max_threads"] = options.Value.Api.MaxThreads;
+            }
             command.AddParameter("tenant", window.TenantKey);
             command.AddParameter("from", window.From.UtcDateTime);
             command.AddParameter("to", window.To.UtcDateTime);

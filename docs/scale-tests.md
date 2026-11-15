@@ -691,3 +691,46 @@ caught up a watermark from the previous session. That is an artefact of the star
 **Also fixed:** `SloTests.The_api_shows_slos_by_category_and_an_uncounted_window_as_unknown_Async` failed in the first hour after
 midnight UTC, because the last counted hour then starts the day before. The test now dates the older hour from the day the last
 hour starts in. A time-of-day test bug, not the platform's.
+
+### 2. Searches bounded (R11, step 1)
+
+**The changes:**
+- **At most 8 API queries at once per replica.** The API's ClickHouse queries (searches and the Console's telemetry pages) take
+  a slot from `ClickHouse:Api:MaxConcurrent` (8). A query waits up to `ClickHouse:Api:QueueTimeout` (5 s) for one, then is
+  refused. The workers' queries don't take slots.
+- **Tighter limits per API query:** `max_execution_time` 20 s (the profile allows 60) and `max_threads` 2. So one replica's
+  searches use at most about 16 of ClickHouse's cores.
+- **Busy is a 503, not a 500.** No slot in time, or ClickHouse cutting a query for time, for too many queries or for memory
+  (codes 159, 202, 241): 503 "Busy, try again" with `Retry-After: 5`. ClickHouse out of reach: 503 "Telemetry store
+  unavailable" with `Retry-After: 15` (the milestone 2 gap: this was a 500).
+- **Seen in metrics:** `juice.observability.clickhouse.api.running`, and the query outcomes `busy` and `unavailable`.
+
+**The searches ceiling again, 8 and 16 a second** (`20261115T0202-search-8per-s`, `20261115T0235-search-16per-s`), against
+milestone 4:
+
+| | 8 a second, before | 8 a second, bounded | 16 a second, before | 16 a second, bounded |
+|---|---|---|---|---|
+| Search p50 / p95 | 102 / 614 ms | 125 / 314 ms | 2.3 s / no answer | 5.4 s / no answer |
+| Searches failed | 0 | 0 | 6,028 of 28,785 (ClickHouse timeouts and refusals) | 3,308 of 28,777, all 503 "busy" after 5.0–5.1 s |
+| Searches answered a second | 8 | 8 | 12.6 | 14.1 |
+| ClickHouse CPU, mean / max | 5.8 / – | 3.3 / 20.2 | 18.9 / 22 | 15.7 / 21.8 |
+| ClickHouse memory, max | 3.5 GiB | 2.9 GiB | 22.8 GiB | 3.7 GiB |
+| Console page p95 | 1.7 s | 757 ms | 30 s, 12 of 174 failed | 6.3 s, 16 of 174 failed |
+| API reads p95 (PostgreSQL) | 30 ms | 17.7 ms | 67.9 ms | 53.7 ms |
+| Ingest | all stored | all stored | **points 64.8 % stored, 7.6 M refused** | **all stored, 0 refused**; freshness p95 1.74 s |
+| Discovery watermark past its delay, max | within | 31.5 s | 882 s | 33.6 s |
+
+- **16 a second now degrades instead of collapsing.** The searches queue for a slot and wait. The answered ones took 5.3–6.0 s
+  (p50–p95): about 5 s waiting and under a second running. One in nine was refused with a 503 at the queue timeout.
+- **Ingest and discovery are no longer touched.** Every point was stored, nothing was refused, and ClickHouse's memory stayed
+  under 4 GiB. Before, a third of the points were lost.
+- **8 a second got faster:** p95 314 ms against 614 ms, on about half the cores. With two threads a query, the scans contend less.
+- **One replica's search capacity is about 14 a second here** (8 slots, about 0.55 s a search running). Beyond that, searches
+  wait and then are refused. More capacity needs another API replica, with its own 8 slots, on a ClickHouse with the cores for it.
+  Their 16 cores each are the sizing figure (`MaxConcurrent × MaxThreads`).
+- **Not measured here:** ClickHouse's queries running at once, since the harness doesn't sample `system.processes`. The bound
+  allows at most 8 from the API, plus the workers' queries (off in this ceiling).
+
+**Step 2 (workload scheduling in ClickHouse) is deferred.** Step 1 kept ingest whole at twice the search rate that broke it.
+What's left is the workers' share of the cores while searches fill their 16. That shows only in the full mix with every worker on,
+so the final rerun checks it. If the workers lag there, step 2 comes in.

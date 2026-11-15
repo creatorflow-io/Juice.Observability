@@ -140,7 +140,8 @@ The rule scheduler has no single pass: it shows as busy slots instead.
 
 | Instrument | Type, unit | Attributes | A bad value means |
 |---|---|---|---|
-| `juice.observability.clickhouse.query.duration` | histogram, s | caller, outcome | One caller slow: its queries. Every caller slow: ClickHouse itself. `timeout` rising: queries cut by the caller's own deadline (`Rules:EvaluationTimeout`, `Slos:QueryTimeout`), ClickHouse too slow. `canceled`: the host or the request stopping |
+| `juice.observability.clickhouse.query.duration` | histogram, s | caller, outcome | One caller slow: its queries. Every caller slow: ClickHouse itself. `timeout` rising: queries cut by the caller's own deadline (`Rules:EvaluationTimeout`, `Slos:QueryTimeout`), ClickHouse too slow. `canceled`: the host or the request stopping. `busy`: an API query refused for load, by the API (`ClickHouse:Api:MaxConcurrent` taken for `QueueTimeout`) or by ClickHouse (its time, concurrency or memory limit), answered 503 "Busy, try again". `unavailable`: ClickHouse not reached, answered 503 |
+| `juice.observability.clickhouse.api.running` | up-down counter | – | API queries running now on this replica. At `ClickHouse:Api:MaxConcurrent`, with `busy` rising: searches wait or are refused. Raise it only if ClickHouse has cores to spare, since ingest and the workers share them |
 | `juice.observability.clickhouse.query.read_rows` | counter | caller | A caller reading far more than the others |
 | `juice.observability.clickhouse.query.read_bytes` | counter, By | caller | Same |
 

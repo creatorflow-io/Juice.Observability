@@ -187,7 +187,8 @@ namespace Juice.Observability.Discovery
         public static IServiceCollection AddPlatformDiscovery(this IServiceCollection services, IConfiguration configuration)
         {
             services.Configure<DiscoveryOptions>(configuration.GetSection(DiscoveryOptions.Section));
-            services.Configure<ClickHouseOptions>(configuration.GetSection(ClickHouseOptions.Section));
+            services.AddOptions<ClickHouseOptions>().Bind(configuration.GetSection(ClickHouseOptions.Section))
+                .Validate(o => !o.Api.Validate().Any(), "invalid ClickHouse:Api settings").ValidateOnStart();
             services.Configure<PlatformOptions>(configuration.GetSection(PlatformOptions.Section));
             services.AddSingleton<ClickHouseTelemetrySource>();
             services.AddSingleton<ITelemetrySource>(sp => sp.GetRequiredService<ClickHouseTelemetrySource>());

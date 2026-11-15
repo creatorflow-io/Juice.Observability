@@ -79,5 +79,39 @@ namespace Juice.Observability.Discovery
         /// isn't sampled (its CPU, memory, queries and disks don't show), and everything else works.
         /// </summary>
         public string MonitorConnectionString { get; set; } = "";
+
+        /// <summary>The API's own queries (searches, series, operations, the Console's pages): <c>ClickHouse:Api</c> (Phase 11 R11).</summary>
+        public ClickHouseApiOptions Api { get; set; } = new();
     }
+
+    /// <summary>
+    /// Bounds on the queries the API makes for its callers, so a burst of searches waits or is refused instead of taking ClickHouse from ingest and
+    /// the workers: at 16 searches a second, 428 ran at once and the platform lost a third of its metric points (docs/scale-tests.md, the searches
+    /// ceiling). Per replica. The workers' queries aren't bounded here.
+    /// </summary>
+    public sealed class ClickHouseApiOptions
+    {
+        /// <summary>API queries running at once on this replica; the rest wait up to <see cref="QueueTimeout"/>.</summary>
+        public int MaxConcurrent { get; set; } = 8;
+        /// <summary>How long an API query waits for a free slot before the API answers "busy, try again" (503).</summary>
+        public TimeSpan QueueTimeout { get; set; } = TimeSpan.FromSeconds(5);
+        /// <summary>ClickHouse's <c>max_execution_time</c> for an API query, in seconds; within the profile's 60.</summary>
+        public int MaxExecutionSeconds { get; set; } = 20;
+        /// <summary>ClickHouse's <c>max_threads</c> for an API query: <see cref="MaxConcurrent"/> × this is what searches can take of its cores.</summary>
+        public int MaxThreads { get; set; } = 2;
+
+        public IEnumerable<string> Validate()
+        {
+            if (MaxConcurrent is < 1 or > 256) yield return "ClickHouse:Api:MaxConcurrent must be 1 to 256";
+            if (QueueTimeout < TimeSpan.Zero || QueueTimeout > TimeSpan.FromMinutes(1)) yield return "ClickHouse:Api:QueueTimeout must be 0 to 1 minute";
+            if (MaxExecutionSeconds is < 1 or > 60) yield return "ClickHouse:Api:MaxExecutionSeconds must be 1 to 60 (the reader profile's limit)";
+            if (MaxThreads is < 1 or > 64) yield return "ClickHouse:Api:MaxThreads must be 1 to 64";
+        }
+    }
+
+    /// <summary>The API's queries are at their bound, or ClickHouse refused or timed one out under load: answered "busy, try again" (503).</summary>
+    public sealed class TelemetryBusyException(string message, Exception? inner = null) : Exception(message, inner);
+
+    /// <summary>ClickHouse can't be reached for an API query: answered "unavailable" (503), not a 500.</summary>
+    public sealed class TelemetryUnavailableException(string message, Exception? inner = null) : Exception(message, inner);
 }

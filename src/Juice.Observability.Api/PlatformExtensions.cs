@@ -61,6 +61,8 @@ namespace Juice.Observability.Api
             services.Configure<IntegrationOptions>(configuration.GetSection(IntegrationOptions.Section));
             services.AddPlatformAuthentication(configuration);
             services.AddPlatformProblemDetails();
+            // A telemetry query refused for load, or ClickHouse out of reach: 503 "Busy, try again" (Phase 11 R11), handled by the host's UseExceptionHandler.
+            services.AddExceptionHandler<TelemetryStoreExceptionHandler>();
             services.AddHealthChecks().AddCheck<DatabaseHealthCheck>("database", tags: ["ready"]);
             // The platform's own metrics (Phase 11, docs/platform-metrics.md): on by default, exported when Telemetry:Otlp:Endpoint is set.
             services.AddPlatformTelemetry(configuration);

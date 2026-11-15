@@ -19,7 +19,10 @@ export function problemText(error: unknown): string {
   const e = error as { status?: number; error?: { title?: string; detail?: string } } | undefined;
   if (!e) return '';
   if (e.status === 0) return 'The Juice API cannot be reached.';
-  return [e.error?.title, e.error?.detail].filter(Boolean).join(': ') || `Request failed (${e.status}).`;
+  const text = [e.error?.title, e.error?.detail].filter(Boolean).join(': ');
+  // The API answers a search refused for load as 503 "Busy, try again" with its own text; a proxy's bare 503 says the same here.
+  if (!text && e.status === 503) return 'Busy, try again: the platform is answering as many queries as it allows.';
+  return text || `Request failed (${e.status}).`;
 }
 
 /**
