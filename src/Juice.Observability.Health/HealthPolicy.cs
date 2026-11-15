@@ -23,6 +23,13 @@ namespace Juice.Observability.Health
         /// <summary>Time for telemetry to reach ClickHouse (measured p95 under reference load: 1.4 s).</summary>
         public TimeSpan Lag { get; set; } = TimeSpan.FromSeconds(10);
 
+        /// <summary>
+        /// How far back before the previous pass's end a pass reads liveness (Phase 11 R12). The runner remembers each
+        /// resource's last-seen time across passes, so it reads only what is new, plus this much for rows stored late. A pass
+        /// with nothing remembered (the first, or after a restart or a change of leader) reads the whole window.
+        /// </summary>
+        public TimeSpan LivenessOverlap { get; set; } = TimeSpan.FromMinutes(1);
+
         /// <summary>A previously seen subject without telemetry for longer than this is Offline.</summary>
         public TimeSpan FreshnessGrace { get; set; } = TimeSpan.FromMinutes(5);
 

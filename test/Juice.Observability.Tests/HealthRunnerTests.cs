@@ -243,6 +243,50 @@ namespace Juice.Observability.Tests
         private static ServiceProvider Services(ScratchDatabase database)
             => new ServiceCollection().AddDbContext<PlatformDbContext>(o => PlatformDbContext.Configure(o, database.ConnectionString)).BuildServiceProvider();
 
+        [Fact]
+        public async Task A_following_pass_remembers_liveness_and_reads_only_the_new_part_Async()
+        {
+            // Phase 11 R12: liveness is kept across passes; a following pass reads from the previous end less LivenessOverlap.
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var service = $"health-{_run}-remembered";
+            async Task SendAsync(string instance, DateTimeOffset at)
+                => await LocalStack.SendAsync("traces", Otlp.Traces([("service.name", service), ("service.instance.id", instance)],
+                    Otlp.Span(Otlp.TraceId(), Otlp.SpanId(), null, "work", Otlp.Internal, at)));
+            var start = DateTimeOffset.UtcNow;
+            await SendAsync("a", start.AddMinutes(-3));
+            await SendAsync("b", start.AddMinutes(-4));
+            await LocalStack.WaitForSpansAsync(service, 2);
+            await Discover(database);
+            async Task<Dictionary<string, DateTimeOffset?>> EvidenceAsync()
+            {
+                await using var db = database.Context();
+                var serviceId = (await db.Services.SingleAsync(s => s.Name == service, Ct)).Id;
+                var instances = await db.Instances.Where(i => i.ServiceId == serviceId).ToDictionaryAsync(i => i.Id, i => i.InstanceKey, Ct);
+                return await db.HealthSnapshots.Where(h => instances.Keys.Contains(h.SubjectId))
+                    .ToDictionaryAsync(h => instances[h.SubjectId], h => h.LastEvidenceAt, Ct);
+            }
+            static void Near(DateTimeOffset expected, DateTimeOffset? actual)
+                => Assert.InRange(actual!.Value, expected.AddSeconds(-1), expected.AddSeconds(1));
+
+            var runner = Health(database);
+            await runner.RunOnceAsync(Ct);
+            Near(start.AddMinutes(-3), (await EvidenceAsync())["a"]);
+            Near(start.AddMinutes(-4), (await EvidenceAsync())["b"]);
+
+            // Stored now, but timed 2 minutes back: before the previous pass's end less the overlap.
+            await SendAsync("b", start.AddMinutes(-2));
+            await LocalStack.WaitForSpansAsync(service, 3);
+            await runner.RunOnceAsync(Ct);
+            var following = await EvidenceAsync();
+            Near(start.AddMinutes(-3), following["a"]);   // remembered: not read again
+            Near(start.AddMinutes(-4), following["b"]);   // the late row isn't read
+
+            // A runner with nothing remembered reads the whole window.
+            await Health(database).RunOnceAsync(Ct);
+            Near(start.AddMinutes(-2), (await EvidenceAsync())["b"]);
+        }
+
         private static async Task Discover(ScratchDatabase database)
             => await new DiscoveryRunner(Services(database).GetRequiredService<IServiceScopeFactory>(),
                 new ClickHouseTelemetrySource(Options.Create(new ClickHouseOptions { ConnectionString = LocalStack.ClickHouseReader })),

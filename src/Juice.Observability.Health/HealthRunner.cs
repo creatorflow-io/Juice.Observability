@@ -32,6 +32,11 @@ namespace Juice.Observability.Health
         private static readonly Counter<long> TransitionCount = Meter.CreateCounter<long>("juice.observability.health.transitions", "{transition}",
             "Health state transitions, by subject type and new state");
 
+        // Liveness remembered across passes (HealthPolicy.LivenessOverlap): each resource, keyed without its times and count,
+        // with its latest observation. One worker calls RunOnceAsync at a time.
+        private readonly Dictionary<ResourceObservation, ResourceObservation> seen = [];
+        private (string Tenant, DateTimeOffset To)? seenThrough;
+
         private const string RequestsQuery = $"""
             SELECT ResourceAttributes['service.namespace'] AS ns, ServiceName AS svc,
                    ResourceAttributes['deployment.environment.name'] AS env, ResourceAttributes['service.instance.id'] AS inst,
@@ -75,6 +80,34 @@ namespace Juice.Observability.Health
             }
         }
 
+        /// <summary>
+        /// Every resource seen in the window, with its latest observation (Phase 11 R12). Reads only from the previous pass's
+        /// end less <paramref name="overlap"/>, and keeps what earlier passes saw while it is still in the window; with nothing
+        /// remembered, or a window that doesn't follow on, it reads the whole window. Before, every pass read the whole window,
+        /// so each row was read about Window / Interval times.
+        /// </summary>
+        private async Task<List<ResourceObservation>> LivenessAsync(TelemetryWindow window, TimeSpan overlap, CancellationToken cancellationToken)
+        {
+            var follows = seenThrough is { } through && through.Tenant == window.TenantKey && through.To > window.From && through.To <= window.To;
+            var from = follows && seenThrough!.Value.To - overlap > window.From ? seenThrough.Value.To - overlap : window.From;
+            var read = await clickHouse.ReadResourcesAsync(window with { From = from }, cancellationToken);
+            if (!follows) seen.Clear();
+            foreach (var o in read)
+            {
+                var key = o with { FirstSeen = default, LastSeen = default, Records = 0 };
+                if (!seen.TryGetValue(key, out var known) || o.LastSeen >= known.LastSeen)
+                {
+                    seen[key] = known is null ? o : o with { FirstSeen = known.FirstSeen < o.FirstSeen ? known.FirstSeen : o.FirstSeen };
+                }
+            }
+            foreach (var key in seen.Where(kv => kv.Value.LastSeen < window.From).Select(kv => kv.Key).ToList())
+            {
+                seen.Remove(key);
+            }
+            seenThrough = (window.TenantKey, window.To);
+            return [.. seen.Values];
+        }
+
         private async Task<HealthRunResult> RunAsync(CancellationToken cancellationToken)
         {
             var policy = options.Value;
@@ -91,7 +124,7 @@ namespace Juice.Observability.Health
 
             // ─── evidence (read first: if ClickHouse is down nothing is written) ───
             var window = new TelemetryWindow(tenant.Key, from, to, discovery.Value.RowLimit);
-            var liveness = await clickHouse.ReadResourcesAsync(window, cancellationToken);
+            var liveness = await LivenessAsync(window, policy.LivenessOverlap, cancellationToken);
             var requests = await clickHouse.QueryAsync(RequestsQuery, window, r => (Observation: new ResourceObservation
             {
                 ServiceNamespace = r.GetString(0), ServiceName = r.GetString(1), Environment = r.GetString(2),

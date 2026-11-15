@@ -809,3 +809,44 @@ Reconciling never moves a first-seen time later or a last-seen time earlier, so 
 - **The container's CPU didn't move,** so that saving didn't show in docker stats. The rest of ClickHouse's CPU (about 0.2 cores
   before, 0.55 after) isn't attributed by what the harness records. Merges were similar in both windows (439 M and 564 M rows
   merged). So the R12 claim is the measured query cost, not the container's total.
+
+### 5. Health remembers liveness across passes (R12)
+
+**Measured first** (`query_log`, the workers ceiling at 4×, `20261115T0019`): health's liveness read cost 0.30 cores, 7.5 M rows
+and 9.1 CPU-seconds every 30 s. It reads every table, metrics included, over the whole 5-minute evidence window, so each row was
+read about 10 times. Health uses only each resource's latest last-seen time from it.
+
+**The change:** the health runner keeps each resource's latest observation across passes. A pass reads from the previous pass's
+end less `Health:LivenessOverlap` (1 min), merges, and drops what has left the window. A runner with nothing remembered (the
+first pass, or after a restart or a change of leader) reads the whole window, as before. The trade-off: a row stored more than
+a minute after its own time is missed until a runner starts without memory. Before, it counted while it was inside the window.
+
+**Workers ceiling at 4× again** (`20261115T1006`, the same 200 rules and 200 SLOs as `20261115T0019`), with discovery's 5-minute
+metrics cadence (section 4) also in place. From `query_log`, as a share of the 30-minute window:
+
+| `platform_reader` queries | Before | After |
+|---|---|---|
+| Discovery: resource read | 60 passes, 13.3 M rows each, 0.517 cores | spans and logs 60 passes, 1.7 M rows, 0.064 cores; metrics 6 passes, 8.9 M rows, 0.038 cores |
+| Discovery: links and resource uses | 0.067 cores | 0.078 cores |
+| Health: liveness | 60 passes, 7.5 M rows each, 0.302 cores | 60 passes, 2.65 M rows each, 0.105 cores |
+| Health: requests and memory | 0.015 cores | 0.012 cores |
+| Rules | 0.326 cores | 0.275 cores |
+| SLO counting | 0.61 cores | 0.38 cores (see below) |
+| **All of them** | **1.84 cores** | **0.95 cores** |
+
+| Step result | Before | After |
+|---|---|---|
+| ClickHouse container CPU, mean / max (docker stats) | 1.77 / 12.1 cores | **0.87 / 7.3 cores** |
+| Health freshness p95 | 40.7 s | 40.7 s |
+| Rule breach-to-alert p95 | 63 s | 67 s |
+| Webhook first dispatch p95 | 1.81 s over 207 | 1.9 s over 159 |
+| Every worker within 60 s of its delay; no backlog growing | yes | yes |
+| Ingest | all stored | all stored |
+| API restarts | 0 | 0 |
+
+- **ClickHouse's CPU halved with every worker on,** and the drop in the container (0.90 cores) matches the drop in the reader's
+  queries (0.89). Section 4's 8 a second run, where the container didn't move, ran without health, rules or SLOs.
+- **Discovery and health together went from 0.90 to 0.30 cores.**
+- **The SLO figure isn't a like-for-like change.** In the before step, 150 of the 200 SLOs were new to the database and counted 30
+  days at once (the burst it was run to test). Here they were already counted. Rules and SLO counting are unchanged by R12 so far.
+- **The workers' lines hold as before.** Breach-to-alert and webhook figures differ with the breach runs' timing, not their cost.
