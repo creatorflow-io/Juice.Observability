@@ -90,7 +90,7 @@
       "title": "M5 Phase 10 acceptance doc",
       "ref": "docs/phase-10-acceptance.md",
       "status": "doing",
-      "note": "docs/phase-10-acceptance.md written 2026-11-16: each gate line to its evidence (Console scope, tenant context, scale tests with resources and the disk budget), the deliverables and the four drills. Awaits the owner's acceptance. Maps each gate line to its evidence; owner acceptance."
+      "note": "docs/phase-10-acceptance.md written 2026-11-16: each gate line to its evidence (Console scope, tenant context, scale tests with resources and the disk budget), the deliverables and the four drills. Accepted by the owner 2026-11-17. Maps each gate line to its evidence; owner acceptance."
     },
     {
       "doc_id": "p10-gate-console",

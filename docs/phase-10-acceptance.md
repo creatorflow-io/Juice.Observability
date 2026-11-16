@@ -1,6 +1,6 @@
 # Phase 10 acceptance: domain Console and scale hardening
 
-**Status:** built and reviewed; awaiting the owner's acceptance. Milestones 1–4 are done, each closed by the review loop (D3); this
+**Status:** accepted by the owner 2026-11-17. Milestones 1–4 are done, each closed by the review loop (D3); this
 document is milestone 5. Phase 10's 5× and 10× steps, and its drills, ran after Phase 11 on the owner's exception (13 November), so the
 scale figures below are the platform as released in 1.3.0. [Plan](phase-10-plan.md).
 
