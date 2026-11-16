@@ -990,3 +990,68 @@ free attribute filter still reads the map. Tests check the script against `Resou
 from the map, and that each column holds its key on the running stack; `tests/verify.sh` checks the columns on every table. Applied
 to the working stack's existing tables (a metadata change); a fresh install was simulated (the script waits for tables created
 later). Its effect on the workers is for the final rerun to show.
+
+## Phase 11 final rerun: 1×, 3×, 4×, 5×, 6×, 10×, 16 November
+
+All of milestone 5 (fixes 1–8 above) against the 13 November baseline, on a fresh scale stack again:
+- **Run:** `stack.sh destroy`, then `WARMUP=300 scale/steps.sh --restore --through 1 3 4 5 6 10`, commit 38e136a, 5 minutes of
+  warm-up and 30 measured per step. 4× and 6× are held out for the capacity view's ±25 % check (R10); 1, 3, 5 and 10 calibrate it.
+- **Reports:** `build/scale/20261116T0442-1x`, `…0517-3x`, `…0553-4x`, `…0628-5x`, `…0704-6x`, `…0739-10x` (`report.md`).
+- **Per-component figures:** `components.json` in each step, and `build/scale/m5-final-components.md`.
+
+| Measure | Line | 1× | 3× | 4× | 5× | 6× | 10× |
+|---|---|---|---|---|---|---|---|
+| Throughput (stored, spans / points / logs) | ≥ 98 % each, nothing lost | 100 / 100 / 100 %, 0 lost | 100 / 100 / 100 %, 0 lost | 100 / 100 / 100 %, 0 lost | 100 / 100 / 100 %, 0 lost | 100 / 100 / 100 %, **12,948 points dropped** (once, 10 s) | 100 / **94.2** / 100 %, **10.5 M points dropped** |
+| Ingestion freshness p95 | ≤ 30 s | 1.37 s | 1.35 s | 1.4 s | 1.41 s | 1.58 s | 1.35 s |
+| API reads p95 (20/s) | ≤ 500 ms | 10.6 ms | 11.3 ms | 12.9 ms | 16 ms | 38.8 ms | 33.9 ms |
+| Health freshness p95 | ≤ 60 s | 37.9 s | 38.1 s | 38.8 s | 40.4 s | 39.7 s | 42 s |
+| Rule breach-to-alert p95 | ≤ 2 min after `ForDuration` | 67 s | 64 s | 66 s | 65 s | 65 s | 65 s |
+| Webhook first dispatch p95 | ≤ 30 s | 0.56 s | 1.98 s | 1.99 s | 1.96 s | 1.96 s | 1.83 s |
+| Queue lag, past each configured delay | ≤ 60 s, nothing growing | within | within | within | within | within | within; **Collector queue growing** |
+| Telemetry search p95 (reported) | – | 62 ms | 126 ms | 154 ms | 230 ms | 817 ms | 1.14 s |
+| Console page p95 (reported) | – | 654 ms | 708 ms | 769 ms | 888 ms | 1.18 s | 1.43 s |
+| ClickHouse CPU, mean / max (docker stats) | – | 0.76 / 8.5 | 1.75 / 13.8 | 2.68 / 18.3 | 3.16 / 16.2 | 5.46 / 21.4 | 7.06 / 18.7 |
+
+- **1× meets every §9 target, and every line holds at 3×** (R10), and at 4× and 5×. 5× is where the baseline first crossed (20 M
+  points refused, workers minutes behind); it now runs with every worker in line and ClickHouse at about a fifth of the CPU.
+- **6× crosses only "nothing lost":** one 10-second sample in 30 minutes, 0.012 % of the points, while everything else stayed in.
+- **10× crosses on throughput**, sustained: 5.8 % of points dropped and the Collector's queue growing. Every worker, freshness and
+  read is still in line (in the baseline they were 9–21 minutes behind).
+
+**Against the baseline,** from `query_log` (CPU cores in the window, the platform's reads and the Collector's inserts):
+
+| | 1× before → after | 3× | 5× | 10× |
+|---|---|---|---|---|
+| Platform reads (`platform_reader`), CPU | 1.90 → 0.28 (−85 %) | 6.98 → 0.72 (−90 %) | 11.23 → 1.29 (−89 %) | 12.34 (saturated) → 3.08 |
+| Rows read a second | 3.2 M → 1.2 M | 12.1 M → 3.3 M | 20.8 M → 6.1 M | 32.1 M → 10.8 M |
+| ClickHouse container CPU, mean | 2.49 → 0.76 | 8.29 → 1.75 | 15.1 → 3.16 | 15.96 → 7.06 |
+| Telemetry search p95 | 292 ms → 62 ms | 2.6 s → 126 ms | 10.6 s → 230 ms | 46.4 s → 1.14 s |
+
+The rows read are what the owner asked about on 16 November (3 M a second at 1×): 1.2 M now, of which the synthetic search mix (one
+log and one trace search a second) is about half (0.6 M a second at 1×, `juice:api:/telemetry/*`). The workers read the other 0.6 M (SLOs 0.25 M, discovery 0.17 M, health 0.1 M, rules 0.09 M).
+Fixes 2–6 and 8 each took a share; this run measures them together, the sections above one at a time.
+
+**The ~1.5 % point loss of the two ingest ceiling runs (§8) didn't recur:** 0 lost at 1–5× with the full mix. It belonged to that
+harness, where the generator fell behind too.
+
+### The next limit: the Collector's metrics export, in bursts at 6× and sustained at 10×
+
+- **At 6×, a burst.** At 07:27:05 ClickHouse went from 2.5 to 10–16 cores for about 40 seconds (`metric_log`, 5-second steps), with
+  16–23 queries running at once: a 25-second merge of 24.7 M `otel_metrics_sum` rows and a 21-second one of traces, the 16 inserts,
+  and a discovery pass and searches at the same moment (discovery's four queries in that minute took 41 CPU-seconds). Inserts slowed
+  (p95 243 ms at 6× against 109 ms at 5×); the export queue went from 95,000 to 196,000 items in one sample, its bound is 200,000,
+  and 12,948 points were dropped (`otelcol_exporter_enqueue_failed_metric_points`). It drained within 30 seconds.
+- **At 10×, sustained,** and not for ClickHouse's CPU: it averaged 7.1 of 24 cores. Insert latency did: p50 13 ms at 1×, about 70 ms
+  from 3× to 6×, **206 ms at 10×**, with flushes fewer and larger (27.6 a second at 6×, 17.9 at 10×). Each of the exporter's 16
+  inserts waits for its flush, so the metrics export tops out near the 94 % that was stored: about 95,000 points a second. The
+  ingest ceiling (§7) found the same order, 110,000 a second at 20× with only 4.4 of 16 inserts in flight. Why the wait grows
+  (ClickHouse's adaptive async-insert busy timeout, the batch sizes the exporter sends, or the Collector itself) is not measured yet:
+  it's the Collector profile queued after milestone 5.
+
+### The ±25 % check (R10): what this run gives it
+
+The check is on the capacity view's predicted knee (milestone 6), which doesn't exist yet; this run is its data. A first look, by a
+straight line through ClickHouse's mean CPU at 1, 3, 5 and 10× (0.714 cores per × − 0.21): 4× predicted 2.65 cores, measured 2.68
+(−1 %); 6× predicted 4.08, measured 5.46 (−25 %, at the edge). The knee itself isn't a CPU knee: ClickHouse would run out of cores
+near 34× on that line, but the first line crossed at 6× (a burst) and the sustained one at 10× (insert wait). So the capacity view has
+to model the export path (inserts in flight × insert latency against the queue's bound) and the burst headroom, not just CPU.
