@@ -26,10 +26,6 @@ say() { echo "$(date -u +%H:%M:%S) $*" | tee -a "$log"; }
 failures=()
 check() { if eval "$2"; then say "ok: $1"; else say "FAILED: $1"; failures+=("$1"); fi; }
 
-if [[ -n "$(docker ps -q --filter publish=4318 --filter publish=8123)" ]]; then
-  say "the stack's ports are in use (the working stack?): stop it first"; exit 2
-fi
-
 cleanup() {
   if ! $keep && [[ -d "$tree/deploy/local" ]]; then
     (cd "$tree/deploy/local" && docker compose --profile platform down -v --remove-orphans >> "$log" 2>&1)
@@ -37,18 +33,25 @@ cleanup() {
     say "the drill's stack, volumes and worktree removed"
   fi
 }
-trap cleanup EXIT
-
-say "upgrade drill: $from → $to (${minutes} min of 1× load first)"
 # An earlier run's drill stack and volumes (interrupted, or --keep) go first: a fresh install at $from, with this run's secrets.
 docker compose -p juice-upgrade down -v --remove-orphans >> "$log" 2>&1
 docker volume ls -q --filter label=com.docker.compose.project=juice-upgrade | xargs -r docker volume rm >> "$log" 2>&1
+# Then every port the drill's stack publishes, or its checks call, must be free: a container or not (a local API on 5180, say).
+for port in 4317 4318 4319 5180 5432 8080 8123; do
+  if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
+    say "port $port is in use (the working stack?): stop what holds it first"; exit 2
+  fi
+done
+
+trap cleanup EXIT
+
+say "upgrade drill: $from → $to (${minutes} min of 1× load first)"
 git -C "$root" worktree remove --force "$tree" >/dev/null 2>&1
 git -C "$root" worktree add --detach "$tree" "$from" >> "$log" 2>&1 || { say "no worktree at $from"; exit 1; }
 # Everything below runs in the drill's own checkout, never the working one: stop if it isn't there.
-cd "$tree/deploy/local" 2>/dev/null && [[ "$(pwd -P)" == "$(cd "$tree/deploy/local" && pwd -P)" && "$(pwd -P)" != "$(cd "$here" && pwd -P)" ]] \
-  || { say "$from has no deploy/local in $tree"; exit 1; }
+cd "$tree/deploy/local" 2>/dev/null && [[ "$(pwd -P)" != "$(cd "$here" && pwd -P)" ]] || { say "$from has no deploy/local in $tree"; exit 1; }
 JUICE_PLATFORM_TENANT_ID=upgrade-drill bash scripts/init.sh >> "$log" 2>&1 || { say "init.sh at $from failed"; exit 1; }
+# The exported COMPOSE_PROJECT_NAME already wins over .env; the drill's .env says so too, for anyone running compose in its directory.
 sed -i 's/^COMPOSE_PROJECT_NAME=.*/COMPOSE_PROJECT_NAME=juice-upgrade/' .env
 dc() { docker compose --profile platform "$@"; }
 env_of() { sed -n "s/^$1=//p" .env; }
@@ -70,9 +73,11 @@ sleep 90   # discovery, health and rules catch up on the load's last minute
 transient='^(outbox|idempotency_records|worker_heartbeats|worker_leases|__ef_migrations_history)'
 snapshot() {
   ch "SELECT table, sum(rows) FROM system.parts WHERE active AND database = 'otel' AND table LIKE 'otel_%' AND table NOT LIKE '%_mv' GROUP BY table ORDER BY table FORMAT TSV"
-  for t in $(pg "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY 1" | grep -Ev "$transient"); do
-    echo -e "pg.$t\t$(pg "SELECT count(*) FROM \"$t\"")"
-  done
+  # One psql call: the counting query built from pg_tables, then run (a count that fails leaves its line empty, which counts as lost).
+  local tables
+  tables=$(pg "SELECT string_agg(format('SELECT %L, count(*) FROM %I', 'pg.' || tablename, tablename), ' UNION ALL ' ORDER BY tablename)
+    FROM pg_tables WHERE schemaname = 'public' AND tablename !~ '$transient'")
+  dc exec -T postgres psql -U juice -d juice_observability -AtF $'\t' -c "$tables" </dev/null
   echo -e "pg.migrations\t$(pg 'SELECT count(*) FROM __ef_migrations_history')"
 }
 snapshot > "$out/before.tsv"
@@ -98,7 +103,8 @@ say "after: $(tr '\t\n' '= ' < "$out/after.tsv")"
 
 # ─── the checks ───
 # Every count before against after: one missing after (a table dropped, a count that failed) is lost too.
-lost=$(join -t $'\t' -a1 -e MISSING -o 0,1.2,2.2 <(sort "$out/before.tsv") <(sort "$out/after.tsv") | awk -F'\t' '$3 == "MISSING" || $3 + 0 < $2 + 0 { print $1 }' | tr '\n' ' ')
+lost=$(join -t $'\t' -a1 -e MISSING -o 0,1.2,2.2 <(sort "$out/before.tsv") <(sort "$out/after.tsv") \
+  | awk -F'\t' '$2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/ || $3 + 0 < $2 + 0 { print $1 }' | tr '\n' ' ')
 check "nothing lost: every table and record count at least what it was (${lost:-all kept})" '[[ -z "$lost" ]]'
 grew=$(join -t $'\t' <(sort "$out/before.tsv") <(sort "$out/after.tsv") | awk -F'\t' '$1 == "otel_traces" && $3 > $2 { print "yes" }')
 check "telemetry still flows: more spans after the upgrade's load" '[[ "$grew" == yes ]]'
@@ -125,14 +131,18 @@ for _ in $(seq 1 12); do
   [[ "$platform" -gt 0 ]] && break; sleep 10
 done
 check "the platform's own metrics arrive under the reserved tenant ($platform points in 2 min)" '[[ "$platform" -gt 0 ]]'
-heartbeats=$(pg "SELECT count(DISTINCT worker) FROM worker_heartbeats WHERE seen_at > now() - interval '1 minute'")
-check "every worker's heartbeat written ($heartbeats of 8)" '[[ "$heartbeats" == 8 ]]'
+# Every worker enabled somewhere has a pass that ended well within its threshold (three intervals, at least 60 s) and succeeded.
+workers=$(pg "SELECT count(DISTINCT worker) FROM worker_heartbeats WHERE enabled AND seen_at > now() - interval '1 minute'")
+passing=$(pg "SELECT count(DISTINCT worker) FROM worker_heartbeats WHERE enabled AND seen_at > now() - interval '1 minute'
+  AND last_outcome IN ('success', 'partial') AND last_ended_at > now() - greatest(interval_seconds * 3, 60) * interval '1 second'")
+check "every enabled worker passing since the upgrade ($passing of $workers)" '[[ "$workers" -ge 6 && "$passing" == "$workers" ]]'
 status=""
 for _ in $(seq 1 24); do
   status=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:5180/health/platform); [[ "$status" == 200 ]] && break; sleep 5
 done
 check "/health/platform ok (HTTP $status)" '[[ "$status" == 200 ]]'
-leaked=$(pg "SELECT count(*) FROM services WHERE namespace LIKE 'juice%' OR name LIKE 'otel%'")
+# The API reports as service.name juice-observability-platform (PlatformTelemetry.ServiceName), the Collector's self-scrape as otel-collector.
+leaked=$(pg "SELECT count(*) FROM services WHERE name LIKE 'juice-observability%' OR name LIKE 'otel%' OR namespace LIKE 'juice%'")
 check "the platform's own telemetry isn't in the tenant's inventory ($leaked services)" '[[ "$leaked" == 0 ]]'
 
 {

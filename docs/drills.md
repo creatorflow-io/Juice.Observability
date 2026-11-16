@@ -15,7 +15,9 @@ latest result. Raw logs stay under `build/`.
   wrong table name (the database's history table is snake case), so it failed though the migrations had run; the second passed. The
   milestone 7 review then hardened the drill (every platform table counted, a table missing after counted as lost, the migrations
   against the release's files, the load and the access script failing the drill, the old data read through the platform's API), and
-  the third run, to 83e55d5, is the record: `build/upgrade-drill-20261116T1218/result.md`.
+  the third run, to 83e55d5, is the record: `build/upgrade-drill-20261116T1218/result.md`. Its second review round made two checks
+  stricter (every enabled worker passing, not only its heartbeat row; the platform's own services by the names they report) and the
+  ports checked whoever holds them; the fourth run passed those as well: `build/upgrade-drill-20261116T1246/result.md`.
 
 | Count | Before (1.2.0) | After (1.3.0, 2 min more) |
 |---|--:|--:|
@@ -39,8 +41,8 @@ outbox's, expiring idempotency keys, leases and heartbeats.
   - Grafana's row policy on the tenant column (new after 1.2.0, where Grafana read every tenant);
   - `platform_monitor` reading its system tables;
   - the platform's own metrics arriving under the reserved tenant (627 points in 2 minutes), and none of them in the tenant's inventory;
-  - every worker's heartbeat written (8 of 8); `/health/platform` answering `ok`.
-- **Time:** `docker compose up` to the stack up again: 52–73 s over the three runs (the image build cached or not); the checkout and
+  - every enabled worker passing since the upgrade (8 of 8, in the fourth run); `/health/platform` answering `ok`.
+- **Time:** `docker compose up` to the stack up again: 39–73 s over the four runs (the image build cached or not); the checkout and
   `init.sh` before it take seconds. The Collector is down for part of it; senders retry, as for any Collector restart.
 - **Not covered:** rolling back to 1.2.0 after the upgrade (the [deployment guide](deployment.md) says what an older build ignores);
   more than one API replica during the upgrade.

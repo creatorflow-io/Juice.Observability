@@ -358,6 +358,9 @@ namespace Juice.Observability.Tests
             var token = await LocalStack.TokenAsync("erin");
             await new HeartbeatWriter(factory.Services.GetRequiredService<IServiceScopeFactory>(), NullLogger<HeartbeatWriter>.Instance).WriteOnceAsync(ct);
 
+            // The host's first authenticated request fetches the IdP's keys and warms up: not what this times.
+            (await ApiTests.Get(client, "/api/v1/tenants", token)).Dispose();
+
             // While the first sample is still waiting on ClickHouse, and after it gave up: an answer each time, in well under the sample's timeout.
             for (var i = 0; i < 2; i++)
             {

@@ -21,7 +21,7 @@ own review. [Plan](phase-11-plan.md), [platform metrics](platform-metrics.md), [
 
 - **Version:** 1.3.0 (`Directory.Build.props`, the Console package). Tagging `api-1.3.0` and `console-1.3.0` publishes it: the owner's step.
 - **Upgrade from 1.2.0:** `scripts/init.sh` (adds `CLICKHOUSE_MONITOR_PASSWORD` and the platform's OTLP token), `docker compose
-  --profile platform up -d --build`, `scripts/apply-clickhouse-access.sh` ([runbook](runbook.md#upgrade)). The migrations (heartbeats,
+  --profile platform up -d --build --wait --remove-orphans`, `scripts/apply-clickhouse-access.sh` ([runbook](runbook.md#upgrade)). The migrations (heartbeats,
   their pass time) run on start; `clickhouse-access` adds `platform_monitor`, the row policies and the platform pipeline's users;
   `clickhouse-columns` adds the resource columns, with nothing rewritten.
 - **Drill** ([drills](drills.md#upgrade-120--130-16-november)): `tests/upgrade-drill.sh` installed 1.2.0, gave it 10 minutes of the reference load, upgraded
