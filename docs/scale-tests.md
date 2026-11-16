@@ -982,3 +982,11 @@ MATERIALIZED` (`20261116T0216`). The columns were dropped again afterwards. `que
 - **Both runs lost about 1.5 % of points,** where the 15 November 16-consumer run lost none: the baseline was also flagged a harness
   limit (the generator fell behind, 230 spans given up). The loss is the same without and with the columns, so it says nothing
   about them; the larger scale data (merges of up to 58–68 M rows) and the host are the candidates, not measured.
+
+**Shipped** (owner, 16 November: every key the workers read). `clickhouse/resource-columns.sh` adds the twelve columns of D on every
+start (the `clickhouse-columns` service, after the Collector has created its tables; the API and Grafana wait for it); every
+platform query reads them (`ResourceColumns`), Grafana's `grafana_tenant` policy filters on `JuiceTenant`, and only the Console's
+free attribute filter still reads the map. Tests check the script against `ResourceColumns`, that no query in `src` reads a listed key
+from the map, and that each column holds its key on the running stack; `tests/verify.sh` checks the columns on every table. Applied
+to the working stack's existing tables (a metadata change); a fresh install was simulated (the script waits for tables created
+later). Its effect on the workers is for the final rerun to show.

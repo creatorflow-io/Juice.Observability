@@ -38,9 +38,9 @@ namespace Juice.Observability.Health
         private (string Tenant, DateTimeOffset To)? seenThrough;
 
         private const string RequestsQuery = $"""
-            SELECT ResourceAttributes['service.namespace'] AS ns, ServiceName AS svc,
-                   ResourceAttributes['deployment.environment.name'] AS env, ResourceAttributes['service.instance.id'] AS inst,
-                   ResourceAttributes['host.name'] AS host_name, ResourceAttributes['process.pid'] AS pid,
+            SELECT JuiceServiceNamespace AS ns, ServiceName AS svc,
+                   JuiceEnvironment AS env, JuiceServiceInstance AS inst,
+                   JuiceHostName AS host_name, JuiceProcessPid AS pid,
                    countIf(SpanKind IN ('Server', 'Consumer')) AS requests,
                    countIf(SpanKind IN ('Server', 'Consumer') AND StatusCode = 'Error') AS errors
             FROM otel.otel_traces
@@ -51,7 +51,7 @@ namespace Juice.Observability.Health
             """;
 
         private const string MemoryQuery = $"""
-            SELECT ResourceAttributes['host.id'] AS host_id, ResourceAttributes['host.name'] AS host_name,
+            SELECT JuiceHostId AS host_id, JuiceHostName AS host_name,
                    Attributes['state'] AS state, argMax(Value, TimeUnix) AS bytes
             FROM otel.otel_metrics_sum
             WHERE {ClickHouseTelemetrySource.Tenant} AND TimeUnix >= {ClickHouseTelemetrySource.From}

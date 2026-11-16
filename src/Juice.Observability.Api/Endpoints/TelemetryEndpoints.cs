@@ -84,11 +84,11 @@ namespace Juice.Observability.Api.Endpoints
         private static readonly Regex AttributeKeyPattern = new(@"^[A-Za-z0-9_.\-]{1,128}$", RegexOptions.Compiled);
         private static readonly Regex MetricNamePattern = new(@"^[A-Za-z_:][A-Za-z0-9_.:/\-]{0,254}$", RegexOptions.Compiled);
 
-        private const string Environment = "ResourceAttributes['deployment.environment.name']";
+        private const string Environment = "JuiceEnvironment";
         /// <summary>A newest-first search's lower bound for the slice being read (ClickHouseTelemetrySource.QueryNewestFirstAsync).</summary>
         private const string SliceFrom = "{slice_from:DateTime64(9)}";
-        private const string Instance = "ResourceAttributes['service.instance.id']";
-        private const string Host = "ResourceAttributes['host.name']";
+        private const string Instance = "JuiceServiceInstance";
+        private const string Host = "JuiceHostName";
         private const string DbSystem = "lowerUTF8(if(SpanAttributes['db.system.name'] != '', SpanAttributes['db.system.name'], SpanAttributes['db.system']))";
 
         public static RouteGroupBuilder MapTelemetryEndpoints(this RouteGroupBuilder tenant)
@@ -278,7 +278,7 @@ namespace Juice.Observability.Api.Endpoints
         }
 
         private static string ServiceCondition(Scope scope, Service service)
-            => $"ServiceName = {scope.Add("String", service.Name)} AND ResourceAttributes['service.namespace'] = {scope.Add("String", service.Namespace)}";
+            => $"ServiceName = {scope.Add("String", service.Name)} AND JuiceServiceNamespace = {scope.Add("String", service.Namespace)}";
 
         /// <summary>The attributes discovery derived the instance key from (D1): the instance id, or host and process id.</summary>
         private static string InstanceCondition(Scope scope, ServiceInstance instance)
@@ -289,7 +289,7 @@ namespace Juice.Observability.Api.Endpoints
             }
             var separator = instance.InstanceKey.LastIndexOf(':');
             return separator > 0
-                ? $"{Instance} = '' AND lowerUTF8({Host}) = {scope.Add("String", instance.InstanceKey[..separator])} AND ResourceAttributes['process.pid'] = {scope.Add("String", instance.InstanceKey[(separator + 1)..])}"
+                ? $"{Instance} = '' AND lowerUTF8({Host}) = {scope.Add("String", instance.InstanceKey[..separator])} AND JuiceProcessPid = {scope.Add("String", instance.InstanceKey[(separator + 1)..])}"
                 : $"{Instance} = '' AND lowerUTF8({Host}) = {scope.Add("String", instance.InstanceKey)}";
         }
 
@@ -301,8 +301,8 @@ namespace Juice.Observability.Api.Endpoints
             {
                 ResourceType.Database => ($"{DbSystem} = {scope.Add("String", Attr("db.system.name"))} AND lowerUTF8(SpanAttributes['server.address']) = {scope.Add("String", Attr("server.address"))} AND SpanAttributes['db.namespace'] = {scope.Add("String", Attr("db.namespace"))}", true),
                 ResourceType.MessagingDestination => ($"lowerUTF8(SpanAttributes['messaging.system']) = {scope.Add("String", Attr("messaging.system"))} AND SpanAttributes['messaging.destination.name'] = {scope.Add("String", Attr("messaging.destination.name"))}", true),
-                ResourceType.Host => ($"(lowerUTF8(ResourceAttributes['host.id']) = {scope.Add("String", resource.Key)} OR (ResourceAttributes['host.id'] = '' AND lowerUTF8({Host}) = {scope.Add("String", resource.Key)}))", false),
-                ResourceType.Container => ($"lowerUTF8(ResourceAttributes['container.id']) = {scope.Add("String", resource.Key)}", false),
+                ResourceType.Host => ($"(lowerUTF8(JuiceHostId) = {scope.Add("String", resource.Key)} OR (JuiceHostId = '' AND lowerUTF8({Host}) = {scope.Add("String", resource.Key)}))", false),
+                ResourceType.Container => ($"lowerUTF8(JuiceContainerId) = {scope.Add("String", resource.Key)}", false),
                 _ => (string.Join(" AND ", resource.Attributes.Where(kv => kv.Key.StartsWith("k8s.", StringComparison.Ordinal))
                     .Select(kv => $"ResourceAttributes[{scope.Add("String", kv.Key)}] = {scope.Add("String", kv.Value)}").DefaultIfEmpty("false")), false),
             };
@@ -437,7 +437,7 @@ namespace Juice.Observability.Api.Endpoints
             var spans = await clickHouse.QueryAsync($"""
                 SELECT SpanId, ParentSpanId, ServiceName, {Environment}, {Instance}, {Host}, SpanName, SpanKind, Timestamp, Duration,
                        StatusCode, StatusMessage, ScopeName, ScopeVersion, SpanAttributes, Events.Name, Events.Timestamp,
-                       Events.Attributes, Links.TraceId, Links.SpanId, ResourceAttributes['service.namespace'],
+                       Events.Attributes, Links.TraceId, Links.SpanId, JuiceServiceNamespace,
                        SpanAttributes['messaging.system'], SpanAttributes['messaging.destination.name'],
                        if(SpanAttributes['db.system.name'] != '', SpanAttributes['db.system.name'], SpanAttributes['db.system']),
                        SpanAttributes['db.namespace'], SpanAttributes['server.address']
@@ -802,7 +802,7 @@ namespace Juice.Observability.Api.Endpoints
         private const int CapacityStepSeconds = 60;
         /// <summary>How far back "the outbox is behind now" looks.</summary>
         private const int CapacityRecentSeconds = 300;
-        private const string InstanceOfRow = $"concat({Instance}, '|', {Host}, '|', ResourceAttributes['process.pid'])";
+        private const string InstanceOfRow = $"concat({Instance}, '|', {Host}, '|', JuiceProcessPid)";
 
         /// <summary>
         /// What a service was measured to need, per instance: each instance's work, CPU, memory and thread pool queue per
@@ -946,7 +946,7 @@ namespace Juice.Observability.Api.Endpoints
             var scope = await ScopeAsync(http, db, clock, new Filter { Environment = run.Environment, From = run.StartedAt, To = end }, limit, MaxSeriesRange, ct);
             var stepParameter = scope.Add("UInt32", (uint)step);
             string Bucket(string time) => $"toStartOfInterval({time}, toIntervalSecond({stepParameter}))";
-            const string Namespace = "ResourceAttributes['service.namespace']";
+            const string Namespace = "JuiceServiceNamespace";
 
             var spans = await clickHouse.QueryAsync($"""
                 SELECT {Namespace} AS ns, ServiceName, {Bucket("Timestamp")} AS b,

@@ -23,10 +23,10 @@ namespace Juice.Observability.Rules
         private const string Env = EnvironmentKey;
         private const string ServiceScope = $"""
             ServiceName != ''
-            AND ({Svc} = '' OR (ServiceName = {Svc} AND ResourceAttributes['service.namespace'] = {Ns}))
+            AND ({Svc} = '' OR (ServiceName = {Svc} AND JuiceServiceNamespace = {Ns}))
             AND ({EnvParam} = '' OR {Env} = {EnvParam})
             """;
-        private const string ServiceKeys = $"ResourceAttributes['service.namespace'] AS ns, ServiceName AS svc, {Env} AS env";
+        private const string ServiceKeys = $"JuiceServiceNamespace AS ns, ServiceName AS svc, {Env} AS env";
 
         private static readonly string ErrorRate = $"""
             SELECT {ServiceKeys}, countIf(StatusCode = 'Error') AS errors, count() AS requests
@@ -57,11 +57,11 @@ namespace Juice.Observability.Rules
         private static readonly string HostMemory = $"""
             SELECT host, sumIf(bytes, state = 'used') / sum(bytes) AS used
             FROM (
-                SELECT if(ResourceAttributes['host.id'] != '', lower(ResourceAttributes['host.id']), lower(ResourceAttributes['host.name'])) AS host,
+                SELECT if(JuiceHostId != '', lower(JuiceHostId), lower(JuiceHostName)) AS host,
                        Attributes['state'] AS state, argMax(Value, TimeUnix) AS bytes
                 FROM otel.otel_metrics_sum
                 WHERE {Tenant} AND TimeUnix >= {From} AND TimeUnix < {To} AND MetricName = 'system.memory.usage'
-                  AND ({HostParam} = '' OR lower(ResourceAttributes['host.name']) = {HostParam} OR lower(ResourceAttributes['host.id']) = {HostParam})
+                  AND ({HostParam} = '' OR lower(JuiceHostName) = {HostParam} OR lower(JuiceHostId) = {HostParam})
                 GROUP BY host, state
             )
             WHERE host != ''

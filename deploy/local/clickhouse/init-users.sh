@@ -54,8 +54,8 @@ policies=""
 for table in $stamped; do
   policies+="CREATE ROW POLICY IF NOT EXISTS all_tenants ON $table USING 1 TO otel_writer, platform_reader, ${CLICKHOUSE_USER};
 ALTER ROW POLICY all_tenants ON $table USING 1 TO otel_writer, platform_reader, ${CLICKHOUSE_USER};
-CREATE ROW POLICY IF NOT EXISTS grafana_tenant ON $table USING ResourceAttributes['juice.platform_tenant_id'] = '${tenant}' TO grafana_reader;
-ALTER ROW POLICY grafana_tenant ON $table USING ResourceAttributes['juice.platform_tenant_id'] = '${tenant}' TO grafana_reader;
+CREATE ROW POLICY IF NOT EXISTS grafana_tenant ON $table USING JuiceTenant = '${tenant}' TO grafana_reader;
+ALTER ROW POLICY grafana_tenant ON $table USING JuiceTenant = '${tenant}' TO grafana_reader;
 "
 done
 

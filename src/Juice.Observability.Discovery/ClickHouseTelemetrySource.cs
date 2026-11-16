@@ -43,17 +43,17 @@ namespace Juice.Observability.Discovery
 
     /// <summary>
     /// Platform-owned query templates over the exporter's default tables (requirements §5.1). Every query filters on the
-    /// Collector-stamped <c>ResourceAttributes['juice.platform_tenant_id']</c>, is bounded in time and rows, and takes
+    /// Collector-stamped tenant (<c>JuiceTenant</c>, see <see cref="ResourceColumns"/>), is bounded in time and rows, and takes
     /// values only as parameters. Connects as <c>platform_reader</c>, whose profile caps time and memory.
     /// </summary>
     public sealed class ClickHouseTelemetrySource(IOptions<ClickHouseOptions> options) : ITelemetrySource
     {
-        public const string Tenant = "ResourceAttributes['juice.platform_tenant_id'] = {tenant:String}";
+        public const string Tenant = "JuiceTenant = {tenant:String}";
         public const string From = "{from:DateTime64(9)}";
         public const string To = "{to:DateTime64(9)}";
         public const string Limit = "{limit:UInt32}";
         /// <summary>A span's environment key, as rules and SLOs match it: lowercase and trimmed, <c>unspecified</c> when missing or blank.</summary>
-        public const string EnvironmentKey = "if(trim(BOTH ' ' FROM ResourceAttributes['deployment.environment.name']) = '', 'unspecified', lower(trim(BOTH ' ' FROM ResourceAttributes['deployment.environment.name'])))";
+        public const string EnvironmentKey = "if(trim(BOTH ' ' FROM JuiceEnvironment) = '', 'unspecified', lower(trim(BOTH ' ' FROM JuiceEnvironment)))";
         public const string CountFrom = "{count_from:DateTime64(9)}";
 
         // Phase 11 R4: every platform query, timed and sized per caller (PlatformCaller: a worker, or an API endpoint). The same caller is in
@@ -82,7 +82,7 @@ namespace Juice.Observability.Discovery
         public static string LogComment(string caller) => $"juice:{caller}";
 
         /// <summary>One service (<c>{svc}</c>, <c>{ns}</c>) in one environment (<c>{env}</c>), in any of <see cref="ResourceTables"/>.</summary>
-        public const string ServiceMatch = $"ServiceName = {{svc:String}} AND ResourceAttributes['service.namespace'] = {{ns:String}} AND {EnvironmentKey} = {{env:String}}";
+        public const string ServiceMatch = $"ServiceName = {{svc:String}} AND JuiceServiceNamespace = {{ns:String}} AND {EnvironmentKey} = {{env:String}}";
 
         /// <summary><c>namespace/name</c> or <c>name</c> (no namespace), as rules and SLOs name a service.</summary>
         public static (string Namespace, string Name) SplitService(string service)
@@ -104,12 +104,12 @@ namespace Juice.Observability.Discovery
         ];
 
         private const string ResourceColumns = """
-            ResourceAttributes['service.namespace'] AS ns, ServiceName AS svc,
-            ResourceAttributes['service.instance.id'] AS inst, ResourceAttributes['deployment.environment.name'] AS env,
-            ResourceAttributes['service.version'] AS ver, ResourceAttributes['host.name'] AS host_name,
-            ResourceAttributes['host.id'] AS host_id, ResourceAttributes['container.id'] AS container_id,
-            ResourceAttributes['k8s.pod.uid'] AS pod_uid, ResourceAttributes['k8s.namespace.name'] AS pod_ns,
-            ResourceAttributes['k8s.pod.name'] AS pod_name, ResourceAttributes['process.pid'] AS pid
+            JuiceServiceNamespace AS ns, ServiceName AS svc,
+            JuiceServiceInstance AS inst, JuiceEnvironment AS env,
+            JuiceServiceVersion AS ver, JuiceHostName AS host_name,
+            JuiceHostId AS host_id, JuiceContainerId AS container_id,
+            JuicePodUid AS pod_uid, JuicePodNamespace AS pod_ns,
+            JuicePodName AS pod_name, JuiceProcessPid AS pid
             """;
 
         private const string ResourceKeys = "ns, svc, inst, env, ver, host_name, host_id, container_id, pod_uid, pod_ns, pod_name, pid";
@@ -143,14 +143,14 @@ namespace Juice.Observability.Discovery
             SELECT p.ns AS src_ns, p.svc AS src, p.env AS env, c.ns AS dst_ns, c.svc AS dst, p.kind AS kind,
                    count() AS spans, min(c.ts) AS first_seen, max(c.ts) AS last_seen, countIf(c.ts >= {CountFrom}) AS fresh_spans
             FROM (
-                SELECT TraceId, ParentSpanId, ServiceName AS svc, ResourceAttributes['service.namespace'] AS ns, Timestamp AS ts
+                SELECT TraceId, ParentSpanId, ServiceName AS svc, JuiceServiceNamespace AS ns, Timestamp AS ts
                 FROM otel.otel_traces
                 WHERE {Tenant} AND Timestamp >= {From} AND Timestamp < {To}
                   AND SpanKind IN ('Server', 'Consumer') AND ParentSpanId != ''
             ) AS c
             INNER JOIN (
-                SELECT TraceId, SpanId, ServiceName AS svc, ResourceAttributes['service.namespace'] AS ns,
-                       ResourceAttributes['deployment.environment.name'] AS env, toString(SpanKind) AS kind
+                SELECT TraceId, SpanId, ServiceName AS svc, JuiceServiceNamespace AS ns,
+                       JuiceEnvironment AS env, toString(SpanKind) AS kind
                 FROM otel.otel_traces
                 WHERE {Tenant} AND Timestamp >= {From} - INTERVAL 5 MINUTE AND Timestamp < {To}
                   AND SpanKind IN ('Client', 'Producer')
@@ -162,8 +162,8 @@ namespace Juice.Observability.Discovery
 
         // Spans that name a messaging destination or a database. Older semantic conventions are read as fallbacks.
         private static readonly string ResourceUsesQuery = $"""
-            SELECT ResourceAttributes['service.namespace'] AS ns, ServiceName AS svc,
-                   ResourceAttributes['deployment.environment.name'] AS env, toString(SpanKind) AS kind,
+            SELECT JuiceServiceNamespace AS ns, ServiceName AS svc,
+                   JuiceEnvironment AS env, toString(SpanKind) AS kind,
                    SpanAttributes['messaging.system'] AS msys, SpanAttributes['messaging.destination.name'] AS mdest,
                    if(SpanAttributes['db.system.name'] != '', SpanAttributes['db.system.name'], SpanAttributes['db.system']) AS dbsys,
                    if(SpanAttributes['db.namespace'] != '', SpanAttributes['db.namespace'], SpanAttributes['db.name']) AS dbns,

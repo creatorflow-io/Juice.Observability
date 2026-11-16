@@ -102,9 +102,14 @@ with `resource_detection` so application telemetry never gets the Collector's ho
 
 - **Tables.** The exporter creates its default tables in the `otel` database (`create_schema: true`, exporter
   v0.163.0): `otel_traces`, `otel_logs`, `otel_metrics_{sum,gauge,histogram,exponential_histogram,summary}`.
-- **Tenant.** Recorded approach (§5.1): default tables, tenant read from
+- **Tenant.** Recorded approach (§5.1): default tables, tenant stamped in
   `ResourceAttributes['juice.platform_tenant_id']`. Platform queries (Track B) must filter on it. The traces table
   does not store scope attributes.
+- **Resource columns** (`clickhouse/resource-columns.sh`, Phase 11 R12): the twelve resource attributes the platform reads,
+  the tenant first, are also columns of their own on the seven tables (`JuiceTenant`, `JuiceServiceNamespace`, …,
+  `LowCardinality(String) MATERIALIZED` from the map), and the platform and Grafana's policy read those. Looking a key up in
+  the map row by row was most of what the workers' queries cost. The `clickhouse-columns` service adds them on every start, once
+  the Collector has created its tables; older parts compute them from the map, so nothing is rewritten.
 - **Retention.** One exporter per signal, so each has its own TTL: traces and logs 30 days, metrics 90 days
   (`JUICE_*_TTL` in `.env`, the §9 reference profile). The TTL is applied when the tables are created. To change it
   later, run `ALTER TABLE otel.<table> MODIFY TTL toDateTime(<time column>) + toIntervalHour(<hours>)` on each table of
@@ -128,7 +133,7 @@ with `resource_detection` so application telemetry never gets the Collector's ho
 
   **Row policies.** One ClickHouse can hold more than one tenant (the test Collector writes `local-test` here), and
   Grafana's queries don't filter by tenant, so `grafana_tenant` limits `grafana_reader` to rows whose
-  `ResourceAttributes['juice.platform_tenant_id']` is `JUICE_PLATFORM_TENANT_ID`, on each of the seven tables that carry
+  `JuiceTenant` (the tenant stamp, as a column) is `JUICE_PLATFORM_TENANT_ID`, on each of the seven tables that carry
   it. `all_tenants` lets the other users read every row. `clickhouse/access.xml` turns off ClickHouse's default of letting a user
   with no policy read every row, so a missing policy hides rows instead of showing them. The filter costs Grafana about 0.2 s on a month of spans (42 M on this stack).
 

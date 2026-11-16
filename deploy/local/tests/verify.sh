@@ -148,9 +148,20 @@ done
 # everything from Grafana, which the checks above can't tell from hiding the right rows. The answer is the policies that differ.
 check "grafana_tenant filters on $JUICE_PLATFORM_TENANT_ID for grafana_reader only, all_tenants lets every row through for the others" \
   "$(ch "SELECT arrayStringConcat(arraySort(groupArray(concat(short_name, ' on ', table))), ' ') FROM system.row_policies WHERE database = 'otel'
-         AND NOT (short_name = 'grafana_tenant' AND select_filter = '(ResourceAttributes[''juice.platform_tenant_id'']) = ''$JUICE_PLATFORM_TENANT_ID'''
+         AND NOT (short_name = 'grafana_tenant' AND select_filter = 'JuiceTenant = ''$JUICE_PLATFORM_TENANT_ID'''
                   AND apply_to_list = ['grafana_reader'] AND NOT apply_to_all
               OR short_name = 'all_tenants' AND select_filter = '1' AND arraySort(apply_to_list) = ['admin', 'otel_writer', 'platform_reader'] AND NOT apply_to_all)" 2>&1)" ""
+# The resource columns that the platform's queries and grafana_tenant read (clickhouse/resource-columns.sh): on every table with the
+# stamp, each column present, LowCardinality(String), materialised from its key. The answer is what's missing or different.
+resource_columns=$(sed -n '/^columns="/,/"$/p' clickhouse/resource-columns.sh | tr -d '"' | sed 's/^columns=//' \
+  | awk '{printf "%s(%s, %s)", (NR > 1 ? ", " : ""), "\x27" $2 "\x27", "\x27ResourceAttributes[\x27\x27" $1 "\x27\x27]\x27"}')
+check "every otel table with the tenant stamp has the 12 resource columns, materialised from their keys" \
+  "$(ch "SELECT arrayStringConcat(arraySort(groupArray(concat(t, '.', c.1))), ' ') FROM
+           (SELECT DISTINCT table AS t FROM system.columns WHERE database = 'otel' AND name = 'ResourceAttributes') AS tables
+           CROSS JOIN (SELECT arrayJoin([$resource_columns]) AS c) AS expected
+         WHERE length([$resource_columns]) != 12
+           OR (t, c.1, 'MATERIALIZED', c.2, 'LowCardinality(String)') NOT IN
+               (SELECT table, name, default_kind, default_expression, type FROM system.columns WHERE database = 'otel')" 2>&1)" ""
 # And that Grafana still sees this tenant's rows: the same count as admin, over a window that ended 5 minutes ago (so no insert
 # lands between the two reads). The platform's own telemetry is always arriving on this stack, so 0 from admin fails too:
 # a quiet stack would prove nothing.

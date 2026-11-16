@@ -117,6 +117,34 @@ services:
       start_period: 150s
     restart: "no"
 
+  # Adds the resource attributes the platform reads as columns of their own on the Collector's tables (clickhouse/resource-columns.sh,
+  # Phase 11 R12), each time this container starts. The exporter creates its tables when the Collector starts, so this waits for the
+  # Collector, then for the tables. The platform API and Grafana read the columns, so they wait for it. It idles healthy afterwards,
+  # like clickhouse-access; scripts/apply-clickhouse-access.sh runs the script again by hand.
+  clickhouse-columns:
+    image: *clickhouse-image
+    entrypoint: ["bash", "-c", "rm -f /tmp/applied && bash /resource-columns.sh && touch /tmp/applied && exec sleep infinity"]
+    init: true
+    environment:
+      CLICKHOUSE_USER: admin
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_ADMIN_PASSWORD:?run scripts/init.sh}
+      CLICKHOUSE_HOST: clickhouse
+    volumes:
+      - ./clickhouse/resource-columns.sh:/resource-columns.sh:ro
+    depends_on:
+      clickhouse-access:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/applied"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      # Longer than the script waits for the tables (180 s).
+      start_period: 200s
+    restart: "no"
+
   # Optional (UI architecture §5): only with --profile grafana. Juice Console is the product UI.
   grafana:
     image: grafana/grafana:13.2.5
@@ -163,6 +191,9 @@ services:
       clickhouse:
         condition: service_healthy
       clickhouse-access:
+        condition: service_healthy
+      # Grafana's row policy reads the tenant column (clickhouse/resource-columns.sh).
+      clickhouse-columns:
         condition: service_healthy
       keycloak:
         condition: service_healthy
@@ -275,6 +306,9 @@ services:
         condition: service_healthy
       # Its users, grants and row policies applied (and so after an upgrade, by starting the API alone).
       clickhouse-access:
+        condition: service_healthy
+      # Its queries read the resource columns (clickhouse/resource-columns.sh).
+      clickhouse-columns:
         condition: service_healthy
       keycloak:
         condition: service_healthy
