@@ -40,9 +40,14 @@ cleanup() {
 trap cleanup EXIT
 
 say "upgrade drill: $from → $to (${minutes} min of 1× load first)"
+# An earlier run's drill stack and volumes (interrupted, or --keep) go first: a fresh install at $from, with this run's secrets.
+docker compose -p juice-upgrade down -v --remove-orphans >> "$log" 2>&1
+docker volume ls -q --filter label=com.docker.compose.project=juice-upgrade | xargs -r docker volume rm >> "$log" 2>&1
 git -C "$root" worktree remove --force "$tree" >/dev/null 2>&1
 git -C "$root" worktree add --detach "$tree" "$from" >> "$log" 2>&1 || { say "no worktree at $from"; exit 1; }
-cd "$tree/deploy/local"
+# Everything below runs in the drill's own checkout, never the working one: stop if it isn't there.
+cd "$tree/deploy/local" 2>/dev/null && [[ "$(pwd -P)" == "$(cd "$tree/deploy/local" && pwd -P)" && "$(pwd -P)" != "$(cd "$here" && pwd -P)" ]] \
+  || { say "$from has no deploy/local in $tree"; exit 1; }
 JUICE_PLATFORM_TENANT_ID=upgrade-drill bash scripts/init.sh >> "$log" 2>&1 || { say "init.sh at $from failed"; exit 1; }
 sed -i 's/^COMPOSE_PROJECT_NAME=.*/COMPOSE_PROJECT_NAME=juice-upgrade/' .env
 dc() { docker compose --profile platform "$@"; }
@@ -53,18 +58,26 @@ pg() { dc exec -T postgres psql -U juice -d juice_observability -Atc "$1" </dev/
 say "starting $from"
 dc up -d --build --wait >> "$log" 2>&1 || { say "$from didn't start: see $log"; exit 1; }
 say "sending ${minutes} min of 1× load"
-JUICE_LOCAL_DIR="$tree/deploy/local/" node "$here/scale/generate.mjs" --multiplier 1 --duration $((minutes * 60)) --out "$out/before-load" >> "$log" 2>&1
+load_from=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+JUICE_LOCAL_DIR="$tree/deploy/local/" node "$here/scale/generate.mjs" --multiplier 1 --duration $((minutes * 60)) --out "$out/before-load" >> "$log" 2>&1 \
+  || { say "the load before the upgrade failed: see $log"; exit 1; }
+load_to=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 sleep 90   # discovery, health and rules catch up on the load's last minute
 
-# What there is before: every telemetry table's rows, and the platform database's records.
+# What there is: every telemetry table's rows, and every platform table's (as tests/restore-drill.sh counts them). Tables whose rows
+# come and go by design are left out: the outbox's (delivered messages are removed), expiring idempotency keys, and the leases' and
+# heartbeats' (live state).
+transient='^(outbox|idempotency_records|worker_heartbeats|worker_leases|__ef_migrations_history)'
 snapshot() {
   ch "SELECT table, sum(rows) FROM system.parts WHERE active AND database = 'otel' AND table LIKE 'otel_%' AND table NOT LIKE '%_mv' GROUP BY table ORDER BY table FORMAT TSV"
-  for t in services service_instances resources dependencies rules alerts health_snapshots health_transitions audit_records slos slo_buckets; do
-    echo -e "pg.$t\t$(pg "SELECT count(*) FROM $t" 2>/dev/null || echo -)"
+  for t in $(pg "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY 1" | grep -Ev "$transient"); do
+    echo -e "pg.$t\t$(pg "SELECT count(*) FROM \"$t\"")"
   done
   echo -e "pg.migrations\t$(pg 'SELECT count(*) FROM __ef_migrations_history')"
 }
 snapshot > "$out/before.tsv"
+spans_before=$(awk -F'\t' '$1 == "otel_traces" { print $2 + 0 }' "$out/before.tsv")
+(( spans_before > 0 )) || { say "no spans stored before the upgrade: the drill would test nothing"; exit 1; }
 say "before: $(tr '\t\n' '= ' < "$out/before.tsv")"
 
 say "upgrading in place to $to"
@@ -73,26 +86,35 @@ bash scripts/init.sh >> "$log" 2>&1 || { say "init.sh at $to failed"; exit 1; }
 sed -i 's/^COMPOSE_PROJECT_NAME=.*/COMPOSE_PROJECT_NAME=juice-upgrade/' .env
 started=$(date +%s)
 dc up -d --build --wait --remove-orphans >> "$log" 2>&1 || { say "$to didn't start: see $log"; exit 1; }
-bash scripts/apply-clickhouse-access.sh >> "$log" 2>&1 || say "apply-clickhouse-access.sh failed: see $log"
-say "upgraded and up in $(( $(date +%s) - started )) s"
+up_in=$(( $(date +%s) - started ))
+check "scripts/apply-clickhouse-access.sh ran (step 5 of the runbook)" 'bash scripts/apply-clickhouse-access.sh >> "$log" 2>&1'
+say "compose up to the stack up again: $up_in s"
 
 say "sending 2 min of 1× load through the upgraded stack"
-JUICE_LOCAL_DIR="$tree/deploy/local/" node "$here/scale/generate.mjs" --multiplier 1 --duration 120 --out "$out/after-load" >> "$log" 2>&1
+check "the load after the upgrade sent" 'JUICE_LOCAL_DIR="$tree/deploy/local/" node "$here/scale/generate.mjs" --multiplier 1 --duration 120 --out "$out/after-load" >> "$log" 2>&1'
 sleep 60
 snapshot > "$out/after.tsv"
 say "after: $(tr '\t\n' '= ' < "$out/after.tsv")"
 
 # ─── the checks ───
-lost=$(join -t $'\t' <(sort "$out/before.tsv") <(sort "$out/after.tsv") | awk -F'\t' '$2 != "-" && $3 + 0 < $2 + 0 { print $1 }')
+# Every count before against after: one missing after (a table dropped, a count that failed) is lost too.
+lost=$(join -t $'\t' -a1 -e MISSING -o 0,1.2,2.2 <(sort "$out/before.tsv") <(sort "$out/after.tsv") | awk -F'\t' '$3 == "MISSING" || $3 + 0 < $2 + 0 { print $1 }' | tr '\n' ' ')
 check "nothing lost: every table and record count at least what it was (${lost:-all kept})" '[[ -z "$lost" ]]'
 grew=$(join -t $'\t' <(sort "$out/before.tsv") <(sort "$out/after.tsv") | awk -F'\t' '$1 == "otel_traces" && $3 > $2 { print "yes" }')
 check "telemetry still flows: more spans after the upgrade's load" '[[ "$grew" == yes ]]'
-migrations=$(pg 'SELECT migration_id FROM __ef_migrations_history ORDER BY 1 DESC LIMIT 1')
-check "every migration applied (latest: $migrations)" '[[ "$migrations" == *WorkerPassSeconds ]]'
+applied=$(pg 'SELECT count(*) FROM __ef_migrations_history')
+shipped=$(ls "$tree/src/Juice.Observability.Data/Migrations" | grep -cE '^[0-9]{14}_[A-Za-z0-9]+\.cs$')
+check "every migration the release has applied ($applied of $shipped)" '[[ "$applied" == "$shipped" ]]'
 columns=$(ch "SELECT count() FROM system.columns WHERE database = 'otel' AND name LIKE 'Juice%' AND default_kind = 'MATERIALIZED'")
 check "the resource columns on all seven tables ($columns of 84)" '[[ "$columns" == 84 ]]'
-mismatch=$(ch "SELECT countIf(JuiceTenant != ResourceAttributes['juice.platform_tenant_id']) + countIf(JuiceServiceNamespace != ResourceAttributes['service.namespace']) FROM otel.otel_traces")
-check "the columns hold their keys on parts written before them ($mismatch mismatches over every span)" '[[ "$mismatch" == 0 ]]'
+# The platform reads the old data through the new columns: a trace search over the load before the upgrade (its tenant filter is
+# JuiceTenant now, on parts written before the column existed) finds its traces.
+token=$(curl -s http://localhost:8080/realms/juice/protocol/openid-connect/token -d grant_type=password -d client_id=juice-platform-cli \
+  -d username=victor --data-urlencode "password=$(env_of KEYCLOAK_DEMO_PASSWORD)" | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
+tenant=$(curl -s -H "Authorization: Bearer $token" http://localhost:5180/api/v1/tenants | sed -n 's/.*"id":"\([^"]*\)".*/\1/p' | head -1)
+found=$(curl -s -H "Authorization: Bearer $token" "http://localhost:5180/api/v1/tenants/$tenant/telemetry/traces?from=$load_from&to=$load_to&limit=10" \
+  | grep -o '"traceId"' | wc -l)
+check "the old traces found through the new columns ($found of a page of 10, from before the upgrade)" '[[ "$found" -gt 0 ]]'
 policy=$(ch "SELECT select_filter FROM system.row_policies WHERE short_name = 'grafana_tenant' LIMIT 1")
 check "Grafana's row policy on the tenant column ($policy)" '[[ "$policy" == *JuiceTenant* ]]'
 monitor=$(dc exec -T clickhouse clickhouse client --user platform_monitor --password "$(env_of CLICKHOUSE_MONITOR_PASSWORD)" -q "SELECT count() FROM system.disks" </dev/null)
@@ -117,9 +139,10 @@ check "the platform's own telemetry isn't in the tenant's inventory ($leaked ser
   echo "# Upgrade drill $from → ${to:0:7}, $stamp UTC"
   echo
   echo "${minutes} min of 1× load at $from, then upgraded in place (init.sh, compose up, apply-clickhouse-access.sh), then 2 min more."
+  echo "Compose up to the stack up again: $up_in s."
   echo
   echo "| Count | Before | After |"; echo "|---|--:|--:|"
-  join -t $'\t' <(sort "$out/before.tsv") <(sort "$out/after.tsv") | awk -F'\t' '{ printf "| %s | %s | %s |\n", $1, $2, $3 }'
+  join -t $'\t' -a1 -a2 -e - -o 0,1.2,2.2 <(sort "$out/before.tsv") <(sort "$out/after.tsv") | awk -F'\t' '{ printf "| %s | %s | %s |\n", $1, $2, $3 }'
   echo
   grep -E ' (ok|FAILED): ' "$log" | sed 's/^[0-9:]* /- /'
 } > "$out/result.md"

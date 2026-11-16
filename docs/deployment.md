@@ -384,7 +384,7 @@ spans, 10,000 metric points and 1,000 logs a second. Raw data and method: [scale
 | ClickHouse CPU | the node is busy | a larger node; fewer searches at once (`ClickHouse:Api:MaxConcurrent`); the reads by caller say which worker or page costs most |
 | Insert p95 | inserts wait on a busy ClickHouse | as ClickHouse CPU; amber at 200 ms, where the rerun's 6× burst was |
 | A search's read p95 | searches are slow | narrower time ranges; `ClickHouse:Api` bounds; ClickHouse's CPU |
-| Disk: days until full | it fills before retention lets old data go | a larger disk, or shorter retention (`JUICE_*_TTL`, set when the tables are created) |
+| Disk: days until full | it fills before retention lets old data go | a larger disk, or shorter retention: `ALTER TABLE otel.<table> MODIFY TTL …` on each table (`JUICE_*_TTL` in `.env` applies only when the tables are created; see `deploy/local/README.md`, Retention) |
 
 ### Measuring your own
 

@@ -341,6 +341,6 @@ it. The agent's log says `The platform refused this agent's action report` when 
 6. Check: `/health/platform` answers `ok` within a couple of minutes, and `tests/verify.sh` passes.
 
 **Drilled:** `tests/upgrade-drill.sh` installs a release (`FROM=api-1.2.0`), gives it the reference load for 10 minutes, upgrades it in
-place with steps 2–5 and checks that nothing was lost and every new piece works on the old data ([drills](drills.md)). From 1.2.0 the upgrade took 52–73 s from checkout to a stack up again (the Collector is down for part of it: senders retry, as for any Collector restart).
+place with steps 2–5 and checks that nothing was lost and every new piece works on the old data ([drills](drills.md)). From 1.2.0, `compose up` took 52–73 s to the stack up again (the Collector is down for part of it: senders retry, as for any Collector restart).
 `MigrationTests` checks every migration path from an empty database up,
 one migration at a time, with the data carried across.

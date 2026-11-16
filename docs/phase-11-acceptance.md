@@ -25,9 +25,10 @@ own review. [Plan](phase-11-plan.md), [platform metrics](platform-metrics.md), [
   their pass time) run on start; `clickhouse-access` adds `platform_monitor`, the row policies and the platform pipeline's users;
   `clickhouse-columns` adds the resource columns, with nothing rewritten.
 - **Drill** ([drills](drills.md#upgrade-120--130-16-november)): `tests/upgrade-drill.sh` installed 1.2.0, gave it 10 minutes of the reference load, upgraded
-  it in place to 4bb88db and checked: nothing lost (600,027 spans and every platform record kept), every migration applied, the
-  resource columns right on every span written before them, Grafana's row policy, `platform_monitor`, the platform pipeline, every
-  worker's heartbeat, `/health/platform` ok. 52 s from checkout to the stack up again.
+  it in place to 83e55d5 and checked: nothing lost (599,970 spans and each of the 39 platform tables counted), every migration the
+  release has applied (21 of 21), the resource columns on every table and the old traces found through them by the upgraded API,
+  Grafana's row policy, `platform_monitor`, the platform pipeline, every worker's heartbeat, `/health/platform` ok. 58 s from
+  `compose up` to the stack up again.
 
 ## Decisions the owner made in Phase 11
 

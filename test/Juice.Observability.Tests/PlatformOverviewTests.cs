@@ -340,8 +340,14 @@ namespace Juice.Observability.Tests
             using var hang = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
             hang.Start();
             var port = ((IPEndPoint)hang.LocalEndpoint).Port;
-            var accepted = new List<System.Net.Sockets.TcpClient>();
-            _ = Task.Run(async () => { while (true) accepted.Add(await hang.AcceptTcpClientAsync(ct)); }, ct);
+            // The API's sampler and workers keep connecting while the test runs: accepted from another thread, held until the end.
+            var accepted = new System.Collections.Concurrent.ConcurrentBag<System.Net.Sockets.TcpClient>();
+            using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var accepting = Task.Run(async () =>
+            {
+                try { while (true) accepted.Add(await hang.AcceptTcpClientAsync(stop.Token)); }
+                catch (Exception e) when (e is OperationCanceledException or ObjectDisposedException or System.Net.Sockets.SocketException) { }
+            }, CancellationToken.None);
             await using var database = await LocalStack.CreateDatabaseAsync();
             await using var factory = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string>
             {
@@ -362,7 +368,10 @@ namespace Juice.Observability.Tests
                 Assert.Equal(System.Text.Json.JsonValueKind.Null, overview.GetProperty("clickHouse").ValueKind);
                 if (i == 0) await Task.Delay(PlatformSampler.Timeout + TimeSpan.FromSeconds(2), ct);
             }
-            accepted.ForEach(c => c.Dispose());
+            await stop.CancelAsync();
+            hang.Stop();
+            await accepting;
+            foreach (var c in accepted) c.Dispose();
         }
 
         [Fact]
