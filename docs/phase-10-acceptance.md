@@ -20,12 +20,12 @@ scale figures below are the platform as released in 1.3.0. [Plan](phase-10-plan.
 - **Load and capacity:** the scale harness and the steps above; the capacity view, calibrated on the reference host.
 - **The drills** ([drills](drills.md)), each on a fresh compose project on this machine (P8):
   - **Upgrade:** 1.2.0 → 1.3.0 with 10 minutes of the reference load (the plan's 1.1.0 → 1.2.0, moved to cover 1.3.0 by the owner's
-    exception): nothing lost, every migration, the new pieces working on the old data. `compose up` to the stack up in 36–73 s.
+    exception): nothing lost, every migration, the new pieces working on the old data. `compose up` to the stack up in 36–73 s over the runs.
   - **Retention:** short TTLs on a scratch project; every row deleted by ClickHouse's own TTL merges, none of any source left past
     its TTL. The real retention's disk: above.
   - **Restore on a fresh project, and disaster recovery:** the working stack (588 M telemetry rows) backed up as the schedule does,
     lost, and rebuilt on a fresh project from a clean checkout, `.env`, secrets and the backups: every table back, the platform
-    answering, old traces found, new telemetry flowing. **RPO 5 s, RTO 151 s** against §9's 24 h and 4 h.
+    answering, old traces found, new telemetry flowing. **RPO 5 s, RTO 145 s** against §9's 24 h and 4 h.
 
 ## Decisions the owner made in Phase 10
 

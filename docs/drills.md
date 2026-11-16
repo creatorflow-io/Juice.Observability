@@ -20,6 +20,9 @@ latest result. Raw logs stay under `build/`.
   ports checked whoever holds them; the fourth run passed those as well: `build/upgrade-drill-20261116T1246/result.md`. The confirmation round read the ports from the
   compose file, checked them before removing anything, counted each table on its own if the one query failed, and required all 8
   workers with each replica's row judged on its own; the fifth run passed: `build/upgrade-drill-20261116T1308/result.md`.
+  Phase 10's milestone 4 review then moved the drills onto a shared `tests/drill-lib.sh`. A sixth attempt stopped before the upgrade:
+  1.2.0's API crashed as it started (exit 139, Npgsql's GSS encryption probe, the crash 1.3.0 fixed), and 1.2.0 doesn't restart it, so
+  the drill now starts it again on that exit code alone. The seventh run passed every check: `build/upgrade-drill-20261116T1556/result.md`.
 
 | Count | Before (1.2.0) | After (1.3.0, 2 min more) |
 |---|--:|--:|
@@ -44,7 +47,7 @@ outbox's, expiring idempotency keys, leases and heartbeats.
   - `platform_monitor` reading its system tables;
   - the platform's own metrics arriving under the reserved tenant (627 points in 2 minutes), and none of them in the tenant's inventory;
   - every enabled worker passing since the upgrade (8 of 8 and no replica's row failing, in the fifth run); `/health/platform` answering `ok`.
-- **Time:** `docker compose up` to the stack up again: 36–73 s over the five runs (the image build cached or not); the checkout and
+- **Time:** `docker compose up` to the stack up again: 36–73 s over the runs (the image build cached or not); the checkout and
   `init.sh` before it take seconds. The Collector is down for part of it; senders retry, as for any Collector restart.
 - **Not covered:** rolling back to 1.2.0 after the upgrade (the [deployment guide](deployment.md) says what an older build ignores);
   more than one API replica during the upgrade.
@@ -59,20 +62,23 @@ drill, since a restore onto a new host is what a disaster recovery is.
   checkout of this commit and what an operator keeps off the host: the two backups, `.env` and `secrets/`. It starts PostgreSQL and
   ClickHouse alone, restores both (`scripts/restore.sh`, `scripts/restore-telemetry.sh`) and counts them, then starts the rest
   (`up --build --wait`, `scripts/apply-clickhouse-access.sh`) and checks the platform.
-- **Ran:** four times on 16 November, against the working stack (588 M telemetry rows, 6.7 GiB; 45 services). The first stopped before
+- **Ran:** six times on 16 November, against the working stack (588 M telemetry rows, 6.7 GiB; 45 services). The first stopped before
   the rebuild: the script set `MSYS_NO_PATHCONV` for itself, and Git Bash then handed `git` an unconverted path; fixed. The second and
   third passed everything but the counts, short by 1,830 spans and 15 SLO buckets both times, and neither a loss:
   - **the spans:** the working stack's parts still held 1,830 rows a lightweight `DELETE` (a test's) had masked: `count()` sees
     62,600,670, the parts' totals said 62,602,500. A backup carries the rows that are there. The drill counts `count()` now;
   - **the SLO buckets:** 15 = 3 SLOs × the 5 minutes of `Slos:Lateness`, which the restored platform's SLO counter recounts as soon
     as it runs, with what those minutes hold. The drill counts the restored stores before the platform starts now.
-- **The fourth run is the record** (`build/dr-drill-20261116T1456/result.md`), every check passed:
-  - every table back with what it held at the backup: the 8 telemetry tables (the 7 signal tables and the trace index; 62.6 M spans,
-    588 M rows in all) and all 39 platform tables counted;
+- **The fourth run passed every check** (`build/dr-drill-20261116T1456`). The milestone's review then made the drill stricter: the
+  restored counts must equal the backup's exactly (more is as wrong as less), the ports are checked before the working stack is
+  touched, the search runs over the deployment's own tenant, and a failed count can never pass. The fifth run passed that too, and the
+  sixth, on the final script, is the record (`build/dr-drill-20261116T1613/result.md`), every check passed:
+  - every table back with exactly what it held at the backup: the 8 telemetry tables (the 7 signal tables and the trace index;
+    62,600,670 spans, 588 M rows in all) and all 39 platform tables counted;
   - `/health/platform` answering `ok` on the new project; the services and their health back through the API (45); a trace search
-    over the hour before the backup found a full page; new telemetry stored (59,982 spans in 3 minutes);
-  - **RPO 5 s** (the last backup to the loss), **RTO 151 s** (the rebuild's start to the platform answering `ok`; the two restores
-    90 s of it). The backups: 852 KB for the platform database, 4.2 GB for the telemetry.
+    over the hour before the backup found a full page; new telemetry stored (60,044 spans in 3 minutes);
+  - **RPO 5 s** (the last backup to the loss), **RTO 145 s** (the rebuild's start to the platform answering `ok`; the two restores
+    81 s of it). The backups: 852 KB for the platform database, 4.2 GB for the telemetry. Over the runs, RTO 145–161 s.
 - **What it means for §9:** the RPO a deployment has is its backup schedule's interval: daily backups meet ≤ 24 h. The RTO measured
   here is for this data size on this machine; copying the backups to the new host comes on top. Both are far inside their targets.
 - **Not covered:** a new host's own install (Docker, the checkout), which the RTO doesn't include; restoring Grafana's dashboards
@@ -86,12 +92,14 @@ drill, since a restore onto a new host is what a disaster recovery is.
   stack starts without the platform, the exporter creates its tables, and 2 minutes of the reference load go in. Then it waits.
   ClickHouse applies a TTL in a merge, at most every `merge_with_ttl_timeout` (4 hours by default) per partition: the drill lowers that
   to 60 s on its scratch tables, so it waits minutes, not hours. Nothing else forces the deletion.
-- **Ran once, every check passed** (`build/retention-drill-20261116T1503/result.md`):
-  - the exporter created all seven tables with the configured TTL (`toDateTime(Timestamp) + toIntervalMinute(4)`, and `TimeUnix`
-    for the metrics);
-  - 118,774 spans, as many logs, and 1.2 M metric points stored;
-  - every row of the load deleted by ClickHouse's own TTL merges 421 s after the load ended: gauges and histograms first, then logs
-    and spans, the metric sums last;
+- **Ran three times, every check passed each time.** The first (`build/retention-drill-20261116T1503`) watched the seven signal
+  tables; the review added the trace index and made a failed count never read as gone; the third, on the final script, is the record
+  (`build/retention-drill-20261116T1547/result.md`):
+  - the exporter created all eight tables, the trace index included, with the configured TTL (`toDateTime(Timestamp) +
+    toIntervalMinute(4)`; `TimeUnix` for the metrics, `Start` for the trace index);
+  - 118,821 spans, as many logs, and about 1.2 M metric points stored;
+  - every row of the load deleted by ClickHouse's own TTL merges 310 s after the load ended (421 s on the first run), the trace
+    index included: the tables emptied one by one, each as its own TTL merge ran, in an order that differs between runs;
   - no row of any source left past its TTL, the Collector's own host and self metrics included, which kept arriving throughout.
 - **On a real deployment** each partition is a UTC day, so a day's telemetry goes within `merge_with_ttl_timeout` (4 hours) after its
   last row passes the TTL: the disk holds the retention plus about a day.

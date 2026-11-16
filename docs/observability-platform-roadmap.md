@@ -181,7 +181,7 @@
 
 **Acceptance gate:** console does not duplicate general Grafana exploration without a product need; tenant context is preserved; scale tests document throughput, query mix, queue lag, resource use, and cost assumptions.
 
-**Status:** in progress: milestones 1 (Console scope and tenant context), 2 (scale harness) and 3 (scale tests, 1× and 3×) done, reviewed; 1× met every target, 3× crossed the SLO-lag line once (cause not measured), and 5× and 10× moved to the Phase 11 baseline; milestones 4–5 wait for Phase 11 (draft). See the [Phase 10 plan](phase-10-plan.md), [milestone 1](phase-10-console.md) and the [scale tests](scale-tests.md).
+**Status:** milestones 1–4 done: Console scope and tenant context, the scale harness, the scale tests (1× and 3×, then 5× and 10× in Phase 11), and the drills (upgrade 1.2.0 → 1.3.0, retention, restore on a fresh project and disaster recovery: RPO 5 s, RTO 145 s). The gate awaits the owner: [Phase 10 acceptance](phase-10-acceptance.md), [drills](drills.md), [scale tests](scale-tests.md).
 
 ## Phase 11 — Platform self-observability, capacity, and performance
 

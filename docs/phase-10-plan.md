@@ -1,6 +1,7 @@
 # Phase 10 plan: domain Console and scale hardening
 
-**Status:** approved by the owner 12 November; nothing built yet. The owner's decisions are marked **Owner**; the rest are mine, for review.
+**Status:** approved by the owner 12 November; milestones 1–4 done (the drills on 16 November, after Phase 11 on the owner's exception); the
+gate's [acceptance](phase-10-acceptance.md) awaits the owner. The owner's decisions are marked **Owner**; the rest are mine, for review.
 The owner's answers are at the end.
 
 **Roadmap goal:** build proven domain workflows and scale the reference deployment with evidence.
