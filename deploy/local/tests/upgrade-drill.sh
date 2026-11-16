@@ -22,32 +22,19 @@ tree="$root/build/upgrade-drill"
 # Every compose call (this script's and the stack's own scripts') on the drill's project, never the working stack's.
 export COMPOSE_PROJECT_NAME=juice-upgrade
 log="$out/drill.log"
-say() { echo "$(date -u +%H:%M:%S) $*" | tee -a "$log"; }
-failures=()
-check() { if eval "$2"; then say "ok: $1"; else say "FAILED: $1"; failures+=("$1"); fi; }
+source tests/drill-lib.sh
 
 cleanup() {
   if ! $keep && [[ -d "$tree/deploy/local" ]]; then
     (cd "$tree/deploy/local" && docker compose --profile platform down -v --remove-orphans >> "$log" 2>&1)
-    git -C "$root" worktree remove --force "$tree" >> "$log" 2>&1
-    say "the drill's stack, volumes and worktree removed"
+    remove_tree
   fi
 }
 # Every port the stack publishes (read from the compose file, the release this checkout is) must be free, whoever holds it (a local API
-# on 5180, say): checked first, before anything is removed. An earlier drill's stack holding them doesn't count: it goes next.
-ports=$(docker compose --profile platform config --format json 2>/dev/null \
-  | node -e 'let j="";process.stdin.on("data",d=>j+=d).on("end",()=>{const c=JSON.parse(j);console.log([...new Set(Object.values(c.services)
-      .flatMap(s=>(s.ports||[]).map(p=>p.published)).filter(Boolean))].join(" "))})')
-[[ -n "$ports" ]] || { say "can't read the stack's ports from docker-compose.yml"; exit 1; }
-for port in $ports; do
-  [[ -n "$(docker ps -q --filter label=com.docker.compose.project=juice-upgrade --filter publish="$port")" ]] && continue
-  if timeout 1 bash -c "exec 3<>/dev/tcp/127.0.0.1/$port" 2>/dev/null; then
-    say "port $port is in use (the working stack?): stop what holds it first"; exit 2
-  fi
-done
-# An earlier run's drill stack and volumes (interrupted, or --keep) go then: a fresh install at $from, with this run's secrets.
-docker compose -p juice-upgrade down -v --remove-orphans >> "$log" 2>&1
-docker volume ls -q --filter label=com.docker.compose.project=juice-upgrade | xargs -r docker volume rm >> "$log" 2>&1
+# on 5180, say): checked first, before anything is removed. An earlier drill's stack holding them doesn't count: it goes next, with its
+# volumes (interrupted, or --keep), for a fresh install at $from with this run's secrets.
+require_free_ports "$(stack_ports --profile platform)" juice-upgrade
+remove_project juice-upgrade
 
 trap cleanup EXIT
 
@@ -127,11 +114,9 @@ columns=$(ch "SELECT count() FROM system.columns WHERE database = 'otel' AND nam
 check "the resource columns on all seven tables ($columns of 84)" '[[ "$columns" == 84 ]]'
 # The platform reads the old data through the new columns: a trace search over the load before the upgrade (its tenant filter is
 # JuiceTenant now, on parts written before the column existed) finds its traces.
-token=$(curl -s http://localhost:8080/realms/juice/protocol/openid-connect/token -d grant_type=password -d client_id=juice-platform-cli \
-  -d username=victor --data-urlencode "password=$(env_of KEYCLOAK_DEMO_PASSWORD)" | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
-tenant=$(curl -s -H "Authorization: Bearer $token" http://localhost:5180/api/v1/tenants | sed -n 's/.*"id":"\([^"]*\)".*/\1/p' | head -1)
-found=$(curl -s -H "Authorization: Bearer $token" "http://localhost:5180/api/v1/tenants/$tenant/telemetry/traces?from=$load_from&to=$load_to&limit=10" \
-  | grep -o '"traceId"' | wc -l)
+token=$(viewer_token "$(env_of KEYCLOAK_DEMO_PASSWORD)")
+tenant=$(first_tenant "$token")
+found=$(curl -s -H "Authorization: Bearer $token" "http://localhost:5180/api/v1/tenants/$tenant/telemetry/traces?from=$load_from&to=$load_to&limit=10" | page_items)
 check "the old traces found through the new columns ($found of a page of 10, from before the upgrade)" '[[ "$found" -gt 0 ]]'
 policy=$(ch "SELECT select_filter FROM system.row_policies WHERE short_name = 'grafana_tenant' LIMIT 1")
 check "Grafana's row policy on the tenant column ($policy)" '[[ "$policy" == *JuiceTenant* ]]'

@@ -2,9 +2,10 @@
 # The retention drill (docs/phase-10-plan.md milestone 4): retention seen to delete. A scratch compose project (juice-retention, its own
 # volumes) from a clean checkout of this commit, with the TTLs set short in its .env (JUICE_*_TTL, as an operator sets them before the
 # tables are created): the exporter creates its tables with them, telemetry is sent, and once it is older than its TTL ClickHouse removes
-# it by itself, table by table. The load's rows (the generated shop, namespace shop) are watched until gone; the Collector's own host and
-# self metrics keep arriving meanwhile, so the tables never empty: every row of any source must also be gone once past its TTL.
-#   tests/retention-drill.sh [--keep]          TTL=4m (each signal's), MINUTES=2 (of 1× load)
+# it by itself, table by table, the trace index included. The load's rows (the generated shop, namespace shop) are watched until gone;
+# the Collector's own host and self metrics keep arriving meanwhile, so the tables never empty: every row of any source must also be
+# gone once past its TTL.
+#   tests/retention-drill.sh [--keep]          TTL=4m (each signal's, in whole minutes), MINUTES=2 (of 1× load)
 # ClickHouse applies a TTL in a merge, at most every merge_with_ttl_timeout (4 hours by default) per partition: the drill lowers that to
 # 60 s on its scratch tables only, so it waits minutes, not hours; the deletion itself is ClickHouse's, nothing forces it.
 # Needs the stack's ports free (the working stack stopped). Writes build/retention-drill-<time>/: drill.log, rows.tsv, result.md.
@@ -20,27 +21,18 @@ stamp=$(date -u +%Y%m%dT%H%M)
 out="$root/build/retention-drill-$stamp"; mkdir -p "$out"
 tree="$root/build/retention-drill"
 log="$out/drill.log"
-say() { echo "$(date -u +%H:%M:%S) $*" | tee -a "$log"; }
-failures=()
-check() { if eval "$2"; then say "ok: $1"; else say "FAILED: $1"; failures+=("$1"); fi; }
+source tests/drill-lib.sh
+[[ "$ttl" =~ ^[1-9][0-9]*m$ ]] || { say "TTL is whole minutes, such as 4m (the exporter then writes toIntervalMinute)"; exit 2; }
+ttl_minutes=${ttl%m}
 export COMPOSE_PROJECT_NAME=juice-retention
 
-ports=$(docker compose config --format json 2>/dev/null \
-  | node -e 'let j="";process.stdin.on("data",d=>j+=d).on("end",()=>{const c=JSON.parse(j);console.log([...new Set(Object.values(c.services)
-      .flatMap(s=>(s.ports||[]).map(p=>p.published)).filter(Boolean))].join(" "))})')
-[[ -n "$ports" ]] || { say "can't read the stack's ports from docker-compose.yml"; exit 1; }
-for port in $ports; do
-  [[ -n "$(docker ps -q --filter label=com.docker.compose.project=juice-retention --filter publish="$port")" ]] && continue
-  if timeout 1 bash -c "exec 3<>/dev/tcp/127.0.0.1/$port" 2>/dev/null; then say "port $port is in use (the working stack?): stop it first"; exit 2; fi
-done
-docker compose -p juice-retention down -v --remove-orphans >> "$log" 2>&1
-docker volume ls -q --filter label=com.docker.compose.project=juice-retention | xargs -r docker volume rm >> "$log" 2>&1
+require_free_ports "$(stack_ports)" juice-retention
+remove_project juice-retention
 
 cleanup() {
   if ! $keep && [[ -d "$tree/deploy/local" ]]; then
     (cd "$tree/deploy/local" && docker compose down -v --remove-orphans >> "$log" 2>&1)
-    git -C "$root" worktree remove --force "$tree" >> "$log" 2>&1
-    say "the drill's project, volumes and worktree removed"
+    remove_tree
   fi
 }
 trap cleanup EXIT
@@ -57,61 +49,68 @@ ch() { docker compose exec -T clickhouse clickhouse client --user admin --passwo
 
 say "starting the telemetry stack (no platform)"
 docker compose up -d --wait >> "$log" 2>&1 || { say "the stack didn't start: see $log"; exit 1; }
-tables="otel_traces otel_logs otel_metrics_gauge otel_metrics_sum otel_metrics_histogram otel_metrics_exponential_histogram otel_metrics_summary"
+# Every table the exporter makes, the trace index (otel_traces_trace_id_ts, by trace start) included, and its time column.
+tables="otel_traces otel_logs otel_traces_trace_id_ts otel_metrics_gauge otel_metrics_sum otel_metrics_histogram otel_metrics_exponential_histogram otel_metrics_summary"
+listed="'${tables// /\',\'}'"
+time_of() { case $1 in otel_metrics_*) echo TimeUnix ;; otel_traces_trace_id_ts) echo Start ;; *) echo Timestamp ;; esac; }
 for _ in $(seq 1 60); do
-  [[ "$(ch "SELECT count() FROM system.tables WHERE database = 'otel' AND name IN ('${tables// /\',\'}')")" == 7 ]] && break; sleep 2
+  [[ "$(ch "SELECT count() FROM system.tables WHERE database = 'otel' AND name IN ($listed)")" == 8 ]] && break; sleep 2
 done
-ttls=$(ch "SELECT name, extract(engine_full, 'TTL [^S]*') FROM system.tables WHERE database = 'otel' AND name IN ('${tables// /\',\'}') ORDER BY name FORMAT TSV")
+ttls=$(ch "SELECT name, extract(engine_full, 'TTL [^S]*') FROM system.tables WHERE database = 'otel' AND name IN ($listed) ORDER BY name FORMAT TSV")
 say "TTLs: $(echo "$ttls" | tr '\t\n' '  ')"
-set_ttl=$(echo "$ttls" | grep -c "toIntervalMinute(${ttl%m})")
-check "the exporter created every table with the configured TTL ($set_ttl of 7 at $ttl)" '[[ "$set_ttl" == 7 ]]'
+set_ttl=$(echo "$ttls" | grep -c "toIntervalMinute($ttl_minutes)")
+check "the exporter created every table, the trace index included, with the configured TTL ($set_ttl of 8 at $ttl)" '[[ "$set_ttl" == 8 ]]'
 for t in $tables; do ch "ALTER TABLE otel.$t MODIFY SETTING merge_with_ttl_timeout = 60" >> "$log" 2>&1; done
 
 say "sending ${minutes} min of 1× load"
 JUICE_LOCAL_DIR="$tree/deploy/local/" node "$here/scale/generate.mjs" --multiplier 1 --duration $((minutes * 60)) --out "$out/load" >> "$log" 2>&1 \
   || { say "the load failed: see $log"; exit 1; }
 sent_at=$(date +%s)
-# The load's rows in each table (the generated shop).
+# The load's rows in each table (the generated shop; every trace in the index is the load's: nothing else sends spans). A count that
+# isn't a number (a failed query) is printed as it came, and never counts as gone.
 rows() {
-  local t
-  for t in $tables; do echo -e "$t\t$(ch "SELECT count() FROM otel.$t WHERE JuiceServiceNamespace = 'shop'")"; done
-}
-# Rows of any source past their TTL by more than a TTL merge's interval (60 s) and a minute to run it.
-expired() {
-  local t col sum=0 n
+  local t where
   for t in $tables; do
-    [[ $t == otel_metrics_* ]] && col=TimeUnix || col=Timestamp
-    n=$(ch "SELECT count() FROM otel.$t WHERE $col < now() - toIntervalMinute(${ttl%m}) - INTERVAL 2 MINUTE"); sum=$(( sum + n ))
+    [[ $t == otel_traces_trace_id_ts ]] && where=1 || where="JuiceServiceNamespace = 'shop'"
+    echo -e "$t\t$(ch "SELECT count() FROM otel.$t WHERE $where")"
+  done
+}
+# Rows of any source past their TTL by more than a TTL merge's interval (60 s) and a minute to run it; "?" when a count failed.
+past_ttl() {
+  local t n sum=0
+  for t in $tables; do
+    n=$(ch "SELECT count() FROM otel.$t WHERE $(time_of "$t") < now() - toIntervalMinute($ttl_minutes) - INTERVAL 2 MINUTE")
+    is_count "$n" || { echo "?"; return; }
+    sum=$(( sum + n ))
   done
   echo "$sum"
 }
 stored=$(rows); echo "$stored" | sed "s/^/$(date -u +%H:%M:%S)\tstored\t/" >> "$out/rows.tsv"
 say "stored: $(echo "$stored" | tr '\t\n' '= ')"
-spans=$(echo "$stored" | awk -F'\t' '$1 == "otel_traces" { print $2 + 0 }')
-check "telemetry stored before it expired ($spans spans)" '(( spans > 0 ))'
+spans=$(echo "$stored" | awk -F'\t' '$1 == "otel_traces" { print $2 }')
+check "telemetry stored before it expired ($spans spans)" 'is_count "$spans" && (( spans > 0 ))'
 
 # Every row is past its TTL a TTL after the load ended; then ClickHouse's own TTL merges remove it. Watched every 30 s, up to 15 minutes.
 left=""
-for i in $(seq 1 30); do
+for _ in $(seq 1 30); do
   sleep 30
   now=$(rows); echo "$now" | sed "s/^/$(date -u +%H:%M:%S)\tleft\t/" >> "$out/rows.tsv"
-  left=$(echo "$now" | awk -F'\t' '$2 > 0' | tr '\t\n' '= ')
-  expired=$(( $(date +%s) - sent_at ))
-  say "after ${expired} s: ${left:-every row of the load gone}"
+  left=$(echo "$now" | awk -F'\t' '$2 != "0"' | tr '\t\n' '= ')
+  say "after $(( $(date +%s) - sent_at )) s: ${left:-every row of the load gone}"
   [[ -z "$left" ]] && break
 done
 gone_after=$(( $(date +%s) - sent_at ))
 check "the load's rows deleted by their TTL, with nothing forcing it (${left:-all gone} ${gone_after} s after the load ended)" '[[ -z "$left" ]]'
-old=$(expired)
+old=$(past_ttl)
 check "no row of any source left past its TTL (the Collector's own metrics included: $old)" '[[ "$old" == 0 ]]'
 
 {
   echo "# Retention drill, $stamp UTC, ${to:0:7}"
   echo
   echo "TTL $ttl on every signal (JUICE_*_TTL in .env before the tables were created), merge_with_ttl_timeout 60 s on the scratch tables,"
-  echo "${minutes} min of 1× load; every row gone $gone_after s after the load ended."
+  echo "${minutes} min of 1× load; every row of it gone $gone_after s after the load ended."
   echo
-  echo "| When | Stage | Table | Rows |"; echo "|---|---|---|--:|"
+  echo "| When | Stage | Table | Rows of the load |"; echo "|---|---|---|--:|"
   awk -F'\t' '{ printf "| %s | %s | %s | %s |\n", $1, $2, $3, $4 }' "$out/rows.tsv"
   echo
   grep -E ' (ok|FAILED): ' "$log" | sed 's/^[0-9:]* /- /'
