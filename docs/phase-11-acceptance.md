@@ -1,7 +1,8 @@
 # Phase 11 acceptance: the platform's own health, limits and sizing
 
-**Status:** built and reviewed; awaiting the owner's acceptance. Milestones 1–7 are done, each closed by the review loop (two fix
-rounds and a confirmation round, R16). [Plan](phase-11-plan.md), [platform metrics](platform-metrics.md), [scale tests](scale-tests.md),
+**Status:** accepted by the owner 2026-11-16, with the two decisions built differently from the plan (R2: no separate telemetry call;
+R5: the Collector's own metrics scraped, not pushed; [plan](phase-11-plan.md), "As built"). Milestones 1–7 are done, each closed by the
+review loop (two fix rounds and a confirmation round, R16). [Plan](phase-11-plan.md), [platform metrics](platform-metrics.md), [scale tests](scale-tests.md),
 [deployment guide](deployment.md#sizing-and-scaling).
 
 ## The gate
@@ -18,7 +19,8 @@ rounds and a confirmation round, R16). [Plan](phase-11-plan.md), [platform metri
 
 ## Release 1.3.0 (R17)
 
-- **Version:** 1.3.0 (`Directory.Build.props`, the Console package). Tagging `api-1.3.0` and `console-1.3.0` publishes it: the owner's step.
+- **Version:** 1.3.0 (`Directory.Build.props`, the Console package), tagged `api-1.3.0` and `console-1.3.0` locally. Pushing the tags
+  publishes it (`.github/workflows/release.yml`): the owner's step.
 - **Upgrade from 1.2.0:** `scripts/init.sh` (adds `CLICKHOUSE_MONITOR_PASSWORD` and the platform's OTLP token), `docker compose
   --profile platform up -d --build --wait --remove-orphans`, `scripts/apply-clickhouse-access.sh` ([runbook](runbook.md#upgrade)). The migrations (heartbeats,
   their pass time) run on start; `clickhouse-access` adds `platform_monitor`, the row policies and the platform pipeline's users;

@@ -191,7 +191,7 @@
 
 **Acceptance gate:** every §9 operational metric is exported and documented; the Overview shows each worker's state and the platform's headroom and keeps working while ClickHouse is slow or down; the capacity estimate is checked against measured scale steps; the rerun steps show where the first limit moved and why; no new infrastructure without an ADR.
 
-**Status:** planned; split from Phase 10 by the owner 2026-11-13. **Phase-order exception (owner, 2026-11-13):** Phase 11 runs before Phase 10's milestones 4 (drills) and 5 (gate), so the upgrade drill also covers 1.2.0 → 1.3.0. See the [Phase 11 plan](phase-11-plan.md) (approved 2026-11-13; revision 3 the same day turns it toward the data path's throughput). Milestones 1 (self-metrics) and 2 (heartbeats and platform status) built.
+**Status:** done; split from Phase 10 by the owner 2026-11-13. **Phase-order exception (owner, 2026-11-13):** Phase 11 runs before Phase 10's milestones 4 (drills) and 5 (gate), so the upgrade drill also covers 1.2.0 → 1.3.0. See the [Phase 11 plan](phase-11-plan.md) (approved 2026-11-13; revision 3 the same day turns it toward the data path's throughput). Done: all seven milestones, accepted by the owner 2026-11-16 ([acceptance](phase-11-acceptance.md)); release 1.3.0. Phase 10's milestones 4 (drills: the upgrade drill is done, [drills](drills.md)) and 5 (gate) follow.
 
 ## Explicit triggers for deferred infrastructure and SaaS
 
