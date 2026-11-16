@@ -145,6 +145,11 @@ namespace Juice.Observability.Api
 
         private readonly TimeProvider _clock = clock;
         private (long Micros, long At)? _cpu;
+        // What doesn't change while ClickHouse runs, read once: its cores and its machine's memory (Phase 11 R9). The tables' retention, read
+        // again at most every RetentionRead.
+        private (double? Cores, double? Memory)? _machine;
+        private (IReadOnlyDictionary<string, int?> Days, long At)? _retention;
+        private static readonly TimeSpan RetentionRead = TimeSpan.FromMinutes(10);
         private (IReadOnlyList<SignalFlow> Signals, long At)? _collector;
         private DateTime? _windowEnd;
         private readonly Dictionary<(string User, string Kind, string Outcome), long> _finished = [];
@@ -332,14 +337,17 @@ namespace Juice.Observability.Api
                 var windowStart = _windowEnd is { } last && last <= windowEnd ? last : windowEnd - Interval;
                 if (windowEnd - windowStart > MaxWindow) windowStart = windowEnd - MaxWindow;
                 var finished = new Dictionary<(string User, string Kind), (long Ok, long Failed, double? P95)>();
+                var insertSeconds = 0d;
                 await ReadAsync(connection, """
                     SELECT user, query_kind, countIf(type = 'QueryFinish'), countIf(type != 'QueryFinish'),
-                      quantileIf(0.95)(query_duration_ms, type = 'QueryFinish') / 1000
+                      quantileIf(0.95)(query_duration_ms, type = 'QueryFinish') / 1000, toFloat64(sumIf(query_duration_ms, type = 'QueryFinish')) / 1000
                     FROM system.query_log
                     WHERE type != 'QueryStart' AND event_time >= {from:DateTime} AND event_time < {to:DateTime}
                     GROUP BY user, query_kind
                     """, r =>
                 {
+                    // The Collector's inserts' durations: over the window's length, how many ran at once (Phase 11 R9).
+                    if (r.GetString(0) == "otel_writer" && r.GetString(1) == "Insert") insertSeconds += Convert.ToDouble(r.GetValue(5));
                     var key = (User(r.GetString(0)), KnownKinds.Contains(r.GetString(1)) ? r.GetString(1) : "other");
                     var ok = Convert.ToInt64(r.GetValue(2));
                     var p95 = ok > 0 ? Convert.ToDouble(r.GetValue(4)) : (double?)null;
@@ -360,41 +368,54 @@ namespace Juice.Observability.Api
                 await ReadAsync(connection, "SELECT name, free_space, total_space FROM system.disks",
                     r => disks.Add((r.GetString(0), Convert.ToDouble(r.GetValue(1)), Convert.ToDouble(r.GetValue(2)))), cancellationToken);
                 var tables = new List<(string, double, double)>();
-                await ReadAsync(connection, "SELECT table, sum(bytes_on_disk), sum(rows) FROM system.parts WHERE active AND database = 'otel' GROUP BY table",
-                    r => tables.Add((r.GetString(0), Convert.ToDouble(r.GetValue(1)), Convert.ToDouble(r.GetValue(2)))), cancellationToken);
+                var days = new List<(string Table, double Yesterday, double Today, double TodaySeconds)>();
+                // Each table's size, and the bytes of its last whole UTC day's partition and of today's (the exporter's tables are partitioned by day).
+                await ReadAsync(connection, """
+                    SELECT table, sum(bytes_on_disk), sum(rows), toFloat64(sumIf(bytes_on_disk, partition = toString(yesterday()))),
+                      toFloat64(sumIf(bytes_on_disk, partition = toString(today()))), toFloat64(now() - toStartOfDay(now()))
+                    FROM system.parts WHERE active AND database = 'otel' GROUP BY table
+                    """, r =>
+                {
+                    tables.Add((r.GetString(0), Convert.ToDouble(r.GetValue(1)), Convert.ToDouble(r.GetValue(2))));
+                    days.Add((r.GetString(0), Convert.ToDouble(r.GetValue(3)), Convert.ToDouble(r.GetValue(4)), Convert.ToDouble(r.GetValue(5))));
+                }, cancellationToken);
 
-                // What the Overview and the capacity view add (Phase 11 R8, R9): the cores, the Collector's inserts in flight over the window, the
-                // platform's reads by caller, and each table's growth and retention.
-                var available = Convert.ToDouble(await ScalarAsync(connection, "SELECT toFloat64(getSetting('max_threads'))", cancellationToken) ?? 0d);
-                var memoryTotal = Convert.ToDouble(await ScalarAsync(connection, "SELECT value FROM system.asynchronous_metrics WHERE metric = 'OSMemoryTotal'", cancellationToken) ?? 0d);
-                var windowSeconds = Math.Max(1, (windowEnd - windowStart).TotalSeconds);
-                var inserting = Convert.ToDouble(await ScalarAsync(connection, """
-                    SELECT toFloat64(sum(query_duration_ms)) / 1000 FROM system.query_log
-                    WHERE type = 'QueryFinish' AND user = 'otel_writer' AND query_kind = 'Insert' AND event_time >= {from:DateTime} AND event_time < {to:DateTime}
-                    """, cancellationToken, ("from", windowStart), ("to", windowEnd)) ?? 0d) / windowSeconds;
-                var callers = new List<CallerQueries>();
-                await ReadAsync(connection, """
-                    SELECT if(log_comment = '', '(none)', substring(log_comment, 1, 80)), count(), quantile(0.95)(query_duration_ms) / 1000
-                    FROM system.query_log
-                    WHERE type = 'QueryFinish' AND user = 'platform_reader' AND event_time >= {from:DateTime} AND event_time < {to:DateTime}
-                    GROUP BY 1 ORDER BY 3 DESC LIMIT 30
-                    """, r => callers.Add(new CallerQueries(r.GetString(0), Convert.ToInt64(r.GetValue(1)), Convert.ToDouble(r.GetValue(2)))),
-                    cancellationToken, ("from", windowStart), ("to", windowEnd));
-                var growth = new List<TableGrowth>();
-                await ReadAsync(connection, """
-                    SELECT t.name, toFloat64(p.yesterday), toFloat64(p.today), toFloat64(now() - toStartOfDay(now())),
-                      toInt32OrNull(extract(t.engine_full, 'toIntervalDay\\((\\d+)\\)'))
-                    FROM system.tables AS t LEFT JOIN (
-                      SELECT table, sumIf(bytes_on_disk, partition = toString(yesterday())) AS yesterday, sumIf(bytes_on_disk, partition = toString(today())) AS today
-                      FROM system.parts WHERE active AND database = 'otel' GROUP BY table
-                    ) AS p ON p.table = t.name
-                    WHERE t.database = 'otel' AND t.engine LIKE '%MergeTree'
-                    """, r => growth.Add(TableGrowthOf(r.GetString(0), Convert.ToDouble(r.GetValue(1)), Convert.ToDouble(r.GetValue(2)),
-                        Convert.ToDouble(r.GetValue(3)), r.IsDBNull(4) ? null : Convert.ToInt32(r.GetValue(4)))), cancellationToken);
+                // What only the Overview and the capacity view use (Phase 11 R8, R9), apart: if it fails, ClickHouse is still up and its figures
+                // above still count; these are left out of this sample, and logged.
+                var inserting = insertSeconds / Math.Max(1, (windowEnd - windowStart).TotalSeconds);
+                var growth = days.Select(d => TableGrowthOf(d.Table, d.Yesterday, d.Today, d.TodaySeconds, null)).ToList();
+                List<CallerQueries>? callers = null;
+                try
+                {
+                    _machine ??= (
+                        Convert.ToDouble(await ScalarAsync(connection, "SELECT toFloat64(getSetting('max_threads'))", cancellationToken) ?? 0d) is var c and > 0 ? c : null,
+                        Convert.ToDouble(await ScalarAsync(connection, "SELECT value FROM system.asynchronous_metrics WHERE metric = 'OSMemoryTotal'", cancellationToken) ?? 0d) is var m and > 0 ? m : null);
+                    if (_retention is not { } known || Stopwatch.GetElapsedTime(known.At) > RetentionRead)
+                    {
+                        var retention = new Dictionary<string, int?>(StringComparer.Ordinal);
+                        await ReadAsync(connection, """SELECT name, toInt32OrNull(extract(engine_full, 'toIntervalDay\\((\\d+)\\)')) FROM system.tables WHERE database = 'otel'""",
+                            r => retention[r.GetString(0)] = r.IsDBNull(1) ? null : Convert.ToInt32(r.GetValue(1)), cancellationToken);
+                        _retention = (retention, Stopwatch.GetTimestamp());
+                    }
+                    growth = [.. growth.Select(g => g with { RetentionDays = _retention!.Value.Days.GetValueOrDefault(g.Name) })];
+                    callers = [];
+                    await ReadAsync(connection, """
+                        SELECT if(log_comment = '', '(none)', substring(log_comment, 1, 80)), count(), quantile(0.95)(query_duration_ms) / 1000
+                        FROM system.query_log
+                        WHERE type = 'QueryFinish' AND user = 'platform_reader' AND event_time >= {from:DateTime} AND event_time < {to:DateTime}
+                        GROUP BY 1 ORDER BY 3 DESC LIMIT 30
+                        """, r => callers.Add(new CallerQueries(r.GetString(0), Convert.ToInt64(r.GetValue(1)), Convert.ToDouble(r.GetValue(2)))),
+                        cancellationToken, ("from", windowStart), ("to", windowEnd));
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    logger.LogWarning(ex, "ClickHouse's figures for the Overview couldn't be read this sample");
+                    callers = null;
+                }
 
                 return new ClickHouseSample(true, cores, memory, running,
                     [.. finished.Select(f => new FinishedQueries(f.Key.User, f.Key.Kind, f.Value.Ok, f.Value.Failed, f.Value.P95))], disks, tables,
-                    available > 0 ? available : null, inserting, callers, growth, memoryTotal > 0 ? memoryTotal : null);
+                    _machine?.Cores, inserting, callers, growth, _machine?.Memory);
             }
             catch (Exception ex) when (ex is not OperationCanceledException || !StoppingNow(cancellationToken))
             {

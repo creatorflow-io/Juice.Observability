@@ -28,7 +28,7 @@ await op('panel', async () => {
   const text = await operator.locator('.jc-platform').innerText();
   for (const part of ['workers', 'ingestion', 'clickhouse', 'disk', 'capacity', 'discovery']) expect(text.toLowerCase().includes(part), `the panel shows ${part}`);
   expect(/Calibrated on|Not calibrated/.test(text), 'the capacity view says what it is calibrated on, or that it is not');
-  expect(/spans \d+(\.\d)?×|spans –/.test(text), 'the load is a multiple of the reference');
+  expect(/spans \d+(\.\d)?×|spans —/.test(text), 'the load is a multiple of the reference');
 });
 
 const viewer = await signIn(browser, 'victor', problems);

@@ -185,6 +185,83 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
+        public void A_full_queue_is_red_even_where_the_calibrations_queues_sum_went_past_one()
+        {
+            // Review of milestone 6: the calibration's queue is the three queues' sum (1.05 of one bound at 10×), so one queue against it never reached red.
+            var overview = PlatformOverview.Build(Status(), SampleOf(queue: 200000), Now, Shipped());
+            Assert.Equal(PlatformOverview.Bad, overview.Ingestion!.Queues.Single(q => q.Exporter == "clickhouse/metrics").Level);
+        }
+
+        [Fact]
+        public void A_queue_without_a_bound_on_the_page_is_unknown_not_a_failed_answer()
+        {
+            var sample = SampleOf();
+            sample = sample with { Collector = sample.Collector! with { Queues = [new ExportQueue("clickhouse/metrics", 50, 0)] } };
+            var overview = PlatformOverview.Build(Status(), sample, Now, null);
+
+            Assert.Equal(PlatformOverview.Unknown, overview.Ingestion!.Queues.Single().Level);
+            Assert.Null(overview.Capacity.Resources.Single(r => r.Name == "collector.queue").Now);
+            System.Text.Json.JsonSerializer.Serialize(overview);   // no NaN or infinity to refuse
+        }
+
+        [Fact]
+        public void Tables_that_reach_their_retention_before_the_disk_is_full_dont_count_down_to_full()
+        {
+            // 40 GB of traces on disk, 4 GB a day, 30 days: 80 GB still to grow, and 100 GB free. The disk never fills.
+            var disk = PlatformOverview.Build(Status(), SampleOf(diskFree: 100e9), Now, null).Disk!;
+            Assert.Null(disk.DaysUntilFull);
+            Assert.Equal(PlatformOverview.Ok, disk.Level);
+        }
+
+        [Fact]
+        public void A_calibration_without_cpu_figures_falls_back_to_shares_of_the_cores()
+        {
+            var shipped = Shipped();
+            var calibration = shipped with { Steps = [.. shipped.Steps.Select(s => s with { Resources = s.Resources.Where(r => r.Key != "clickhouse.cpu").ToDictionary() })] };
+            Assert.Equal(PlatformOverview.Bad, PlatformOverview.Build(Status(), SampleOf(cores: 22), Now, calibration).ClickHouse!.CpuLevel);
+        }
+
+        [Fact]
+        public void A_calibration_missing_a_section_is_a_bad_file_and_is_read_again_only_once_it_changes()
+        {
+            Assert.Throws<InvalidDataException>(() => CapacityCalibration.Parse("""{ "version": 1, "steps": [] }"""));
+
+            var file = Path.Combine(Path.GetTempPath(), $"calibration-{Guid.NewGuid():N}.json");
+            try
+            {
+                File.WriteAllText(file, "{ not json");
+                var logger = new CountingLogger();
+                var store = new CapacityCalibrationStore(Options.Create(new CapacityOptions { CalibrationFile = file }), logger);
+                Assert.Null(store.Get());
+                Assert.Null(store.Get());
+                Assert.Equal(1, logger.Warnings);   // logged once a change, not on every poll
+
+                File.Copy(Path.Combine(Repository(), "deploy", "local", "capacity", "calibration.json"), file, overwrite: true);
+                File.SetLastWriteTimeUtc(file, DateTime.UtcNow.AddSeconds(5));
+                Assert.Equal(5, store.Get()!.Knee.HeldTo);
+            }
+            finally
+            {
+                File.Delete(file);
+            }
+        }
+
+        private sealed class CountingLogger : Microsoft.Extensions.Logging.ILogger<CapacityCalibrationStore>
+        {
+            public int Warnings { get; private set; }
+
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+            public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+
+            public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId, TState state, Exception? exception,
+                Func<TState, Exception?, string> formatter)
+            {
+                if (logLevel == Microsoft.Extensions.Logging.LogLevel.Warning) Warnings++;
+            }
+        }
+
+        [Fact]
         public void An_old_sample_shows_no_figures_but_the_workers()
         {
             var overview = PlatformOverview.Build(Status(Worker("slos", 30, 3)), SampleOf(), Now + TimeSpan.FromMinutes(5), Shipped());

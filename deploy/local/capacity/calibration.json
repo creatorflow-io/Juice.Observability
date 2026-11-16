@@ -1,11 +1,12 @@
 {
   "version": 1,
-  "created": "2026-11-16T09:46:01.447Z",
+  "created": "2026-11-16T10:13:51.619Z",
   "commit": "38e136a+changes",
   "host": {
     "cores": 24,
     "memoryBytes": 33427488768,
-    "hostCores": 24
+    "hostCores": 24,
+    "dockerCpus": 24
   },
   "mix": {
     "rules": 50,

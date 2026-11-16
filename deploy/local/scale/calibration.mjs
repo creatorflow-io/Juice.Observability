@@ -48,6 +48,8 @@ const steps = dirs.map(dir => {
 }).sort((a, b) => a.multiplier - b.multiplier);
 
 const meta = json(join(dirs[0], 'summary.json')).meta;
+// ClickHouse's own core count (its automatic max_threads), which the platform reads live to match a calibration; the Docker VM's otherwise.
+const clickhouseCores = json(join(dirs[0], 'components.json')).clickhouseCores ?? meta.docker_cpus;
 const calibration = steps.filter(s => !s.heldOut);
 const crossedAt = calibration.find(s => !s.held)?.multiplier ?? null;
 const heldTo = calibration.filter(s => s.held && (crossedAt === null || s.multiplier < crossedAt)).at(-1)?.multiplier ?? null;
@@ -55,8 +57,9 @@ const file = {
   version: 1,
   created: new Date().toISOString(),
   commit: meta.commit,
-  // The host the steps ran on: the view matches it by ClickHouse's cores and the memory it sees (the Docker VM's, with Docker Desktop).
-  host: { cores: meta.docker_cpus, memoryBytes: meta.docker_mem_bytes, hostCores: meta.host_cores },
+  // The host the steps ran on: the view matches it by ClickHouse's cores (as ClickHouse counts them) and the memory it sees (the Docker
+  // VM's, with Docker Desktop).
+  host: { cores: clickhouseCores, memoryBytes: meta.docker_mem_bytes, hostCores: meta.host_cores, dockerCpus: meta.docker_cpus },
   // What drives the workers' cost besides the load: the scale stack's rules and SLOs (config.mjs), its shop's services (generate.mjs).
   mix: { rules: meta.rules, slos: meta.slos, services: 10, searchesPerSecond: meta.search_rate },
   // §9's reference load, per second, at 1×.

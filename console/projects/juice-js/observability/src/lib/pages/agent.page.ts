@@ -13,7 +13,7 @@ import { ApprovalCount } from '../core/approval-count';
 import { ContextService } from '../core/context.service';
 import { ActionParameter, AgentAction, AgentCommand, BundleSummary, EnrollmentToken } from '../core/models';
 import { MatCheckboxModule } from '@angular/material/checkbox';
-import { AgoPipe, ReasonPipe, copyText } from '../shared/format';
+import { AgoPipe, ReasonPipe, copyText, formatBytes } from '../shared/format';
 import { apiResource } from '../shared/resource';
 import { problemText } from '../shared/telemetry';
 import { ContextBar } from '../shared/ui';
@@ -36,15 +36,6 @@ const PARAMETER_LABELS: Record<string, string> = {
   pathPrefix: 'Only under this path', host: 'Host', port: 'Port', timeoutMs: 'Wait (ms)', service: 'Service', folder: 'Folder',
   keepHours: 'Keep files from the last (hours)', dryRun: 'Dry run: only report what would go', logLines: 'Lines from each log',
 };
-
-function formatBytes(bytes: number | null | undefined): string {
-  if (bytes === null || bytes === undefined) return '—';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
-  let value = bytes;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit++; }
-  return `${value < 10 && unit > 0 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
-}
 
 function formatUptime(seconds: number): string {
   const days = Math.floor(seconds / 86_400);

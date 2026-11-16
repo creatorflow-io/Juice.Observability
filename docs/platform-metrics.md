@@ -279,11 +279,11 @@ replica's last sample, never a query of its own, and the Console reads it again 
 | Each worker: state, last pass, how busy | the heartbeats; how busy is its recent passes (a moving mean, each pass weighing a fifth) against its interval | 80 % busy | a bad state (stale, stuck, unheld, gone), or 100 % busy |
 | Each backlog (outbox, webhooks, discovery) | the status | – | `behind` |
 | Each signal: received, refused, dropped a second | the Collector's metrics page (`Telemetry:CollectorMetricsUrl`), the tenant's receivers only; dropped by any exporter | – | anything refused or dropped since the last sample |
-| Each export queue against its bound | the same page | 50 % (calibrated: its p95 where every line held) | 90 % (calibrated: where one crossed) |
+| Each export queue against its bound | the same page | 50 % | 90 % |
 | ClickHouse CPU | the sampler's CPU, against `max_threads` (its cores) | 50 % of them (calibrated: the mean where every line held) | 80 % (calibrated: where one crossed) |
 | The Collector's insert p95, and inserts in flight | `query_log`, `otel_writer`: the inserts' durations over the sample's window is how many ran at once | 200 ms | 350 ms (the final rerun: 109 ms at 5×, 243 ms at 6×, 347 ms at 10×) |
 | The platform's reads, p95 by caller | `query_log`, `platform_reader`, by `log_comment` | an API search past 500 ms (§9's API line) | past 5 s; the workers' have no line |
-| Disk: used, free, a day, at retention, days until full | `system.disks`; each table's last whole UTC day's partition (or today's, scaled, once an hour has passed: an estimate) and its TTL | under 30 days, or the retention needs more than the disk | under 7 days |
+| Disk: used, free, a day, at retention, days until full | `system.disks`; each table's last whole UTC day's partition (or today's, scaled, once an hour has passed: an estimate) and its TTL. Days until full only while the tables still have more to grow, to reach their retention, than is free | under 30 days, or the retention needs more than the disk | under 7 days |
 
 **The capacity view (R9): measured, labelled, not extrapolated.**
 - **The calibration:** `scale/steps.sh` writes it after the steps (`scale/components.mjs`, then `scale/calibration.mjs`), with `HELD_OUT`

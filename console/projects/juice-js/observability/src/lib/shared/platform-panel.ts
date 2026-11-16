@@ -1,10 +1,10 @@
 import { DecimalPipe } from '@angular/common';
-import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
-import { EMPTY, map, switchMap, timer } from 'rxjs';
+import { EMPTY, catchError, map, switchMap, tap, timer } from 'rxjs';
 import { ApiService } from '../core/api.service';
 import { PlatformLevel } from '../core/models';
-import { AgoPipe } from './format';
+import { AgoPipe, formatBytes, formatDuration, formatPercent } from './format';
 import { apiResource } from './resource';
 import { problemText } from './telemetry';
 
@@ -19,23 +19,15 @@ const RESOURCE_NAMES: Record<string, string> = {
   'clickhouse.cpu': 'ClickHouse CPU', 'clickhouse.inserts_in_flight': 'Collector inserts in flight', 'collector.queue': 'Export queue',
 };
 
-export function formatBytes(bytes: number | null | undefined): string {
-  if (bytes === null || bytes === undefined) return '–';
-  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
-  let v = bytes, i = 0;
-  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
-  return `${v >= 100 || i === 0 ? v.toFixed(0) : v.toFixed(1)} ${units[i]}`;
-}
-
 export function formatRate(perSecond: number | null | undefined): string {
-  if (perSecond === null || perSecond === undefined) return '–';
+  if (perSecond === null || perSecond === undefined) return '—';
   return perSecond >= 1000 ? `${(perSecond / 1000).toFixed(perSecond >= 100_000 ? 0 : 1)}k/s` : `${perSecond.toFixed(perSecond >= 10 ? 0 : 1)}/s`;
 }
 
 /** A resource's figure in its own unit: cores and inserts as numbers, shares as percentages. */
 export function formatMeasure(value: number | null | undefined, unit: string): string {
-  if (value === null || value === undefined) return '–';
-  return unit === 'cores' || unit === 'inserts' ? value.toFixed(value >= 10 ? 0 : 1) : `${Math.round(value * 100)} %`;
+  if (value === null || value === undefined) return '—';
+  return unit === 'cores' || unit === 'inserts' ? value.toFixed(value >= 10 ? 0 : 1) : formatPercent(value);
 }
 
 /**
@@ -73,7 +65,7 @@ export function formatMeasure(value: number | null | undefined, unit: string): s
                 <div class="jc-list-row">
                   <span class="jc-badge" [class]="cls(b.level)">{{ b.state }}</span>
                   <strong>{{ b.name }} backlog</strong>
-                  <span class="jc-muted">{{ b.ageSeconds === null ? '–' : seconds(b.ageSeconds) }} of {{ seconds(b.lineSeconds) }}</span>
+                  <span class="jc-muted">{{ b.ageSeconds === null ? '—' : seconds(b.ageSeconds) }} of {{ seconds(b.lineSeconds) }}</span>
                 </div>
               }
             </div>
@@ -101,13 +93,13 @@ export function formatMeasure(value: number | null | undefined, unit: string): s
               @if (o.clickHouse; as c) {
                 <div class="jc-list-row">
                   <span class="jc-badge" [class]="cls(c.cpuLevel)">CPU</span>
-                  <span>{{ c.cores === null ? '–' : c.cores.toFixed(1) }} of {{ c.coresAvailable ?? '–' }} cores</span>
+                  <span>{{ c.cores === null ? '—' : c.cores.toFixed(1) }} of {{ c.coresAvailable ?? '—' }} cores</span>
                   <span class="jc-muted">{{ c.runningQueries }} queries running</span>
                 </div>
                 <div class="jc-list-row">
                   <span class="jc-badge" [class]="cls(c.insertLevel)">inserts</span>
                   <span>p95 {{ ms(c.insertP95Seconds) }}</span>
-                  <span class="jc-muted">{{ c.insertsInFlight === null ? '–' : c.insertsInFlight.toFixed(1) }} in flight</span>
+                  <span class="jc-muted">{{ c.insertsInFlight === null ? '—' : c.insertsInFlight.toFixed(1) }} in flight</span>
                 </div>
                 @for (r of c.reads.slice(0, 6); track r.name) {
                   <div class="jc-list-row">
@@ -135,7 +127,7 @@ export function formatMeasure(value: number | null | undefined, unit: string): s
           <p class="jc-muted">{{ o.capacity.label }}</p>
           <div class="jc-list-row">
             @for (l of o.capacity.load; track l.signal) {
-              <span>{{ l.signal }} <strong>{{ l.multiple === null ? '–' : l.multiple.toFixed(1) + '×' }}</strong>
+              <span>{{ l.signal }} <strong>{{ l.multiple === null ? '—' : l.multiple.toFixed(1) + '×' }}</strong>
                 <span class="jc-muted">({{ rate(l.perSecond) }} of {{ rate(l.reference) }} at 1×)</span></span>
             }
           </div>
@@ -170,23 +162,29 @@ export function formatMeasure(value: number | null | undefined, unit: string): s
 export class PlatformPanel {
   private readonly api = inject(ApiService);
 
+  /** The last read's failure, cleared by the next that succeeds: a failed read keeps the last figures and the 15 s reads going. */
+  private readonly failed = signal<unknown>(undefined);
   protected readonly overview = apiResource({
     // Only for operators and admins (the tenant says so): a viewer never asks, so never gets the 403.
-    stream: () => this.api.tenant$.pipe(switchMap(t => t.canOperate ? timer(0, REFRESH_MS).pipe(switchMap(() => this.api.platformOverview())) : EMPTY)),
+    stream: () => this.api.tenant$.pipe(switchMap(t => t.canOperate
+      ? timer(0, REFRESH_MS).pipe(switchMap(() => this.api.platformOverview().pipe(
+        tap(() => this.failed.set(undefined)),
+        catchError(e => { this.failed.set(e); return EMPTY; }))))
+      : EMPTY)),
   });
   protected readonly o = computed(() => this.overview.value());
   /** Whether the user is an operator or admin, from the tenant (false until it is known). */
   private readonly canOperate = toSignal(this.api.tenant$.pipe(map(t => !!t.canOperate)), { initialValue: false });
   /** A viewer isn't an operator: no panel (and a 403 from a role changed since sign-in hides it too, without an error). */
-  protected readonly hidden = computed(() => !this.canOperate() || (this.overview.error() as { status?: number } | undefined)?.status === 403);
-  protected readonly error = computed(() => this.overview.error() && !this.hidden() ? problemText(this.overview.error()) : '');
+  protected readonly hidden = computed(() => !this.canOperate() || (this.failed() as { status?: number } | undefined)?.status === 403);
+  protected readonly error = computed(() => this.failed() && !this.hidden() ? problemText(this.failed()) : '');
 
   protected cls(level: PlatformLevel): string { return `jc-badge ${LEVEL_CLASS[level]}`; }
-  protected pct(share: number): string { return `${Math.round(share * 100)} %`; }
+  protected pct(share: number): string { return formatPercent(share); }
   protected rate(perSecond: number | null): string { return formatRate(perSecond); }
   protected bytes(bytes: number | null): string { return formatBytes(bytes); }
   protected measure(value: number | null, unit: string): string { return formatMeasure(value, unit); }
-  protected ms(seconds: number | null): string { return seconds === null ? '–' : `${Math.round(seconds * 1000)} ms`; }
+  protected ms(seconds: number | null): string { return formatDuration(seconds === null ? null : seconds * 1000); }
   protected seconds(s: number): string { return s >= 120 ? `${Math.round(s / 60)} min` : `${Math.round(s)} s`; }
   protected days(d: number): string { return d >= 365 ? 'over a year' : `${Math.round(d)} days`; }
   protected resource(name: string): string { return RESOURCE_NAMES[name] ?? (name.startsWith('worker.') ? `Worker ${name.slice(7)}` : name); }

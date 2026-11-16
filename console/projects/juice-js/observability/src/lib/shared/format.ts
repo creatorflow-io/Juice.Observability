@@ -22,6 +22,15 @@ export function formatDuration(ms: number | null | undefined): string {
   return `${Math.floor(s / 60)} m ${String(s % 60).padStart(2, '0')} s`;
 }
 
+export function formatBytes(bytes: number | null | undefined): string {
+  if (bytes === null || bytes === undefined) return '—';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit++; }
+  return `${value < 10 && unit > 0 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
+}
+
 export function formatPercent(rate: number | null | undefined): string {
   if (rate === null || rate === undefined) return '—';
   const p = rate * 100;

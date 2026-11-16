@@ -79,7 +79,9 @@ for (const dir of process.argv.slice(2)) {
   const [inserts] = await q(`SELECT sum(f) / ${secs / 10} AS mean, quantile(0.99)(f) AS p99, max(f) AS max FROM (
       SELECT toStartOfInterval(event_time, INTERVAL 10 SECOND) AS b, sum(query_duration_ms) / 10000 AS f FROM system.query_log
       WHERE type = 'QueryFinish' AND user = 'otel_writer' AND query_kind = 'Insert' AND ${win} GROUP BY b)`);
-  const out = { multiplier: meta.multiplier, start, end, seconds: secs, byUser, failures, byCaller, parts, server, passes, postgres: { ops: pgOps, connections: pgConn, metrics: metricNames.map(m => m.name) }, gauges, inserts };
+  // ClickHouse's own count of its cores (its automatic max_threads), which the platform's capacity view matches a calibration by.
+  const [{ cores }] = await q(`SELECT toFloat64(getSetting('max_threads')) AS cores`);
+  const out = { multiplier: meta.multiplier, start, end, seconds: secs, byUser, failures, byCaller, parts, server, passes, postgres: { ops: pgOps, connections: pgConn, metrics: metricNames.map(m => m.name) }, gauges, inserts, clickhouseCores: cores };
   writeFileSync(join(dir, 'components.json'), JSON.stringify(out, null, 2));
 
   const lines = [`### ${meta.multiplier}× (${start} – ${end} UTC, ${secs} s)`, '',

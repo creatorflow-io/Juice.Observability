@@ -66,7 +66,6 @@ for m in "${steps[@]}"; do
   wait "$step_pid"; result=$?; step_pid=""
   # The run's own directory, as run.sh named it (never an older run of the same multiplier).
   dir=$(sed -n 's/^scale step .* → //p' "$steplog" | head -1)
-  [[ -n "$dir" && -f "$dir/summary.json" ]] && dirs+=("$dir")
   kind=$(node -e '
     const [dir, steplog] = process.argv.slice(1);
     const { existsSync } = require("fs");
@@ -80,6 +79,8 @@ for m in "${steps[@]}"; do
     } catch { console.log("harness problem: no report (see " + steplog + ")"); }' "$dir" "$steplog" 2>/dev/null)
   say "step ×$m done: report exit $result${kind:+ ($kind)}${dir:+; $dir/report.md}"
   if [[ -n "$kind" ]]; then say "stopping on a $kind"; status=1; break; fi
+  # Only a step that says something about the platform calibrates the capacity view: never one stopped on a harness problem.
+  [[ -n "$dir" && -f "$dir/summary.json" ]] && dirs+=("$dir")
   if (( result != 0 )); then
     if [[ "$m" == 1 && -z "${CEILING:-}" ]]; then say "stopping: 1× missed a target (P7: fix or ADR before going on)"; status=1; break; fi
     say "×$m crossed a line"

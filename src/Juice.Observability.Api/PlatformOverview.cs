@@ -35,7 +35,16 @@ namespace Juice.Observability.Api
         private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true, NumberHandling = JsonNumberHandling.AllowReadingFromString };
 
         public static CapacityCalibration Parse(string json)
-            => JsonSerializer.Deserialize<CapacityCalibration>(json, Json) ?? throw new InvalidDataException("The calibration file is empty.");
+        {
+            var calibration = JsonSerializer.Deserialize<CapacityCalibration>(json, Json) ?? throw new InvalidDataException("The calibration file is empty.");
+            // The deserialiser leaves a missing section null: a bad file, said so, not a crash where it is used.
+            if (calibration.Host is null || calibration.Mix is null || calibration.Reference is null || calibration.Knee is null || calibration.Steps is null
+                || calibration.Steps.Any(s => s?.Resources is null))
+            {
+                throw new InvalidDataException("The calibration file lacks host, mix, reference, knee or steps.");
+            }
+            return calibration;
+        }
 
         /// <summary>
         /// Whether this calibration is for the machine ClickHouse runs on: the same cores, and memory within 10 %. Matched by what ClickHouse
@@ -59,9 +68,10 @@ namespace Juice.Observability.Api
             }
             lock (_lock)
             {
+                var written = DateTime.MinValue;
                 try
                 {
-                    var written = File.GetLastWriteTimeUtc(path);
+                    written = File.GetLastWriteTimeUtc(path);
                     if (_cached is { } c && c.Path == path && c.Written == written)
                     {
                         return c.Calibration;
@@ -81,7 +91,7 @@ namespace Juice.Observability.Api
                 catch (Exception ex) when (ex is IOException or JsonException or InvalidDataException or UnauthorizedAccessException)
                 {
                     logger.LogWarning(ex, "The capacity calibration {File} can't be read: the capacity view shows utilisation only", path);
-                    _cached = (path, DateTime.MinValue, null);
+                    _cached = (path, written, null);
                     return null;
                 }
             }
@@ -122,7 +132,8 @@ namespace Juice.Observability.Api
 
         /// <summary>
         /// Disk: used and free, what the tables add a day, what they need at their retention in the steady state, and the days until full at
-        /// that rate (null when nothing grows). <see cref="Estimated"/>: some table has no whole day yet, so its day is scaled from today's.
+        /// that rate (null when nothing grows, or when the tables reach their retention before the disk is full). <see cref="Estimated"/>: some
+        /// table has no whole day yet, so its day is scaled from today's.
         /// </summary>
         public sealed record Disk(double Used, double Free, double Total, double? BytesPerDay, double? NeedAtRetention, double? DaysUntilFull, bool Estimated,
             string Level, IReadOnlyList<DiskTable> Tables);
@@ -147,7 +158,7 @@ namespace Juice.Observability.Api
         /// </summary>
         public sealed record Resource(string Name, string Unit, double? Now, double? AtHeld, double? AtCrossed, string Level);
 
-        /// <summary>A queue amber and red share, and ClickHouse's CPU's, without a calibration for this machine.</summary>
+        /// <summary>An exporter's queue amber and red shares of its bound; ClickHouse's CPU's of its cores without a calibration for this machine.</summary>
         public const double QueueWarn = 0.5, QueueBad = 0.9, CpuWarn = 0.5, CpuBad = 0.8;
 
         /// <summary>
@@ -187,7 +198,8 @@ namespace Juice.Observability.Api
                     [.. (collector.Queues ?? []).Select(q =>
                     {
                         var fill = q.Capacity > 0 ? q.Size / q.Capacity : 0;
-                        return new Queue(q.Exporter, q.Size, q.Capacity, fill, Level(fill, Calibrated(calibrated, "collector.queue", m => m.P95) ?? (QueueWarn, QueueBad)));
+                        // One exporter's queue, against fixed shares of its own bound: the calibration's queue is the queues' sum.
+                        return new Queue(q.Exporter, q.Size, q.Capacity, fill, q.Capacity > 0 ? Level(fill, (QueueWarn, QueueBad)) : Unknown);
                     })])
                 : null;
 
@@ -195,9 +207,9 @@ namespace Juice.Observability.Api
             if (clickHouse is not null)
             {
                 var insertP95 = clickHouse.Finished.Where(f => f.User == "otel_writer" && f.Kind == "Insert").Select(f => f.P95).Max();
-                var cpuLevel = calibrated is not null
-                    ? Level(clickHouse.Cores, Calibrated(calibrated, "clickhouse.cpu", m => m.Mean))
-                    : clickHouse.Cores is { } cores && clickHouse.CoresAvailable is { } available and > 0 ? Level(cores / available, (CpuWarn, CpuBad)) : Unknown;
+                var cpuLines = Calibrated(calibrated, "clickhouse.cpu", m => m.Mean)
+                    ?? (clickHouse.CoresAvailable is { } available and > 0 ? (CpuWarn * available, CpuBad * available) : null);
+                var cpuLevel = Level(clickHouse.Cores, cpuLines);
                 clickHouseFigures = new ClickHouse(clickHouse.Cores, clickHouse.CoresAvailable, cpuLevel, clickHouse.Running.Values.Sum(), clickHouse.InsertsInFlight,
                     insertP95, insertP95 is { } p ? Level(p, (InsertWarnSeconds, InsertBadSeconds)) : Unknown,
                     [.. (clickHouse.Callers ?? []).Select(c => new Caller(c.Caller, c.Count, c.P95,
@@ -220,7 +232,10 @@ namespace Juice.Observability.Api
                 g.BytesPerDay is { } day && g.RetentionDays is { } days ? day * days : null)).OrderByDescending(t => t.Bytes).ToList();
             var perDay = tables.Any(t => t.BytesPerDay is not null) ? tables.Sum(t => t.BytesPerDay ?? 0) : (double?)null;
             var need = tables.Any(t => t.NeedAtRetention is not null) ? tables.Sum(t => t.NeedAtRetention ?? 0) : (double?)null;
-            var daysUntilFull = perDay is > 0 ? disk.Free / perDay : null;
+            // Once a table holds its retention, old partitions go as new ones come: the disk fills only if what the tables still have to grow
+            // to reach their retention is more than is free. Without a retention known for some table, the plain rate.
+            var toGrow = need is { } n && tables.All(t => t.BytesPerDay is null || t.NeedAtRetention is not null) ? n - tables.Sum(t => t.Bytes) : (double?)null;
+            var daysUntilFull = perDay is > 0 && (toGrow is null || toGrow > disk.Free) ? disk.Free / perDay : null;
             var used = disk.Total - disk.Free;
             // Full before retention lets old data go: the steady state needs more than the disk holds.
             var level = daysUntilFull < DiskBadDays ? Bad : daysUntilFull < DiskWarnDays || need > disk.Total ? Warn : Ok;
@@ -255,7 +270,9 @@ namespace Juice.Observability.Api
                 clickHouse?.CoresAvailable is { } available and > 0 ? (CpuWarn * available, CpuBad * available) : null);
             Add("clickhouse.inserts_in_flight", "inserts", clickHouse?.InsertsInFlight, m => m.Mean, null);
             var queues = collector?.Queues;
-            Add("collector.queue", "of the bound", queues is { Count: > 0 } ? queues.Sum(q => q.Size) / queues.Max(q => q.Capacity) : null, m => m.P95, (QueueWarn, QueueBad));
+            // The queues' sum over one queue's bound, as the steps measured it (the metrics queue is nearly all of it).
+            Add("collector.queue", "of the bound", queues is { Count: > 0 } && queues.Max(q => q.Capacity) is var bound and > 0 ? queues.Sum(q => q.Size) / bound : null,
+                m => m.P95, (QueueWarn, QueueBad));
             foreach (var w in workers.Where(w => w.Utilisation is not null))
             {
                 Add($"worker.{w.Name}", "of its interval", w.Utilisation, m => m.Mean, (0.8, 1), fixedLines: true);

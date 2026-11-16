@@ -230,6 +230,7 @@ namespace Juice.Observability.Data
                 if (held && !state.Held)
                 {
                     state.LastEnd = null;
+                    state.PassSeconds = null;   // and how long an earlier hold's passes took isn't this hold's
                     state.HeldSince = Stopwatch.GetTimestamp();
                 }
                 state.Held = held;
