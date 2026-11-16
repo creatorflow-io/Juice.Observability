@@ -70,9 +70,11 @@ namespace Juice.Observability.Discovery
 
             var (windows, watermark, totals) = await AdvanceAsync(db, tenant, CheckpointSource,
                 separate ? TelemetrySignals.SpansAndLogs : TelemetrySignals.All, end, cancellationToken);
-            // The metric tables on their own checkpoint, read once at least MetricsInterval has passed since it.
+            // The metric tables on their own checkpoint, read once at least MetricsInterval has passed since it, or at once while it
+            // doesn't exist yet (with InitialLookback shorter than MetricsInterval it would otherwise never be due).
             var metricsWindows = 0;
-            if (separate && end - await WatermarkAsync(db, tenant.Id, MetricsCheckpointSource, end, cancellationToken) >= settings.MetricsInterval)
+            if (separate && await StoredWatermarkAsync(db, tenant.Id, MetricsCheckpointSource, cancellationToken) is var stored
+                && (stored is null || end - stored.Value >= settings.MetricsInterval))
             {
                 var metrics = await AdvanceAsync(db, tenant, MetricsCheckpointSource, TelemetrySignals.Metrics, end, cancellationToken);
                 metricsWindows = metrics.Windows;
@@ -89,10 +91,13 @@ namespace Juice.Observability.Discovery
 
         private async Task<DateTimeOffset> WatermarkAsync(PlatformDbContext db, Guid tenantId, string checkpointSource, DateTimeOffset end,
             CancellationToken cancellationToken)
-            => await db.Checkpoints.AsNoTracking()
+            => await StoredWatermarkAsync(db, tenantId, checkpointSource, cancellationToken) ?? end - options.Value.InitialLookback;
+
+        private static Task<DateTimeOffset?> StoredWatermarkAsync(PlatformDbContext db, Guid tenantId, string checkpointSource,
+            CancellationToken cancellationToken)
+            => db.Checkpoints.AsNoTracking()
                 .Where(c => c.TenantId == tenantId && c.Source == checkpointSource)
-                .Select(c => (DateTimeOffset?)c.Watermark).SingleOrDefaultAsync(cancellationToken)
-                ?? end - options.Value.InitialLookback;
+                .Select(c => (DateTimeOffset?)c.Watermark).SingleOrDefaultAsync(cancellationToken);
 
         // Reads the signals' tables from the checkpoint up to end, window by window, applying each window and moving the
         // checkpoint in one transaction. Service links and resource uses come from spans, so a metrics-only read has none.

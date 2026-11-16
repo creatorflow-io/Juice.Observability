@@ -401,6 +401,22 @@ namespace Juice.Observability.Tests
             }
         }
 
+        [Fact]
+        public async Task The_metrics_checkpoint_is_made_when_the_initial_lookback_is_shorter_than_the_metrics_interval_Async()
+        {
+            // Review of milestone 5: with no metrics checkpoint the pass counted InitialLookback as the time since it, so a lookback
+            // shorter than MetricsInterval was never due and the metric tables were never read.
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var ct = TestContext.Current.CancellationToken;
+            var result = await Runner(database, o => { o.MetricsInterval = TimeSpan.FromMinutes(5); o.InitialLookback = TimeSpan.FromMinutes(2); })
+                .RunOnceAsync(ct);
+
+            Assert.True(result.MetricsWindows > 0);
+            await using var db = database.Context();
+            Assert.Contains(DiscoveryRunner.MetricsCheckpointSource, await db.Checkpoints.Select(c => c.Source).ToListAsync(ct));
+        }
+
         private static async Task<(int, int, int, int, int)> CountsAsync(ScratchDatabase database)
         {
             await using var db = database.Context();

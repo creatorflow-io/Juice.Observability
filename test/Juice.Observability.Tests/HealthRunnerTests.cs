@@ -324,6 +324,50 @@ namespace Juice.Observability.Tests
             Assert.InRange((await EvidenceAsync())!.Value, start.AddSeconds(-31), start.AddSeconds(-29));
         }
 
+        [Fact]
+        public async Task A_row_stored_late_by_one_service_alone_is_read_by_the_next_whole_read_Async()
+        {
+            // Review of milestone 5: a service whose rows are all stored late (long spans) while the others are current isn't seen by
+            // the narrowed reads; at least every LivenessFullRead a pass reads the whole window again.
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var service = $"health-{_run}-laggard";
+            async Task SendAsync(string instance, DateTimeOffset at)
+                => await LocalStack.SendAsync("traces", Otlp.Traces([("service.name", service), ("service.instance.id", instance)],
+                    Otlp.Span(Otlp.TraceId(), Otlp.SpanId(), null, "work", Otlp.Internal, at)));
+            var start = DateTimeOffset.UtcNow;
+            await SendAsync("late", start.AddMinutes(-3));
+            await SendAsync("current", start);
+            await LocalStack.WaitForSpansAsync(service, 2);
+            await Discover(database);
+            async Task<DateTimeOffset?> LateAsync()
+            {
+                await using var db = database.Context();
+                var serviceId = (await db.Services.SingleAsync(s => s.Name == service, Ct)).Id;
+                var instance = await db.Instances.SingleAsync(i => i.ServiceId == serviceId && i.InstanceKey == "late", Ct);
+                return (await db.HealthSnapshots.SingleAsync(h => h.SubjectId == instance.Id, Ct)).LastEvidenceAt;
+            }
+            static void Near(DateTimeOffset expected, DateTimeOffset? actual)
+                => Assert.InRange(actual!.Value, expected.AddSeconds(-1), expected.AddSeconds(1));
+
+            var clock = new FixedClock(start);
+            var runner = Health(database, clock: clock);
+            await runner.RunOnceAsync(Ct);
+            Near(start.AddMinutes(-3), await LateAsync());
+
+            // Stored now, timed 2 minutes back: the next pass, 30 s on, reads from about a minute before its predecessor's end.
+            await SendAsync("late", start.AddMinutes(-2));
+            await LocalStack.WaitForSpansAsync(service, 3);
+            clock.Now = start.AddSeconds(30);
+            await runner.RunOnceAsync(Ct);
+            Near(start.AddMinutes(-3), await LateAsync());
+
+            // LivenessFullRead (2 min) after the first pass, the whole window is read again.
+            clock.Now = start.AddMinutes(2);
+            await runner.RunOnceAsync(Ct);
+            Near(start.AddMinutes(-2), await LateAsync());
+        }
+
         private static async Task Discover(ScratchDatabase database)
             => await new DiscoveryRunner(Services(database).GetRequiredService<IServiceScopeFactory>(),
                 new ClickHouseTelemetrySource(Options.Create(new ClickHouseOptions { ConnectionString = LocalStack.ClickHouseReader })),

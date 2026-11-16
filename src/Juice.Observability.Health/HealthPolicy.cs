@@ -30,6 +30,13 @@ namespace Juice.Observability.Health
         /// </summary>
         public TimeSpan LivenessOverlap { get; set; } = TimeSpan.FromMinutes(1);
 
+        /// <summary>
+        /// At least this often a pass reads liveness over the whole window again (review of milestone 5): a resource whose rows are
+        /// all stored late (spans are timed by their start and written when they end, so a 2-minute span is 2 minutes late) is still
+        /// seen before <see cref="FreshnessGrace"/> runs out, as long as it is less than FreshnessGrace less this late.
+        /// </summary>
+        public TimeSpan LivenessFullRead { get; set; } = TimeSpan.FromMinutes(2);
+
         /// <summary>A previously seen subject without telemetry for longer than this is Offline.</summary>
         public TimeSpan FreshnessGrace { get; set; } = TimeSpan.FromMinutes(5);
 

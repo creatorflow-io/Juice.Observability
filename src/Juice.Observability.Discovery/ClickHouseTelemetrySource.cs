@@ -103,7 +103,7 @@ namespace Juice.Observability.Discovery
             ("otel_metrics_summary", "TimeUnix"),
         ];
 
-        private const string ResourceColumns = """
+        private const string ResourceSelect = """
             JuiceServiceNamespace AS ns, ServiceName AS svc,
             JuiceServiceInstance AS inst, JuiceEnvironment AS env,
             JuiceServiceVersion AS ver, JuiceHostName AS host_name,
@@ -127,7 +127,7 @@ namespace Juice.Observability.Discovery
             SELECT {ResourceKeys}, min(first_seen) AS first_seen, max(last_seen) AS last_seen, sum(records) AS records
             FROM (
             {string.Join("\nUNION ALL\n", tables.Select(t => $"""
-                SELECT {ResourceColumns}, min({t.Time}) AS first_seen, max({t.Time}) AS last_seen, count() AS records
+                SELECT {ResourceSelect}, min({t.Time}) AS first_seen, max({t.Time}) AS last_seen, count() AS records
                 FROM otel.{t.Table}
                 WHERE {Tenant} AND {t.Time} >= {From} AND {t.Time} < {To}
                 GROUP BY {ResourceKeys}
@@ -183,7 +183,7 @@ namespace Juice.Observability.Discovery
             => ReadResourcesAsync(window, TelemetrySignals.All, cancellationToken);
 
         public Task<IReadOnlyList<ResourceObservation>> ReadResourcesAsync(TelemetryWindow window, TelemetrySignals signals, CancellationToken cancellationToken)
-            => QueryAsync(ResourcesQueries[signals], window, r => new ResourceObservation
+            => QueryAsync(ResourcesQueries.GetValueOrDefault(signals) ?? throw new ArgumentOutOfRangeException(nameof(signals), signals, "Spans and logs, metrics, or both"), window, r => new ResourceObservation
             {
                 ServiceNamespace = r.GetString(0),
                 ServiceName = r.GetString(1),

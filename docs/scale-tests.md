@@ -820,7 +820,9 @@ read about 10 times. Health uses only each resource's latest last-seen time from
 end less `Health:LivenessOverlap` (1 min), merges, and drops what has left the window. A runner with nothing remembered (the
 first pass, or after a restart or a change of leader) reads the whole window, as before. The trade-off: a row stored more than
 a minute after its own time is missed until a runner starts without memory. Before, it counted while it was inside the window. (Changed in the milestone 5 review: with ingestion minutes behind, every row arrived before the read range and live
-instances would have gone Offline. The read now also reaches back as far as the newest row remembered trails the previous end.)
+instances would have gone Offline. The read now also reaches back as far as the newest row remembered trails the previous end, and the review's second round
+added a whole-window read at least every `Health:LivenessFullRead`, 2 minutes, for one service whose rows are all late, such as
+long spans, which are written when they end.)
 
 **Workers ceiling at 4× again** (`20261115T1006`, the same 200 rules and 200 SLOs as `20261115T0019`), with discovery's 5-minute
 metrics cadence (section 4) also in place. From `query_log`, as a share of the 30-minute window:
