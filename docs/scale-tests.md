@@ -959,3 +959,26 @@ first (382 CPU-seconds both).
 - **Caveats.** The copy was merged into one part per table, so time-bounded queries prune less than on live data: health read 7.5 M
   rows a query here against 2.65 M live. The percentages are the comparison; the absolute CPU-seconds aren't the live cost. The cost
   at insert (each key looked up once per row) isn't measured yet, nor are the searches (they filter on the tenant and namespace).
+
+**The cost at insert** (owner, 16 November: measure it before shipping). Ingest ceiling at 10×, 16 consumers, run twice back to back on
+the same data: as now (`20261116T0141`), then with the 12 columns of D added to the seven telemetry tables as `LowCardinality(String)
+MATERIALIZED` (`20261116T0216`). The columns were dropped again afterwards. `query_log` and `part_log`, the 30-minute windows:
+
+| ClickHouse, ingest 10× | Without | With 12 columns | Change |
+|---|---|---|---|
+| Inserts (`otel_writer`), CPU | 0.231 cores | 0.522 cores | +0.29 |
+| Async insert flushes, CPU | 0.378 cores | 0.459 cores | +0.08 |
+| Merges, CPU (1,184 M and 1,235 M rows merged) | 1.27 cores | 1.61 cores | +0.34 (+22 % a row merged) |
+| Container CPU (docker stats): mean / median / p90 | 2.41 / 1.90 / 3.98 cores | 3.13 / 2.61 / 4.15 cores | +0.72 mean |
+| Sum-table insert p50 / p95; its flush p50 | 224 / 313 ms; 45 ms | 235 / 317 ms; 58 ms | +11 ms |
+| New parts written | 3.98 GB | 4.15 GB | +4 % |
+| Points stored; freshness p95 | 98.6 %; 0.89 s | 98.3 %; 0.97 s | – |
+
+- **The columns cost about 0.7 cores at 10× ingest:** half at insert (each key looked up once a row), half in merges (12 more
+  columns to rewrite). Insert latency barely moves.
+- **Against what they save on reads, at the workers 4× run's 1× ingest:** about 0.07 cores at insert, scaled from 10×, against 72 %
+  of the 0.57 cores the worker queries cost there (`20261115T1129`), about 0.4. Both sides grow with ingest, since the workers read
+  rows in proportion to it.
+- **Both runs lost about 1.5 % of points,** where the 15 November 16-consumer run lost none: the baseline was also flagged a harness
+  limit (the generator fell behind, 230 spans given up). The loss is the same without and with the columns, so it says nothing
+  about them; the larger scale data (merges of up to 58–68 M rows) and the host are the candidates, not measured.
