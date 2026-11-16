@@ -33,15 +33,21 @@ cleanup() {
     say "the drill's stack, volumes and worktree removed"
   fi
 }
-# An earlier run's drill stack and volumes (interrupted, or --keep) go first: a fresh install at $from, with this run's secrets.
-docker compose -p juice-upgrade down -v --remove-orphans >> "$log" 2>&1
-docker volume ls -q --filter label=com.docker.compose.project=juice-upgrade | xargs -r docker volume rm >> "$log" 2>&1
-# Then every port the drill's stack publishes, or its checks call, must be free: a container or not (a local API on 5180, say).
-for port in 4317 4318 4319 5180 5432 8080 8123; do
-  if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
+# Every port the stack publishes (read from the compose file, the release this checkout is) must be free, whoever holds it (a local API
+# on 5180, say): checked first, before anything is removed. An earlier drill's stack holding them doesn't count: it goes next.
+ports=$(docker compose --profile platform config --format json 2>/dev/null \
+  | node -e 'let j="";process.stdin.on("data",d=>j+=d).on("end",()=>{const c=JSON.parse(j);console.log([...new Set(Object.values(c.services)
+      .flatMap(s=>(s.ports||[]).map(p=>p.published)).filter(Boolean))].join(" "))})')
+[[ -n "$ports" ]] || { say "can't read the stack's ports from docker-compose.yml"; exit 1; }
+for port in $ports; do
+  [[ -n "$(docker ps -q --filter label=com.docker.compose.project=juice-upgrade --filter publish="$port")" ]] && continue
+  if timeout 1 bash -c "exec 3<>/dev/tcp/127.0.0.1/$port" 2>/dev/null; then
     say "port $port is in use (the working stack?): stop what holds it first"; exit 2
   fi
 done
+# An earlier run's drill stack and volumes (interrupted, or --keep) go then: a fresh install at $from, with this run's secrets.
+docker compose -p juice-upgrade down -v --remove-orphans >> "$log" 2>&1
+docker volume ls -q --filter label=com.docker.compose.project=juice-upgrade | xargs -r docker volume rm >> "$log" 2>&1
 
 trap cleanup EXIT
 
@@ -56,7 +62,8 @@ sed -i 's/^COMPOSE_PROJECT_NAME=.*/COMPOSE_PROJECT_NAME=juice-upgrade/' .env
 dc() { docker compose --profile platform "$@"; }
 env_of() { sed -n "s/^$1=//p" .env; }
 ch() { dc exec -T clickhouse clickhouse client --user admin --password "$(env_of CLICKHOUSE_ADMIN_PASSWORD)" -q "$1" </dev/null; }
-pg() { dc exec -T postgres psql -U juice -d juice_observability -Atc "$1" </dev/null; }
+psql_() { dc exec -T postgres psql -U juice -d juice_observability -At "$@" </dev/null; }
+pg() { psql_ -c "$1"; }
 
 say "starting $from"
 dc up -d --build --wait >> "$log" 2>&1 || { say "$from didn't start: see $log"; exit 1; }
@@ -73,11 +80,16 @@ sleep 90   # discovery, health and rules catch up on the load's last minute
 transient='^(outbox|idempotency_records|worker_heartbeats|worker_leases|__ef_migrations_history)'
 snapshot() {
   ch "SELECT table, sum(rows) FROM system.parts WHERE active AND database = 'otel' AND table LIKE 'otel_%' AND table NOT LIKE '%_mv' GROUP BY table ORDER BY table FORMAT TSV"
-  # One psql call: the counting query built from pg_tables, then run (a count that fails leaves its line empty, which counts as lost).
-  local tables
-  tables=$(pg "SELECT string_agg(format('SELECT %L, count(*) FROM %I', 'pg.' || tablename, tablename), ' UNION ALL ' ORDER BY tablename)
+  # One psql call: the counting query built from pg_tables, then run. If it fails, each table on its own, and a count that fails there
+  # leaves its line empty, which the comparison counts as lost: a table never drops out of it unseen.
+  local names query
+  names=$(pg "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename !~ '$transient' ORDER BY 1")
+  query=$(pg "SELECT string_agg(format('SELECT %L, count(*) FROM %I', 'pg.' || tablename, tablename), ' UNION ALL ' ORDER BY tablename)
     FROM pg_tables WHERE schemaname = 'public' AND tablename !~ '$transient'")
-  dc exec -T postgres psql -U juice -d juice_observability -AtF $'\t' -c "$tables" </dev/null
+  [[ -n "$names" ]] || echo -e "pg.tables\t"   # not even the list: an empty count, so the comparison fails
+  if ! psql_ -F $'\t' -c "$query"; then
+    for t in $names; do echo -e "pg.$t\t$(pg "SELECT count(*) FROM \"$t\"" 2>/dev/null)"; done
+  fi
   echo -e "pg.migrations\t$(pg 'SELECT count(*) FROM __ef_migrations_history')"
 }
 snapshot > "$out/before.tsv"
@@ -131,11 +143,14 @@ for _ in $(seq 1 12); do
   [[ "$platform" -gt 0 ]] && break; sleep 10
 done
 check "the platform's own metrics arrive under the reserved tenant ($platform points in 2 min)" '[[ "$platform" -gt 0 ]]'
-# Every worker enabled somewhere has a pass that ended well within its threshold (three intervals, at least 60 s) and succeeded.
-workers=$(pg "SELECT count(DISTINCT worker) FROM worker_heartbeats WHERE enabled AND seen_at > now() - interval '1 minute'")
-passing=$(pg "SELECT count(DISTINCT worker) FROM worker_heartbeats WHERE enabled AND seen_at > now() - interval '1 minute'
-  AND last_outcome IN ('success', 'partial') AND last_ended_at > now() - greatest(interval_seconds * 3, 60) * interval '1 second'")
-check "every enabled worker passing since the upgrade ($passing of $workers)" '[[ "$workers" -ge 6 && "$passing" == "$workers" ]]'
+# The drill's stack enables every worker the platform has (WorkerPulse.KnownWorkers, 8), and each must be passing: every live row that
+# should pass (the lease holder's, or every replica's for a worker without a lease) has a pass that ended within its threshold (three
+# intervals, at least 60 s) and succeeded. One replica's good row doesn't hide another's failing one.
+live="enabled AND seen_at > now() - interval '1 minute' AND (held OR NOT leased)"
+workers=$(pg "SELECT count(DISTINCT worker) FROM worker_heartbeats WHERE $live")
+failing=$(pg "SELECT count(*) FROM worker_heartbeats WHERE $live AND NOT (coalesce(last_outcome IN ('success', 'partial'), false)
+  AND coalesce(last_ended_at > now() - greatest(interval_seconds * 3, 60) * interval '1 second', false))")
+check "every worker running and passing since the upgrade ($workers of 8, $failing rows failing)" '[[ "$workers" == 8 && "$failing" == 0 ]]'
 status=""
 for _ in $(seq 1 24); do
   status=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:5180/health/platform); [[ "$status" == 200 ]] && break; sleep 5

@@ -1,8 +1,7 @@
 # Phase 11 acceptance: the platform's own health, limits and sizing
 
-**Status:** built and reviewed; awaiting the owner's acceptance. Milestones 1–6 are done, each closed by the review loop (two fix
-rounds and a confirmation round, R16). Milestone 7 (this document, the sizing guide, the 1.3.0 upgrade path and its drill) is under its
-own review. [Plan](phase-11-plan.md), [platform metrics](platform-metrics.md), [scale tests](scale-tests.md),
+**Status:** built and reviewed; awaiting the owner's acceptance. Milestones 1–7 are done, each closed by the review loop (two fix
+rounds and a confirmation round, R16). [Plan](phase-11-plan.md), [platform metrics](platform-metrics.md), [scale tests](scale-tests.md),
 [deployment guide](deployment.md#sizing-and-scaling).
 
 ## The gate

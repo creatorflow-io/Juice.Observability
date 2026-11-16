@@ -146,8 +146,8 @@ As built in milestone 2 (13 November), after its review:
 | 6 | **Overview panel and capacity view** | R8, R9: the panel, and the calibration file written by `steps.sh` from the final rerun and the ceilings | A Playwright journey: the panel is present, and a worker turns red when its lease is held from `psql`. `WorkerLease.KeyOf` gives the key, and the takeover won't end a session that isn't a worker's. A unit test for the view from a known calibration |
 | 7 | **Guide, gate and release** | R18, with each component's ceiling and lever; `deployment.md` corrected (all six leased workers); `docs/phase-11-acceptance.md`; the 1.3.0 upgrade path | Owner acceptance |
 
-- **Order (revision 3):** 1 → 2 → 3 → 4 → 5 → 6 → 7. Milestones 1–6 are done (16 November); 7 is built and under review, and
-  then the gate ([acceptance](phase-11-acceptance.md)).
+- **Order (revision 3):** 1 → 2 → 3 → 4 → 5 → 6 → 7. Milestones 1–7 are done (16 November); the gate is the owner's
+  ([acceptance](phase-11-acceptance.md)).
 - **The baseline (3) waits for the metrics (1),** so it measures causes, not only symptoms.
 - **The ceilings (4) follow the baseline,** which shows which component to push first.
 - **The Overview (6) comes after the fixes,** so its limits are the measured ones, not a provisional calibration rewritten later. The
