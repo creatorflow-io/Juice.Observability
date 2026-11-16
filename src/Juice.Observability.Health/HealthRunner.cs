@@ -91,10 +91,11 @@ namespace Juice.Observability.Health
         private async Task<List<ResourceObservation>> LivenessAsync(TelemetryWindow window, TimeSpan overlap, TimeSpan fullRead,
             CancellationToken cancellationToken)
         {
-            var follows = seenThrough is { } through && through.Tenant == window.TenantKey && through.To > window.From && through.To <= window.To
-                && seen.Count > 0 && window.To - lastFullRead < fullRead;
+            // Follows on: the same tenant, and the previous end inside this window. Only then is what is remembered kept.
+            var continues = seenThrough is { } through && through.Tenant == window.TenantKey && through.To > window.From && through.To <= window.To
+                && seen.Count > 0;
             var from = window.From;
-            if (follows)
+            if (continues && window.To - lastFullRead < fullRead)
             {
                 // Rows are stored some time after their own; how long is about how far the newest row remembered trails the previous
                 // end. The read reaches back that much further, so a backlog in ingestion widens it instead of losing every row.
@@ -103,11 +104,10 @@ namespace Juice.Observability.Health
                 if (reach > window.From) from = reach;
             }
             var read = await clickHouse.ReadResourcesAsync(window with { From = from }, cancellationToken);
-            if (!follows)
-            {
-                seen.Clear();
-                lastFullRead = window.To;
-            }
+            // A periodic whole read merges into what is remembered rather than replacing it: the read is capped at the row limit,
+            // and what a capped read leaves out is still remembered until it leaves the window.
+            if (!continues) seen.Clear();
+            if (from == window.From) lastFullRead = window.To;
             foreach (var o in read)
             {
                 var key = o with { FirstSeen = default, LastSeen = default, Records = 0 };

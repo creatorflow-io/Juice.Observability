@@ -256,7 +256,7 @@ namespace Juice.Observability.Tests
             var start = DateTimeOffset.UtcNow;
             await SendAsync("a", start.AddMinutes(-3));
             await SendAsync("b", start.AddMinutes(-4));
-            await SendAsync("c", start);   // ingestion is current: the newest row remembered is near the previous end
+            await SendAsync("c", start.AddSeconds(-15));   // ingestion is current: the newest row remembered is near the previous end
             await LocalStack.WaitForSpansAsync(service, 3);
             await Discover(database);
             async Task<Dictionary<string, DateTimeOffset?>> EvidenceAsync()
@@ -337,7 +337,7 @@ namespace Juice.Observability.Tests
                     Otlp.Span(Otlp.TraceId(), Otlp.SpanId(), null, "work", Otlp.Internal, at)));
             var start = DateTimeOffset.UtcNow;
             await SendAsync("late", start.AddMinutes(-3));
-            await SendAsync("current", start);
+            await SendAsync("current", start.AddSeconds(-15));   // inside the first pass's window, which ends Lag (10 s) before start
             await LocalStack.WaitForSpansAsync(service, 2);
             await Discover(database);
             async Task<DateTimeOffset?> LateAsync()

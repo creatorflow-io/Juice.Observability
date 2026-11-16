@@ -33,7 +33,8 @@ namespace Juice.Observability.Health
         /// <summary>
         /// At least this often a pass reads liveness over the whole window again (review of milestone 5): a resource whose rows are
         /// all stored late (spans are timed by their start and written when they end, so a 2-minute span is 2 minutes late) is still
-        /// seen before <see cref="FreshnessGrace"/> runs out, as long as it is less than FreshnessGrace less this late.
+        /// seen before <see cref="FreshnessGrace"/> runs out, as long as it is less late than FreshnessGrace less this, less Lag and a pass.
+        /// A whole read merges into what is remembered. Zero makes every pass a whole read.
         /// </summary>
         public TimeSpan LivenessFullRead { get; set; } = TimeSpan.FromMinutes(2);
 

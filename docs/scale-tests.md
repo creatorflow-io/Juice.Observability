@@ -4,6 +4,8 @@
 harness (below) met every target.
 Milestone 3 (the steps) run 12 November: 1× met every target, 3× crossed the SLO-lag line once (one sample, 64 s against 60 s; cause not measured), so the driver stopped there; 5× and 10× moved to the Phase 11 baseline. Part of the [Phase 10 plan](phase-10-plan.md) (P3–P8, D1–D2). Raw data of every
 run stays in `build/scale/<UTC time>-<multiplier>x/`.
+Phase 11 milestone 5 (the fixes) done 16 November: the final rerun (below) held every line through 5×, then two review rounds
+and a confirmation round (28 findings, 20 fixed, the rest kept with their reasons in the tracker).
 
 ## The harness (milestone 2)
 
@@ -822,7 +824,8 @@ first pass, or after a restart or a change of leader) reads the whole window, as
 a minute after its own time is missed until a runner starts without memory. Before, it counted while it was inside the window. (Changed in the milestone 5 review: with ingestion minutes behind, every row arrived before the read range and live
 instances would have gone Offline. The read now also reaches back as far as the newest row remembered trails the previous end, and the review's second round
 added a whole-window read at least every `Health:LivenessFullRead`, 2 minutes, for one service whose rows are all late, such as
-long spans, which are written when they end.)
+long spans, which are written when they end. That raises the liveness reads from about 3 a row to about 5, still half of the 10
+before; the figures below were measured without it, and the next scale run measures it.)
 
 **Workers ceiling at 4× again** (`20261115T1006`, the same 200 rules and 200 SLOs as `20261115T0019`), with discovery's 5-minute
 metrics cadence (section 4) also in place. From `query_log`, as a share of the 30-minute window:
