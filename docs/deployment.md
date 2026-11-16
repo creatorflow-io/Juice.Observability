@@ -331,8 +331,10 @@ spans, 10,000 metric points and 1,000 logs a second. Raw data and method: [scale
   reference on this host, and measure your own (below).
 - **ClickHouse's CPU comes in bursts:** its mean grows by about 0.7 cores per 1×, but merges and searches take it to 13–19 cores for
   seconds at a time from 3× up. Size the node for the bursts, not the mean.
-- **Disk:** about 1 TB per 1× at the reference retention (traces and logs 30 days, metrics 90), from the first 30 minutes' parts
-  before ClickHouse's later merges: an upper figure. The panel's disk figure measures your own a day.
+- **Disk:** about 1 TB per 1× at the reference retention (traces and logs 30 days, metrics 90): 17.5 GB a day, measured after
+  ClickHouse's merges; metric sums at 90 days are 71 % of it ([drills](drills.md#the-disk-the-real-retention-needs)). A day's
+  partition goes within about 4 hours of passing its TTL, so the disk holds the retention plus about a day. The panel's disk figure
+  measures your own a day.
 
 ### What scales out, and what doesn't
 

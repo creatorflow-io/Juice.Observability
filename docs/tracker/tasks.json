@@ -79,8 +79,8 @@
       "kind": "task",
       "title": "M4 Drills: upgrade, retention, restore, DR",
       "ref": "docs/drills.md (to write)",
-      "status": "todo",
-      "note": "Upgrade drill done 2026-11-16 in Phase 11 M7 (1.2.0 to 1.3.0, docs/drills.md, tests/upgrade-drill.sh). Still to do: retention, restore on a fresh project, DR. Can start after M2. Upgrade 1.1.0→1.2.0 with 1x data; retention with short TTLs + disk budget; restore on a fresh compose project; DR RPO ≤ 24 h, RTO ≤ 4 h."
+      "status": "doing",
+      "note": "All four drilled 2026-11-16 (docs/drills.md): upgrade 1.2.0 to 1.3.0 (tests/upgrade-drill.sh, 13 of 13); disaster recovery, also the restore on a fresh project (tests/dr-drill.sh: working stack backed up and lost, rebuilt on juice-dr from a clean checkout, .env, secrets and the backups; 47 tables back, RPO 5 s, RTO 151 s; two runs short only by masked lightweight-deleted rows and the SLO counter recounting its last 5 minutes, the counting fixed); retention (tests/retention-drill.sh: 4-minute TTLs on a scratch project, every row of the load deleted by ClickHouse's own TTL merges 421 s after the load; disk at full retention at 1x about 1.04 TB, 17.5 GB a day, measured after merges). Next: review loop (R16 style), then M5 acceptance doc. Earlier: Upgrade drill done 2026-11-16 in Phase 11 M7 (1.2.0 to 1.3.0, docs/drills.md, tests/upgrade-drill.sh). Still to do: retention, restore on a fresh project, DR. Can start after M2. Upgrade 1.1.0→1.2.0 with 1x data; retention with short TTLs + disk budget; restore on a fresh compose project; DR RPO ≤ 24 h, RTO ≤ 4 h."
     },
     {
       "doc_id": "p10-m5",

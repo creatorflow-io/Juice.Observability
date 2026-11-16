@@ -1,6 +1,6 @@
 # Drills
 
-The operations rehearsed on a running stack ([Phase 10 plan](phase-10-plan.md) milestone 4, D2), each with its script and its
+The operations rehearsed on this machine ([Phase 10 plan](phase-10-plan.md) milestone 4, D2; P8: each on a fresh compose project), each with its script and its
 latest result. Raw logs stay under `build/`.
 
 ## Upgrade: 1.2.0 → 1.3.0 (16 November)
@@ -49,8 +49,76 @@ outbox's, expiring idempotency keys, leases and heartbeats.
 - **Not covered:** rolling back to 1.2.0 after the upgrade (the [deployment guide](deployment.md) says what an older build ignores);
   more than one API replica during the upgrade.
 
-## Still to drill (Phase 10 milestone 4)
+## Disaster recovery, and restore on a fresh project (16 November)
 
-- **Retention:** short TTLs on a scratch run, then the real TTLs' disk budget.
-- **Restore** on a fresh compose project (`tests/restore-drill.sh` restores in place today).
-- **Disaster recovery:** lose the host, rebuild from the latest backups, measure RPO (≤ 24 h) and RTO (≤ 4 h).
+`deploy/local/tests/dr-drill.sh`: requirements §9's RPO ≤ 24 h and RTO ≤ 4 h, and Phase 10's restore on a fresh project (P8), in one
+drill, since a restore onto a new host is what a disaster recovery is.
+- **What it does:** the working stack's writers (the Collectors and the API) stop, its tables are counted, and it is backed up as the
+  schedule does (`scripts/backup.sh`, `scripts/backup-telemetry.sh`). Then it is "lost": stopped, and not used again (its volumes are
+  never touched). A fresh compose project (`juice-dr`, its own volumes and network) stands in for the new host, built from a clean
+  checkout of this commit and what an operator keeps off the host: the two backups, `.env` and `secrets/`. It starts PostgreSQL and
+  ClickHouse alone, restores both (`scripts/restore.sh`, `scripts/restore-telemetry.sh`) and counts them, then starts the rest
+  (`up --build --wait`, `scripts/apply-clickhouse-access.sh`) and checks the platform.
+- **Ran:** four times on 16 November, against the working stack (588 M telemetry rows, 6.7 GiB; 45 services). The first stopped before
+  the rebuild: the script set `MSYS_NO_PATHCONV` for itself, and Git Bash then handed `git` an unconverted path; fixed. The second and
+  third passed everything but the counts, short by 1,830 spans and 15 SLO buckets both times, and neither a loss:
+  - **the spans:** the working stack's parts still held 1,830 rows a lightweight `DELETE` (a test's) had masked: `count()` sees
+    62,600,670, the parts' totals said 62,602,500. A backup carries the rows that are there. The drill counts `count()` now;
+  - **the SLO buckets:** 15 = 3 SLOs × the 5 minutes of `Slos:Lateness`, which the restored platform's SLO counter recounts as soon
+    as it runs, with what those minutes hold. The drill counts the restored stores before the platform starts now.
+- **The fourth run is the record** (`build/dr-drill-20261116T1456/result.md`), every check passed:
+  - every table back with what it held at the backup: the 8 telemetry tables (the 7 signal tables and the trace index; 62.6 M spans,
+    588 M rows in all) and all 39 platform tables counted;
+  - `/health/platform` answering `ok` on the new project; the services and their health back through the API (45); a trace search
+    over the hour before the backup found a full page; new telemetry stored (59,982 spans in 3 minutes);
+  - **RPO 5 s** (the last backup to the loss), **RTO 151 s** (the rebuild's start to the platform answering `ok`; the two restores
+    90 s of it). The backups: 852 KB for the platform database, 4.2 GB for the telemetry.
+- **What it means for §9:** the RPO a deployment has is its backup schedule's interval: daily backups meet ≤ 24 h. The RTO measured
+  here is for this data size on this machine; copying the backups to the new host comes on top. Both are far inside their targets.
+- **Not covered:** a new host's own install (Docker, the checkout), which the RTO doesn't include; restoring Grafana's dashboards
+  (provisioned from the repository, so a checkout brings them back) and the agents' own state (on their hosts).
+
+## Retention (16 November)
+
+`deploy/local/tests/retention-drill.sh`: retention seen to delete, and the disk the real retention needs.
+- **What it does:** a scratch compose project (`juice-retention`, its own volumes) from a clean checkout of this commit, with every
+  signal's TTL set to 4 minutes in its `.env` (`JUICE_*_TTL`, as an operator sets them before the tables are created). The telemetry
+  stack starts without the platform, the exporter creates its tables, and 2 minutes of the reference load go in. Then it waits.
+  ClickHouse applies a TTL in a merge, at most every `merge_with_ttl_timeout` (4 hours by default) per partition: the drill lowers that
+  to 60 s on its scratch tables, so it waits minutes, not hours. Nothing else forces the deletion.
+- **Ran once, every check passed** (`build/retention-drill-20261116T1503/result.md`):
+  - the exporter created all seven tables with the configured TTL (`toDateTime(Timestamp) + toIntervalMinute(4)`, and `TimeUnix`
+    for the metrics);
+  - 118,774 spans, as many logs, and 1.2 M metric points stored;
+  - every row of the load deleted by ClickHouse's own TTL merges 421 s after the load ended: gauges and histograms first, then logs
+    and spans, the metric sums last;
+  - no row of any source left past its TTL, the Collector's own host and self metrics included, which kept arriving throughout.
+- **On a real deployment** each partition is a UTC day, so a day's telemetry goes within `merge_with_ttl_timeout` (4 hours) after its
+  last row passes the TTL: the disk holds the retention plus about a day.
+
+### The disk the real retention needs
+
+At the reference load (1×) and the reference retention (traces and logs 30 days, metrics 90), measured on the final rerun's scale
+data after ClickHouse's merges (`juice-scale` volume, 588 M rows): bytes a row on disk, times the rows a day at 1× (the 1× step's).
+
+| Table | Bytes a row | Rows a day at 1× | A day | Retention | At full retention |
+|---|--:|--:|--:|--:|--:|
+| `otel_traces` | 49.7 | 86.6 M | 4.3 GB | 30 d | 129 GB |
+| `otel_logs` | 50.5 | 86.3 M | 4.4 GB | 30 d | 131 GB |
+| `otel_traces_trace_id_ts` | 21.5 | 13.2 M | 0.28 GB | 30 d | 8.5 GB |
+| `otel_metrics_sum` | 9.7 | 846 M | 8.2 GB | 90 d | 741 GB |
+| `otel_metrics_histogram` | 19.5 | 12.7 M | 0.25 GB | 90 d | 22 GB |
+| `otel_metrics_gauge` | 11.4 | 6.7 M | 0.08 GB | 90 d | 7 GB |
+| **Total** | | | **17.5 GB** | | **about 1.04 TB** |
+
+- **The scale reports' figure stands:** they scaled the first 30 minutes' parts to a day (1,020 GB at full retention at 1×), and the
+  merged parts hold about the same bytes a row (49.7 against 50 for spans, 9.7 against 9.5 for metric sums), so "about 1 TB per 1×"
+  in the [deployment guide](deployment.md#what-one-machine-carries) is the measured figure, not only an upper one.
+- **Metric sums are 71 % of it,** at 90 days: shorter metrics retention is the largest lever (`ALTER TABLE … MODIFY TTL`).
+- PostgreSQL's share is small: 0.08 GB a day at 1× (the 1× step); its SLO buckets are kept 35 days (`Slos:Retention`).
+- The Overview's disk figure measures a deployment's own day from its last whole UTC partition, and its days until full.
+
+## Not drilled
+
+- Rolling back a release after an upgrade, and an upgrade with more than one API replica.
+- A new host's own install (Docker, the checkout) in the RTO.
