@@ -119,8 +119,8 @@
       "kind": "gate",
       "title": "Gate: scale tests document throughput, query mix, queue lag, resource use, cost assumptions",
       "ref": "Roadmap Phase 10 gate",
-      "status": "todo",
-      "note": "Evidence in docs/scale-tests.md (M2 harness, M3 steps 1x and 3x). Gate itself waits for Phase 10 M5, after Phase 11."
+      "status": "doing",
+      "note": "Evidence ready 2026-11-16 (docs/phase-10-acceptance.md): throughput, query mix, queue lag and resources per step from 1x to 10x (docs/scale-tests.md), cost as resources with the disk at full retention measured after merges (docs/drills.md). Awaits the owner at the Phase 10 gate. Evidence in docs/scale-tests.md (M2 harness, M3 steps 1x and 3x). Gate itself waits for Phase 10 M5, after Phase 11."
     },
     {
       "doc_id": "p11-plan",
