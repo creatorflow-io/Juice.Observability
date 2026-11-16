@@ -1,7 +1,7 @@
 import { DecimalPipe } from '@angular/common';
 import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
-import { EMPTY, catchError, map, switchMap, tap, timer } from 'rxjs';
+import { EMPTY, catchError, map, switchMap, takeWhile, tap, timer } from 'rxjs';
 import { ApiService } from '../core/api.service';
 import { PlatformLevel } from '../core/models';
 import { AgoPipe, formatBytes, formatDuration, formatPercent } from './format';
@@ -104,7 +104,7 @@ export function formatMeasure(value: number | null | undefined, unit: string): s
                 @for (r of c.reads.slice(0, 6); track r.name) {
                   <div class="jc-list-row">
                     <span class="jc-badge" [class]="cls(r.level)">p95 {{ ms(r.p95Seconds) }}</span>
-                    <span>{{ r.name }}</span><span class="jc-muted">{{ r.count }} in 15 s</span>
+                    <span>{{ r.name }}</span><span class="jc-muted">{{ r.count }} in the last minute</span>
                   </div>
                 }
               } @else { <p class="jc-muted">No figures: ClickHouse isn't sampled (ClickHouse:MonitorConnectionString), or didn't answer.</p> }
@@ -112,7 +112,7 @@ export function formatMeasure(value: number | null | undefined, unit: string): s
               <h3>Disk</h3>
               @if (o.disk; as d) {
                 <div class="jc-list-row">
-                  <span class="jc-badge" [class]="cls(d.level)">{{ d.daysUntilFull === null ? 'not growing' : days(d.daysUntilFull) + ' until full' }}</span>
+                  <span class="jc-badge" [class]="cls(d.level)">{{ d.daysUntilFull !== null ? days(d.daysUntilFull) + ' until full' : d.bytesPerDay ? 'fits at retention' : 'not growing' }}</span>
                   <span>{{ bytes(d.used) }} used, {{ bytes(d.free) }} free</span>
                 </div>
                 <div class="jc-list-row">
@@ -167,7 +167,10 @@ export class PlatformPanel {
   protected readonly overview = apiResource({
     // Only for operators and admins (the tenant says so): a viewer never asks, so never gets the 403.
     stream: () => this.api.tenant$.pipe(switchMap(t => t.canOperate
-      ? timer(0, REFRESH_MS).pipe(switchMap(() => this.api.platformOverview().pipe(
+      ? timer(0, REFRESH_MS).pipe(
+        // Refused (a role taken away since sign-in): stop asking, rather than be refused every 15 s.
+        takeWhile(() => (this.failed() as { status?: number } | undefined)?.status !== 403),
+        switchMap(() => this.api.platformOverview().pipe(
         tap(() => this.failed.set(undefined)),
         catchError(e => { this.failed.set(e); return EMPTY; }))))
       : EMPTY)),

@@ -179,9 +179,11 @@ namespace Juice.Observability.Tests
             Assert.Equal(PlatformOverview.Warn, disk.Level);   // under a month
             Assert.Equal(PlatformOverview.Bad, PlatformOverview.Build(Status(), SampleOf(diskFree: 20e9), Now, null).Disk!.Level);
 
-            Assert.Equal(new TableGrowth("t", 5, false, 30), PlatformSampler.TableGrowthOf("t", 5, 9, 7200, 30));
-            Assert.Equal(new TableGrowth("t", 86400, true, 30), PlatformSampler.TableGrowthOf("t", 0, 7200, 7200, 30));
-            Assert.Null(PlatformSampler.TableGrowthOf("t", 0, 100, 600, 30).BytesPerDay);   // under an hour of today: no estimate yet
+            Assert.Equal(new TableGrowth("t", 5, false, 30), PlatformSampler.TableGrowthOf("t", 5, 86000, 9, 7200, 30));
+            // Yesterday's rows span two hours (ingestion started at 22:00): scaled to a day, and an estimate.
+            Assert.Equal(new TableGrowth("t", 43200, true, 30), PlatformSampler.TableGrowthOf("t", 3600, 7200, 9, 7200, 30));
+            Assert.Equal(new TableGrowth("t", 86400, true, 30), PlatformSampler.TableGrowthOf("t", 0, 0, 7200, 7200, 30));
+            Assert.Null(PlatformSampler.TableGrowthOf("t", 0, 0, 100, 600, 30).BytesPerDay);   // under an hour of today: no estimate yet
         }
 
         [Fact]
@@ -269,6 +271,7 @@ namespace Juice.Observability.Tests
             Assert.Null(overview.Ingestion);
             Assert.Null(overview.Disk);
             Assert.False(overview.Capacity.Calibrated);
+            Assert.StartsWith("ClickHouse isn't sampled now", overview.Capacity.Label);   // not "for another machine"
             Assert.Single(overview.Workers);
         }
 

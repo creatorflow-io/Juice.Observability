@@ -95,10 +95,12 @@ namespace Juice.Observability.Api.Endpoints
         }
 
         /// <summary>The tenants the caller may use: the one its tenant claim names, when it exists.</summary>
-        private static async Task<IResult> ListTenantsAsync(HttpContext http, PlatformDbContext db, IOptions<AuthOptions> auth, CancellationToken ct)
+        private static async Task<IResult> ListTenantsAsync(HttpContext http, PlatformDbContext db, IOptions<AuthOptions> auth, IOptions<Discovery.PlatformOptions> platform,
+            CancellationToken ct)
         {
             var key = http.User.FindFirst(auth.Value.TenantClaim)?.Value;
-            var operate = http.User.IsInRole(Roles.Operator) || http.User.IsInRole(Roles.Admin);
+            // As /api/v1/platform/overview judges it: the role, and this deployment's tenant.
+            var operate = (http.User.IsInRole(Roles.Operator) || http.User.IsInRole(Roles.Admin)) && key == platform.Value.TenantKey;
             var tenants = key is null ? [] : await db.Tenants.AsNoTracking()
                 .Where(t => t.Key == key && t.Status == TenantStatus.Active)
                 .Select(t => new TenantDto(t.Id, t.Key, t.DisplayName, operate)).ToListAsync(ct);

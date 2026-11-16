@@ -167,6 +167,9 @@ namespace Juice.Observability.Api
         /// </summary>
         public const double InsertWarnSeconds = 0.2, InsertBadSeconds = 0.35;
 
+        /// <summary>The <c>log_comment</c> every API telemetry read carries (ClickHouseTelemetrySource: callers named <c>api:...</c>).</summary>
+        private static readonly string ApiCaller = Discovery.ClickHouseTelemetrySource.LogComment("api:");
+
         /// <summary>An API search's p95: amber past the §9 API line (500 ms), red past 5 s.</summary>
         public const double SearchWarnSeconds = 0.5, SearchBadSeconds = 5;
 
@@ -207,13 +210,11 @@ namespace Juice.Observability.Api
             if (clickHouse is not null)
             {
                 var insertP95 = clickHouse.Finished.Where(f => f.User == "otel_writer" && f.Kind == "Insert").Select(f => f.P95).Max();
-                var cpuLines = Calibrated(calibrated, "clickhouse.cpu", m => m.Mean)
-                    ?? (clickHouse.CoresAvailable is { } available and > 0 ? (CpuWarn * available, CpuBad * available) : null);
-                var cpuLevel = Level(clickHouse.Cores, cpuLines);
+                var cpuLevel = Level(clickHouse.Cores, CpuLines(clickHouse, calibrated));
                 clickHouseFigures = new ClickHouse(clickHouse.Cores, clickHouse.CoresAvailable, cpuLevel, clickHouse.Running.Values.Sum(), clickHouse.InsertsInFlight,
                     insertP95, insertP95 is { } p ? Level(p, (InsertWarnSeconds, InsertBadSeconds)) : Unknown,
                     [.. (clickHouse.Callers ?? []).Select(c => new Caller(c.Caller, c.Count, c.P95,
-                        c.Caller.StartsWith("juice:api:", StringComparison.Ordinal) ? Level(c.P95, (SearchWarnSeconds, SearchBadSeconds)) : Ok))]);
+                        c.Caller.StartsWith(ApiCaller, StringComparison.Ordinal) ? Level(c.P95, (SearchWarnSeconds, SearchBadSeconds)) : Ok))]);
             }
 
             var disk = clickHouse is null ? null : DiskOf(clickHouse);
@@ -266,8 +267,7 @@ namespace Juice.Observability.Api
                     : fallback is { } f ? Level(now, f) : now is null ? Unknown : Ok;
                 resources.Add(new Resource(name, unit, now, atHeld, atCrossed, level));
             }
-            Add("clickhouse.cpu", "cores", clickHouse?.Cores, m => m.Mean,
-                clickHouse?.CoresAvailable is { } available and > 0 ? (CpuWarn * available, CpuBad * available) : null);
+            Add("clickhouse.cpu", "cores", clickHouse?.Cores, m => m.Mean, clickHouse is null ? null : CpuLines(clickHouse, null));
             Add("clickhouse.inserts_in_flight", "inserts", clickHouse?.InsertsInFlight, m => m.Mean, null);
             var queues = collector?.Queues;
             // The queues' sum over one queue's bound, as the steps measured it (the metrics queue is nearly all of it).
@@ -281,9 +281,11 @@ namespace Juice.Observability.Api
             var now = load.Max(l => l.Multiple);
             var label = calibration is null
                 ? "Not calibrated: no calibration file (Capacity:CalibrationFile). Utilisation only."
+                : clickHouse?.CoresAvailable is null || clickHouse.MemoryTotal is null
+                    ? "ClickHouse isn't sampled now, so this machine can't be matched to the calibration. Utilisation only."
                 : calibrated is null
                     ? $"Not calibrated for this machine: the calibration is for {calibration.Host.Cores:0} cores and {calibration.Host.MemoryBytes / (1L << 30):0.#} GiB"
-                      + (clickHouse?.CoresAvailable is { } c ? $", ClickHouse here has {c:0} cores and {(clickHouse.MemoryTotal ?? 0) / (1L << 30):0.#} GiB" : "")
+                      + $", ClickHouse here has {clickHouse.CoresAvailable:0} cores and {clickHouse.MemoryTotal / (1L << 30):0.#} GiB"
                       + ". Utilisation only."
                     : $"Calibrated on {calibration.Host.Cores:0} cores and {calibration.Host.MemoryBytes / (1L << 30):0.#} GiB, with {calibration.Mix.Rules} rules, "
                       + $"{calibration.Mix.Slos} SLOs, {calibration.Mix.Services} services and {calibration.Mix.SearchesPerSecond:0.#} searches a second"
@@ -291,6 +293,11 @@ namespace Juice.Observability.Api
             return new Capacity(calibrated is not null, label, load, mix, calibrated?.Knee.HeldTo, calibrated?.Knee.CrossedAt, calibrated?.Knee.Crossed ?? [],
                 calibrated?.Knee.HeldTo is { } heldTo && now is > 0 ? heldTo / now : null, resources);
         }
+
+        /// <summary>ClickHouse's CPU lines: what the steps measured where every line held and where one crossed, or else shares of its cores.</summary>
+        private static (double Warn, double Bad)? CpuLines(ClickHouseSample clickHouse, CapacityCalibration? calibrated)
+            => Calibrated(calibrated, "clickhouse.cpu", m => m.Mean)
+               ?? (clickHouse.CoresAvailable is { } available and > 0 ? (CpuWarn * available, CpuBad * available) : null);
 
         private static Load LoadOf(string signal, double? perSecond, double reference)
             => new(signal, perSecond, reference, perSecond is { } r && reference > 0 ? r / reference : null);

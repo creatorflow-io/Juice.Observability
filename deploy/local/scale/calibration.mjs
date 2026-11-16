@@ -34,7 +34,8 @@ const steps = dirs.map(dir => {
   const resources = {
     'clickhouse.cpu': { mean: cpu?.avg ?? null, max: cpu?.max ?? null, unit: 'cores' },
     'clickhouse.inserts_in_flight': { mean: components.inserts.mean, p99: components.inserts.p99, max: components.inserts.max, unit: 'inserts' },
-    'collector.queue': { p95: quantile(queue, 0.95) / QUEUE_BOUND, max: Math.max(...queue) / QUEUE_BOUND, unit: 'of the bound' },
+    // No queue samples in the step's window (the Collector restarted, a scrape failed): no figure, never 0, which would make any fill red.
+    'collector.queue': queue.length ? { p95: quantile(queue, 0.95) / QUEUE_BOUND, max: Math.max(...queue) / QUEUE_BOUND, unit: 'of the bound' } : { p95: null, max: null, unit: 'of the bound' },
   };
   // A worker's interval is the window over its passes (each runs on a timer); its utilisation is its mean pass over that.
   for (const p of components.passes) {
