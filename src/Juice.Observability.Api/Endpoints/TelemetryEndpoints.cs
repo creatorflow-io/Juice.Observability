@@ -304,7 +304,7 @@ namespace Juice.Observability.Api.Endpoints
                 ResourceType.Host => ($"(lowerUTF8(JuiceHostId) = {scope.Add("String", resource.Key)} OR (JuiceHostId = '' AND lowerUTF8({Host}) = {scope.Add("String", resource.Key)}))", false),
                 ResourceType.Container => ($"lowerUTF8(JuiceContainerId) = {scope.Add("String", resource.Key)}", false),
                 _ => (string.Join(" AND ", resource.Attributes.Where(kv => kv.Key.StartsWith("k8s.", StringComparison.Ordinal))
-                    .Select(kv => $"ResourceAttributes[{scope.Add("String", kv.Key)}] = {scope.Add("String", kv.Value)}").DefaultIfEmpty("false")), false),
+                    .Select(kv => $"{ResourceColumns.ColumnOf(kv.Key) ?? $"ResourceAttributes[{scope.Add("String", kv.Key)}]"} = {scope.Add("String", kv.Value)}").DefaultIfEmpty("false")), false),
             };
         }
 
@@ -414,7 +414,8 @@ namespace Juice.Observability.Api.Endpoints
             var rows = await clickHouse.QueryNewestFirstAsync(sql, scope.Window, r => (Trace: new TraceSummaryDto(r.GetString(0), Utc(r.GetValue(1)),
                 Ms(r.GetValue(2)), r.GetString(3), r.GetString(4), NonEmpty(r.GetString(5)), NonEmpty(r.GetString(6)), NonEmpty(r.GetString(7)),
                 Convert.ToInt64(r.GetValue(8)), Convert.ToInt64(r.GetValue(9)), ((string[])r.GetValue(10)).Order(StringComparer.Ordinal).ToList()),
-                Position: new Position(Convert.ToInt64(r.GetValue(11)), r.GetString(0))), scope.Window.Limit, ct, scope.Parameters, after?.Time);
+                Position: new Position(Convert.ToInt64(r.GetValue(11)), r.GetString(0))), scope.Window.Limit, ct, scope.Parameters, after?.Time,
+                sliced: filter.TraceId is not { Length: > 0 } && filter.SpanId is not { Length: > 0 });
             var page = rows.Take(take).ToList();
             var next = rows.Count > take ? page[^1].Position.Encode() : null;
             return Results.Ok(new TelemetryPage<TraceSummaryDto>(
@@ -556,7 +557,8 @@ namespace Juice.Observability.Api.Endpoints
                     NonEmpty(x.GetString(4)), NonEmpty(x.GetString(5)), x.GetString(6), Convert.ToBoolean(x.GetValue(7)),
                     NonEmpty(x.GetString(8)), NonEmpty(x.GetString(9)), Bounded(x.GetValue(10))),
                     Position: new Position(Convert.ToInt64(x.GetValue(11)), Convert.ToUInt64(x.GetValue(12)).ToString())),
-                scope.Window.Limit, ct, scope.Parameters, after?.Time);
+                scope.Window.Limit, ct, scope.Parameters, after?.Time,
+                sliced: traceId is not { Length: > 0 } && spanId is not { Length: > 0 });
             var page = rows.Take(take).ToList();
             var next = rows.Count > take ? page[^1].Position.Encode() : null;
             return Results.Ok(new TelemetryPage<LogDto>(page.Select(r => r.Log).ToList(), next is not null, next));

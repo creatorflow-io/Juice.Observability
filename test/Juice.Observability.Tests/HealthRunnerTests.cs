@@ -256,7 +256,8 @@ namespace Juice.Observability.Tests
             var start = DateTimeOffset.UtcNow;
             await SendAsync("a", start.AddMinutes(-3));
             await SendAsync("b", start.AddMinutes(-4));
-            await LocalStack.WaitForSpansAsync(service, 2);
+            await SendAsync("c", start);   // ingestion is current: the newest row remembered is near the previous end
+            await LocalStack.WaitForSpansAsync(service, 3);
             await Discover(database);
             async Task<Dictionary<string, DateTimeOffset?>> EvidenceAsync()
             {
@@ -276,7 +277,7 @@ namespace Juice.Observability.Tests
 
             // Stored now, but timed 2 minutes back: before the previous pass's end less the overlap.
             await SendAsync("b", start.AddMinutes(-2));
-            await LocalStack.WaitForSpansAsync(service, 3);
+            await LocalStack.WaitForSpansAsync(service, 4);
             await runner.RunOnceAsync(Ct);
             var following = await EvidenceAsync();
             Near(start.AddMinutes(-3), following["a"]);   // remembered: not read again
@@ -285,6 +286,42 @@ namespace Juice.Observability.Tests
             // A runner with nothing remembered reads the whole window.
             await Health(database).RunOnceAsync(Ct);
             Near(start.AddMinutes(-2), (await EvidenceAsync())["b"]);
+        }
+
+        [Fact]
+        public async Task A_following_pass_reads_further_back_while_ingestion_runs_late_Async()
+        {
+            // Review of milestone 5: with rows stored minutes after their own time, reading only from the previous end less the
+            // overlap missed every row, and live instances went Offline. The read reaches back as far as the newest row trails.
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var service = $"health-{_run}-late";
+            async Task SendAsync(DateTimeOffset at)
+                => await LocalStack.SendAsync("traces", Otlp.Traces([("service.name", service), ("service.instance.id", "a")],
+                    Otlp.Span(Otlp.TraceId(), Otlp.SpanId(), null, "work", Otlp.Internal, at)));
+            var start = DateTimeOffset.UtcNow;
+            await SendAsync(start.AddMinutes(-3));
+            await LocalStack.WaitForSpansAsync(service, 1);
+            await Discover(database);
+            async Task<DateTimeOffset?> EvidenceAsync()
+            {
+                await using var db = database.Context();
+                var serviceId = (await db.Services.SingleAsync(s => s.Name == service, Ct)).Id;
+                var instance = await db.Instances.SingleAsync(i => i.ServiceId == serviceId, Ct);
+                return (await db.HealthSnapshots.SingleAsync(h => h.SubjectId == instance.Id, Ct)).LastEvidenceAt;
+            }
+
+            // The clock runs 2 minutes ahead of the telemetry, as when ingestion is 2 minutes behind: the newest row anywhere in the
+            // tenant trails the pass's end by about that much.
+            var runner = Health(database, clock: new FixedClock(start.AddMinutes(2)));
+            await runner.RunOnceAsync(Ct);
+            Assert.InRange((await EvidenceAsync())!.Value, start.AddMinutes(-3).AddSeconds(-1), start.AddMinutes(-3).AddSeconds(1));
+
+            // Stored now, 30 s before the telemetry's present: 2 min 20 s before the previous end, past the overlap (1 min).
+            await SendAsync(start.AddSeconds(-30));
+            await LocalStack.WaitForSpansAsync(service, 2);
+            await runner.RunOnceAsync(Ct);
+            Assert.InRange((await EvidenceAsync())!.Value, start.AddSeconds(-31), start.AddSeconds(-29));
         }
 
         private static async Task Discover(ScratchDatabase database)

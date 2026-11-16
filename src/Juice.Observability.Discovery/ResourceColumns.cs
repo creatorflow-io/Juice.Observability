@@ -38,5 +38,10 @@ namespace Juice.Observability.Discovery
             [PodNamespace] = "k8s.namespace.name",
             [PodName] = "k8s.pod.name",
         };
+
+        private static readonly Dictionary<string, string> ColumnsByKey = Keys.ToDictionary(kv => kv.Value, kv => kv.Key, StringComparer.Ordinal);
+
+        /// <summary>The column that holds a resource attribute, or null for a key read from the map.</summary>
+        public static string? ColumnOf(string key) => ColumnsByKey.GetValueOrDefault(key);
     }
 }

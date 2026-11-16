@@ -119,7 +119,8 @@ namespace Juice.Observability.Discovery
             new[] { TelemetrySignals.SpansAndLogs, TelemetrySignals.Metrics, TelemetrySignals.All }
                 .ToDictionary(s => s, s => ResourcesQueryOf(ResourceTables.Where(t => s.HasFlag(SignalOf(t.Table)))));
 
-        private static TelemetrySignals SignalOf(string table)
+        /// <summary>Which signal a telemetry table holds: the metric tables, or spans and logs.</summary>
+        public static TelemetrySignals SignalOf(string table)
             => table.StartsWith("otel_metrics_", StringComparison.Ordinal) ? TelemetrySignals.Metrics : TelemetrySignals.SpansAndLogs;
 
         private static string ResourcesQueryOf(IEnumerable<(string Table, string Time)> tables) => $"""
@@ -254,47 +255,66 @@ namespace Juice.Observability.Discovery
         /// <paramref name="newest"/> (a cursor's position) or the window's end, starts <see cref="NewestSlice"/> before it, and
         /// widens <see cref="SliceGrowth"/> times until it returns <paramref name="enough"/> rows or covers the window. The
         /// answer is the same as one read of the whole window: when a slice already holds enough rows, nothing older can
-        /// rank above them. An API caller holds one query slot for every slice.
+        /// rank above them. An API caller holds one query slot for every slice. A search that can match only a few rows (by trace
+        /// or span id) passes <paramref name="sliced"/> false and reads the window at once: in slices it would read all four.
         /// </summary>
         public async Task<IReadOnlyList<T>> QueryNewestFirstAsync<T>(string sql, TelemetryWindow window, Func<DbDataReader, T> map, int enough,
-            CancellationToken cancellationToken, IReadOnlyDictionary<string, object>? parameters = null, DateTimeOffset? newest = null)
+            CancellationToken cancellationToken, IReadOnlyDictionary<string, object>? parameters = null, DateTimeOffset? newest = null, bool sliced = true)
         {
             var caller = PlatformCaller.Current;
             var holding = false;
             if (IsApi(caller))
             {
                 var started = Stopwatch.GetTimestamp();
-                if (!await apiSlots.WaitAsync(options.Value.Api.QueueTimeout, cancellationToken))
+                try
+                {
+                    await EnterApiSlotAsync(cancellationToken);
+                }
+                catch (TelemetryBusyException)
                 {
                     QueryDuration.Record(Stopwatch.GetElapsedTime(started).TotalSeconds,
                         new KeyValuePair<string, object?>("caller", caller), new KeyValuePair<string, object?>("outcome", "busy"));
-                    throw new TelemetryBusyException($"{options.Value.Api.MaxConcurrent} telemetry queries are already running on this replica");
+                    throw;
                 }
                 holding = true;
-                ApiRunning.Add(1);
             }
             try
             {
                 var top = newest is { } at && at < window.To ? at : window.To;
                 for (var slice = NewestSlice; ; slice *= SliceGrowth)
                 {
-                    var whole = top - slice <= window.From;
-                    var sliced = new Dictionary<string, object>(parameters ?? new Dictionary<string, object>())
+                    var whole = !sliced || top - slice <= window.From;
+                    var bounded = new Dictionary<string, object>(parameters ?? new Dictionary<string, object>())
                     {
                         ["slice_from"] = (whole ? window.From : top - slice).UtcDateTime,
                     };
-                    var rows = await QueryCoreAsync(sql, window, map, sliced, takeSlot: false, cancellationToken);
+                    var rows = await QueryCoreAsync(sql, window, map, bounded, takeSlot: false, cancellationToken);
                     if (whole || rows.Count >= enough) return rows;
                 }
             }
             finally
             {
-                if (holding)
-                {
-                    ApiRunning.Add(-1);
-                    apiSlots.Release();
-                }
+                if (holding) LeaveApiSlot();
             }
+        }
+
+        /// <summary>
+        /// Takes one of the replica's API query slots (ClickHouse:Api:MaxConcurrent), waiting at most QueueTimeout; busy if none
+        /// frees. <see cref="LeaveApiSlot"/> gives it back.
+        /// </summary>
+        private async Task EnterApiSlotAsync(CancellationToken cancellationToken)
+        {
+            if (!await apiSlots.WaitAsync(options.Value.Api.QueueTimeout, cancellationToken))
+            {
+                throw new TelemetryBusyException($"{options.Value.Api.MaxConcurrent} telemetry queries are already running on this replica");
+            }
+            ApiRunning.Add(1);
+        }
+
+        private void LeaveApiSlot()
+        {
+            ApiRunning.Add(-1);
+            apiSlots.Release();
         }
 
         private async Task<IReadOnlyList<T>> QueryCoreAsync<T>(string sql, TelemetryWindow window, Func<DbDataReader, T> map,
@@ -310,13 +330,10 @@ namespace Juice.Observability.Discovery
             {
                 if (api && takeSlot)
                 {
-                    if (!await apiSlots.WaitAsync(options.Value.Api.QueueTimeout, cancellationToken))
-                    {
-                        outcome = "busy";
-                        throw new TelemetryBusyException($"{options.Value.Api.MaxConcurrent} telemetry queries are already running on this replica");
-                    }
+                    outcome = "busy";
+                    await EnterApiSlotAsync(cancellationToken);
+                    outcome = "failure";
                     holding = true;
-                    ApiRunning.Add(1);
                 }
                 var rows = await RunAsync(sql, window, map, parameters, caller, api, c => command = c, cancellationToken);
                 outcome = "success";
@@ -341,11 +358,7 @@ namespace Juice.Observability.Discovery
             }
             finally
             {
-                if (holding)
-                {
-                    ApiRunning.Add(-1);
-                    apiSlots.Release();
-                }
+                if (holding) LeaveApiSlot();
                 var tag = new KeyValuePair<string, object?>("caller", caller);
                 QueryDuration.Record(Stopwatch.GetElapsedTime(started).TotalSeconds, tag, new KeyValuePair<string, object?>("outcome", outcome));
                 if (command?.QueryStats is { } stats)

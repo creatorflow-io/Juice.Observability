@@ -10,7 +10,11 @@ using Microsoft.Extensions.Options;
 
 namespace Juice.Observability.Discovery
 {
-    public sealed record DiscoveryRunResult(int Windows, DateTimeOffset Watermark, ReconcileResult Totals);
+    /// <param name="Windows">Windows read on the spans and logs checkpoint (or every table, without a separate metrics cadence).</param>
+    /// <param name="Watermark">Where the spans and logs checkpoint stands after the pass.</param>
+    /// <param name="Totals">What the pass created, over both checkpoints.</param>
+    /// <param name="MetricsWindows">Windows read on the metric tables' own checkpoint this pass; 0 when it wasn't due.</param>
+    public sealed record DiscoveryRunResult(int Windows, DateTimeOffset Watermark, ReconcileResult Totals, int MetricsWindows = 0);
 
     /// <summary>
     /// One discovery pass: reads telemetry from the checkpoint up to now minus the lag, in windows of at most
@@ -67,9 +71,12 @@ namespace Juice.Observability.Discovery
             var (windows, watermark, totals) = await AdvanceAsync(db, tenant, CheckpointSource,
                 separate ? TelemetrySignals.SpansAndLogs : TelemetrySignals.All, end, cancellationToken);
             // The metric tables on their own checkpoint, read once at least MetricsInterval has passed since it.
+            var metricsWindows = 0;
             if (separate && end - await WatermarkAsync(db, tenant.Id, MetricsCheckpointSource, end, cancellationToken) >= settings.MetricsInterval)
             {
-                totals = Add(totals, (await AdvanceAsync(db, tenant, MetricsCheckpointSource, TelemetrySignals.Metrics, end, cancellationToken)).Totals);
+                var metrics = await AdvanceAsync(db, tenant, MetricsCheckpointSource, TelemetrySignals.Metrics, end, cancellationToken);
+                metricsWindows = metrics.Windows;
+                totals = Add(totals, metrics.Totals);
             }
 
             if (totals.Services + totals.Instances + totals.Resources + totals.Dependencies > 0)
@@ -77,7 +84,7 @@ namespace Juice.Observability.Discovery
                 logger.LogInformation("Discovery created {Services} services, {Instances} instances, {Resources} resources, {Dependencies} dependencies",
                     totals.Services, totals.Instances, totals.Resources, totals.Dependencies);
             }
-            return new DiscoveryRunResult(windows, watermark, totals);
+            return new DiscoveryRunResult(windows, watermark, totals, metricsWindows);
         }
 
         private async Task<DateTimeOffset> WatermarkAsync(PlatformDbContext db, Guid tenantId, string checkpointSource, DateTimeOffset end,
@@ -206,6 +213,12 @@ namespace Juice.Observability.Discovery
         }
     }
 
+    internal sealed class ClickHouseOptionsValidator : IValidateOptions<ClickHouseOptions>
+    {
+        public ValidateOptionsResult Validate(string? name, ClickHouseOptions options)
+            => options.Api.Validate().ToList() is { Count: > 0 } errors ? ValidateOptionsResult.Fail(errors) : ValidateOptionsResult.Success;
+    }
+
     public static class DiscoveryServiceCollectionExtensions
     {
         /// <summary>Discovery from ClickHouse; the worker runs when <c>Discovery:Enabled</c> is true.</summary>
@@ -213,7 +226,9 @@ namespace Juice.Observability.Discovery
         {
             services.Configure<DiscoveryOptions>(configuration.GetSection(DiscoveryOptions.Section));
             services.AddOptions<ClickHouseOptions>().Bind(configuration.GetSection(ClickHouseOptions.Section))
-                .Validate(o => !o.Api.Validate().Any(), "invalid ClickHouse:Api settings").ValidateOnStart();
+                .ValidateOnStart();
+            // Each invalid ClickHouse:Api setting is named, with its range, in the startup failure.
+            services.AddSingleton<IValidateOptions<ClickHouseOptions>, ClickHouseOptionsValidator>();
             services.Configure<PlatformOptions>(configuration.GetSection(PlatformOptions.Section));
             services.AddSingleton<ClickHouseTelemetrySource>();
             services.AddSingleton<ITelemetrySource>(sp => sp.GetRequiredService<ClickHouseTelemetrySource>());

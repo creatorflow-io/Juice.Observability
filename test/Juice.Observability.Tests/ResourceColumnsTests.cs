@@ -54,6 +54,23 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
+        public void Every_column_a_platform_query_names_is_one_the_script_adds()
+        {
+            // The queries name the columns in their SQL text (review of milestone 5): a misspelt one would compile and fail only in
+            // ClickHouse. JuiceAgent is the agent's entry point, not a column.
+            var columns = ResourceColumns.Keys.Keys.Append("JuiceAgent").ToHashSet(StringComparer.Ordinal);
+            var unknown = Directory.EnumerateFiles(Path.Combine(Repository(), "src"), "*.cs", SearchOption.AllDirectories)
+                .SelectMany(file => Regex.Matches(File.ReadAllText(file), @"\bJuice[A-Z][A-Za-z]*\b")
+                    .Where(m => !columns.Contains(m.Value))
+                    .Select(m => $"{Path.GetFileName(file)}: {m.Value}"))
+                .ToList();
+
+            Assert.Empty(unknown);
+            Assert.Equal(ResourceColumns.PodUid, ResourceColumns.ColumnOf("k8s.pod.uid"));
+            Assert.Null(ResourceColumns.ColumnOf("k8s.deployment.name"));
+        }
+
+        [Fact]
         public async Task Every_column_holds_its_key_on_the_running_stack_Async()
         {
             LocalStack.RequireAvailable();

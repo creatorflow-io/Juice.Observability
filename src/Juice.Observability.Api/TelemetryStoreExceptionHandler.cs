@@ -30,12 +30,18 @@ namespace Juice.Observability.Api
             }
             http.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
             http.Response.Headers.RetryAfter = retry.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            return await problems.TryWriteAsync(new ProblemDetailsContext
+            if (!await problems.TryWriteAsync(new ProblemDetailsContext
             {
                 HttpContext = http,
                 Exception = exception,
                 ProblemDetails = new ProblemDetails { Status = StatusCodes.Status503ServiceUnavailable, Title = title, Detail = detail },
-            });
+            }))
+            {
+                // No problem writer takes the request's Accept (text/html, say): still the 503, as plain text, not the host's 500.
+                http.Response.ContentType = "text/plain; charset=utf-8";
+                await http.Response.WriteAsync($"{title}. {detail}", cancellationToken);
+            }
+            return true;
         }
     }
 }

@@ -75,18 +75,12 @@ namespace Juice.Observability.Slos
         /// <summary>
         /// The minutes in which the SLO's service sent any telemetry, of any signal (a running service exports its metrics every minute, busy or not).
         /// A minute without any is a gap, the service or the pipeline down, not a quiet minute: it isn't counted, so it stays unknown.
+        /// Read over spans and logs first, then over the metric tables (Phase 11 R12): a service with requests has spans in every minute,
+        /// so the metric tables, most of the rows, are read only for a stretch the spans and logs don't cover.
         /// </summary>
-        internal static readonly string PresenceQuery = PresenceQueryOf(ResourceTables);
+        internal static readonly string SpansAndLogsPresenceQuery = PresenceQueryOf(ResourceTables.Where(t => SignalOf(t.Table) == TelemetrySignals.SpansAndLogs));
 
-        /// <summary>
-        /// <see cref="PresenceQuery"/> over spans and logs, and over the metric tables (Phase 11 R12): a service with requests has spans in every
-        /// minute, so the metric tables, most of the rows, are read only for a stretch the spans and logs don't cover.
-        /// </summary>
-        internal static readonly string SpansAndLogsPresenceQuery = PresenceQueryOf(ResourceTables.Where(t => !IsMetricTable(t.Table)));
-
-        internal static readonly string MetricsPresenceQuery = PresenceQueryOf(ResourceTables.Where(t => IsMetricTable(t.Table)));
-
-        private static bool IsMetricTable(string table) => table.StartsWith("otel_metrics_", StringComparison.Ordinal);
+        internal static readonly string MetricsPresenceQuery = PresenceQueryOf(ResourceTables.Where(t => SignalOf(t.Table) == TelemetrySignals.Metrics));
 
         private static string PresenceQueryOf(IEnumerable<(string Table, string Time)> tables) => $"""
             SELECT DISTINCT minute FROM (

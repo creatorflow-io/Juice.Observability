@@ -75,6 +75,15 @@ namespace Juice.Observability.Tests
             var problem = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
             Assert.Equal("Telemetry store unavailable", problem.GetProperty("title").GetString());
             Assert.True(problem.TryGetProperty("correlationId", out _));
+
+            // A client that takes only HTML gets no problem document, but still the 503 (review of milestone 5).
+            using var html = new HttpRequestMessage(HttpMethod.Get, $"/api/v1/tenants/{tenant}/telemetry/traces");
+            html.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+            html.Headers.Accept.ParseAdd("text/html");
+            using var plain = await client.SendAsync(html, TestContext.Current.CancellationToken);
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, plain.StatusCode);
+            Assert.Equal("15", plain.Headers.GetValues("Retry-After").Single());
+            Assert.StartsWith("Telemetry store unavailable.", await plain.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
         }
     }
 }

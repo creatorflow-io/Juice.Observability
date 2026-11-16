@@ -82,14 +82,24 @@ namespace Juice.Observability.Health
 
         /// <summary>
         /// Every resource seen in the window, with its latest observation (Phase 11 R12). Reads only from the previous pass's
-        /// end less <paramref name="overlap"/>, and keeps what earlier passes saw while it is still in the window; with nothing
+        /// end less <paramref name="overlap"/> and less how far the newest row it remembers trailed that end (so ingestion running late
+        /// widens the read rather than losing rows), and keeps what earlier passes saw while it is still in the window; with nothing
         /// remembered, or a window that doesn't follow on, it reads the whole window. Before, every pass read the whole window,
         /// so each row was read about Window / Interval times.
         /// </summary>
         private async Task<List<ResourceObservation>> LivenessAsync(TelemetryWindow window, TimeSpan overlap, CancellationToken cancellationToken)
         {
-            var follows = seenThrough is { } through && through.Tenant == window.TenantKey && through.To > window.From && through.To <= window.To;
-            var from = follows && seenThrough!.Value.To - overlap > window.From ? seenThrough.Value.To - overlap : window.From;
+            var follows = seenThrough is { } through && through.Tenant == window.TenantKey && through.To > window.From && through.To <= window.To
+                && seen.Count > 0;
+            var from = window.From;
+            if (follows)
+            {
+                // Rows are stored some time after their own; how long is about how far the newest row remembered trails the previous
+                // end. The read reaches back that much further, so a backlog in ingestion widens it instead of losing every row.
+                var behind = seenThrough!.Value.To - seen.Values.Max(o => o.LastSeen);
+                var reach = seenThrough.Value.To - overlap - (behind > TimeSpan.Zero ? behind : TimeSpan.Zero);
+                if (reach > window.From) from = reach;
+            }
             var read = await clickHouse.ReadResourcesAsync(window with { From = from }, cancellationToken);
             if (!follows) seen.Clear();
             foreach (var o in read)
