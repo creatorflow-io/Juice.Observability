@@ -22,8 +22,9 @@ out="$root/build/dr-drill-$stamp"; mkdir -p "$out"
 tree="$root/build/dr-drill"
 log="$out/drill.log"
 source tests/drill-lib.sh
-env_of() { sed -n "s/^$1=//p" .env; }
-working=$(env_of COMPOSE_PROJECT_NAME); working=${working:-juice-observability}
+# The working stack's project, as compose itself resolves it (the shell's COMPOSE_PROJECT_NAME, .env, or the directory).
+working=$(docker compose config --format json 2>/dev/null | node -e 'let j="";process.stdin.on("data",d=>j+=d).on("end",()=>{ try { console.log(JSON.parse(j).name); } catch { console.log(""); } })')
+[[ -n "$working" ]] || { say "can't read the working stack's project from docker-compose.yml"; exit 1; }
 
 # What there is: every telemetry table's rows as a query sees them (count(): a part keeps the rows a lightweight DELETE masked until
 # it is merged, and a backup carries only the rows that are there), and every platform table's but those whose rows come and go by
@@ -43,7 +44,8 @@ snapshot() {   # in a stack's directory, with its project
 }
 
 # ─── 1. the latest backups of the working stack, then the loss ───
-[[ -n "$(docker compose ps -q --status running postgres clickhouse 2>/dev/null)" ]] || { say "the working stack isn't running: nothing to back up"; exit 2; }
+[[ "$(docker compose ps -q --status running postgres clickhouse 2>/dev/null | wc -l)" == 2 ]] \
+  || { say "the working stack's PostgreSQL and ClickHouse aren't both running: nothing to back up"; exit 2; }
 # Before anything changes: the ports the new project needs are free, but for the working stack's own (it is stopped next).
 require_free_ports "$(stack_ports --profile platform)" "$working"
 say "backing up the working stack (the schedule's backups)"
@@ -63,6 +65,7 @@ window=$(docker compose exec -T clickhouse clickhouse client --user admin --pass
   formatDateTime(max(Timestamp) - INTERVAL 1 HOUR, '%Y-%m-%dT%H:%i:%SZ', 'UTC'), formatDateTime(max(Timestamp), '%Y-%m-%dT%H:%i:%SZ', 'UTC')
   FROM otel.otel_traces WHERE JuiceTenant = '$(env_of JUICE_PLATFORM_TENANT_ID)' FORMAT TSV" </dev/null)
 read -r search_from search_to <<< "$window"
+[[ "$search_from" == 19* || -z "$search_from" ]] && { say "no spans of the deployment's tenant on the working stack: the search would test nothing"; exit 1; }
 
 say "the loss: the working stack stops (its volumes stay, unused by the drill)"
 docker compose --profile platform --profile test --profile grafana --profile agent stop >> "$log" 2>&1
@@ -111,9 +114,12 @@ up_at=$(date +%s)
 check "/health/platform ok on the new project (HTTP $status)" '[[ "$status" == 200 ]]'
 
 # ─── 3. the checks ───
-lost=$(join -t $'\t' -a1 -e MISSING -o 0,1.2,2.2 <(sort "$out/before.tsv") <(sort "$out/after.tsv") \
-  | awk -F'\t' '$2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/ || $3 + 0 < $2 + 0 { print $1 }' | tr '\n' ' ')
-check "every table back with at least what it held at the backup (${lost:-all})" '[[ -z "$lost" ]]'
+# Exactly what was counted at the backup: the writers were stopped, and the restored stores are counted before the platform starts, so
+# more is as wrong as less (rows restored twice, a Collector that wrote first).
+keyed() { LC_ALL=C sort -t $'\t' -k1,1 "$1"; }
+differ=$(LC_ALL=C join -t $'\t' -a1 -a2 -e MISSING -o 0,1.2,2.2 <(keyed "$out/before.tsv") <(keyed "$out/after.tsv") \
+  | awk -F'\t' '$2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/ || $3 != $2 { print $1 }' | tr '\n' ' ')
+check "every table back with exactly what it held at the backup (${differ:-all})" '[[ -z "$differ" ]]'
 token=$(viewer_token "$(env_of KEYCLOAK_DEMO_PASSWORD)")
 tenant=$(first_tenant "$token")
 services=$(curl -s -H "Authorization: Bearer $token" "http://localhost:5180/api/v1/tenants/$tenant/health?subjectType=service&limit=200" | page_items)
@@ -137,7 +143,7 @@ check "RTO within 4 h ($rto s from the start of the rebuild to the platform answ
   echo "RPO $rpo s (the last backup to the loss). RTO $rto s (rebuild started to the platform answering ok; the restores $(( restored - started )) s of it)."
   echo
   echo "| Count | At the backup | Restored |"; echo "|---|--:|--:|"
-  join -t $'\t' -a1 -a2 -e - -o 0,1.2,2.2 <(sort "$out/before.tsv") <(sort "$out/after.tsv") | awk -F'\t' '{ printf "| %s | %s | %s |\n", $1, $2, $3 }'
+  LC_ALL=C join -t $'\t' -a1 -a2 -e - -o 0,1.2,2.2 <(keyed "$out/before.tsv") <(keyed "$out/after.tsv") | awk -F'\t' '{ printf "| %s | %s | %s |\n", $1, $2, $3 }'
   echo
   grep -E ' (ok|FAILED): ' "$log" | sed 's/^[0-9:]* /- /'
 } > "$out/result.md"

@@ -47,13 +47,19 @@ JUICE_PLATFORM_TENANT_ID=upgrade-drill bash scripts/init.sh >> "$log" 2>&1 || { 
 # The exported COMPOSE_PROJECT_NAME already wins over .env; the drill's .env says so too, for anyone running compose in its directory.
 sed -i 's/^COMPOSE_PROJECT_NAME=.*/COMPOSE_PROJECT_NAME=juice-upgrade/' .env
 dc() { docker compose --profile platform "$@"; }
-env_of() { sed -n "s/^$1=//p" .env; }
 ch() { dc exec -T clickhouse clickhouse client --user admin --password "$(env_of CLICKHOUSE_ADMIN_PASSWORD)" -q "$1" </dev/null; }
 psql_() { dc exec -T postgres psql -U juice -d juice_observability -At "$@" </dev/null; }
 pg() { psql_ -c "$1"; }
 
 say "starting $from"
-dc up -d --build --wait >> "$log" 2>&1 || { say "$from didn't start: see $log"; exit 1; }
+# 1.2.0's API can crash as it starts (exit 139: Npgsql's GSS encryption probe, fixed in 1.3.0, docs/scale-tests.md, Phase 11 fixes §1),
+# and its compose file has no restart policy for it: started again, up to three times, each crash logged with the API's last lines.
+for attempt in 1 2 3; do
+  dc up -d --build --wait >> "$log" 2>&1 && break
+  say "$from didn't start (attempt $attempt): the API exited $(docker inspect -f '{{.State.ExitCode}}' "$(dc ps -aq platform-api)" 2>/dev/null)"
+  dc logs --tail 40 platform-api >> "$log" 2>&1
+  (( attempt == 3 )) && { say "$from didn't start: see $log"; exit 1; }
+done
 say "sending ${minutes} min of 1× load"
 load_from=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 JUICE_LOCAL_DIR="$tree/deploy/local/" node "$here/scale/generate.mjs" --multiplier 1 --duration $((minutes * 60)) --out "$out/before-load" >> "$log" 2>&1 \

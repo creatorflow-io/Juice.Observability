@@ -5,6 +5,8 @@ failures=()
 say() { echo "$(date -u +%H:%M:%S) $*" | tee -a "$log"; }
 # check "<what>" '<test>': the test is evaluated; a failure is recorded, and the drill exits 1 at its end.
 check() { if eval "$2"; then say "ok: $1"; else say "FAILED: $1"; failures+=("$1"); fi; }
+# A setting from the .env in the current directory (the stack's).
+env_of() { sed -n "s/^$1=//p" .env; }
 # A count read from a store: a number, or the drill can't judge it (a failed query prints nothing, which must never read as 0).
 is_count() { [[ "$1" =~ ^[0-9]+$ ]]; }
 

@@ -31,7 +31,7 @@ remove_project juice-retention
 
 cleanup() {
   if ! $keep && [[ -d "$tree/deploy/local" ]]; then
-    (cd "$tree/deploy/local" && docker compose down -v --remove-orphans >> "$log" 2>&1)
+    (cd "$tree/deploy/local" && docker compose --profile platform down -v --remove-orphans >> "$log" 2>&1)
     remove_tree
   fi
 }
@@ -44,7 +44,7 @@ cd "$tree/deploy/local" 2>/dev/null && [[ "$(pwd -P)" != "$(cd "$here" && pwd -P
 JUICE_PLATFORM_TENANT_ID=retention-drill bash scripts/init.sh >> "$log" 2>&1 || { say "init.sh failed"; exit 1; }
 sed -i "s/^COMPOSE_PROJECT_NAME=.*/COMPOSE_PROJECT_NAME=juice-retention/; s/^JUICE_TRACES_TTL=.*/JUICE_TRACES_TTL=$ttl/;
   s/^JUICE_METRICS_TTL=.*/JUICE_METRICS_TTL=$ttl/; s/^JUICE_LOGS_TTL=.*/JUICE_LOGS_TTL=$ttl/" .env
-admin=$(sed -n 's/^CLICKHOUSE_ADMIN_PASSWORD=//p' .env)
+admin=$(env_of CLICKHOUSE_ADMIN_PASSWORD)
 ch() { docker compose exec -T clickhouse clickhouse client --user admin --password "$admin" -q "$1" </dev/null; }
 
 say "starting the telemetry stack (no platform)"
@@ -56,7 +56,7 @@ time_of() { case $1 in otel_metrics_*) echo TimeUnix ;; otel_traces_trace_id_ts)
 for _ in $(seq 1 60); do
   [[ "$(ch "SELECT count() FROM system.tables WHERE database = 'otel' AND name IN ($listed)")" == 8 ]] && break; sleep 2
 done
-ttls=$(ch "SELECT name, extract(engine_full, 'TTL [^S]*') FROM system.tables WHERE database = 'otel' AND name IN ($listed) ORDER BY name FORMAT TSV")
+ttls=$(ch "SELECT name, extract(engine_full, 'TTL (.*?) SETTINGS') FROM system.tables WHERE database = 'otel' AND name IN ($listed) ORDER BY name FORMAT TSV")
 say "TTLs: $(echo "$ttls" | tr '\t\n' '  ')"
 set_ttl=$(echo "$ttls" | grep -c "toIntervalMinute($ttl_minutes)")
 check "the exporter created every table, the trace index included, with the configured TTL ($set_ttl of 8 at $ttl)" '[[ "$set_ttl" == 8 ]]'
@@ -69,21 +69,23 @@ sent_at=$(date +%s)
 # The load's rows in each table (the generated shop; every trace in the index is the load's: nothing else sends spans). A count that
 # isn't a number (a failed query) is printed as it came, and never counts as gone.
 rows() {
-  local t where
+  local t where query=""
   for t in $tables; do
     [[ $t == otel_traces_trace_id_ts ]] && where=1 || where="JuiceServiceNamespace = 'shop'"
-    echo -e "$t\t$(ch "SELECT count() FROM otel.$t WHERE $where")"
+    query+="${query:+ UNION ALL }SELECT '$t', count() FROM otel.$t WHERE $where"
   done
+  # A failed query prints no line for a table: each table is listed, its count empty then, which never reads as gone.
+  local got; got=$(ch "$query FORMAT TSV")
+  for t in $tables; do echo -e "$t\t$(echo "$got" | awk -F'\t' -v t="$t" '$1 == t { print $2 }')"; done
 }
 # Rows of any source past their TTL by more than a TTL merge's interval (60 s) and a minute to run it; "?" when a count failed.
 past_ttl() {
-  local t n sum=0
+  local t query=""
   for t in $tables; do
-    n=$(ch "SELECT count() FROM otel.$t WHERE $(time_of "$t") < now() - toIntervalMinute($ttl_minutes) - INTERVAL 2 MINUTE")
-    is_count "$n" || { echo "?"; return; }
-    sum=$(( sum + n ))
+    query+="${query:+ UNION ALL }SELECT count() AS n FROM otel.$t WHERE $(time_of "$t") < now() - toIntervalMinute($ttl_minutes) - INTERVAL 2 MINUTE"
   done
-  echo "$sum"
+  local n; n=$(ch "SELECT sum(n) FROM ($query)")
+  is_count "$n" && echo "$n" || echo "?"
 }
 stored=$(rows); echo "$stored" | sed "s/^/$(date -u +%H:%M:%S)\tstored\t/" >> "$out/rows.tsv"
 say "stored: $(echo "$stored" | tr '\t\n' '= ')"
