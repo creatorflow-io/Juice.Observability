@@ -271,7 +271,8 @@ export interface PlatformOverview {
 export interface PlatformCapacity {
   calibrated: boolean; label: string;
   load: { signal: string; perSecond: number | null; reference: number; multiple: number | null }[];
-  mix: { rules: number; slos: number; services: number; calibratedRules: number | null; calibratedSlos: number | null; calibratedServices: number | null; calibratedSearchesPerSecond: number | null };
+  /** Null until the platform database's counts are first read. */
+  mix: { rules: number | null; slos: number | null; services: number | null; calibratedRules: number | null; calibratedSlos: number | null; calibratedServices: number | null; calibratedSearchesPerSecond: number | null };
   heldTo: number | null; crossedAt: number | null; crossed: string[];
   /** The last step that held over today's load: how many times today's load the platform held at. */
   headroom: number | null;

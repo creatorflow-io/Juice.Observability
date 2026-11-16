@@ -112,7 +112,7 @@ export function formatMeasure(value: number | null | undefined, unit: string): s
               <h3>Disk</h3>
               @if (o.disk; as d) {
                 <div class="jc-list-row">
-                  <span class="jc-badge" [class]="cls(d.level)">{{ d.daysUntilFull !== null ? days(d.daysUntilFull) + ' until full' : d.bytesPerDay ? 'fits at retention' : 'not growing' }}</span>
+                  <span class="jc-badge" [class]="cls(d.level)">{{ d.daysUntilFull !== null ? days(d.daysUntilFull) + ' until full' : d.bytesPerDay === null ? 'no estimate yet' : d.bytesPerDay > 0 ? 'fits at retention' : 'not growing' }}</span>
                   <span>{{ bytes(d.used) }} used, {{ bytes(d.free) }} free</span>
                 </div>
                 <div class="jc-list-row">
@@ -137,7 +137,7 @@ export function formatMeasure(value: number | null | undefined, unit: string): s
               @if (o.capacity.headroom !== null) { Today's load is {{ (1 / o.capacity.headroom * 100).toFixed(0) }} % of what held. }</p>
           }
           <div class="jc-list-row jc-muted">
-            Now: {{ o.capacity.mix.rules }} rules, {{ o.capacity.mix.slos }} SLOs, {{ o.capacity.mix.services }} services
+            Now: {{ o.capacity.mix.rules ?? '—' }} rules, {{ o.capacity.mix.slos ?? '—' }} SLOs, {{ o.capacity.mix.services ?? '—' }} services
             @if (o.capacity.mix.calibratedRules !== null) {
               · calibrated with {{ o.capacity.mix.calibratedRules }} rules, {{ o.capacity.mix.calibratedSlos }} SLOs, {{ o.capacity.mix.calibratedServices }} services
               and {{ o.capacity.mix.calibratedSearchesPerSecond }} searches a second
@@ -166,7 +166,8 @@ export class PlatformPanel {
   private readonly failed = signal<unknown>(undefined);
   protected readonly overview = apiResource({
     // Only for operators and admins (the tenant says so): a viewer never asks, so never gets the 403.
-    stream: () => this.api.tenant$.pipe(switchMap(t => t.canOperate
+    // A new tenant answer starts afresh: a 403 before it doesn't stop the reads it allows.
+    stream: () => this.api.tenant$.pipe(tap(() => this.failed.set(undefined)), switchMap(t => t.canOperate
       ? timer(0, REFRESH_MS).pipe(
         // Refused (a role taken away since sign-in): stop asking, rather than be refused every 15 s.
         takeWhile(() => (this.failed() as { status?: number } | undefined)?.status !== 403),

@@ -149,7 +149,7 @@ namespace Juice.Observability.Api
 
         public sealed record Load(string Signal, double? PerSecond, double Reference, double? Multiple);
 
-        public sealed record Mix(long Rules, long Slos, long Services, long? CalibratedRules, long? CalibratedSlos, long? CalibratedServices,
+        public sealed record Mix(long? Rules, long? Slos, long? Services, long? CalibratedRules, long? CalibratedSlos, long? CalibratedServices,
             double? CalibratedSearchesPerSecond);
 
         /// <summary>
@@ -252,7 +252,7 @@ namespace Juice.Observability.Api
             {
                 LoadOf("spans", Rate("spans"), reference.Spans), LoadOf("points", Rate("points"), reference.Points), LoadOf("logs", Rate("logs"), reference.Logs),
             };
-            var mix = new Mix(postgres?.Rules ?? 0, postgres?.Slos ?? 0, postgres?.Services ?? 0, calibration?.Mix.Rules, calibration?.Mix.Slos,
+            var mix = new Mix(postgres?.Rules, postgres?.Slos, postgres?.Services, calibration?.Mix.Rules, calibration?.Mix.Slos,
                 calibration?.Mix.Services, calibration?.Mix.SearchesPerSecond);
 
             var resources = new List<Resource>();
@@ -281,8 +281,10 @@ namespace Juice.Observability.Api
             var now = load.Max(l => l.Multiple);
             var label = calibration is null
                 ? "Not calibrated: no calibration file (Capacity:CalibrationFile). Utilisation only."
-                : clickHouse?.CoresAvailable is null || clickHouse.MemoryTotal is null
+                : clickHouse is null
                     ? "ClickHouse isn't sampled now, so this machine can't be matched to the calibration. Utilisation only."
+                : clickHouse.CoresAvailable is null || clickHouse.MemoryTotal is null
+                    ? "ClickHouse's cores or memory couldn't be read, so this machine can't be matched to the calibration. Utilisation only."
                 : calibrated is null
                     ? $"Not calibrated for this machine: the calibration is for {calibration.Host.Cores:0} cores and {calibration.Host.MemoryBytes / (1L << 30):0.#} GiB"
                       + $", ClickHouse here has {clickHouse.CoresAvailable:0} cores and {clickHouse.MemoryTotal / (1L << 30):0.#} GiB"

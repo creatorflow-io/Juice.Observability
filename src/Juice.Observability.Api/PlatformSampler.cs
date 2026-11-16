@@ -96,14 +96,14 @@ namespace Juice.Observability.Api
         private static void Gauge(string name, string unit, string description, Func<Sample, IEnumerable<Measurement<double>>> read)
             => Meter.CreateObservableGauge(name, () => s_live is { Latest: { } sample } live && live._clock.GetUtcNow() - sample.At <= Fresh ? read(sample) : [], unit, description);
 
-        /// <summary>One PostgreSQL sample. Rules (enabled), Slos (not retired) and Services count the deployment's
+        /// <summary>One PostgreSQL sample. Rules (enabled), Slos (not retired) and Services (null until first read) count the deployment's
         /// tenant: the mix the capacity view sets beside its calibration's (Phase 11 R9).</summary>
         public sealed record PostgresSample(bool Up, double Duration, double Size, double? WatermarkLag, long OutboxPending, long OutboxRetrying,
-            double? OutboxOldest, long WebhookPending, long WebhookRetrying, double? WebhookOldest, long Rules = 0, long Slos = 0, long Services = 0);
+            double? OutboxOldest, long WebhookPending, long WebhookRetrying, double? WebhookOldest, long? Rules = null, long? Slos = null, long? Services = null);
 
         public sealed record FinishedQueries(string User, string Kind, long Succeeded, long Failed, double? P95);
 
-        /// <summary>The platform's reads of one caller (<c>log_comment</c>, such as <c>juice:slos</c>) finished in the sample's window.</summary>
+        /// <summary>The platform's reads of one caller (<c>log_comment</c>, such as <c>juice:slos</c>) finished in the last minute (read once a minute).</summary>
         public sealed record CallerQueries(string Caller, long Count, double P95);
 
         /// <summary>
@@ -145,13 +145,13 @@ namespace Juice.Observability.Api
 
         private readonly TimeProvider _clock = clock;
         private (long Micros, long At)? _cpu;
-        // What doesn't change while ClickHouse runs, read once: its cores and its machine's memory (Phase 11 R9). The tables' retention, read
-        // again at most every RetentionRead.
-        // (each read again at most every SlowRead: a ClickHouse restarted on another machine shows within it, and a value missing is retried).
+        // What seldom changes, read again at most every SlowRead (Phase 11 R9): ClickHouse's cores and its machine's memory (also while either is
+        // missing, and a ClickHouse restarted on another machine shows within it), and the tables' retention.
         private (double? Cores, double? Memory, long At)? _machine;
         private (IReadOnlyDictionary<string, int?> Days, long At)? _retention;
         private static readonly TimeSpan SlowRead = TimeSpan.FromMinutes(10);
-        // The platform's reads by caller, and the mix, change slowly and cost a scan each: read once a minute, the last answer kept between.
+        // The platform's reads by caller, and the mix, change slowly and cost a scan each: read once a minute, the last answer kept between. A
+        // failed read drops the callers' answer (it would be shown as the last minute's); the mix is kept, and stays unknown until first read.
         private (IReadOnlyList<CallerQueries> Callers, long At)? _callers;
         private ((long Rules, long Slos, long Services) Mix, long At)? _mix;
         private static readonly TimeSpan MinuteRead = TimeSpan.FromMinutes(1);
@@ -449,6 +449,7 @@ namespace Juice.Observability.Api
                 catch (Exception ex) when (ex is not OperationCanceledException || !StoppingNow(cancellationToken))
                 {
                     logger.LogWarning(ex, "ClickHouse's figures for the Overview couldn't be read this sample");
+                    if (_callers is { } stale && Stopwatch.GetElapsedTime(stale.At) > MinuteRead) _callers = null;
                 }
 
                 return new ClickHouseSample(true, cores, memory, running,
@@ -459,6 +460,7 @@ namespace Juice.Observability.Api
             {
                 logger.LogWarning(ex, "ClickHouse didn't answer the platform sample");
                 _cpu = null;
+                _callers = null;   // read afresh once it answers, never the minute before it went down
                 return new ClickHouseSample(false, null, 0, new Dictionary<string, long>(), [], [], []);
             }
         }

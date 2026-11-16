@@ -115,7 +115,7 @@ namespace Juice.Observability.Tests
             Assert.Equal((5d, 10d), (capacity.HeldTo!.Value, capacity.CrossedAt!.Value));
             Assert.Equal(1, capacity.Load.Single(l => l.Signal == "points").Multiple);
             Assert.Equal(5, capacity.Headroom);
-            Assert.Equal((50L, 50L, 50L, 50L), (capacity.Mix.Rules, capacity.Mix.CalibratedRules!.Value, capacity.Mix.Slos, capacity.Mix.CalibratedSlos!.Value));
+            Assert.Equal((50L, 50L, 50L, 50L), (capacity.Mix.Rules!.Value, capacity.Mix.CalibratedRules!.Value, capacity.Mix.Slos!.Value, capacity.Mix.CalibratedSlos!.Value));
             // Inserts in flight: 2.09 where every line held (5×), 10.3 where one crossed (10×). 3 is past the first.
             var inserts = capacity.Resources.Single(r => r.Name == "clickhouse.inserts_in_flight");
             Assert.Equal(PlatformOverview.Warn, inserts.Level);
@@ -322,6 +322,9 @@ namespace Juice.Observability.Tests
             Assert.True(clickHouse.InsertsInFlight >= 0);
             Assert.NotNull(clickHouse.Callers);
             Assert.Contains(clickHouse.Growth!, g => g.Name == "otel_traces" && g.RetentionDays is > 0);
+            // The exporter's DateTime64 time columns give its parts a time range, so a day's span is known (not 0) once a day has data.
+            Assert.True(await LocalStack.ClickHouseAsync(
+                "SELECT count() FROM system.parts WHERE active AND database = 'otel' AND table = 'otel_traces' AND toUnixTimestamp(max_time) > 0") != "0");
             Assert.True(second.Postgres.Services >= 0);
         }
 
