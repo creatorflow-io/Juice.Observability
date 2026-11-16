@@ -74,9 +74,16 @@ rows() {
     [[ $t == otel_traces_trace_id_ts ]] && where=1 || where="JuiceServiceNamespace = 'shop'"
     query+="${query:+ UNION ALL }SELECT '$t', count() FROM otel.$t WHERE $where"
   done
-  # A failed query prints no line for a table: each table is listed, its count empty then, which never reads as gone.
-  local got; got=$(ch "$query FORMAT TSV")
-  for t in $tables; do echo -e "$t\t$(echo "$got" | awk -F'\t' -v t="$t" '$1 == t { print $2 }')"; done
+  # If the one query fails, each table on its own, so one table's failure leaves only its own count empty (which never reads as gone).
+  local got; got=$(ch "$query FORMAT TSV") || got=""
+  for t in $tables; do
+    local n; n=$(echo "$got" | awk -F'\t' -v t="$t" '$1 == t { print $2 }')
+    if [[ -z "$got" ]]; then
+      [[ $t == otel_traces_trace_id_ts ]] && where=1 || where="JuiceServiceNamespace = 'shop'"
+      n=$(ch "SELECT count() FROM otel.$t WHERE $where" 2>/dev/null)
+    fi
+    echo -e "$t\t$n"
+  done
 }
 # Rows of any source past their TTL by more than a TTL merge's interval (60 s) and a minute to run it; "?" when a count failed.
 past_ttl() {

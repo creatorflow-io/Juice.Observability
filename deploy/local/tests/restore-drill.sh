@@ -4,6 +4,7 @@
 # Then the same for telemetry (ClickHouse).
 set -uo pipefail
 cd "$(dirname "$0")/.."
+export LC_ALL=C   # sort and join agree on the order, whatever the locale
 export MSYS_NO_PATHCONV=1
 q() { docker compose exec -T postgres psql -U juice -d "$1" -At -c "$2" < /dev/null; }
 counts() {

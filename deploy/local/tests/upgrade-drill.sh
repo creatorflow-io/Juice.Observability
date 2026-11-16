@@ -54,11 +54,13 @@ pg() { psql_ -c "$1"; }
 say "starting $from"
 # 1.2.0's API can crash as it starts (exit 139: Npgsql's GSS encryption probe, fixed in 1.3.0, docs/scale-tests.md, Phase 11 fixes §1),
 # and its compose file has no restart policy for it: started again, up to three times, each crash logged with the API's last lines.
+# Only that crash is retried; any other failure (a build, a port, a service never healthy) stops the drill at once.
 for attempt in 1 2 3; do
   dc up -d --build --wait >> "$log" 2>&1 && break
-  say "$from didn't start (attempt $attempt): the API exited $(docker inspect -f '{{.State.ExitCode}}' "$(dc ps -aq platform-api)" 2>/dev/null)"
+  code=$(docker inspect -f '{{.State.ExitCode}}' "$(dc ps -aq platform-api)" 2>/dev/null)
   dc logs --tail 40 platform-api >> "$log" 2>&1
-  (( attempt == 3 )) && { say "$from didn't start: see $log"; exit 1; }
+  [[ "$code" == 139 && $attempt -lt 3 ]] || { say "$from didn't start (the API's exit code: ${code:-none}): see $log"; exit 1; }
+  say "$from's API crashed as it started (exit 139, attempt $attempt): starting it again"
 done
 say "sending ${minutes} min of 1× load"
 load_from=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -108,10 +110,10 @@ say "after: $(tr '\t\n' '= ' < "$out/after.tsv")"
 
 # ─── the checks ───
 # Every count before against after: one missing after (a table dropped, a count that failed) is lost too.
-lost=$(join -t $'\t' -a1 -e MISSING -o 0,1.2,2.2 <(sort "$out/before.tsv") <(sort "$out/after.tsv") \
+lost=$(LC_ALL=C join -t $'\t' -a1 -e MISSING -o 0,1.2,2.2 <(keyed "$out/before.tsv") <(keyed "$out/after.tsv") \
   | awk -F'\t' '$2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/ || $3 + 0 < $2 + 0 { print $1 }' | tr '\n' ' ')
 check "nothing lost: every table and record count at least what it was (${lost:-all kept})" '[[ -z "$lost" ]]'
-grew=$(join -t $'\t' <(sort "$out/before.tsv") <(sort "$out/after.tsv") | awk -F'\t' '$1 == "otel_traces" && $3 > $2 { print "yes" }')
+grew=$(LC_ALL=C join -t $'\t' <(keyed "$out/before.tsv") <(keyed "$out/after.tsv") | awk -F'\t' '$1 == "otel_traces" && $3 > $2 { print "yes" }')
 check "telemetry still flows: more spans after the upgrade's load" '[[ "$grew" == yes ]]'
 applied=$(pg 'SELECT count(*) FROM __ef_migrations_history')
 shipped=$(ls "$tree/src/Juice.Observability.Data/Migrations" | grep -cE '^[0-9]{14}_[A-Za-z0-9]+\.cs$')
@@ -121,7 +123,7 @@ check "the resource columns on all seven tables ($columns of 84)" '[[ "$columns"
 # The platform reads the old data through the new columns: a trace search over the load before the upgrade (its tenant filter is
 # JuiceTenant now, on parts written before the column existed) finds its traces.
 token=$(viewer_token "$(env_of KEYCLOAK_DEMO_PASSWORD)")
-tenant=$(first_tenant "$token")
+tenant=$(tenant_id "$token" upgrade-drill)
 found=$(curl -s -H "Authorization: Bearer $token" "http://localhost:5180/api/v1/tenants/$tenant/telemetry/traces?from=$load_from&to=$load_to&limit=10" | page_items)
 check "the old traces found through the new columns ($found of a page of 10, from before the upgrade)" '[[ "$found" -gt 0 ]]'
 policy=$(ch "SELECT select_filter FROM system.row_policies WHERE short_name = 'grafana_tenant' LIMIT 1")
@@ -158,7 +160,7 @@ check "the platform's own telemetry isn't in the tenant's inventory ($leaked ser
   echo "Compose up to the stack up again: $up_in s."
   echo
   echo "| Count | Before | After |"; echo "|---|--:|--:|"
-  join -t $'\t' -a1 -a2 -e - -o 0,1.2,2.2 <(sort "$out/before.tsv") <(sort "$out/after.tsv") | awk -F'\t' '{ printf "| %s | %s | %s |\n", $1, $2, $3 }'
+  LC_ALL=C join -t $'\t' -a1 -a2 -e - -o 0,1.2,2.2 <(keyed "$out/before.tsv") <(keyed "$out/after.tsv") | awk -F'\t' '{ printf "| %s | %s | %s |\n", $1, $2, $3 }'
   echo
   grep -E ' (ok|FAILED): ' "$log" | sed 's/^[0-9:]* /- /'
 } > "$out/result.md"

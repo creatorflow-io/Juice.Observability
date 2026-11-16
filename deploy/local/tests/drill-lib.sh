@@ -1,5 +1,5 @@
 # Shared by the drills (tests/upgrade-drill.sh, tests/dr-drill.sh, tests/retention-drill.sh; docs/drills.md): logging and checks, the
-# stack's ports, the drill's worktree, the viewer's token. Sourced after the drill sets root, tree and log.
+# stack's ports, the drill's project and worktree, JSON answers, the viewer's token. Sourced after the drill sets root, tree and log.
 
 failures=()
 say() { echo "$(date -u +%H:%M:%S) $*" | tee -a "$log"; }
@@ -9,12 +9,19 @@ check() { if eval "$2"; then say "ok: $1"; else say "FAILED: $1"; failures+=("$1
 env_of() { sed -n "s/^$1=//p" .env; }
 # A count read from a store: a number, or the drill can't judge it (a failed query prints nothing, which must never read as 0).
 is_count() { [[ "$1" =~ ^[0-9]+$ ]]; }
+# A tab-separated file sorted on its first column, as join wants it, whatever the locale.
+keyed() { LC_ALL=C sort -t $'\t' -k1,1 "$1"; }
+
+# json '<JavaScript function of the parsed input>': what it returns, from JSON on stdin; nothing when the input isn't JSON or it throws.
+json() {
+  node -e 'let j=""; process.stdin.on("data", d => j += d).on("end", () => {
+    try { const v = eval(process.argv[1])(JSON.parse(j)); console.log(v ?? ""); } catch { console.log(""); } })' "$1"
+}
 
 # The host ports the stack publishes, from the compose file in the current directory (with the profiles given).
 stack_ports() {
-  docker compose "$@" config --format json 2>/dev/null | node -e 'let j="";process.stdin.on("data",d=>j+=d).on("end",()=>{
-    try { const c=JSON.parse(j); console.log([...new Set(Object.values(c.services).flatMap(s=>(s.ports||[]).map(p=>p.published))
-      .filter(Boolean))].join(" ")); } catch { console.log(""); } })'
+  docker compose "$@" config --format json 2>/dev/null \
+    | json 'c => [...new Set(Object.values(c.services).flatMap(s => (s.ports || []).map(p => p.published)).filter(Boolean))].join(" ")'
 }
 
 # require_free_ports "<ports>" [project...]: every port free, but those held by the named compose projects' containers (the drill stops or
@@ -30,9 +37,9 @@ require_free_ports() {
   done
 }
 
-# The drill's project and its volumes, gone (an earlier run's, interrupted or kept).
+# The drill's project and its volumes gone (an earlier run's, interrupted or kept): every profile's containers, then any volume left.
 remove_project() {
-  docker compose -p "$1" down -v --remove-orphans >> "$log" 2>&1
+  docker compose -p "$1" --profile platform --profile test --profile grafana --profile agent down -v --remove-orphans >> "$log" 2>&1
   docker volume ls -q --filter "label=com.docker.compose.project=$1" | xargs -r docker volume rm >> "$log" 2>&1
 }
 
@@ -43,17 +50,13 @@ remove_tree() {
   if [[ -e "$tree" ]]; then say "the worktree $tree is left: remove it, then git worktree prune"; else say "the drill's project, volumes and worktree removed"; fi
 }
 
-# The demo viewer's token from the stack's IdP (the password given), and the first tenant the token may read.
+# The demo viewer's token from the stack's IdP (the password given), and the id of the tenant with the key given (the deployment's).
 viewer_token() {
   curl -s http://localhost:8080/realms/juice/protocol/openid-connect/token -d grant_type=password -d client_id=juice-platform-cli \
-    -d username=victor --data-urlencode "password=$1" \
-    | node -e 'let j="";process.stdin.on("data",d=>j+=d).on("end",()=>{ try { console.log(JSON.parse(j).access_token ?? ""); } catch { console.log(""); } })'
+    -d username=victor --data-urlencode "password=$1" | json 'r => r.access_token'
 }
-first_tenant() {
-  curl -s -H "Authorization: Bearer $1" http://localhost:5180/api/v1/tenants \
-    | node -e 'let j="";process.stdin.on("data",d=>j+=d).on("end",()=>{ try { console.log(JSON.parse(j).items[0]?.id ?? ""); } catch { console.log(""); } })'
+tenant_id() {
+  curl -s -H "Authorization: Bearer $1" http://localhost:5180/api/v1/tenants | KEY=$2 json 'p => p.items.find(t => t.key === process.env.KEY)?.id'
 }
 # How many items an API page holds (0 when it isn't one).
-page_items() {
-  node -e 'let j="";process.stdin.on("data",d=>j+=d).on("end",()=>{ try { console.log(JSON.parse(j).items.length); } catch { console.log(0); } })'
-}
+page_items() { local n; n=$(json 'p => p.items.length'); echo "${n:-0}"; }
