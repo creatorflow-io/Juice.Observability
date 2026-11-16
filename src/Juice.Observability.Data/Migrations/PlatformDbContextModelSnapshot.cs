@@ -2895,6 +2895,10 @@ namespace Juice.Observability.Data.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("leased");
 
+                    b.Property<double?>("PassSeconds")
+                        .HasColumnType("double precision")
+                        .HasColumnName("pass_seconds");
+
                     b.Property<DateTimeOffset?>("RegisteredAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("registered_at");

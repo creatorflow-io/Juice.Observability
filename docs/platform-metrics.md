@@ -210,6 +210,7 @@ workers are action-requests, discovery, health, notifications, rules, sampler, s
 - whether it runs under a lease, holds it, and since when;
 - when the pass in progress started;
 - when the last pass ended, and its outcome.
+- how long its recent passes took, a moving mean (milestone 6: the panel's "how busy"; the 1.3.0 migration adds the column).
 
 **Times:**
 - **Whose clock:** every time in a row is the database's. The replica sends ages on its own monotonic clock, and the database subtracts
@@ -264,6 +265,42 @@ otherwise `ok`. The heartbeats are read at most every 15 s, so many requests cos
   each dependency, each backlog, and each replica with its version.
   - **Who can read it:** operators and admins of this deployment, so their tenant claim must name this deployment's tenant. One IdP may
     serve several deployments.
+
+## The Overview's platform panel and the capacity view
+
+Milestone 6 (plan R8, R9). `/api/v1/platform/overview`, for the same callers as the status, and the Console's Overview shows it to
+operators and admins (the tenants list says `canOperate`, so a viewer's Console never asks). It is built from the status and the
+replica's last sample, never a query of its own, and the Console reads it again every 15 s.
+
+**The panel (R8).** Each figure is `ok`, `warn` or `bad` (green, amber, red):
+
+| Figure | From | Amber | Red |
+|---|---|---|---|
+| Each worker: state, last pass, how busy | the heartbeats; how busy is its recent passes (a moving mean, each pass weighing a fifth) against its interval | 80 % busy | a bad state (stale, stuck, unheld, gone), or 100 % busy |
+| Each backlog (outbox, webhooks, discovery) | the status | – | `behind` |
+| Each signal: received, refused, dropped a second | the Collector's metrics page (`Telemetry:CollectorMetricsUrl`), the tenant's receivers only; dropped by any exporter | – | anything refused or dropped since the last sample |
+| Each export queue against its bound | the same page | 50 % (calibrated: its p95 where every line held) | 90 % (calibrated: where one crossed) |
+| ClickHouse CPU | the sampler's CPU, against `max_threads` (its cores) | 50 % of them (calibrated: the mean where every line held) | 80 % (calibrated: where one crossed) |
+| The Collector's insert p95, and inserts in flight | `query_log`, `otel_writer`: the inserts' durations over the sample's window is how many ran at once | 200 ms | 350 ms (the final rerun: 109 ms at 5×, 243 ms at 6×, 347 ms at 10×) |
+| The platform's reads, p95 by caller | `query_log`, `platform_reader`, by `log_comment` | an API search past 500 ms (§9's API line) | past 5 s; the workers' have no line |
+| Disk: used, free, a day, at retention, days until full | `system.disks`; each table's last whole UTC day's partition (or today's, scaled, once an hour has passed: an estimate) and its TTL | under 30 days, or the retention needs more than the disk | under 7 days |
+
+**The capacity view (R9): measured, labelled, not extrapolated.**
+- **The calibration:** `scale/steps.sh` writes it after the steps (`scale/components.mjs`, then `scale/calibration.mjs`), with `HELD_OUT`
+  naming the steps kept out to check it. The stack reads `capacity/calibration.json` (`Capacity:CalibrationFile`). It names its host
+  (ClickHouse's cores and memory) and its mix (rules, SLOs, services, searches a second), and holds each step's resources as the
+  platform measures them live: ClickHouse's CPU, the Collector's inserts in flight, the export queue (in the steps, the queues' sum,
+  which the metrics queue is nearly all of), and each worker's pass time against its interval.
+- **The knee is a bracket,** from the calibration steps alone: the last step every line held, and the first that crossed one. The
+  shipped calibration (the final rerun, 16 November, [scale tests](scale-tests.md)): held to 5×, crossed at 10×. The view claims no
+  more than that: the knee came from bursts, not from a curve the steps could be interpolated along (owner, 16 November).
+- **The load** is a multiple of §9's reference per signal (1,000 spans, 10,000 points and 1,000 logs a second), from the Collector's
+  received rate. **Headroom** is the step that held over today's load.
+- **Each resource** shows now, and what it measured where every line held and where one crossed; amber and red at those.
+- **Labels:** "Calibrated on 24 cores and 31.1 GiB, with 50 rules, 50 SLOs, 10 services and 2 searches a second". With no file, or a
+  file for another machine (cores, or memory more than 10 % off), it shows utilisation only, against fixed shares, and says why. The
+  mix is shown beside the calibration's, since rules, SLOs and services also drive cost.
+- **Disk** is its own figure (days until full), not part of the headroom. No prices (Phase 10 P6).
 
 ## Volume
 

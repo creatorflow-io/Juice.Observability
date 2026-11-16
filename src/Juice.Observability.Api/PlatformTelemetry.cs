@@ -31,6 +31,12 @@ namespace Juice.Observability.Api
         public string? CollectorHealthUrl { get; set; }
 
         /// <summary>
+        /// The Collector's own metrics page (its <c>service.telemetry</c> Prometheus reader, such as <c>http://otel-collector:8888/metrics</c>), read
+        /// with each health check for each signal's flow and each exporter's queue (Phase 11 R8). Unset: the Overview shows no ingestion figures.
+        /// </summary>
+        public string? CollectorMetricsUrl { get; set; }
+
+        /// <summary>
         /// Where the metrics go: the Collector's platform pipeline (<c>otlp/platform</c>), which stamps them with the reserved tenant
         /// <c>juice-platform</c>, so they never enter the tenant's own data.
         /// </summary>
@@ -139,8 +145,12 @@ namespace Juice.Observability.Api
             catch (InvalidOperationException ex)
             {
                 // A value that doesn't convert (Telemetry:ExportInterval=15s, Telemetry:Enabled=yes): no export, the platform still starts.
-                // The Collector's health check is a plain string, kept so the platform's status still checks it.
-                options = new TelemetryOptions { Enabled = false, CollectorHealthUrl = configuration[$"{TelemetryOptions.Section}:CollectorHealthUrl"] };
+                // The Collector's health check and metrics page are plain strings, kept so the platform's status still reads them.
+                options = new TelemetryOptions
+                {
+                    Enabled = false, CollectorHealthUrl = configuration[$"{TelemetryOptions.Section}:CollectorHealthUrl"],
+                    CollectorMetricsUrl = configuration[$"{TelemetryOptions.Section}:CollectorMetricsUrl"],
+                };
                 unreadable = $"not exported: the Telemetry settings can't be read ({ex.InnerException?.Message ?? ex.Message})";
             }
             services.AddSingleton(Microsoft.Extensions.Options.Options.Create(options));

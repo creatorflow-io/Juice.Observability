@@ -4,7 +4,7 @@ import { EMPTY, Observable, expand, map, reduce, shareReplay, switchMap, tap } f
 import { OBSERVABILITY_OPTIONS } from './options';
 import {
   ActionRequest, ActionRequestsWaiting, ActionTarget, Agent, SloDetail, SloSummary, AgentActions, AgentCommand, AgentPackage, EnrollmentToken, AlertDetail, AlertNotifications, Alert, AllowlistEntry, Application, Channel, ChannelTestResult, Delivery, EscalationPolicy, IncidentDetail, IncidentEvent, IncidentSummary, Silence, DependencyEvidence, DependencyStatsPage, DeploymentEnvironment, LoadRun, LoadRunResults, Related, Timeline, Health, LogRecord, MetricInfo, Operation,
-  Page, ResourceDetail, ResourceSummary, Rule, SearchHit, Series, Capacity, ServiceStats, Tenant, TelemetryPage, Topology, Trace,
+  Page, PlatformOverview, ResourceDetail, ResourceSummary, Rule, SearchHit, Series, Capacity, ServiceStats, Tenant, TelemetryPage, Topology, Trace,
   TraceSummary, Suggestions, CorrelationDecision,
 } from './models';
 
@@ -119,6 +119,9 @@ export class ApiService {
     return this.once<ActionRequest>(`/agents/${agentId}/action-requests`, { action, parameters, reason, target });
   }
   actionRequests(query: Query = {}) { return this.get<Page<ActionRequest>>('/action-requests', { limit: 100, ...query }); }
+  /** The platform panel and capacity view (operators and admins of this deployment; a viewer gets 403). Not under a tenant: the platform's own. */
+  platformOverview(): Observable<PlatformOverview> { return this.tenant$.pipe(switchMap(() => this.http.get<PlatformOverview>(`${this.base}/platform/overview`))); }
+
   /** A diagnostic bundle's zip (operators and admins; audited). */
   downloadBundle(agentId: string, bundleId: string) {
     return this.tenant$.pipe(switchMap(t => this.http.get(`${this.base}/tenants/${t.id}/agents/${agentId}/bundles/${bundleId}`, { responseType: 'blob', observe: 'response' })));

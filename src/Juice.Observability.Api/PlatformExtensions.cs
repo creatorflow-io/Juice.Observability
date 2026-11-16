@@ -70,6 +70,10 @@ namespace Juice.Observability.Api
             services.AddSingleton<HeartbeatWriter>();
             services.AddHostedService(sp => sp.GetRequiredService<HeartbeatWriter>());
             services.AddSingleton<PlatformStatusService>();
+            // The Overview's platform panel and the capacity view (Phase 11 R8, R9): /api/v1/platform/overview.
+            services.Configure<CapacityOptions>(configuration.GetSection(CapacityOptions.Section));
+            services.AddSingleton<CapacityCalibrationStore>();
+            services.AddSingleton<PlatformOverviewService>();
             return services;
         }
 

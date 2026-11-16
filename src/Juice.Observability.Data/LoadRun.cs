@@ -44,6 +44,8 @@ namespace Juice.Observability.Data
         public DateTimeOffset? RunningSince { get; set; }
         public DateTimeOffset? LastEndedAt { get; set; }
         public string? LastOutcome { get; set; }
+        /// <summary>How long the worker's recent passes took here (a moving mean; Phase 11 R9), against its interval: its utilisation.</summary>
+        public double? PassSeconds { get; set; }
         /// <summary>When the worker was registered in this replica (its loop started); null while it isn't enabled.</summary>
         public DateTimeOffset? RegisteredAt { get; set; }
         /// <summary>When this replica's process started: a replica that started after another was last seen replaced it (a redeploy).</summary>

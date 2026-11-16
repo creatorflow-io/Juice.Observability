@@ -5,7 +5,8 @@ using Microsoft.Extensions.Options;
 
 namespace Juice.Observability.Api.Endpoints
 {
-    public sealed record TenantDto(Guid Id, string Key, string DisplayName);
+    /// <summary>A tenant the caller may read. CanOperate: the caller is an operator or admin (the Console shows the platform panel then; Phase 11 R8).</summary>
+    public sealed record TenantDto(Guid Id, string Key, string DisplayName, bool CanOperate = false);
 
     public sealed record EnvironmentDto(Guid Id, string Key, string Type, DateTimeOffset FirstSeen, DateTimeOffset LastSeen);
 
@@ -97,9 +98,10 @@ namespace Juice.Observability.Api.Endpoints
         private static async Task<IResult> ListTenantsAsync(HttpContext http, PlatformDbContext db, IOptions<AuthOptions> auth, CancellationToken ct)
         {
             var key = http.User.FindFirst(auth.Value.TenantClaim)?.Value;
+            var operate = http.User.IsInRole(Roles.Operator) || http.User.IsInRole(Roles.Admin);
             var tenants = key is null ? [] : await db.Tenants.AsNoTracking()
                 .Where(t => t.Key == key && t.Status == TenantStatus.Active)
-                .Select(t => new TenantDto(t.Id, t.Key, t.DisplayName)).ToListAsync(ct);
+                .Select(t => new TenantDto(t.Id, t.Key, t.DisplayName, operate)).ToListAsync(ct);
             return Results.Ok(new Page<TenantDto>(tenants, null));
         }
 

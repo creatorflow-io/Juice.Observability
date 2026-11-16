@@ -1054,10 +1054,27 @@ harness, where the generator fell behind too.
   (ClickHouse's adaptive async-insert busy timeout, the batch sizes the exporter sends, or the Collector itself) is not measured yet:
   it's the Collector profile queued after milestone 5.
 
-### The ±25 % check (R10): what this run gives it
+### The ±25 % check (R10)
 
 The check is on the capacity view's predicted knee (milestone 6), which doesn't exist yet; this run is its data. A first look, by a
 straight line through ClickHouse's mean CPU at 1, 3, 5 and 10× (0.714 cores per × − 0.21): 4× predicted 2.65 cores, measured 2.68
 (−1 %); 6× predicted 4.08, measured 5.46 (−25 %, at the edge). The knee itself isn't a CPU knee: ClickHouse would run out of cores
 near 34× on that line, but the first line crossed at 6× (a burst) and the sustained one at 10× (insert wait). So the capacity view has
 to model the export path (inserts in flight × insert latency against the queue's bound) and the burst headroom, not just CPU.
+
+**The check, done in milestone 6** (the capacity view, [platform metrics](platform-metrics.md#the-overviews-platform-panel-and-the-capacity-view)):
+- **The mechanism.** The Collector's inserts in flight (their durations over the time, `query_log`, 10-second buckets), mean / p99 /
+  max: 1× 0.12 / 0.14 / 0.16, 3× 1.16 / 1.37 / 1.63, 4× 1.62 / 2.10 / 2.67, 5× 2.09 / 2.82 / 3.59, **6× 3.31 / 10.54 / 11.17**,
+  **10× 10.30 / 10.78 / 10.84**. At 10× every bucket sits near 10.5: the export path saturates there, not at the 16 consumers. At 6×
+  the burst reached the same ceiling for its 40 seconds, while the mean stayed at a third of it.
+- **A curve doesn't predict it.** Interpolating any of the step measures across 1, 3, 5 and 10× puts the knee near 9.5–10×: the queue's
+  p95 or p99, ClickHouse's CPU p99 against its cores, inserts in flight against ~10. That is +60 % against the measured first crossing at
+  6×. The burst isn't on the curve: ClickHouse's CPU p90 went from 4.5 cores at 5× to 13.3 at 6×, and the steps run one after another
+  on growing data, so a later step also meets larger merges.
+- **What the view claims instead** (owner, 16 November, on these figures): the bracket. The last calibration step every line held and the
+  first that crossed one: **held to 5×, crossed at 10×**. Its lower bound, 5×, against the measured first crossing, 6×: **−17 %, within
+  ±25 %.** The held-out steps fall where the bracket says: 4× held, 6× crossed. Chosen after seeing the data, and said so here. It is a
+  coarser claim than a curve, and an honest one: the platform held at 5× and is not claimed to hold anywhere above it.
+- **The calibration file** is `deploy/local/capacity/calibration.json`, written by `scale/calibration.mjs --held-out 4,6` from these six
+  steps (`scale/steps.sh` writes one after every run). Each resource in it is measured as the platform measures it live, so the view
+  sets today's figure beside the step that held and the step that crossed.

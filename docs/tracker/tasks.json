@@ -188,9 +188,9 @@
       "order": 7,
       "kind": "task",
       "title": "M6 Overview platform panel and capacity view (R8-R9)",
-      "ref": "",
-      "status": "todo",
-      "note": "Built from the final rerun and the ceilings (not provisional)."
+      "ref": "docs/platform-metrics.md",
+      "status": "doing",
+      "note": "Built from the final rerun (not provisional). Knee model (owner, 16 November): the conservative bracket, since the 6x crossing came from a burst (inserts in flight saturate near 10.5: 10x mean 10.3, 6x p99 10.5 vs 5x 2.8) and interpolating 1/3/5/10 predicts ~9.5-10x (+60 %). Bracket: held to 5x, crossed at 10x; 5x vs measured 6x = -17 %, within +-25 %; held-out 4x held, 6x crossed. Built: /api/v1/platform/overview (operators of this deployment) and the Console Overview's Platform panel (workers with how busy, backlogs, ingestion per signal and export queues from the Collector's :8888 page, ClickHouse CPU against cores, insert p95 and inserts in flight, reads p95 by caller, disk with a day, need at retention and days until full) and capacity view (load multiple per signal, mix, bracket, each resource now against the held and crossed steps; labelled, utilisation only on another machine). Heartbeats carry a moving-mean pass time (migration WorkerPassSeconds); tenants list says canOperate so a viewer never asks; scale/calibration.mjs (steps.sh writes build/scale/calibration-<time>.json, HELD_OUT), components.mjs adds inserts in flight; deploy/local/capacity/calibration.json shipped. Tests: 11 overview tests, 739 pass; e2e/platform.mjs passes (panel, viewer none, health lease held from psql red as unheld in 45 s, green after). Next: review loop (R16)."
     },
     {
       "doc_id": "p11-m7",

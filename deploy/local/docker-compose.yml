@@ -263,6 +263,10 @@ services:
       Telemetry__Otlp__CaFile: /secrets/ca.crt
       # The Collector's health check, for the platform's status (/health/platform, /api/v1/platform/status).
       Telemetry__CollectorHealthUrl: http://otel-collector:13133/
+      # The Collector's own metrics, for the Overview's ingestion figures (Phase 11 R8), and the capacity view's calibration (R9: the
+      # scale steps on the reference host, scale/calibration.mjs).
+      Telemetry__CollectorMetricsUrl: http://otel-collector:8888/metrics
+      Capacity__CalibrationFile: /config/capacity/calibration.json
       Platform__TenantKey: ${JUICE_PLATFORM_TENANT_ID}
       # Metadata and keys over the compose network; the issuer stays http://PUBLIC_HOST:8080/realms/juice (KC_HOSTNAME).
       Auth__Authority: http://keycloak:8080/realms/juice
@@ -288,6 +292,7 @@ services:
       - ./rules.json:/config/rules.json:ro
       - ./webhooks.json:/config/webhooks.json:ro
       - ./slos.json:/config/slos.json:ro
+      - ./capacity:/config/capacity:ro
       - ./secrets/agents:/secrets/agents:ro
       - ./secrets/release/release.pub:/secrets/release.pub:ro
       - ./secrets/platform-otlp-token:/secrets/platform-otlp-token:ro

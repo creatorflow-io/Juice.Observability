@@ -110,6 +110,9 @@ with `resource_detection` so application telemetry never gets the Collector's ho
   `LowCardinality(String) MATERIALIZED` from the map), and the platform and Grafana's policy read those. Looking a key up in
   the map row by row was most of what the workers' queries cost. The `clickhouse-columns` service adds them on every start, once
   the Collector has created its tables; older parts compute them from the map, so nothing is rewritten.
+- **Capacity calibration** (`capacity/calibration.json`, Phase 11 R9): the scale steps the Overview's capacity view is calibrated
+  on, from the final rerun on the reference host (24 cores, 31.1 GiB). `scale/steps.sh` writes a new one to `build/scale/` after
+  every run; copy it here to use it. On another machine the view shows utilisation only, and says so.
 - **Retention.** One exporter per signal, so each has its own TTL: traces and logs 30 days, metrics 90 days
   (`JUICE_*_TTL` in `.env`, the §9 reference profile). The TTL is applied when the tables are created. To change it
   later, run `ALTER TABLE otel.<table> MODIFY TTL toDateTime(<time column>) + toIntervalHour(<hours>)` on each table of

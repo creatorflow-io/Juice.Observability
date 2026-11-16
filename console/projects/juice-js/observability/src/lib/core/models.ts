@@ -4,7 +4,8 @@
 export interface Page<T> { items: T[]; nextCursor: string | null; }
 export interface TelemetryPage<T> { items: T[]; truncated: boolean; nextCursor?: string | null; }
 
-export interface Tenant { id: string; key: string; displayName: string; }
+/** `canOperate`: the user is an operator or admin, who sees the platform panel (Phase 11 R8). */
+export interface Tenant { id: string; key: string; displayName: string; canOperate?: boolean; }
 export interface DeploymentEnvironment { id: string; key: string; type: string; firstSeen: string; lastSeen: string; }
 export interface Application { id: string; key: string; displayName: string; services: number; firstSeen: string; lastSeen: string; }
 export interface ResourceSummary { id: string; type: string; key: string; displayName: string; firstSeen: string; lastSeen: string; }
@@ -241,3 +242,38 @@ export interface SloAlert {
   id: string; rule: string; state: string; severity: string; firedAt: string | null; resolvedAt: string | null; burnRate: number | null; noData: boolean;
 }
 export interface SloDetail { slo: SloSummary; definition: SloDefinition; versions: SloVersion[]; days: SloDay[]; countedThrough: string | null; alerts: SloAlert[]; }
+
+/** `ok`, `warn` or `bad` (green, amber, red) against the scale steps' lines; `unknown` without a figure (Phase 11 R8). */
+export type PlatformLevel = 'ok' | 'warn' | 'bad' | 'unknown';
+
+/** The Overview's platform panel and the capacity view (`/api/v1/platform/overview`, operators and admins; Phase 11 R8, R9). */
+export interface PlatformOverview {
+  at: string; status: 'ok' | 'degraded';
+  workers: { name: string; state: string; level: PlatformLevel; lastPassEndedAt: string | null; intervalSeconds: number; passSeconds: number | null; utilisation: number | null }[];
+  backlogs: { name: string; state: string; level: PlatformLevel; ageSeconds: number | null; lineSeconds: number }[];
+  /** Null without the Collector's metrics page (Telemetry:CollectorMetricsUrl) or a fresh sample. */
+  ingestion: {
+    signals: { name: string; acceptedPerSecond: number | null; refusedPerSecond: number | null; droppedPerSecond: number | null; refused: number; dropped: number; level: PlatformLevel }[];
+    queues: { exporter: string; size: number; capacity: number; fill: number; level: PlatformLevel }[];
+  } | null;
+  clickHouse: {
+    cores: number | null; coresAvailable: number | null; cpuLevel: PlatformLevel; runningQueries: number; insertsInFlight: number | null;
+    insertP95Seconds: number | null; insertLevel: PlatformLevel; reads: { name: string; count: number; p95Seconds: number; level: PlatformLevel }[];
+  } | null;
+  disk: {
+    used: number; free: number; total: number; bytesPerDay: number | null; needAtRetention: number | null; daysUntilFull: number | null; estimated: boolean;
+    level: PlatformLevel; tables: { name: string; bytes: number; bytesPerDay: number | null; retentionDays: number | null; needAtRetention: number | null }[];
+  } | null;
+  capacity: PlatformCapacity;
+}
+
+/** Measured, labelled, not extrapolated: the knee is the calibration's bracket, the last step every line held and the first that crossed one. */
+export interface PlatformCapacity {
+  calibrated: boolean; label: string;
+  load: { signal: string; perSecond: number | null; reference: number; multiple: number | null }[];
+  mix: { rules: number; slos: number; services: number; calibratedRules: number | null; calibratedSlos: number | null; calibratedServices: number | null; calibratedSearchesPerSecond: number | null };
+  heldTo: number | null; crossedAt: number | null; crossed: string[];
+  /** The last step that held over today's load: how many times today's load the platform held at. */
+  headroom: number | null;
+  resources: { name: string; unit: string; now: number | null; atHeld: number | null; atCrossed: number | null; level: PlatformLevel }[];
+}

@@ -87,16 +87,16 @@ namespace Juice.Observability.Api
             {
                 await using var command = new NpgsqlCommand("""
                     INSERT INTO worker_heartbeats (worker, replica, version, enabled, leased, held, interval_seconds, registered_at, held_since,
-                      running_since, last_ended_at, last_outcome, replica_started_at, seen_at)
+                      running_since, last_ended_at, last_outcome, pass_seconds, replica_started_at, seen_at)
                     SELECT w.worker, @replica, @version, w.enabled, w.leased, w.held, w.interval,
                       now() - make_interval(secs => w.registered), now() - make_interval(secs => w.held_for), now() - make_interval(secs => w.running),
-                      now() - make_interval(secs => w.since_end), w.outcome, now() - make_interval(secs => @uptime), now()
-                    FROM unnest(@worker, @enabled, @leased, @held, @interval, @registered, @held_for, @running, @since_end, @outcome)
-                      AS w(worker, enabled, leased, held, interval, registered, held_for, running, since_end, outcome)
+                      now() - make_interval(secs => w.since_end), w.outcome, w.pass, now() - make_interval(secs => @uptime), now()
+                    FROM unnest(@worker, @enabled, @leased, @held, @interval, @registered, @held_for, @running, @since_end, @outcome, @pass)
+                      AS w(worker, enabled, leased, held, interval, registered, held_for, running, since_end, outcome, pass)
                     ON CONFLICT (worker, replica) DO UPDATE SET version = excluded.version, enabled = excluded.enabled, leased = excluded.leased,
                       held = excluded.held, interval_seconds = excluded.interval_seconds, registered_at = excluded.registered_at,
                       held_since = excluded.held_since, running_since = excluded.running_since, last_ended_at = excluded.last_ended_at,
-                      last_outcome = excluded.last_outcome, replica_started_at = excluded.replica_started_at, seen_at = excluded.seen_at;
+                      last_outcome = excluded.last_outcome, pass_seconds = excluded.pass_seconds, replica_started_at = excluded.replica_started_at, seen_at = excluded.seen_at;
                     DELETE FROM worker_heartbeats WHERE seen_at < now() - @prune;
                     """, connection);
                 command.Parameters.AddWithValue("replica", replica ?? Replica);
@@ -113,6 +113,7 @@ namespace Juice.Observability.Api
                 {
                     ("registered", [.. workers.Select(w => Secs(w.RegisteredFor))]), ("held_for", [.. workers.Select(w => Secs(w.HeldFor))]),
                     ("running", [.. workers.Select(w => Secs(w.RunningFor))]), ("since_end", [.. workers.Select(w => Secs(w.SinceLastEnd))]),
+                    ("pass", [.. workers.Select(w => w.PassSeconds)]),
                 })
                 {
                     command.Parameters.Add(new NpgsqlParameter(name, NpgsqlDbType.Array | NpgsqlDbType.Double) { Value = values });
@@ -147,8 +148,9 @@ namespace Juice.Observability.Api
         public sealed record ReplicaWorker(string Replica, string Version, bool Enabled, bool Held, DateTimeOffset? HeldSince, DateTimeOffset? RunningSince,
             DateTimeOffset? LastEndedAt, string? LastOutcome, DateTimeOffset SeenAt);
 
+        /// <summary>A worker's status. PassSeconds: how long its recent passes took (the holder's, or the slowest replica's without a lease; Phase 11 R9).</summary>
         public sealed record WorkerStatus(string Name, string State, bool Leased, double IntervalSeconds, double ThresholdSeconds, string? Holder,
-            DateTimeOffset? LastPassEndedAt, double? RunningForSeconds, string? LastOutcome, IReadOnlyList<ReplicaWorker> Replicas);
+            DateTimeOffset? LastPassEndedAt, double? RunningForSeconds, string? LastOutcome, IReadOnlyList<ReplicaWorker> Replicas, double? PassSeconds = null);
 
         /// <summary><c>up</c>, <c>down</c>, <c>unknown</c> (no fresh sample) or <c>not_configured</c>.</summary>
         public sealed record DependencyStatus(string Name, string State);
@@ -307,7 +309,7 @@ namespace Juice.Observability.Api
             var reference = holder ?? rows.OrderByDescending(r => r.LastEndedAt).First();
             return new WorkerStatus(name, state, leased, interval.TotalSeconds, threshold.TotalSeconds, holder?.Replica,
                 rows.Max(r => r.LastEndedAt), reference.RunningSince is { } running ? (now - running).TotalSeconds : null, reference.LastOutcome,
-                [.. live.OrderBy(r => r.Replica).Select(Replica)]);
+                [.. live.OrderBy(r => r.Replica).Select(Replica)], leased ? reference.PassSeconds : rows.Max(r => r.PassSeconds));
         }
     }
 
@@ -404,6 +406,12 @@ namespace Juice.Observability.Api
             {
                 http.Response.Headers.CacheControl = "no-store";
                 return Results.Ok(await status.GetAsync(ct));
+            }).RequireAuthorization(Policies.Operate).AddEndpointFilter(ThisDeploymentAsync);
+            // The Overview's platform panel and the capacity view (Phase 11 R8, R9), for the same callers: from the status and the last sample.
+            app.MapGet("/api/v1/platform/overview", async (HttpContext http, PlatformOverviewService overview, CancellationToken ct) =>
+            {
+                http.Response.Headers.CacheControl = "no-store";
+                return Results.Ok(await overview.GetAsync(ct));
             }).RequireAuthorization(Policies.Operate).AddEndpointFilter(ThisDeploymentAsync);
             return app;
         }

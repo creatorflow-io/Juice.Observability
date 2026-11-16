@@ -9,6 +9,9 @@
 #   CEILING=ingest|search|workers scale/steps.sh ...   a component ceiling (docs/phase-11-plan.md R19, see run.sh); for search the
 #                                              steps are searches per second, for workers copies of the rules and SLOs. A 1× miss
 #                                              doesn't stop a ceiling.
+#   HELD_OUT=4,6 scale/steps.sh ...   steps kept out of the capacity view's calibration, to check its knee (docs/phase-11-plan.md R10)
+# After the steps (not for a ceiling), it writes the capacity view's calibration (scale/components.mjs, then scale/calibration.mjs) to
+# build/scale/calibration-<time>.json; copy it to capacity/calibration.json for the stack to use (docs/deployment.md, Capacity view).
 # Needs the working stack stopped (scale/stack.sh up refuses otherwise). Each step is about 35 minutes.
 # Exit 0: every step held, or a limit was found. 1: a 1× miss, a harness problem, or the stacks not brought back as asked.
 # 2: a wrong option. 130: interrupted (INT, TERM or HUP; the running step is stopped first).
@@ -25,7 +28,7 @@ stamp=$(date -u +%Y%m%dT%H%M)
 log="$root/build/scale/steps-$stamp.log"
 mkdir -p "$root/build/scale"
 say() { echo "$(date -u +%H:%M:%S) $*" | tee -a "$log"; }
-status=0; step_pid=""; started=false; starting=false
+status=0; step_pid=""; started=false; starting=false; dirs=()
 
 cleanup() {
   trap '' INT TERM HUP          # a second interrupt mustn't cut the clean-up short
@@ -63,6 +66,7 @@ for m in "${steps[@]}"; do
   wait "$step_pid"; result=$?; step_pid=""
   # The run's own directory, as run.sh named it (never an older run of the same multiplier).
   dir=$(sed -n 's/^scale step .* → //p' "$steplog" | head -1)
+  [[ -n "$dir" && -f "$dir/summary.json" ]] && dirs+=("$dir")
   kind=$(node -e '
     const [dir, steplog] = process.argv.slice(1);
     const { existsSync } = require("fs");
@@ -82,3 +86,13 @@ for m in "${steps[@]}"; do
     $through || { say "stopping: the limit"; break; }
   fi
 done
+
+# The capacity view's calibration (Phase 11 R9), from the steps run, while the scale stack's ClickHouse is still up.
+if [[ -z "${CEILING:-}" ]] && (( ${#dirs[@]} )); then
+  calibration="$root/build/scale/calibration-$stamp.json"
+  if node scale/components.mjs "${dirs[@]}" >> "$log" 2>&1     && node scale/calibration.mjs ${HELD_OUT:+--held-out "$HELD_OUT"} --out "$calibration" "${dirs[@]}" >> "$log" 2>&1; then
+    say "calibration: $calibration"
+  else
+    say "the calibration wasn't written: see $log"; (( status )) || status=1
+  fi
+fi

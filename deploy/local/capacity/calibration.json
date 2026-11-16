@@ -1,0 +1,348 @@
+{
+  "version": 1,
+  "created": "2026-11-16T09:46:01.447Z",
+  "commit": "38e136a+changes",
+  "host": {
+    "cores": 24,
+    "memoryBytes": 33427488768,
+    "hostCores": 24
+  },
+  "mix": {
+    "rules": 50,
+    "slos": 50,
+    "services": 10,
+    "searchesPerSecond": 2
+  },
+  "reference": {
+    "spans": 1000,
+    "points": 10000,
+    "logs": 1000
+  },
+  "knee": {
+    "heldTo": 5,
+    "crossedAt": 10,
+    "crossed": [
+      "Throughput: the offered load reached, nothing refused or dropped",
+      "Queue lag: each worker ≤ 1 min past its configured delay; no growing backlog"
+    ]
+  },
+  "steps": [
+    {
+      "multiplier": 1,
+      "heldOut": false,
+      "held": true,
+      "crossed": [],
+      "resources": {
+        "clickhouse.cpu": {
+          "mean": 0.6074343680454638,
+          "max": 1.190591378665403,
+          "unit": "cores"
+        },
+        "clickhouse.inserts_in_flight": {
+          "mean": 0.12023166666666667,
+          "p99": 0.13587999999999986,
+          "max": 0.1571,
+          "unit": "inserts"
+        },
+        "collector.queue": {
+          "p95": 0.03486,
+          "max": 0.04233,
+          "unit": "of the bound"
+        },
+        "worker.action-requests": {
+          "mean": 0.0001175065,
+          "unit": "of its interval"
+        },
+        "worker.discovery": {
+          "mean": 0.0080002805,
+          "unit": "of its interval"
+        },
+        "worker.health": {
+          "mean": 0.0061469094444444455,
+          "unit": "of its interval"
+        },
+        "worker.notifications": {
+          "mean": 0.0011598564444444456,
+          "unit": "of its interval"
+        },
+        "worker.sampler": {
+          "mean": 0.0013193006666666661,
+          "unit": "of its interval"
+        },
+        "worker.slos": {
+          "mean": 0.060773565,
+          "unit": "of its interval"
+        },
+        "worker.webhooks": {
+          "mean": 0.0008508017222222226,
+          "unit": "of its interval"
+        }
+      }
+    },
+    {
+      "multiplier": 3,
+      "heldOut": false,
+      "held": true,
+      "crossed": [],
+      "resources": {
+        "clickhouse.cpu": {
+          "mean": 1.6206642546727346,
+          "max": 3.977072252428759,
+          "unit": "cores"
+        },
+        "clickhouse.inserts_in_flight": {
+          "mean": 1.1605044444444443,
+          "p99": 1.3706199999999993,
+          "max": 1.6324,
+          "unit": "inserts"
+        },
+        "collector.queue": {
+          "p95": 0.065065,
+          "max": 0.08032,
+          "unit": "of the bound"
+        },
+        "worker.action-requests": {
+          "mean": 0.00030273422222222216,
+          "unit": "of its interval"
+        },
+        "worker.discovery": {
+          "mean": 0.021647650444444444,
+          "unit": "of its interval"
+        },
+        "worker.health": {
+          "mean": 0.015721751277777765,
+          "unit": "of its interval"
+        },
+        "worker.notifications": {
+          "mean": 0.001346376222222218,
+          "unit": "of its interval"
+        },
+        "worker.sampler": {
+          "mean": 0.002484286944444445,
+          "unit": "of its interval"
+        },
+        "worker.slos": {
+          "mean": 0.09819557644444452,
+          "unit": "of its interval"
+        },
+        "worker.webhooks": {
+          "mean": 0.0010305193333333342,
+          "unit": "of its interval"
+        }
+      }
+    },
+    {
+      "multiplier": 4,
+      "heldOut": true,
+      "held": true,
+      "crossed": [],
+      "resources": {
+        "clickhouse.cpu": {
+          "mean": 2.193520552405643,
+          "max": 4.036009416680701,
+          "unit": "cores"
+        },
+        "clickhouse.inserts_in_flight": {
+          "mean": 1.6154738888888887,
+          "p99": 2.104939999999997,
+          "max": 2.6661,
+          "unit": "inserts"
+        },
+        "collector.queue": {
+          "p95": 0.08449,
+          "max": 0.124805,
+          "unit": "of the bound"
+        },
+        "worker.action-requests": {
+          "mean": 0.0004718615555555556,
+          "unit": "of its interval"
+        },
+        "worker.discovery": {
+          "mean": 0.03152511933333333,
+          "unit": "of its interval"
+        },
+        "worker.health": {
+          "mean": 0.020640552944444446,
+          "unit": "of its interval"
+        },
+        "worker.notifications": {
+          "mean": 0.0016005934444444487,
+          "unit": "of its interval"
+        },
+        "worker.sampler": {
+          "mean": 0.004227147555555556,
+          "unit": "of its interval"
+        },
+        "worker.slos": {
+          "mean": 0.12579647155555565,
+          "unit": "of its interval"
+        },
+        "worker.webhooks": {
+          "mean": 0.0012104769444444483,
+          "unit": "of its interval"
+        }
+      }
+    },
+    {
+      "multiplier": 5,
+      "heldOut": false,
+      "held": true,
+      "crossed": [],
+      "resources": {
+        "clickhouse.cpu": {
+          "mean": 2.987145268001181,
+          "max": 5.674423507437565,
+          "unit": "cores"
+        },
+        "clickhouse.inserts_in_flight": {
+          "mean": 2.08814,
+          "p99": 2.8154399999999975,
+          "max": 3.5884,
+          "unit": "inserts"
+        },
+        "collector.queue": {
+          "p95": 0.10932,
+          "max": 0.196665,
+          "unit": "of the bound"
+        },
+        "worker.action-requests": {
+          "mean": 0.000680619055555555,
+          "unit": "of its interval"
+        },
+        "worker.discovery": {
+          "mean": 0.0444173343888889,
+          "unit": "of its interval"
+        },
+        "worker.health": {
+          "mean": 0.030790576833333333,
+          "unit": "of its interval"
+        },
+        "worker.notifications": {
+          "mean": 0.0020386139444444557,
+          "unit": "of its interval"
+        },
+        "worker.sampler": {
+          "mean": 0.006886369722222226,
+          "unit": "of its interval"
+        },
+        "worker.slos": {
+          "mean": 0.15519977422222206,
+          "unit": "of its interval"
+        },
+        "worker.webhooks": {
+          "mean": 0.0014758991111111172,
+          "unit": "of its interval"
+        }
+      }
+    },
+    {
+      "multiplier": 6,
+      "heldOut": true,
+      "held": false,
+      "crossed": [
+        "Throughput: the offered load reached, nothing refused or dropped"
+      ],
+      "resources": {
+        "clickhouse.cpu": {
+          "mean": 4.74838602125437,
+          "max": 11.986003380438447,
+          "unit": "cores"
+        },
+        "clickhouse.inserts_in_flight": {
+          "mean": 3.3118983333333327,
+          "p99": 10.539039999999998,
+          "max": 11.1742,
+          "unit": "inserts"
+        },
+        "collector.queue": {
+          "p95": 0.13652,
+          "max": 0.98026,
+          "unit": "of the bound"
+        },
+        "worker.action-requests": {
+          "mean": 0.0007753359999999993,
+          "unit": "of its interval"
+        },
+        "worker.discovery": {
+          "mean": 0.07481969155555554,
+          "unit": "of its interval"
+        },
+        "worker.health": {
+          "mean": 0.04822140033333339,
+          "unit": "of its interval"
+        },
+        "worker.notifications": {
+          "mean": 0.003230633666666677,
+          "unit": "of its interval"
+        },
+        "worker.sampler": {
+          "mean": 0.009523050444444445,
+          "unit": "of its interval"
+        },
+        "worker.slos": {
+          "mean": 0.2547602405555557,
+          "unit": "of its interval"
+        },
+        "worker.webhooks": {
+          "mean": 0.0020342297222222124,
+          "unit": "of its interval"
+        }
+      }
+    },
+    {
+      "multiplier": 10,
+      "heldOut": false,
+      "held": false,
+      "crossed": [
+        "Throughput: the offered load reached, nothing refused or dropped",
+        "Queue lag: each worker ≤ 1 min past its configured delay; no growing backlog"
+      ],
+      "resources": {
+        "clickhouse.cpu": {
+          "mean": 6.782931629136368,
+          "max": 13.619834834901138,
+          "unit": "cores"
+        },
+        "clickhouse.inserts_in_flight": {
+          "mean": 10.300513333333333,
+          "p99": 10.78406,
+          "max": 10.8405,
+          "unit": "inserts"
+        },
+        "collector.queue": {
+          "p95": 1.048695,
+          "max": 1.09008,
+          "unit": "of the bound"
+        },
+        "worker.action-requests": {
+          "mean": 0.0008202833333333329,
+          "unit": "of its interval"
+        },
+        "worker.discovery": {
+          "mean": 0.1197623176666665,
+          "unit": "of its interval"
+        },
+        "worker.health": {
+          "mean": 0.07433576794444453,
+          "unit": "of its interval"
+        },
+        "worker.notifications": {
+          "mean": 0.0032948651666666507,
+          "unit": "of its interval"
+        },
+        "worker.sampler": {
+          "mean": 0.01099124877777776,
+          "unit": "of its interval"
+        },
+        "worker.slos": {
+          "mean": 0.3536162365555554,
+          "unit": "of its interval"
+        },
+        "worker.webhooks": {
+          "mean": 0.002403242277777769,
+          "unit": "of its interval"
+        }
+      }
+    }
+  ]
+}

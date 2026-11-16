@@ -74,7 +74,12 @@ for (const dir of process.argv.slice(2)) {
         'juice.observability.discovery.watermark_lag', 'juice.observability.postgres.sample.duration', 'juice.observability.clickhouse.cpu',
         'juice.observability.clickhouse.running_queries', 'juice.observability.rules.busy') GROUP BY name ORDER BY name`);
 
-  const out = { multiplier: meta.multiplier, start, end, seconds: secs, byUser, failures, byCaller, parts, server, passes, postgres: { ops: pgOps, connections: pgConn, metrics: metricNames.map(m => m.name) }, gauges };
+  // The Collector's inserts in flight (their durations over the time): on average, and in 10-second buckets, where the final rerun found the
+  // export saturating (docs/scale-tests.md). The platform's sampler measures the same, every 15 s (PlatformSampler, InsertsInFlight).
+  const [inserts] = await q(`SELECT sum(f) / ${secs / 10} AS mean, quantile(0.99)(f) AS p99, max(f) AS max FROM (
+      SELECT toStartOfInterval(event_time, INTERVAL 10 SECOND) AS b, sum(query_duration_ms) / 10000 AS f FROM system.query_log
+      WHERE type = 'QueryFinish' AND user = 'otel_writer' AND query_kind = 'Insert' AND ${win} GROUP BY b)`);
+  const out = { multiplier: meta.multiplier, start, end, seconds: secs, byUser, failures, byCaller, parts, server, passes, postgres: { ops: pgOps, connections: pgConn, metrics: metricNames.map(m => m.name) }, gauges, inserts };
   writeFileSync(join(dir, 'components.json'), JSON.stringify(out, null, 2));
 
   const lines = [`### ${meta.multiplier}× (${start} – ${end} UTC, ${secs} s)`, '',
@@ -88,6 +93,7 @@ for (const dir of process.argv.slice(2)) {
     '', `**Server:** ${server.map(r => `${r.metric} avg ${f(n(r.avg), 2)} max ${f(n(r.max), 2)}`).join('; ')}`,
     '', `**Worker passes (mean s, passes):** ${passes.map(r => `${r.worker} ${f(n(r.mean_s), 2)} (${r.passes})`).join('; ') || 'none'}`,
     `**PostgreSQL (client side):** ${pgOps.map(r => `${f(n(r.ops_s), 1)} commands/s, mean ${f(n(r.mean_ms), 2)} ms`).join('')}; connections ${pgConn.map(r => `${r.state} max ${f(n(r.max), 0)}`).join(', ') || '–'}`,
+    `**Inserts in flight (mean / p99 / max of 10 s):** ${f(n(inserts.mean), 2)} / ${f(n(inserts.p99), 2)} / ${f(n(inserts.max), 2)}`,
     `**Platform gauges (avg / max):** ${gauges.map(r => `${r.name.replace('juice.observability.', '')} ${f(n(r.avg), 2)}/${f(n(r.max), 2)}`).join('; ')}`, ''];
   console.log(lines.join('\n'));
 }

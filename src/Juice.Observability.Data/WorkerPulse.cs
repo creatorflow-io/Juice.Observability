@@ -92,6 +92,8 @@ namespace Juice.Observability.Data
             public bool Held;
             public bool Unleased;
             public string? LastOutcome;
+            /// <summary>How long its recent passes took: a moving mean, each pass weighing <see cref="PassWeight"/> (Phase 11 R9).</summary>
+            public double? PassSeconds;
             public TimeSpan Interval;
             /// <summary>How many running instances registered it (a test process can host several); enabled while above 0.</summary>
             public int Registrations;
@@ -103,7 +105,10 @@ namespace Juice.Observability.Data
         /// the lease, of the pass in progress, and since the last one ended.
         /// </summary>
         public sealed record WorkerState(string Worker, bool Enabled, bool Leased, bool Held, TimeSpan Interval, TimeSpan? RegisteredFor,
-            TimeSpan? HeldFor, TimeSpan? RunningFor, TimeSpan? SinceLastEnd, string? LastOutcome);
+            TimeSpan? HeldFor, TimeSpan? RunningFor, TimeSpan? SinceLastEnd, string? LastOutcome, double? PassSeconds = null);
+
+        /// <summary>The weight of each pass in <see cref="WorkerState.PassSeconds"/>: about the last ten passes count.</summary>
+        public const double PassWeight = 0.2;
 
         /// <summary>Every <see cref="KnownWorkers"/> worker (and any other registered), now: an unregistered one as not enabled.</summary>
         public static IReadOnlyList<WorkerState> Snapshot()
@@ -126,7 +131,7 @@ namespace Juice.Observability.Data
                     states.Add(new WorkerState(worker, enabled, enabled ? !state.Unleased : !UnleasedWorkers.Contains(worker), enabled && state.Held, state.Interval,
                         enabled ? Age(state.Registered) : null, enabled && state.Held && state.HeldSince is { } h ? Age(h) : null,
                         enabled && state.Running is { } r ? Age(r) : null, enabled && state.LastEnd is { } e ? Age(e) : null,
-                        enabled ? state.LastOutcome : null));
+                        enabled ? state.LastOutcome : null, enabled ? state.PassSeconds : null));
                 }
             }
             return states;
@@ -152,6 +157,7 @@ namespace Juice.Observability.Data
                     state.Running = null;
                     state.LastEnd = null;
                     state.LastOutcome = null;
+                    state.PassSeconds = null;
                     state.Held = false;
                     state.HeldSince = null;
                 }
@@ -177,6 +183,7 @@ namespace Juice.Observability.Data
                     state.LastEnd = null;
                     state.HeldSince = null;
                     state.LastOutcome = null;
+                    state.PassSeconds = null;
                 }
             }
         }
@@ -270,11 +277,13 @@ namespace Juice.Observability.Data
                 _done = true;
                 var ended = Stopwatch.GetTimestamp();
                 var outcome = _outcome ?? (_stopping.IsCancellationRequested ? "canceled" : "failure");
+                var seconds = Stopwatch.GetElapsedTime(_started, ended).TotalSeconds;
                 lock (_state)
                 {
                     _state.Running = null;
                     _state.LastEnd = ended;
                     _state.LastOutcome = outcome;
+                    _state.PassSeconds = _state.PassSeconds is { } mean ? mean + PassWeight * (seconds - mean) : seconds;
                 }
                 var tag = new KeyValuePair<string, object?>("worker", _worker);
                 PassDuration.Record(Stopwatch.GetElapsedTime(_started, ended).TotalSeconds, tag);

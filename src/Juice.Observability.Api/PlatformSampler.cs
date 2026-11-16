@@ -96,17 +96,46 @@ namespace Juice.Observability.Api
         private static void Gauge(string name, string unit, string description, Func<Sample, IEnumerable<Measurement<double>>> read)
             => Meter.CreateObservableGauge(name, () => s_live is { Latest: { } sample } live && live._clock.GetUtcNow() - sample.At <= Fresh ? read(sample) : [], unit, description);
 
+        /// <summary>One PostgreSQL sample. Rules (enabled), Slos (not retired) and Services count the deployment's
+        /// tenant: the mix the capacity view sets beside its calibration's (Phase 11 R9).</summary>
         public sealed record PostgresSample(bool Up, double Duration, double Size, double? WatermarkLag, long OutboxPending, long OutboxRetrying,
-            double? OutboxOldest, long WebhookPending, long WebhookRetrying, double? WebhookOldest);
+            double? OutboxOldest, long WebhookPending, long WebhookRetrying, double? WebhookOldest, long Rules = 0, long Slos = 0, long Services = 0);
 
         public sealed record FinishedQueries(string User, string Kind, long Succeeded, long Failed, double? P95);
 
+        /// <summary>The platform's reads of one caller (<c>log_comment</c>, such as <c>juice:slos</c>) finished in the sample's window.</summary>
+        public sealed record CallerQueries(string Caller, long Count, double P95);
+
+        /// <summary>
+        /// A telemetry table's growth: <paramref name="BytesPerDay"/> on disk from the last whole UTC day's partition, or, with none yet, today's
+        /// scaled to a day (<paramref name="Estimated"/>); and its retention, from its TTL.
+        /// </summary>
+        public sealed record TableGrowth(string Name, double? BytesPerDay, bool Estimated, int? RetentionDays);
+
+        /// <summary>One ClickHouse sample. CoresAvailable: the cores ClickHouse may use (its automatic <c>max_threads</c>); MemoryTotal: the memory its machine has.
+        /// InsertsInFlight: the Collector's inserts running at once, on average over the sample's window (their durations over its
+        /// length). The final rerun found the export saturating near 10 (docs/scale-tests.md).</summary>
         public sealed record ClickHouseSample(bool Up, double? Cores, double Memory, IReadOnlyDictionary<string, long> Running,
             IReadOnlyList<FinishedQueries> Finished, IReadOnlyList<(string Name, double Free, double Total)> Disks,
-            IReadOnlyList<(string Name, double Bytes, double Rows)> Tables);
+            IReadOnlyList<(string Name, double Bytes, double Rows)> Tables, double? CoresAvailable = null, double? InsertsInFlight = null,
+            IReadOnlyList<CallerQueries>? Callers = null, IReadOnlyList<TableGrowth>? Growth = null, double? MemoryTotal = null);
 
-        /// <summary>The Collector's health check: answered with a success status within the timeout.</summary>
-        public sealed record CollectorSample(bool Up, double Duration);
+        /// <summary>
+        /// One signal through the Collector: accepted and refused by the tenant's receivers (not the platform's own pipeline), and dropped by
+        /// the exporters (a full queue, or a send given up), as counts since the Collector started, and per second since the previous sample
+        /// (null on the first, or after the Collector restarted).
+        /// </summary>
+        public sealed record SignalFlow(string Signal, double Accepted, double Refused, double Dropped, double? AcceptedPerSecond = null,
+            double? RefusedPerSecond = null, double? DroppedPerSecond = null);
+
+        /// <summary>An exporter's sending queue against its bound: beyond it, data is dropped.</summary>
+        public sealed record ExportQueue(string Exporter, double Size, double Capacity);
+
+        /// <summary>
+        /// The Collector's health check: answered with a success status within the timeout. With its metrics page configured
+        /// (<c>Telemetry:CollectorMetricsUrl</c>), also each signal's flow and each exporter's queue; null when it isn't read or didn't answer.
+        /// </summary>
+        public sealed record CollectorSample(bool Up, double Duration, IReadOnlyList<SignalFlow>? Signals = null, IReadOnlyList<ExportQueue>? Queues = null);
 
         /// <summary>One sample: <see cref="ClickHouse"/> is null when ClickHouse isn't sampled, <see cref="Collector"/> when the Collector isn't checked.</summary>
         public sealed record Sample(DateTimeOffset At, PostgresSample Postgres, ClickHouseSample? ClickHouse, CollectorSample? Collector = null);
@@ -116,6 +145,7 @@ namespace Juice.Observability.Api
 
         private readonly TimeProvider _clock = clock;
         private (long Micros, long At)? _cpu;
+        private (IReadOnlyList<SignalFlow> Signals, long At)? _collector;
         private DateTime? _windowEnd;
         private readonly Dictionary<(string User, string Kind, string Outcome), long> _finished = [];
         private readonly Lock _finishedLock = new();
@@ -165,19 +195,39 @@ namespace Juice.Observability.Api
             var at = _clock.GetUtcNow();
             var postgres = WithinAsync(SamplePostgresAsync, cancellationToken);
             var clickHouseSample = string.IsNullOrWhiteSpace(clickHouse.Value.MonitorConnectionString) ? null : WithinAsync(SampleClickHouseAsync, cancellationToken);
-            var collector = telemetry?.Value.CollectorHealthUrl is { Length: > 0 } url ? WithinAsync(ct => SampleCollectorAsync(url, ct), cancellationToken) : null;
+            var collector = telemetry?.Value.CollectorHealthUrl is { Length: > 0 } url
+                ? WithinAsync(ct => SampleCollectorAsync(url, telemetry.Value.CollectorMetricsUrl, ct), cancellationToken) : null;
             return new Sample(at, await postgres, clickHouseSample is null ? null : await clickHouseSample, collector is null ? null : await collector);
         }
 
         private static readonly HttpClient Http = new() { Timeout = Timeout };
 
-        private async Task<CollectorSample> SampleCollectorAsync(string url, CancellationToken cancellationToken)
+        private async Task<CollectorSample> SampleCollectorAsync(string url, string? metricsUrl, CancellationToken cancellationToken)
         {
             var started = Stopwatch.GetTimestamp();
             try
             {
                 using var response = await Http.GetAsync(url, cancellationToken);
-                return new CollectorSample(response.IsSuccessStatusCode, Stopwatch.GetElapsedTime(started).TotalSeconds);
+                var duration = Stopwatch.GetElapsedTime(started).TotalSeconds;
+                if (!response.IsSuccessStatusCode || metricsUrl is not { Length: > 0 })
+                {
+                    return new CollectorSample(response.IsSuccessStatusCode, duration);
+                }
+                try
+                {
+                    var (signals, queues) = CollectorMetrics.Parse(await Http.GetStringAsync(metricsUrl, cancellationToken));
+                    var now = Stopwatch.GetTimestamp();
+                    signals = CollectorMetrics.WithRates(signals, _collector?.Signals,
+                        _collector is { } last ? Stopwatch.GetElapsedTime(last.At, now).TotalSeconds : null);
+                    _collector = (signals, now);
+                    return new CollectorSample(true, duration, signals, queues);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException || !StoppingNow(cancellationToken))
+                {
+                    logger.LogWarning(ex, "The Collector's metrics page didn't answer the sample");
+                    _collector = null;
+                    return new CollectorSample(true, duration);
+                }
             }
             catch (Exception ex) when (ex is not OperationCanceledException || !StoppingNow(cancellationToken))
             {
@@ -208,7 +258,11 @@ namespace Juice.Observability.Api
               (SELECT count(*) FROM webhook_deliveries WHERE status = 'Pending'),
               (SELECT count(*) FROM webhook_deliveries WHERE status = 'Retrying'),
               -- Overdue: a pending delivery from when it fell due (a grouped one waits for its window on purpose).
-              extract(epoch FROM now() - (SELECT min(next_attempt_at) FROM webhook_deliveries WHERE status = 'Pending' AND next_attempt_at <= now()))::float8
+              extract(epoch FROM now() - (SELECT min(next_attempt_at) FROM webhook_deliveries WHERE status = 'Pending' AND next_attempt_at <= now()))::float8,
+              -- The mix (Phase 11 R9): what drives the workers' cost besides the load.
+              (SELECT count(*) FROM rules r JOIN platform_tenants t ON t.id = r.tenant_id WHERE r.enabled AND t.key = @tenant),
+              (SELECT count(*) FROM slos s JOIN platform_tenants t ON t.id = s.tenant_id WHERE NOT s.retired AND t.key = @tenant),
+              (SELECT count(*) FROM services s JOIN platform_tenants t ON t.id = s.tenant_id WHERE t.key = @tenant)
             """;
 
         private async Task<PostgresSample> SamplePostgresAsync(CancellationToken cancellationToken)
@@ -230,7 +284,8 @@ namespace Juice.Observability.Api
                     await using var reader = await command.ExecuteReaderAsync(cancellationToken);
                     await reader.ReadAsync(cancellationToken);
                     return new PostgresSample(true, Stopwatch.GetElapsedTime(started).TotalSeconds, reader.GetDouble(0), Maybe(reader, 1),
-                        reader.GetInt64(2), reader.GetInt64(3), Maybe(reader, 4), reader.GetInt64(5), reader.GetInt64(6), Maybe(reader, 7));
+                        reader.GetInt64(2), reader.GetInt64(3), Maybe(reader, 4), reader.GetInt64(5), reader.GetInt64(6), Maybe(reader, 7),
+                        reader.GetInt64(8), reader.GetInt64(9), reader.GetInt64(10));
                 }
                 finally
                 {
@@ -308,8 +363,38 @@ namespace Juice.Observability.Api
                 await ReadAsync(connection, "SELECT table, sum(bytes_on_disk), sum(rows) FROM system.parts WHERE active AND database = 'otel' GROUP BY table",
                     r => tables.Add((r.GetString(0), Convert.ToDouble(r.GetValue(1)), Convert.ToDouble(r.GetValue(2)))), cancellationToken);
 
+                // What the Overview and the capacity view add (Phase 11 R8, R9): the cores, the Collector's inserts in flight over the window, the
+                // platform's reads by caller, and each table's growth and retention.
+                var available = Convert.ToDouble(await ScalarAsync(connection, "SELECT toFloat64(getSetting('max_threads'))", cancellationToken) ?? 0d);
+                var memoryTotal = Convert.ToDouble(await ScalarAsync(connection, "SELECT value FROM system.asynchronous_metrics WHERE metric = 'OSMemoryTotal'", cancellationToken) ?? 0d);
+                var windowSeconds = Math.Max(1, (windowEnd - windowStart).TotalSeconds);
+                var inserting = Convert.ToDouble(await ScalarAsync(connection, """
+                    SELECT toFloat64(sum(query_duration_ms)) / 1000 FROM system.query_log
+                    WHERE type = 'QueryFinish' AND user = 'otel_writer' AND query_kind = 'Insert' AND event_time >= {from:DateTime} AND event_time < {to:DateTime}
+                    """, cancellationToken, ("from", windowStart), ("to", windowEnd)) ?? 0d) / windowSeconds;
+                var callers = new List<CallerQueries>();
+                await ReadAsync(connection, """
+                    SELECT if(log_comment = '', '(none)', substring(log_comment, 1, 80)), count(), quantile(0.95)(query_duration_ms) / 1000
+                    FROM system.query_log
+                    WHERE type = 'QueryFinish' AND user = 'platform_reader' AND event_time >= {from:DateTime} AND event_time < {to:DateTime}
+                    GROUP BY 1 ORDER BY 3 DESC LIMIT 30
+                    """, r => callers.Add(new CallerQueries(r.GetString(0), Convert.ToInt64(r.GetValue(1)), Convert.ToDouble(r.GetValue(2)))),
+                    cancellationToken, ("from", windowStart), ("to", windowEnd));
+                var growth = new List<TableGrowth>();
+                await ReadAsync(connection, """
+                    SELECT t.name, toFloat64(p.yesterday), toFloat64(p.today), toFloat64(now() - toStartOfDay(now())),
+                      toInt32OrNull(extract(t.engine_full, 'toIntervalDay\\((\\d+)\\)'))
+                    FROM system.tables AS t LEFT JOIN (
+                      SELECT table, sumIf(bytes_on_disk, partition = toString(yesterday())) AS yesterday, sumIf(bytes_on_disk, partition = toString(today())) AS today
+                      FROM system.parts WHERE active AND database = 'otel' GROUP BY table
+                    ) AS p ON p.table = t.name
+                    WHERE t.database = 'otel' AND t.engine LIKE '%MergeTree'
+                    """, r => growth.Add(TableGrowthOf(r.GetString(0), Convert.ToDouble(r.GetValue(1)), Convert.ToDouble(r.GetValue(2)),
+                        Convert.ToDouble(r.GetValue(3)), r.IsDBNull(4) ? null : Convert.ToInt32(r.GetValue(4)))), cancellationToken);
+
                 return new ClickHouseSample(true, cores, memory, running,
-                    [.. finished.Select(f => new FinishedQueries(f.Key.User, f.Key.Kind, f.Value.Ok, f.Value.Failed, f.Value.P95))], disks, tables);
+                    [.. finished.Select(f => new FinishedQueries(f.Key.User, f.Key.Kind, f.Value.Ok, f.Value.Failed, f.Value.P95))], disks, tables,
+                    available > 0 ? available : null, inserting, callers, growth, memoryTotal > 0 ? memoryTotal : null);
             }
             catch (Exception ex) when (ex is not OperationCanceledException || !StoppingNow(cancellationToken))
             {
@@ -321,12 +406,26 @@ namespace Juice.Observability.Api
 
         private static string User(string user) => KnownUsers.Contains(user) ? user : "other";
 
+        /// <summary>
+        /// A table's bytes a day: the last whole UTC day's partition, or, before there is one, today's scaled to a day once an hour of it has
+        /// passed (an estimate: parts not merged yet are larger than they will be).
+        /// </summary>
+        internal static TableGrowth TableGrowthOf(string name, double yesterday, double today, double todaySeconds, int? retentionDays)
+            => yesterday > 0 ? new TableGrowth(name, yesterday, false, retentionDays)
+                : today > 0 && todaySeconds >= 3600 ? new TableGrowth(name, today * 86400 / todaySeconds, true, retentionDays)
+                : new TableGrowth(name, null, false, retentionDays);
+
         /// <summary>The token passed in is the host's, linked with the sample's own deadline: only the host stopping ends the sampler quietly.</summary>
         private bool StoppingNow(CancellationToken cancellationToken) => cancellationToken.IsCancellationRequested && (PlatformCaller.Stopping?.IsCancellationRequested ?? false);
 
-        private static async Task<object?> ScalarAsync(ClickHouseConnection connection, string sql, CancellationToken cancellationToken)
+        private static async Task<object?> ScalarAsync(ClickHouseConnection connection, string sql, CancellationToken cancellationToken,
+            params (string Name, object Value)[] parameters)
         {
             await using var command = Command(connection, sql);
+            foreach (var (name, value) in parameters)
+            {
+                command.AddParameter(name, value);
+            }
             return await command.ExecuteScalarAsync(cancellationToken);
         }
 
