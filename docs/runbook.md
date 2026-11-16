@@ -328,16 +328,19 @@ it. The agent's log says `The platform refused this agent's action report` when 
 
 ## Upgrade
 
-1. Back up first.
-   - **Coming from 1.2.0 or earlier,** run `scripts/init.sh` first. It keeps everything already there and adds what 1.3.0 needs:
-     `CLICKHOUSE_MONITOR_PASSWORD` in `.env` and `secrets/platform-otlp-token`. Then `docker compose up -d --wait otel-collector`
-     picks up the Collector's platform pipeline. Compose refuses to start without the new `.env` key.
-2. Build and start the new API: `docker compose --profile platform up -d --build platform-api`. It applies pending
-   migrations on start.
-   - **Then run `scripts/apply-clickhouse-access.sh`.** It applies `clickhouse/init-users.sh` (ClickHouse users, grants and row
-     policies) to the existing volume. The `clickhouse-access` service does this whenever it starts, but an upgrade that only
-     changes the script doesn't restart it, so run the script every time. Coming from 1.2.0 or earlier, step 2 already recreates ClickHouse (keeping its volume) and
-     runs `clickhouse-access`, which adds Grafana's tenant row policy (new after 1.2.0: on 1.2.0 Grafana reads every tenant in a
-     shared ClickHouse); the script makes sure. `tests/verify.sh` checks the result.
-3. `MigrationTests` checks every upgrade path from an empty database up, one migration at a time, and the data
-   carried across.
+1. Back up first (`scripts/backup.sh`).
+2. Check out the new version over the old one, in the same directory: `.env`, `secrets/` and the volumes stay.
+3. `scripts/init.sh`. It keeps everything already there and adds what the new version needs. Coming from 1.2.0 or earlier, that is
+   `CLICKHOUSE_MONITOR_PASSWORD` in `.env` and `secrets/platform-otlp-token`; compose refuses to start without the new `.env` key.
+4. `docker compose --profile platform up -d --build --wait --remove-orphans` (with the other profiles you run). It rebuilds the API,
+   which applies pending migrations on start, and recreates what changed: the Collector picks up its platform pipeline,
+   `clickhouse-access` sets up ClickHouse's users, grants and row policies on the existing data (Grafana's tenant policy is new after
+   1.2.0: on 1.2.0 Grafana reads every tenant in a shared ClickHouse), and `clickhouse-columns` adds the resource columns.
+5. `scripts/apply-clickhouse-access.sh`. An upgrade that changes only `clickhouse/init-users.sh` or `resource-columns.sh` doesn't
+   restart their services, so run it every time; it shows the row policies it left.
+6. Check: `/health/platform` answers `ok` within a couple of minutes, and `tests/verify.sh` passes.
+
+**Drilled:** `tests/upgrade-drill.sh` installs a release (`FROM=api-1.2.0`), gives it the reference load for 10 minutes, upgrades it in
+place with steps 2–5 and checks that nothing was lost and every new piece works on the old data ([drills](drills.md)). From 1.2.0 the upgrade took 52–73 s from checkout to a stack up again (the Collector is down for part of it: senders retry, as for any Collector restart).
+`MigrationTests` checks every migration path from an empty database up,
+one migration at a time, with the data carried across.

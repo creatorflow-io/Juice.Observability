@@ -19,7 +19,8 @@ import { randomFillSync } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import * as otlp from './otlp.mjs';
 
-const local = fileURLToPath(new URL('../', import.meta.url));
+// The stack whose token and CA it sends with: this checkout's, or JUICE_LOCAL_DIR's (tests/upgrade-drill.sh sends to a stack checked out elsewhere).
+const local = process.env.JUICE_LOCAL_DIR ? process.env.JUICE_LOCAL_DIR.replace(/[\/]?$/, '/') : fileURLToPath(new URL('../', import.meta.url));
 
 // ─── the shop ───────────────────────────────────────────────────────────────
 

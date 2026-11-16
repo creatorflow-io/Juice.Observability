@@ -309,11 +309,86 @@ Agents are off unless `Agents:Enabled` is `true`, with:
   next renewal. Remove the old certificate after one `Agents:CertificateLifetime`. The listener's server certificate is separate:
   agents trust it through their own `Agent:PlatformCaFile`.
 
-## More than one API replica
+## Sizing and scaling
 
-Replicas can run side by side behind a load balancer. Discovery, health and rules each run in one replica at a time:
-the replica that holds a PostgreSQL advisory lock for that worker runs it, and the others skip their passes. When it
-stops or loses its database connection, another replica takes over within one pass (30 s for discovery and health,
-5 s for rules); the log says `This replica now runs {worker}`. Webhook delivery runs in every replica and
-claims each delivery, so none is sent twice. To keep workers off the API replicas, set `Discovery:Enabled`,
-`Health:Enabled`, `Rules:Enabled` and `Webhooks:Enabled` to `false` there.
+What to give each part of the platform, and what to do when the Overview's platform panel turns amber or red (Phase 11 R18).
+The figures are measured on the reference host (24 cores, a Docker VM with 24 vCPU and 31 GiB, everything on one machine) with
+the reference mix: 10 services of 10 instances, 50 rules, 50 SLOs and 2 searches a second. 1× is §9's reference load: 1,000
+spans, 10,000 metric points and 1,000 logs a second. Raw data and method: [scale tests](scale-tests.md), the final rerun of
+16 November.
+
+### What one machine carries
+
+| Load | ClickHouse CPU, mean (max) | ClickHouse memory, max | Collector CPU, mean | API CPU, mean | PostgreSQL CPU, mean | Disk at full retention |
+|---|---|---|---|---|---|---|
+| 1× | 0.8 cores (8.5) | 2.2 GiB | 0.15 | 0.12 | 0.06 | about 1 TB |
+| 3× | 1.8 (13.8) | 3.9 GiB | 0.36 | 0.12 | 0.06 | about 3 TB |
+| 5× | 3.2 (16.2) | 6.9 GiB | 0.77 | 0.14 | 0.07 | about 5 TB |
+| 10× | 7.1 (18.7) | 10 GiB | 2.35 | 0.23 | 0.12 | about 10 TB |
+
+- **Every §9 target holds through 5×.** At 6× a 40-second ClickHouse burst (large merges, inserts and a discovery pass at once)
+  dropped 0.012 % of points; at 10× the Collector's metrics export drops 5.8 % steadily. Plan to run at no more than 5× the
+  reference on this host, and measure your own (below).
+- **ClickHouse's CPU comes in bursts:** its mean grows by about 0.7 cores per 1×, but merges and searches take it to 13–19 cores for
+  seconds at a time from 3× up. Size the node for the bursts, not the mean.
+- **Disk:** about 1 TB per 1× at the reference retention (traces and logs 30 days, metrics 90), from the first 30 minutes' parts
+  before ClickHouse's later merges: an upper figure. The panel's disk figure measures your own a day.
+
+### What scales out, and what doesn't
+
+- **More API replicas** carry more of the Console and the API: searches (each replica runs at most `ClickHouse:Api:MaxConcurrent`
+  at once), reads and the webhook and outbox delivery, which every replica runs, claiming each delivery so none is sent twice.
+- **Six workers run in one replica at a time:** discovery, health, rules, SLOs, notification planning and agent action requests.
+  The replica that holds a worker's PostgreSQL advisory lock runs it; the others skip their passes. When it stops or loses its
+  database connection, another takes over within a pass (30 s for discovery, health, SLOs and action requests; seconds for rules and
+  notifications); the log says `This replica now runs {worker}`. A worker doesn't get faster with more replicas: its levers are its
+  own settings.
+- **Workers on their own replicas:** to keep the workers off the API replicas, turn them off there, and on in one or two worker
+  replicas (a second is a standby):
+
+  | Worker | Switch | Also turns off |
+  |---|---|---|
+  | Discovery | `Discovery:Enabled` | – |
+  | Health | `Health:Enabled` | – |
+  | Rules | `Rules:Enabled` | – |
+  | SLOs | `Slos:Enabled` | – |
+  | Notification planning | `Webhooks:Enabled` | webhook delivery in that replica |
+  | Agent action requests | `Agents:Enabled` | the agent listener in that replica |
+
+- **ClickHouse is one node, and scales up:** more cores for the bursts, more memory for the merges. A second node (a replica for
+  searches, or shards) is new infrastructure: the roadmap's trigger table applies, with an ADR first.
+- **The Collector is one instance.** Its metrics export is the platform's limit on this host: about 95,000 points a second
+  (9.5× the reference), where the inserts it keeps in flight saturate near 10 (`sending_queue.num_consumers` is 16). Its queue holds
+  200,000 items per signal; beyond, data is dropped and counted.
+- **PostgreSQL** is far from any line: about 0.1 core and 130 commands a second at every step to 10×.
+
+### Each worker's levers
+
+| Worker | Levers | What they trade |
+|---|---|---|
+| Rules | `Rules:MaxConcurrency`, `Rules:EvaluationTimeout`; the number of rules | more at once, more ClickHouse at once |
+| SLOs | `Slos:Interval`, `Slos:MaxMinutesPerPass`; the number of SLOs (at most 200) | a longer interval, a later burn alert |
+| Discovery | `Discovery:Interval`, `Discovery:MetricsInterval` (5 min) | a resource seen only in metrics found later |
+| Health | `Health:Interval`, `Health:LivenessOverlap`, `Health:LivenessFullRead` | fresher health against more reads |
+| Searches | `ClickHouse:Api:MaxConcurrent`, `MaxExecutionSeconds`, `MaxThreads` (per replica) | more searches at once, less ClickHouse for the workers and inserts |
+
+### When the panel turns amber or red
+
+| Figure | What it means | What to do |
+|---|---|---|
+| A worker's "busy" | its passes take most of its interval | its levers above; a replica of its own; fewer rules or SLOs |
+| A worker stale, stuck, unheld or gone | its replica stopped, or its passes do | the runbook's worker entries; `/api/v1/platform/status` names the replica |
+| A backlog behind | delivery or discovery is late | webhooks: the receiving end, or more replicas; discovery: its levers, ClickHouse's CPU |
+| Refused or dropped | the Collector's limit is reached | less load per Collector, or the export's consumers and batch size (measure first); ClickHouse's insert p95 |
+| An export queue filling | inserts are slower than the load | ClickHouse's CPU and insert p95; the queue absorbs bursts, and drops past its bound |
+| ClickHouse CPU | the node is busy | a larger node; fewer searches at once (`ClickHouse:Api:MaxConcurrent`); the reads by caller say which worker or page costs most |
+| Insert p95 | inserts wait on a busy ClickHouse | as ClickHouse CPU; amber at 200 ms, where the rerun's 6× burst was |
+| A search's read p95 | searches are slow | narrower time ranges; `ClickHouse:Api` bounds; ClickHouse's CPU |
+| Disk: days until full | it fills before retention lets old data go | a larger disk, or shorter retention (`JUICE_*_TTL`, set when the tables are created) |
+
+### Measuring your own
+
+The capacity view is calibrated on the reference host. On another machine it shows utilisation only, and says so. To calibrate
+it on yours, run the scale steps there (`deploy/local/scale/steps.sh`, on a stack that isn't serving, with `HELD_OUT` steps to check
+it), and copy the calibration they write into `capacity/calibration.json`: the view then sets each figure beside what that machine
+measured where every line held, and where one crossed.

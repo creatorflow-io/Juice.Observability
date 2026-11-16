@@ -328,6 +328,43 @@ namespace Juice.Observability.Tests
             Assert.True(second.Postgres.Services >= 0);
         }
 
+        /// <summary>
+        /// Gate 2: the Overview keeps working while ClickHouse is slow or down. It reads the heartbeats (PostgreSQL) and the last sample,
+        /// never ClickHouse itself: with ClickHouse hanging, it answers at once, with the workers, and without ClickHouse's figures.
+        /// </summary>
+        [Fact]
+        public async Task The_overview_answers_at_once_with_the_workers_while_clickhouse_hangs_Async()
+        {
+            LocalStack.RequireAvailable();
+            var ct = TestContext.Current.CancellationToken;
+            using var hang = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
+            hang.Start();
+            var port = ((IPEndPoint)hang.LocalEndpoint).Port;
+            var accepted = new List<System.Net.Sockets.TcpClient>();
+            _ = Task.Run(async () => { while (true) accepted.Add(await hang.AcceptTcpClientAsync(ct)); }, ct);
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var factory = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string>
+            {
+                ["ClickHouse:MonitorConnectionString"] = $"Host=127.0.0.1;Port={port};Username=nobody;Password=x",
+                ["ClickHouse:ConnectionString"] = $"Host=127.0.0.1;Port={port};Username=nobody;Password=x",
+            });
+            using var client = factory.CreateClient();
+            var token = await LocalStack.TokenAsync("erin");
+            await new HeartbeatWriter(factory.Services.GetRequiredService<IServiceScopeFactory>(), NullLogger<HeartbeatWriter>.Instance).WriteOnceAsync(ct);
+
+            // While the first sample is still waiting on ClickHouse, and after it gave up: an answer each time, in well under the sample's timeout.
+            for (var i = 0; i < 2; i++)
+            {
+                var started = System.Diagnostics.Stopwatch.StartNew();
+                var overview = await ApiTests.JsonAsync(await ApiTests.Get(client, "/api/v1/platform/overview", token));
+                Assert.True(started.Elapsed < TimeSpan.FromSeconds(3), $"took {started.Elapsed}");
+                Assert.NotEmpty(overview.GetProperty("workers").EnumerateArray());
+                Assert.Equal(System.Text.Json.JsonValueKind.Null, overview.GetProperty("clickHouse").ValueKind);
+                if (i == 0) await Task.Delay(PlatformSampler.Timeout + TimeSpan.FromSeconds(2), ct);
+            }
+            accepted.ForEach(c => c.Dispose());
+        }
+
         [Fact]
         public async Task The_overview_is_for_operators_of_this_deployment_Async()
         {
