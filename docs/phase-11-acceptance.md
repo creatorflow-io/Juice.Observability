@@ -19,8 +19,8 @@ review loop (two fix rounds and a confirmation round, R16). [Plan](phase-11-plan
 
 ## Release 1.3.0 (R17)
 
-- **Version:** 1.3.0 (`Directory.Build.props`, the Console package), tagged `api-1.3.0` and `console-1.3.0` locally. Pushing the tags
-  publishes it (`.github/workflows/release.yml`): the owner's step.
+- **Version:** 1.3.0 (`Directory.Build.props`, the Console package), released 2026-11-16: GitHub releases `api-1.3.0` and
+  `console-1.3.0`, published by `.github/workflows/release.yml` (nuget.org, npm).
 - **Upgrade from 1.2.0:** `scripts/init.sh` (adds `CLICKHOUSE_MONITOR_PASSWORD` and the platform's OTLP token), `docker compose
   --profile platform up -d --build --wait --remove-orphans`, `scripts/apply-clickhouse-access.sh` ([runbook](runbook.md#upgrade)). The migrations (heartbeats,
   their pass time) run on start; `clickhouse-access` adds `platform_monitor`, the row policies and the platform pipeline's users;
