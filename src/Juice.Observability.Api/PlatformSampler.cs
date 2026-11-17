@@ -114,7 +114,7 @@ namespace Juice.Observability.Api
 
         /// <summary>One ClickHouse sample. CoresAvailable: the cores ClickHouse may use (its automatic <c>max_threads</c>); MemoryTotal: the memory its machine has.
         /// InsertsInFlight: the Collector's inserts running at once, on average over the sample's window (their durations over its
-        /// length). The final rerun found the export saturating near 10 (docs/scale-tests.md).</summary>
+        /// length). The final rerun found the export saturating near 10, the ClickHouse driver's default pool (docs/scale-tests.md).</summary>
         public sealed record ClickHouseSample(bool Up, double? Cores, double Memory, IReadOnlyDictionary<string, long> Running,
             IReadOnlyList<FinishedQueries> Finished, IReadOnlyList<(string Name, double Free, double Total)> Disks,
             IReadOnlyList<(string Name, double Bytes, double Rows)> Tables, double? CoresAvailable = null, double? InsertsInFlight = null,

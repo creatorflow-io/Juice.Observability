@@ -1078,3 +1078,38 @@ to model the export path (inserts in flight × insert latency against the queue'
 - **The calibration file** is `deploy/local/capacity/calibration.json`, written by `scale/calibration.mjs --held-out 4,6` from these six
   steps (`scale/steps.sh` writes one after every run). Each resource in it is measured as the platform measures it live, so the view
   sets today's figure beside the step that held and the step that crossed.
+
+## Phase 11 follow-ups, 16–17 November
+
+The two items Phase 11 left open ([acceptance](phase-11-acceptance.md)): why the Collector's metrics export tops out, and what the
+review's whole liveness read every 2 minutes costs.
+
+### The export's limit was the ClickHouse driver's connection pool
+
+The ingest ceiling at 20× (`CEILING=ingest scale/steps.sh 20`, every worker off, no query mix), where the export saturates on its own,
+one change at a time to `collector/config.yaml` (restored after each run):
+
+| At 20× ingest (200,000 points/s offered) | Points stored | ClickHouse CPU, mean | Collector CPU, mean | Inserts in flight, mean / p99 | Run |
+|---|--:|--:|--:|--:|---|
+| A: as 1.3.0 ships (async inserts, 16 consumers) | 55.1 % | 3.1 cores | 3.1 | – | `20261115T1338-ingest-20x` |
+| B: the exporter's `async_insert: false` | 89.7 % | 13.5 cores | 7.3 | 10.9 / 11.2 | `20261116T2308-ingest-20x` |
+| C: async inserts, 32 consumers | 50.7 % | 3.3 cores | 3.1 | 11.1 / 11.3 | `20261116T2345-ingest-20x` |
+| **E: async inserts, the driver's pool at 32 (`connection_params: max_open_conns`)** | **99.6 %** | **8.1 cores** | 5.6 | 20.5 / 30.3 | `20261117T0100-ingest-20x` |
+
+- **The cap:** inserts in flight sat at about 11 whatever the consumers (B and C), the ClickHouse Go driver's default pool of 10
+  connections (`database/sql`'s open connections). More consumers only queue for a connection (C, no better than A). Turning async
+  inserts off (B) made each insert faster (p50 88 ms against 213), so the same 11 slots carried more, at four times ClickHouse's CPU
+  (each insert a part of its own: up to 85 parts in a partition, against 38).
+- **The fix (E), shipped:** `max_open_conns: "32"`, async inserts kept. About 200,000 points a second at the ingest ceiling, twice
+  1.3.0's 110,000; ClickHouse's CPU follows the data it now stores, at a lower cost a point than B's. Up to 30 inserts in flight
+  (p99) and at most 64 parts in a partition. At 20× it is at its new limit (0.5 % of points dropped, the queue's median 71,000), so
+  20× is about where it stands. With the full mix, a rerun of the steps measures where the knee moved (below).
+- Per-component figures: `build/scale/export-experiment-components.md`.
+
+### What health's whole liveness read every 2 minutes costs
+
+A full-mix 1× step on the current code (`20261117T0021-1x`, every §9 target met) against the final rerun's 1× (`20261116T0442-1x`,
+before the review's whole read): health's queries went from 0.026 to 0.038 ClickHouse cores (+46 %), from about 3 reads a row to
+about 5, as estimated; health freshness p95 40 s (line 60 s). The step ran straight after the 20× runs, whose data was still inside the
+rules' and discovery's longer windows (an hour and more), so their figures there (rules 0.19 cores, reading 12 times the rows) say
+nothing about 1×; health's 5-minute window had cleared, and its figure stands.

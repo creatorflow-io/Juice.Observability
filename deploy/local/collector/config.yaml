@@ -181,9 +181,14 @@ exporters:
     create_schema: true
     ttl: ${env:JUICE_TRACES_TTL}
     timeout: 10s
+    # The ClickHouse driver's connection pool: its default, 10 connections, capped the inserts in flight near 10 whatever the consumers,
+    # and with them the metrics export (about 110,000 points/s at the ingest ceiling). 32 stored 99.6 % at 20× (about 200,000 points/s);
+    # docs/scale-tests.md, Phase 11 follow-ups.
+    connection_params:
+      max_open_conns: "32"
     sending_queue:
       enabled: true
-      num_consumers: 16         # concurrent inserts per exporter; each waits out the async-insert busy timeout (~200 ms), so 4 capped metrics near 85k points/s (Phase 11 R12a)
+      num_consumers: 16         # exports at once per exporter (Phase 11 R12a: 4 capped metrics near 85k points/s); 32 measured no better: the pool above was the cap
       sizer: items
       queue_size: 200000        # bounded: data is dropped (and counted in otelcol_exporter_enqueue_failed_*) beyond this
       block_on_overflow: false
