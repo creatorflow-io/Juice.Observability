@@ -314,24 +314,28 @@ Agents are off unless `Agents:Enabled` is `true`, with:
 What to give each part of the platform, and what to do when the Overview's platform panel turns amber or red (Phase 11 R18).
 The figures are measured on the reference host (24 cores, a Docker VM with 24 vCPU and 31 GiB, everything on one machine) with
 the reference mix: 10 services of 10 instances, 50 rules, 50 SLOs and 2 searches a second. 1× is §9's reference load: 1,000
-spans, 10,000 metric points and 1,000 logs a second. Raw data and method: [scale tests](scale-tests.md), the final rerun of
-16 November.
+spans, 10,000 metric points and 1,000 logs a second. Raw data and method: [scale tests](scale-tests.md), the rerun of 17 November
+with the Collector's ClickHouse pool at 32 connections, on a ClickHouse already holding 36 GB (2 billion rows) when it began.
 
 ### What one machine carries
 
 | Load | ClickHouse CPU, mean (max) | ClickHouse memory, max | Collector CPU, mean | API CPU, mean | PostgreSQL CPU, mean | Disk at full retention |
 |---|---|---|---|---|---|---|
-| 1× | 0.8 cores (8.5) | 2.2 GiB | 0.15 | 0.12 | 0.06 | about 1 TB |
-| 3× | 1.8 (13.8) | 3.9 GiB | 0.36 | 0.12 | 0.06 | about 3 TB |
-| 5× | 3.2 (16.2) | 6.9 GiB | 0.77 | 0.14 | 0.07 | about 5 TB |
-| 10× | 7.1 (18.7) | 10 GiB | 2.35 | 0.23 | 0.12 | about 10 TB |
+| 1× | 1.6 cores (11.2) | 5.3 GiB | 0.17 | 0.14 | 0.07 | about 1 TB |
+| 3× | 1.6 (7.2) | 5.7 GiB | 0.41 | 0.13 | 0.06 | about 3 TB |
+| 5× | 3.8 (18.4) | 6.7 GiB | 0.77 | 0.16 | 0.07 | about 5 TB |
+| 6× | 4.4 (20.4) | 8.9 GiB | 0.98 | 0.17 | 0.08 | about 6 TB |
+| 7× | 6.0 (23.6) | 7.8 GiB | 1.56 | 0.24 | 0.14 | about 7 TB |
+| 10× | 7.9 (28.2) | 10.6 GiB | 2.55 | 0.27 | 0.15 | about 10 TB |
 
-- **Every §9 target holds through 5×** (the final rerun, 16 November, with 1.3.0). At 6× a 40-second ClickHouse burst (large
-  merges, inserts and a discovery pass at once) dropped 0.012 % of points; at 10× the Collector's metrics export dropped 5.8 %
-  steadily. That limit was the ClickHouse driver's connection pool, raised since (below); until a rerun with it says otherwise, plan to
-  run at no more than 5× the reference on this host, and measure your own (below).
-- **ClickHouse's CPU comes in bursts:** its mean grows by about 0.7 cores per 1×, but merges and searches take it to 13–19 cores for
-  seconds at a time from 3× up. Size the node for the bursts, not the mean.
+- **Every §9 target holds through 6×** (17 November, with the pool at 32). From 7× ClickHouse's bursts cross "nothing lost": for 20
+  seconds to a minute it takes all of this host's 24 cores, inserts wait, and the Collector's queue fills past its bound (7×: one
+  burst, 0.7 % of points; 8×: 1.1 %; 10×: 2.6 %, in six minutes of bursts). Spans, logs, the workers, freshness and the API stay in line.
+  Before the pool was raised, 6× crossed with one burst too (16 November, 0.012 % of points) and 10× lost 5.8 % steadily.
+- **Plan at no more than 5× the reference on this host** (owner, 17 November): one step under the last that held, because the limit
+  is the bursts' headroom, and a 30-minute step meets only a few of them. Measure your own (below).
+- **ClickHouse's CPU comes in bursts:** its mean grows by about 0.7 cores per 1×, but merges and searches take it to 7–28 cores for
+  seconds at a time, all its cores from 7×. Size the node for the bursts, not the mean: more cores is what moves the knee.
 - **Disk:** about 1 TB per 1× at the reference retention (traces and logs 30 days, metrics 90): 17.5 GB a day, measured after
   ClickHouse's merges; metric sums at 90 days are 71 % of it ([drills](drills.md#the-disk-the-real-retention-needs)). A day's
   partition goes within about 4 hours of passing its TTL, so the disk holds the retention plus about a day. The panel's disk figure
@@ -360,8 +364,8 @@ spans, 10,000 metric points and 1,000 logs a second. Raw data and method: [scale
 
 - **ClickHouse is one node, and scales up:** more cores for the bursts, more memory for the merges. A second node (a replica for
   searches, or shards) is new infrastructure: the roadmap's trigger table applies, with an ADR first.
-- **The Collector is one instance.** Its metrics export was the platform's limit on this host: about 95,000 points a second (9.5×
-  the reference) with the full mix, where the inserts in flight saturated near 10. The cap was the ClickHouse driver's connection pool
+- **The Collector is one instance.** Its metrics export was the platform's limit on this host in 1.3.0: about 95,000 points a
+  second (9.5× the reference) with the full mix, where the inserts in flight saturated near 10. The cap was the ClickHouse driver's connection pool
   (10 connections by default), not the consumers: with `connection_params: max_open_conns: "32"` (shipped after 1.3.0) the ingest
   ceiling at 20× stored 99.6 % of its points (about 200,000 a second, against 55 % before). Its queue holds 200,000 items per signal;
   beyond, data is dropped and counted.

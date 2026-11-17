@@ -281,7 +281,7 @@ replica's last sample, never a query of its own, and the Console reads it again 
 | Each signal: received, refused, dropped a second | the Collector's metrics page (`Telemetry:CollectorMetricsUrl`), the tenant's receivers only; dropped by any exporter | – | anything refused or dropped since the last sample |
 | Each export queue against its bound | the same page | 50 % | 90 % |
 | ClickHouse CPU | the sampler's CPU, against `max_threads` (its cores) | 50 % of them (calibrated: the mean where every line held) | 80 % (calibrated: where one crossed) |
-| The Collector's insert p95, and inserts in flight | `query_log`, `otel_writer`: the inserts' durations over the sample's window is how many ran at once | 200 ms | 350 ms (the final rerun: 109 ms at 5×, 243 ms at 6×, 347 ms at 10×) |
+| The Collector's insert p95, and inserts in flight | `query_log`, `otel_writer`: the inserts' durations over the sample's window is how many ran at once | 200 ms | 350 ms (the final rerun: 109 ms at 5×, 243 ms at 6×, 347 ms at 10×; 17 November: 182 ms at 6×, which held, 362 ms at 7×, which crossed) |
 | The platform's reads, p95 by caller | `query_log`, `platform_reader`, by `log_comment` | an API search past 500 ms (§9's API line) | past 5 s; the workers' have no line |
 | Disk: used, free, a day, at retention, days until full | `system.disks`; each table's last whole UTC day's partition (or today's, scaled, once an hour has passed: an estimate) and its TTL. Days until full only while the tables still have more to grow, to reach their retention, than is free | under 30 days, or the retention needs more than the disk | under 7 days |
 
@@ -292,8 +292,9 @@ replica's last sample, never a query of its own, and the Console reads it again 
   platform measures them live: ClickHouse's CPU, the Collector's inserts in flight, the export queue (in the steps, the queues' sum,
   which the metrics queue is nearly all of), and each worker's pass time against its interval.
 - **The knee is a bracket,** from the calibration steps alone: the last step every line held, and the first that crossed one. The
-  shipped calibration (the final rerun, 16 November, [scale tests](scale-tests.md)): held to 5×, crossed at 10×. The view claims no
-  more than that: the knee came from bursts, not from a curve the steps could be interpolated along (owner, 16 November).
+  shipped calibration (the rerun with the driver's pool at 32, 17 November, 4× held out, [scale tests](scale-tests.md#rerun-with-the-drivers-pool-at-32-1-to-10-17-november)):
+  held to 6×, crossed at 7× (16 November's, before the pool: held to 5×, crossed at 10×). The view claims no more than that: the knee
+  comes from bursts, not from a curve the steps could be interpolated along (owner, 16 November).
 - **The load** is a multiple of §9's reference per signal (1,000 spans, 10,000 points and 1,000 logs a second), from the Collector's
   received rate. **Headroom** is the step that held over today's load.
 - **Each resource** shows now, and what it measured where every line held and where one crossed; amber and red at those.

@@ -88,15 +88,16 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
-        public void The_shipped_calibration_is_the_final_reruns_bracket_with_the_held_out_steps_kept_apart()
+        public void The_shipped_calibration_is_the_pool_reruns_bracket_with_the_held_out_step_kept_apart()
         {
             var calibration = Shipped();
-            Assert.Equal((5d, 10d), (calibration.Knee.HeldTo!.Value, calibration.Knee.CrossedAt!.Value));
-            Assert.Equal([1d, 3d, 5d, 10d], calibration.Steps.Where(s => !s.HeldOut).Select(s => s.Multiplier));
-            // R10's check: the held-out steps fall in the bracket. 4× held below it, 6× crossed inside it: the knee is at least the lower bound, 5×.
+            Assert.Equal((6d, 7d), (calibration.Knee.HeldTo!.Value, calibration.Knee.CrossedAt!.Value));
+            Assert.Equal([1d, 3d, 5d, 6d, 7d, 8d, 10d], calibration.Steps.Where(s => !s.HeldOut).Select(s => s.Multiplier));
+            // R10's check (17 November): the held-out step falls where the bracket says, 4× held below it; the lower bound, 6×, is within ±25 %
+            // of the first crossing measured, 7×.
+            Assert.Equal([4d], calibration.Steps.Where(s => s.HeldOut).Select(s => s.Multiplier));
             Assert.True(calibration.Steps.Single(s => s.Multiplier == 4).Held);
-            Assert.False(calibration.Steps.Single(s => s.Multiplier == 6).Held);
-            Assert.InRange(calibration.Knee.HeldTo!.Value / 6 - 1, -0.25, 0.25);
+            Assert.InRange(calibration.Knee.HeldTo!.Value / 7 - 1, -0.25, 0.25);
             Assert.True(calibration.Matches(24, ReferenceMemory));
             Assert.False(calibration.Matches(8, ReferenceMemory));
             Assert.False(calibration.Matches(24, ReferenceMemory / 2));
@@ -112,15 +113,15 @@ namespace Juice.Observability.Tests
 
             Assert.True(capacity.Calibrated);
             Assert.StartsWith("Calibrated on 24 cores", capacity.Label);
-            Assert.Equal((5d, 10d), (capacity.HeldTo!.Value, capacity.CrossedAt!.Value));
+            Assert.Equal((6d, 7d), (capacity.HeldTo!.Value, capacity.CrossedAt!.Value));
             Assert.Equal(1, capacity.Load.Single(l => l.Signal == "points").Multiple);
-            Assert.Equal(5, capacity.Headroom);
+            Assert.Equal(6, capacity.Headroom);
             Assert.Equal((50L, 50L, 50L, 50L), (capacity.Mix.Rules!.Value, capacity.Mix.CalibratedRules!.Value, capacity.Mix.Slos!.Value, capacity.Mix.CalibratedSlos!.Value));
-            // Inserts in flight: 2.09 where every line held (5×), 10.3 where one crossed (10×). 3 is past the first.
+            // Inserts in flight: 2.78 where every line held (6×), 5.83 where one crossed (7×). 3 is past the first.
             var inserts = capacity.Resources.Single(r => r.Name == "clickhouse.inserts_in_flight");
             Assert.Equal(PlatformOverview.Warn, inserts.Level);
-            Assert.InRange(inserts.AtHeld!.Value, 2, 2.2);
-            Assert.InRange(inserts.AtCrossed!.Value, 10, 10.5);
+            Assert.InRange(inserts.AtHeld!.Value, 2.7, 2.9);
+            Assert.InRange(inserts.AtCrossed!.Value, 5.7, 5.9);
             Assert.Equal(PlatformOverview.Ok, capacity.Resources.Single(r => r.Name == "worker.slos").Level);
             // A light worker measured a few milliseconds a pass in the steps: 1 % busy is still green, its line is its interval.
             var notifications = capacity.Resources.Single(r => r.Name == "worker.notifications");
@@ -240,7 +241,7 @@ namespace Juice.Observability.Tests
 
                 File.Copy(Path.Combine(Repository(), "deploy", "local", "capacity", "calibration.json"), file, overwrite: true);
                 File.SetLastWriteTimeUtc(file, DateTime.UtcNow.AddSeconds(5));
-                Assert.Equal(5, store.Get()!.Knee.HeldTo);
+                Assert.Equal(6, store.Get()!.Knee.HeldTo);
             }
             finally
             {
@@ -404,7 +405,7 @@ namespace Juice.Observability.Tests
             // The local stack runs on the machine the shipped calibration is for (the reference host); elsewhere it says it isn't calibrated.
             if (capacity.GetProperty("calibrated").GetBoolean())
             {
-                Assert.Equal(5, capacity.GetProperty("heldTo").GetDouble());
+                Assert.Equal(6, capacity.GetProperty("heldTo").GetDouble());
                 Assert.StartsWith("Calibrated on", capacity.GetProperty("label").GetString());
             }
             else

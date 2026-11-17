@@ -1103,7 +1103,7 @@ one change at a time to `collector/config.yaml` (restored after each run):
 - **The fix (E), shipped:** `max_open_conns: "32"`, async inserts kept. About 200,000 points a second at the ingest ceiling, twice
   1.3.0's 110,000; ClickHouse's CPU follows the data it now stores, at a lower cost a point than B's. Up to 30 inserts in flight
   (p99) and at most 64 parts in a partition. At 20× it is at its new limit (0.5 % of points dropped, the queue's median 71,000), so
-  20× is about where it stands. With the full mix, a rerun of the steps measures where the knee moved: the next section, once it has run. The pool is the cap again at
+  20× is about where it stands. With the full mix, the knee moved from 6× to 7×: [the rerun of 17 November](#rerun-with-the-drivers-pool-at-32-1-to-10-17-november). The pool is the cap again at
   20× (30 of 32 in flight, p99): an export inserts its metric types' tables at once, so the pool goes up with the consumers. Idle
   connections are kept as many (`max_idle_conns`, the driver's default 5), so a busy pool isn't redialled; each exporter has its own,
   up to 96 connections in all.
@@ -1116,3 +1116,59 @@ before the review's whole read): health's queries went from 0.026 to 0.038 Click
 about 5, as estimated; health freshness p95 40 s (line 60 s). The step ran straight after the 20× runs, whose data was still inside the
 rules' and discovery's longer windows (an hour and more), so their figures there (rules 0.19 cores, reading 12 times the rows) say
 nothing about 1×; health's 5-minute window had cleared, and its figure stands.
+
+## Rerun with the driver's pool at 32: 1× to 10×, 17 November
+
+Where the knee moved with the export's cap raised (the pool, above), the full mix again, commit 5967929:
+- **Runs:** `WARMUP=300 scale/steps.sh --restore --through 1 3 4 5 6 10` (`steps-20261117T0245.log`) stopped after 1× and 3×: its 4×
+  (`20261117T0357-4x`) was a harness problem (the generator fell short) and says nothing. 4×, 5×, 6× and 10× were run again
+  (`steps-20261117T0435.log`), then 8× and 7× alone, to place the knee between 6× and 10× (owner, 17 November).
+- **Reports:** `build/scale/20261117T0246-1x`, `…0321-3x`, `…0435-4x`, `…0511-5x`, `…0546-6x`, `…0815-7x`, `…0736-8x`, `…0622-10x`.
+- **Not a fresh stack.** The sequence started on the scale stack's data from the 20× ceiling runs: 36 GB and 2.05 billion rows at 1×,
+  46.7 GB at 10× (the 16 November sequence started empty and reached 8.7 GB at 10×). Larger merges and longer reads for every step,
+  so against 16 November the steps are a harder test, not a like-for-like one; 1× read 3.1 M rows a second, against 1.2 M.
+
+| Measure | Line | 1× | 3× | 4× | 5× | 6× | 7× | 8× | 10× |
+|---|---|---|---|---|---|---|---|---|---|
+| Throughput (stored, points) | ≥ 98 %, nothing lost | 100 %, 0 lost | 100 %, 0 lost | 100 %, 0 lost | 100 %, 0 lost | 100 %, 0 lost | 99.3 %, **0.85 M lost** | 98.9 %, **1.55 M lost** | **97.4 %**, **4.7 M lost** |
+| Ingestion freshness p95 | ≤ 30 s | 1.52 s | 1.53 s | 1.67 s | 1.72 s | 1.68 s | 2.08 s | 2.07 s | 2.81 s |
+| API reads p95 (20/s) | ≤ 500 ms | 12.3 ms | 12.5 ms | 14.1 ms | 16.1 ms | 21 ms | 44.9 ms | 52.7 ms | 56 ms |
+| Health freshness p95 | ≤ 60 s | 38.3 s | 40.3 s | 39.1 s | 38.4 s | 40.8 s | 39.2 s | 40.8 s | 40.9 s |
+| Rule breach-to-alert p95 | ≤ 2 min after `ForDuration` | 65 s | 65 s | 70 s | 65 s | 64 s | 72 s | 69 s | 69 s |
+| Webhook first dispatch p95 | ≤ 30 s | 2 s | 1.99 s | 1.72 s | 1.77 s | 1.9 s | 1.81 s | 1.92 s | 1.75 s |
+| Queue lag, past each configured delay | ≤ 60 s, nothing growing | within | within | within | within | within | within | **SLOs 63.6 s** | **SLOs 61.3 s** |
+| Export queue, median / max (bound 200,000 a signal) | – | 3,491 / 7,906 | 8,764 / 15,146 | 10,728 / 18,353 | 12,772 / 25,265 | 15,198 / 41,664 | 23,658 / 236,977 | 30,048 / 271,297 | 35,788 / 294,665 |
+| Inserts in flight, mean / p99 / max | – | 0.14 / 0.5 / 0.7 | 1.19 / 1.4 / 1.6 | 1.67 / 2.1 / 2.3 | 2.10 / 2.9 / 3.1 | 2.78 / 4.7 / 4.8 | 5.83 / 19.2 / 37.1 | 9.20 / 27.3 / 39.5 | 12.5 / 29.8 / 36.5 |
+| Collector insert p50 / p95 (`query_log`) | – | 16 / 42 ms | 68 / 96 ms | 69 / 101 ms | 70 / 110 ms | 71 / 182 ms | 92 / 362 ms | 182 / 478 ms | 191 / 535 ms |
+| Telemetry search p95 (reported) | – | 176 ms | 139 ms | 199 ms | 269 ms | 413 ms | 1.14 s | 1.61 s | 2.01 s |
+| Console page p95 (reported) | – | 840 ms | 778 ms | 866 ms | 935 ms | 1.08 s | 1.17 s | 1.25 s | 1.49 s |
+| ClickHouse CPU, mean / max (docker stats) | – | 1.6 / 11.2 | 1.6 / 7.2 | 2.6 / 14.2 | 3.8 / 18.4 | 4.4 / 20.4 | 6.0 / 23.6 | 7.2 / 24.4 | 7.9 / 28.2 |
+| Collector CPU, mean / max | – | 0.17 / 0.83 | 0.41 / 0.85 | 0.56 / 1.63 | 0.77 / 1.77 | 0.98 / 2.36 | 1.56 / 9.2 | 1.96 / 10.0 | 2.55 / 15.8 |
+
+- **Every line held through 6×,** where 16 November's crossed (one burst, 12,948 points) and on a larger data set. Spans and logs were
+  stored whole at every step; only metric points were lost.
+- **7×, 8× and 10× crossed, each in bursts, not sustained.** At 7× one burst of about 20 seconds (08:31:07–08:31:21: 0.85 M points,
+  0.7 % of the window's points); at 8× one of about a minute (08:00:20–08:01:06, after a small one at 07:53: 1.55 M, 1.1 %); at 10× six
+  minutes of them (06:34–06:40: 4.7 M, 2.6 %). The report's "lost in the Collector" counted each of them twice, as the receiver's
+  refusal and the exporter's enqueue failure (1.7 M, 3.1 M and 9.4 M): `report.mjs` now takes the larger of the two, and the
+  reports were written again (only that figure changed).
+  Between and after them nothing was lost: the queue drained, and the 10 to 19 minutes of each window after its last burst lost no point.
+- **What a burst is:** ClickHouse at all its cores (24–28, `docker stats`) for 10 to 60 seconds, and the Collector at 7–16 cores
+  with it; inserts in flight reach 30–40 (p99 19 at 7×, against 4.7 at 6×), so each insert waits longer and the export queue fills
+  past its bound in one or two samples. The workers' reads stay in line but slow down (rules' oldest open alert 86 s at 7×, against
+  its 60 s cycle, within the line). What took ClickHouse's cores in each burst (large merges, discovery or searches at once, as on 16
+  November) wasn't caught: the scale stack was down before it was looked for. `metric_log` and `part_log` for those minutes, on the next run.
+- **The pool isn't the cap at these loads:** at most 40 of the 96 connections in flight. The export now queues on ClickHouse itself,
+  when its cores are all taken.
+- **Against 16 November:** the export's sustained limit is gone (10× stored 94.2 % then, with inserts in flight pinned near 10.5);
+  what crosses now is the bursts' headroom, and from 7×. ClickHouse's CPU is higher at every step on the larger data (1× 1.6 cores,
+  against 0.76).
+
+### The knee and the ±25 % check (R10)
+
+- **Calibration** (owner, 17 November): `deploy/local/capacity/calibration.json`, from `scale/calibration.mjs --held-out 4` over the eight
+  steps above: **held to 6×, crossed at 7×**. 4× is held out, and held, as the bracket says.
+- **The check:** the bracket's lower bound, 6×, against the measured first crossing, 7×: **−14 %, within ±25 %.** Chosen after seeing
+  the data, like 16 November's (then 4× and 6× held out); with both held out the lower bound would be 5×, −29 %, outside.
+- **What the guide advises:** plan at 5× on this host. 6× held here, but it crossed with one burst on 16 November, and the knee is
+  burst headroom, which one 30-minute step samples only a few times ([deployment](deployment.md#what-one-machine-carries)).

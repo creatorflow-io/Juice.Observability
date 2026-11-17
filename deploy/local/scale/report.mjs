@@ -55,7 +55,9 @@ const genWindow = genRows.length * 10;
 const through = signals.map(([c, g]) => ({ signal: g, sent: sentInWindow[g], offered: sentInWindow[g] !== null && genWindow ? sentInWindow[g] / genWindow / (nominal[g] / window) : null,
   accepted: (() => { const rows = collector.filter(r => r.metric === `otelcol_receiver_accepted_${c}` && inWindow(r)).map(r => num(r.value)); return rows.length > 1 ? rows[rows.length - 1] - rows[0] : null; })(), refused: counted(`otelcol_receiver_refused_${c}`), sendFailed: counted(`otelcol_exporter_send_failed_${c}`),
   enqueueFailed: counted(`otelcol_exporter_enqueue_failed_${c}`), stored: stored[g], storedShare: stored[g] !== null && stored[g] !== undefined ? stored[g] / nominal[g] : null, nominal: nominal[g] }));
-const lost = through.reduce((a, t) => a + t.refused + t.sendFailed + t.enqueueFailed, 0);
+// An exporter's enqueue failure (its queue full) is returned to the receiver, which counts the same points as refused: the larger of the
+// two, not their sum (17 November: every point lost at 7×, 8× and 10× was in both).
+const lost = through.reduce((a, t) => a + Math.max(t.refused, t.enqueueFailed) + t.sendFailed, 0);
 const generatorOk = gen !== null && exits.generator === 0 && !gen.failed && !gen.refused && !gen.crashed && !gen.skipped && !gen.skippedLocal && !gen.pointsSkipped;
 // The generator itself too slow (spans given up while few sends were in progress) or a worker crashed: the step says nothing about the platform.
 const harnessLimit = gen !== null && (gen.skippedLocal > 0 || gen.crashed > 0);
