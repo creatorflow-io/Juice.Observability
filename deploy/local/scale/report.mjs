@@ -55,9 +55,11 @@ const genWindow = genRows.length * 10;
 const through = signals.map(([c, g]) => ({ signal: g, sent: sentInWindow[g], offered: sentInWindow[g] !== null && genWindow ? sentInWindow[g] / genWindow / (nominal[g] / window) : null,
   accepted: (() => { const rows = collector.filter(r => r.metric === `otelcol_receiver_accepted_${c}` && inWindow(r)).map(r => num(r.value)); return rows.length > 1 ? rows[rows.length - 1] - rows[0] : null; })(), refused: counted(`otelcol_receiver_refused_${c}`), sendFailed: counted(`otelcol_exporter_send_failed_${c}`),
   enqueueFailed: counted(`otelcol_exporter_enqueue_failed_${c}`), stored: stored[g], storedShare: stored[g] !== null && stored[g] !== undefined ? stored[g] / nominal[g] : null, nominal: nominal[g] }));
-// An exporter's enqueue failure (its queue full) is returned to the receiver, which counts the same points as refused: the larger of the
-// two, not their sum (17 November: every point lost at 7×, 8× and 10× was in both).
-const lost = through.reduce((a, t) => a + Math.max(t.refused, t.enqueueFailed) + t.sendFailed, 0);
+// What the receivers refused (the memory limiter's and a full export queue's alike) and what the exporters' sends lost for good. An
+// exporter's enqueue failure is returned to its receiver, which counts the same points as refused, so it isn't added again (17 November:
+// every point lost at 7×, 8× and 10× was in both). That holds while every exporter is synchronous behind its receiver (no batch
+// processor or connector between, as now): an async stage would make enqueue failures a loss of their own.
+const lost = through.reduce((a, t) => a + t.refused + t.sendFailed, 0);
 const generatorOk = gen !== null && exits.generator === 0 && !gen.failed && !gen.refused && !gen.crashed && !gen.skipped && !gen.skippedLocal && !gen.pointsSkipped;
 // The generator itself too slow (spans given up while few sends were in progress) or a worker crashed: the step says nothing about the platform.
 const harnessLimit = gen !== null && (gen.skippedLocal > 0 || gen.crashed > 0);
@@ -158,7 +160,7 @@ const growthNote = cycles < 2 ? 'growth not judged: the window is shorter than t
 const targets = [
   ['Throughput: the offered load reached, nothing refused or dropped', generatorOk && lost === 0 && offeredOk && acceptedCovered,
     `${gen === null ? 'no generator summary; ' : ''}${!generatorOk && gen ? `generator: exit ${exits.generator ?? '–'}, ${gen.failed} failed, ${gen.refused} refused, ${gen.skipped} spans skipped under backpressure, ${gen.skippedLocal ?? 0} by a slow generator, ${gen.pointsSkipped ?? 0} points skipped, ${gen.crashed} workers crashed; ` : ''}` +
-    `${acceptedCovered ? '' : 'Collector counters missing for part of the window; '}${f(lost, 0)} lost in the Collector (refused, export or enqueue failed, from before the warm-up to after the drain); sent ${through.map(t => `${t.signal} ${pctOf(t.offered)}`).join(', ')} of nominal in the window, stored ${through.map(t => `${pctOf(t.storedShare)}`).join(', ')} (target ≥ 98 % each)`],
+    `${acceptedCovered ? '' : 'Collector counters missing for part of the window; '}${f(lost, 0)} lost in the Collector (refused, a full queue's included, or a send failed, from before the warm-up to after the drain); sent ${through.map(t => `${t.signal} ${pctOf(t.offered)}`).join(', ')} of nominal in the window, stored ${through.map(t => `${pctOf(t.storedShare)}`).join(', ')} (target ≥ 98 % each)`],
   ['Ingestion freshness p95 ≤ 30 s', within(pct(fresh, 0.95), 30000),
     `p95 ${f(pct(fresh, 0.95) / 1000, 2)} s, p50 ${f(pct(fresh, 0.5) / 1000, 2)} s, max ${f(max(fresh) / 1000, 2)} s (${fresh.length} probes)`],
   ['API reads p95 ≤ 500 ms (20/s)', within(apiP95, 500),

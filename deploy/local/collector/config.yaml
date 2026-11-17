@@ -185,7 +185,7 @@ exporters:
     # what caps an exporter: the default capped the metrics export near 110,000 points/s at the ingest ceiling, whatever the consumers.
     # 32 stored 99.6 % at 20× (about 200,000 points/s; docs/scale-tests.md, Phase 11 follow-ups), and is the cap again there: an export
     # inserts its metric types' tables at once, so raise it with num_consumers. Kept as many idle, so a busy pool isn't redialled.
-    # Each exporter has its own (this anchor): up to 96 connections in all, against ClickHouse's max_concurrent_queries (100).
+    # Each exporter has its own (this anchor): up to 96 connections in all, against ClickHouse's max_concurrent_queries (1000 in the image's config), far below it.
     connection_params:
       max_open_conns: "32"
       max_idle_conns: "32"

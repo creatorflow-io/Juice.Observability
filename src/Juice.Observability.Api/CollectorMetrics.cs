@@ -8,7 +8,11 @@ namespace Juice.Observability.Api
     /// Reads the Collector's own metrics page (Prometheus text, from its <c>service.telemetry</c> reader) for the Overview's ingestion figures
     /// (Phase 11 R8): per signal, what the tenant's receivers accepted and refused and what the exporters dropped, and each exporter's queue
     /// against its bound. The platform's own pipeline (<c>otlp/platform</c>, <c>prometheus/self</c>) is left out of accepted and refused: it is
-    /// not the tenant's load. The exporters are shared, so what they drop is counted whichever pipeline it came from.
+    /// not the tenant's load. Refused is everything the receivers turned back, the memory limiter's and a full export queue's alike: an
+    /// exporter's enqueue failure is returned to its receiver, which counts the same items as refused, so it isn't counted again (17 November:
+    /// every point lost at 7×, 8× and 10× was in both). Dropped is what was lost otherwise: an exporter's sends that failed for good (the
+    /// exporters are shared, so whichever pipeline it came from), and what the platform's own receivers refused, a full queue turning back
+    /// the platform's telemetry, which isn't the tenant's refusal but is still lost.
     /// </summary>
     public static partial class CollectorMetrics
     {
@@ -54,8 +58,8 @@ namespace Juice.Observability.Api
                 {
                     var t = totals[signal];
                     if (name == $"otelcol_receiver_accepted_{item}" && !PlatformReceiver(labels)) t.Accepted += value;
-                    else if (name == $"otelcol_receiver_refused_{item}" && !PlatformReceiver(labels)) t.Refused += value;
-                    else if (name == $"otelcol_exporter_enqueue_failed_{item}" || name == $"otelcol_exporter_send_failed_{item}") t.Dropped += value;
+                    else if (name == $"otelcol_receiver_refused_{item}") { if (PlatformReceiver(labels)) t.Dropped += value; else t.Refused += value; }
+                    else if (name == $"otelcol_exporter_send_failed_{item}") t.Dropped += value;
                     else continue;
                     totals[signal] = t;
                 }

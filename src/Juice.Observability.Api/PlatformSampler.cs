@@ -114,15 +114,17 @@ namespace Juice.Observability.Api
 
         /// <summary>One ClickHouse sample. CoresAvailable: the cores ClickHouse may use (its automatic <c>max_threads</c>); MemoryTotal: the memory its machine has.
         /// InsertsInFlight: the Collector's inserts running at once, on average over the sample's window (their durations over its
-        /// length). The final rerun found the export saturating near 10, the ClickHouse driver's default pool (docs/scale-tests.md).</summary>
+        /// length). The 16 November rerun found the export saturating near 10, the ClickHouse driver's default pool, since raised to 32
+        /// (docs/scale-tests.md).</summary>
         public sealed record ClickHouseSample(bool Up, double? Cores, double Memory, IReadOnlyDictionary<string, long> Running,
             IReadOnlyList<FinishedQueries> Finished, IReadOnlyList<(string Name, double Free, double Total)> Disks,
             IReadOnlyList<(string Name, double Bytes, double Rows)> Tables, double? CoresAvailable = null, double? InsertsInFlight = null,
             IReadOnlyList<CallerQueries>? Callers = null, IReadOnlyList<TableGrowth>? Growth = null, double? MemoryTotal = null);
 
         /// <summary>
-        /// One signal through the Collector: accepted and refused by the tenant's receivers (not the platform's own pipeline), and dropped by
-        /// the exporters (a full queue, or a send given up), as counts since the Collector started, and per second since the previous sample
+        /// One signal through the Collector: accepted and refused by the tenant's receivers (not the platform's own pipeline; refused
+        /// includes a full export queue turning them back), and dropped: the exporters' sends given up, and what the platform's own receivers
+        /// refused (CollectorMetrics), as counts since the Collector started, and per second since the previous sample
         /// (null on the first, or after the Collector restarted).
         /// </summary>
         public sealed record SignalFlow(string Signal, double Accepted, double Refused, double Dropped, double? AcceptedPerSecond = null,

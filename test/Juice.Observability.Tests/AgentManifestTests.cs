@@ -24,7 +24,7 @@ namespace Juice.Observability.Tests
             var version = agent.GetCustomAttribute<AssemblyInformationalVersionAttribute>()!.InformationalVersion.Split('+')[0];
             Assert.NotEmpty(version);
             Assert.Equal(version, manifest.Version);
-            Assert.Equal("juice-agent.dll", manifest.EntryPoint);
+            Assert.Equal($"{agent.GetName().Name}.dll", manifest.EntryPoint);
         }
     }
 }

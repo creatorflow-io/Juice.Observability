@@ -134,7 +134,8 @@ export function formatMeasure(value: number | null | undefined, unit: string): s
           @if (o.capacity.calibrated) {
             <p>Held every line to <strong>{{ o.capacity.heldTo }}×</strong>; crossed one by {{ o.capacity.crossedAt }}×
               @if (o.capacity.crossed.length) { <span class="jc-muted">({{ o.capacity.crossed.join('; ') }})</span> }.
-              @if (o.capacity.headroom !== null) { Today's load is {{ (1 / o.capacity.headroom * 100).toFixed(0) }} % of what held. }</p>
+              @if (o.capacity.headroom !== null) { Today's load is {{ (1 / o.capacity.headroom * 100).toFixed(0) }} % of what held. }
+              <span class="jc-muted">What held is a measurement, not a plan: a step meets only a few bursts, so plan a step under it.</span></p>
           }
           <div class="jc-list-row jc-muted">
             Now: {{ o.capacity.mix.rules ?? '—' }} rules, {{ o.capacity.mix.slos ?? '—' }} SLOs, {{ o.capacity.mix.services ?? '—' }} services

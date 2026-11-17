@@ -61,7 +61,7 @@ stack leaves a missing sample rather than a hung run.
 
 | Measure | Target (plan) | Source |
 |---|---|---|
-| Throughput | Nothing refused or dropped | The generator's sent counts in the window, at least 98 % of nominal for each signal; the shop's rows in ClickHouse in the window, at least 98 %, counted after the Collector's queue has drained; the main Collector's refused, export-failed and enqueue-failed counters from a snapshot before the warm-up to one after the drain (summing increases, so a restart can't hide them), and its accepted counters present for 90 % of the window; and the generator itself: no failed, refused or skipped sends, no crashed worker, exit 0. Spans the generator gave up while few sends were in progress mark the step a harness limit (repeat it with more workers), not a platform result |
+| Throughput | Nothing refused or dropped | The generator's sent counts in the window, at least 98 % of nominal for each signal; the shop's rows in ClickHouse in the window, at least 98 %, counted after the Collector's queue has drained; the main Collector's refused and export-failed counters (an enqueue failure is in refused) from a snapshot before the warm-up to one after the drain (summing increases, so a restart can't hide them), and its accepted counters present for 90 % of the window; and the generator itself: no failed, refused or skipped sends, no crashed worker, exit 0. Spans the generator gave up while few sends were in progress mark the step a harness limit (repeat it with more workers), not a platform result |
 | Ingestion freshness | p95 ≤ 30 s | A log record every 10 s, timed until ClickHouse returns it over HTTP; 60 s without it counts as 60 s |
 | API reads | p95 ≤ 500 ms | `query-mix.mjs`; a read with no answer or an error answer counts as slower than any target |
 | Health freshness | p95 ≤ 60 s | Every 10 s, the p95 over live subjects (not Offline or Unknown) of now − `last_evidence_at`: how old the evidence behind what's visible is, so a stalled health worker shows |
@@ -1075,8 +1075,9 @@ to model the export path (inserts in flight × insert latency against the queue'
   first that crossed one: **held to 5×, crossed at 10×**. Its lower bound, 5×, against the measured first crossing, 6×: **−17 %, within
   ±25 %.** The held-out steps fall where the bracket says: 4× held, 6× crossed. Chosen after seeing the data, and said so here. It is a
   coarser claim than a curve, and an honest one: the platform held at 5× and is not claimed to hold anywhere above it.
-- **The calibration file** is `deploy/local/capacity/calibration.json`, written by `scale/calibration.mjs --held-out 4,6` from these six
-  steps (`scale/steps.sh` writes one after every run). Each resource in it is measured as the platform measures it live, so the view
+- **The calibration file** was `deploy/local/capacity/calibration.json`, written by `scale/calibration.mjs --held-out 4,6` from these six
+  steps (`scale/steps.sh` writes one after every run). Replaced on 17 November by the pool rerun's (held to 6×, crossed at 7×, 4× held
+  out; [below](#rerun-with-the-drivers-pool-at-32-1-to-10-17-november)). Each resource in it is measured as the platform measures it live, so the view
   sets today's figure beside the step that held and the step that crossed.
 
 ## Phase 11 follow-ups, 16–17 November
@@ -1150,16 +1151,17 @@ Where the knee moved with the export's cap raised (the pool, above), the full mi
 - **7×, 8× and 10× crossed, each in bursts, not sustained.** At 7× one burst of about 20 seconds (08:31:07–08:31:21: 0.85 M points,
   0.7 % of the window's points); at 8× one of about a minute (08:00:20–08:01:06, after a small one at 07:53: 1.55 M, 1.1 %); at 10× six
   minutes of them (06:34–06:40: 4.7 M, 2.6 %). The report's "lost in the Collector" counted each of them twice, as the receiver's
-  refusal and the exporter's enqueue failure (1.7 M, 3.1 M and 9.4 M): `report.mjs` now takes the larger of the two, and the
-  reports were written again (only that figure changed).
+  refusal and the exporter's enqueue failure (1.7 M, 3.1 M and 9.4 M): `report.mjs` now counts the refusals and the failed sends
+  only, and the reports were written again (only that figure changed).
   Between and after them nothing was lost: the queue drained, and the 10 to 19 minutes of each window after its last burst lost no point.
-- **What a burst is:** ClickHouse at all its cores (24–28, `docker stats`) for 10 to 60 seconds, and the Collector at 7–16 cores
+- **What a burst is:** ClickHouse at all its 24 cores (`docker stats` read up to 28.2: sampling noise) for 10 to 60 seconds, and the Collector at 7–16 cores
   with it; inserts in flight reach 30–40 (p99 19 at 7×, against 4.7 at 6×), so each insert waits longer and the export queue fills
   past its bound in one or two samples. The workers' reads stay in line but slow down (rules' oldest open alert 86 s at 7×, against
   its 60 s cycle, within the line). What took ClickHouse's cores in each burst (large merges, discovery or searches at once, as on 16
   November) wasn't caught: the scale stack was down before it was looked for. `metric_log` and `part_log` for those minutes, on the next run.
-- **The pool isn't the cap at these loads:** at most 40 of the 96 connections in flight. The export now queues on ClickHouse itself,
-  when its cores are all taken.
+- **The pool may be full in a burst, not between:** inserts in flight reach 36–40 at their peak (7×, 8×, 10×), most of them the metrics
+  exporter's, whose own pool is 32. In a burst each insert waits on ClickHouse's cores, all taken, so a larger
+  pool would queue more on ClickHouse rather than store more. Not measured: a step with a larger pool would say.
 - **Against 16 November:** the export's sustained limit is gone (10× stored 94.2 % then, with inserts in flight pinned near 10.5);
   what crosses now is the bursts' headroom, and from 7×. ClickHouse's CPU is higher at every step on the larger data (1× 1.6 cores,
   against 0.76).

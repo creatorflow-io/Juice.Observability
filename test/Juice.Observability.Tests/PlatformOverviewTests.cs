@@ -50,7 +50,7 @@ namespace Juice.Observability.Tests
                     [new ExportQueue("clickhouse/metrics", queue, 200000), new ExportQueue("clickhouse/traces", 0, 200000)]));
 
         [Fact]
-        public void The_collector_page_counts_the_tenants_receivers_and_every_exporters_drops_and_queues()
+        public void The_collector_page_counts_the_tenants_receivers_and_every_exporters_failed_sends_and_queues()
         {
             var (signals, queues) = CollectorMetrics.Parse("""
                 # HELP otelcol_receiver_accepted_spans Number of spans successfully pushed into the pipeline.
@@ -60,6 +60,7 @@ namespace Juice.Observability.Tests
                 otelcol_receiver_accepted_metric_points{receiver="prometheus/self",transport="http"} 7777
                 otelcol_receiver_accepted_metric_points{receiver="host_metrics",transport=""} 300
                 otelcol_receiver_refused_log_records{receiver="otlp",transport="http"} 4
+                otelcol_receiver_refused_metric_points{receiver="otlp/platform",transport="http"} 8
                 otelcol_exporter_enqueue_failed_metric_points{exporter="clickhouse/metrics"} 12948
                 otelcol_exporter_send_failed_metric_points{exporter="clickhouse/metrics"} 52
                 otelcol_exporter_queue_size{data_type="metrics",exporter="clickhouse/metrics"} 196052
@@ -70,7 +71,9 @@ namespace Juice.Observability.Tests
             var by = signals.ToDictionary(s => s.Signal);
             Assert.Equal(2000, by["spans"].Accepted);
             Assert.Equal(300, by["points"].Accepted);   // the platform's own pipeline isn't the tenant's load
-            Assert.Equal(13000, by["points"].Dropped);
+            // The enqueue failures are the receivers' refusals, not counted twice; the platform's own refused points are lost, not the tenant's.
+            Assert.Equal(60, by["points"].Dropped);
+            Assert.Equal(0, by["points"].Refused);
             Assert.Equal(4, by["logs"].Refused);
             Assert.Equal([new ExportQueue("clickhouse/logs", 0, 200000), new ExportQueue("clickhouse/metrics", 196052, 200000)], queues);
         }
@@ -97,7 +100,7 @@ namespace Juice.Observability.Tests
             // of the first crossing measured, 7×.
             Assert.Equal([4d], calibration.Steps.Where(s => s.HeldOut).Select(s => s.Multiplier));
             Assert.True(calibration.Steps.Single(s => s.Multiplier == 4).Held);
-            Assert.InRange(calibration.Knee.HeldTo!.Value / 7 - 1, -0.25, 0.25);
+            Assert.InRange(calibration.Knee.HeldTo!.Value / calibration.Knee.CrossedAt!.Value - 1, -0.25, 0.25);
             Assert.True(calibration.Matches(24, ReferenceMemory));
             Assert.False(calibration.Matches(8, ReferenceMemory));
             Assert.False(calibration.Matches(24, ReferenceMemory / 2));

@@ -290,7 +290,8 @@ replica's last sample, never a query of its own, and the Console reads it again 
   naming the steps kept out to check it. The stack reads `capacity/calibration.json` (`Capacity:CalibrationFile`). It names its host
   (ClickHouse's cores and memory) and its mix (rules, SLOs, services, searches a second), and holds each step's resources as the
   platform measures them live: ClickHouse's CPU, the Collector's inserts in flight, the export queue (in the steps, the queues' sum,
-  which the metrics queue is nearly all of), and each worker's pass time against its interval.
+  which the metrics queue is nearly all of), and each worker's pass time against its interval. Each is set against the steps' mean (the queue:
+  its p95), while the live figure is one 15-second sample: a burst can colour one sample at any load.
 - **The knee is a bracket,** from the calibration steps alone: the last step every line held, and the first that crossed one. The
   shipped calibration (the rerun with the driver's pool at 32, 17 November, 4× held out, [scale tests](scale-tests.md#rerun-with-the-drivers-pool-at-32-1-to-10-17-november)):
   held to 6×, crossed at 7× (16 November's, before the pool: held to 5×, crossed at 10×). The view claims no more than that: the knee
