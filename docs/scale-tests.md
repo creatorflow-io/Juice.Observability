@@ -1096,14 +1096,17 @@ one change at a time to `collector/config.yaml` (restored after each run):
 | C: async inserts, 32 consumers | 50.7 % | 3.3 cores | 3.1 | 11.1 / 11.3 | `20261116T2345-ingest-20x` |
 | **E: async inserts, the driver's pool at 32 (`connection_params: max_open_conns`)** | **99.6 %** | **8.1 cores** | 5.6 | 20.5 / 30.3 | `20261117T0100-ingest-20x` |
 
-- **The cap:** inserts in flight sat at about 11 whatever the consumers (B and C), the ClickHouse Go driver's default pool of 10
-  connections (`database/sql`'s open connections). More consumers only queue for a connection (C, no better than A). Turning async
+- **The cap:** inserts in flight sat at about 11 whatever the consumers (B and C), the ClickHouse Go driver's default pool: clickhouse-go's own
+  default of 10 open connections (5 idle), not `database/sql`'s, which has no limit. More consumers only queue for a connection (C, no better than A). Turning async
   inserts off (B) made each insert faster (p50 88 ms against 213), so the same 11 slots carried more, at four times ClickHouse's CPU
   (each insert a part of its own: up to 85 parts in a partition, against 38).
 - **The fix (E), shipped:** `max_open_conns: "32"`, async inserts kept. About 200,000 points a second at the ingest ceiling, twice
   1.3.0's 110,000; ClickHouse's CPU follows the data it now stores, at a lower cost a point than B's. Up to 30 inserts in flight
   (p99) and at most 64 parts in a partition. At 20× it is at its new limit (0.5 % of points dropped, the queue's median 71,000), so
-  20× is about where it stands. With the full mix, a rerun of the steps measures where the knee moved (below).
+  20× is about where it stands. With the full mix, a rerun of the steps measures where the knee moved: the next section, once it has run. The pool is the cap again at
+  20× (30 of 32 in flight, p99): an export inserts its metric types' tables at once, so the pool goes up with the consumers. Idle
+  connections are kept as many (`max_idle_conns`, the driver's default 5), so a busy pool isn't redialled; each exporter has its own,
+  up to 96 connections in all.
 - Per-component figures: `build/scale/export-experiment-components.md`.
 
 ### What health's whole liveness read every 2 minutes costs
