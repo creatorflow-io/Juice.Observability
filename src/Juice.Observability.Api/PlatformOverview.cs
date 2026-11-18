@@ -108,8 +108,12 @@ namespace Juice.Observability.Api
     {
         public const string Ok = "ok", Warn = "warn", Bad = "bad", Unknown = "unknown";
 
+        /// <summary>
+        /// The panel's figures. <see cref="At"/> is when the status was judged (the request's time); <see cref="SampledAt"/> is when this
+        /// replica's last sample was taken (every 15 s), stale or not, so a sampler that stopped shows its age. None before the first.
+        /// </summary>
         public sealed record Overview(DateTimeOffset At, string Status, IReadOnlyList<Worker> Workers, IReadOnlyList<Backlog> Backlogs,
-            Ingestion? Ingestion, ClickHouse? ClickHouse, Disk? Disk, Capacity Capacity);
+            Ingestion? Ingestion, ClickHouse? ClickHouse, Disk? Disk, Capacity Capacity, DateTimeOffset? SampledAt = null);
 
         /// <summary>A worker: its state, last pass, its pass time against its interval (utilisation), and its level.</summary>
         public sealed record Worker(string Name, string State, string Level, DateTimeOffset? LastPassEndedAt, double IntervalSeconds, double? PassSeconds,
@@ -219,7 +223,7 @@ namespace Juice.Observability.Api
 
             var disk = clickHouse is null ? null : DiskOf(clickHouse);
             return new Overview(status.At, status.Status, workers, backlogs, ingestion, clickHouseFigures, disk,
-                CapacityOf(workers, clickHouse, collector, postgres, calibration, calibrated));
+                CapacityOf(workers, clickHouse, collector, postgres, calibration, calibrated), sample?.At);
         }
 
         private static Disk? DiskOf(ClickHouseSample sample)

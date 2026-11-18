@@ -1,10 +1,10 @@
 import { DecimalPipe } from '@angular/common';
 import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
-import { EMPTY, catchError, map, switchMap, takeWhile, tap, timer } from 'rxjs';
+import { EMPTY, catchError, interval, map, switchMap, takeWhile, tap, timer } from 'rxjs';
 import { ApiService } from '../core/api.service';
 import { PlatformLevel } from '../core/models';
-import { AgoPipe, formatBytes, formatDuration, formatPercent } from './format';
+import { formatAgo, formatBytes, formatDuration, formatPercent } from './format';
 import { apiResource } from './resource';
 import { problemText } from './telemetry';
 
@@ -37,7 +37,7 @@ export function formatMeasure(value: number | null | undefined, unit: string): s
 @Component({
   selector: 'jc-platform-panel',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [AgoPipe, DecimalPipe],
+  imports: [DecimalPipe],
   template: `
     @if (!hidden()) {
       <section class="jc-card jc-platform" aria-labelledby="jc-platform-title">
@@ -45,7 +45,7 @@ export function formatMeasure(value: number | null | undefined, unit: string): s
           <h2 id="jc-platform-title">Platform</h2>
           @if (o(); as o) {
             <span class="jc-badge" [class]="cls(o.status === 'ok' ? 'ok' : 'bad')">{{ o.status }}</span>
-            <span class="jc-muted">sampled {{ o.at | ago }}</span>
+            <span class="jc-muted" title="When this replica last sampled the Collector, ClickHouse and PostgreSQL (every 15 s)">{{ o.sampledAt ? 'sampled ' + ago(o.sampledAt) : 'not sampled yet' }}</span>
           }
         </div>
         @if (error()) { <p class="jc-error">{{ error() }}</p> }
@@ -58,7 +58,7 @@ export function formatMeasure(value: number | null | undefined, unit: string): s
                   <span class="jc-badge" [class]="cls(w.level)">{{ w.state }}</span>
                   <strong>{{ w.name }}</strong>
                   @if (w.utilisation !== null) { <span title="Its recent passes against its interval">{{ pct(w.utilisation) }} busy</span> }
-                  @if (w.lastPassEndedAt) { <span class="jc-muted">last pass {{ w.lastPassEndedAt | ago }}</span> }
+                  @if (w.lastPassEndedAt) { <span class="jc-muted">last pass {{ ago(w.lastPassEndedAt) }}</span> }
                 </div>
               }
               @for (b of o.backlogs; track b.name) {
@@ -183,6 +183,10 @@ export class PlatformPanel {
   /** A viewer isn't an operator: no panel (and a 403 from a role changed since sign-in hides it too, without an error). */
   protected readonly hidden = computed(() => !this.canOperate() || (this.failed() as { status?: number } | undefined)?.status === 403);
   protected readonly error = computed(() => this.failed() && !this.hidden() ? problemText(this.failed()) : '');
+
+  /** A tick a second, so "sampled … ago" counts up between the 15 s reads instead of standing at the read's figure. */
+  private readonly tick = toSignal(interval(1000), { initialValue: 0 });
+  protected ago(iso: string): string { this.tick(); return formatAgo(iso); }
 
   protected cls(level: PlatformLevel): string { return `jc-badge ${LEVEL_CLASS[level]}`; }
   protected pct(share: number): string { return formatPercent(share); }

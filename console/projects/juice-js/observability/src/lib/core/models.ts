@@ -248,7 +248,8 @@ export type PlatformLevel = 'ok' | 'warn' | 'bad' | 'unknown';
 
 /** The Overview's platform panel and the capacity view (`/api/v1/platform/overview`, operators and admins; Phase 11 R8, R9). */
 export interface PlatformOverview {
-  at: string; status: 'ok' | 'degraded';
+  /** When the status was judged (the request's time); sampledAt: when the replica's last sample was taken, null before the first. */
+  at: string; sampledAt: string | null; status: 'ok' | 'degraded';
   workers: { name: string; state: string; level: PlatformLevel; lastPassEndedAt: string | null; intervalSeconds: number; passSeconds: number | null; utilisation: number | null }[];
   backlogs: { name: string; state: string; level: PlatformLevel; ageSeconds: number | null; lineSeconds: number }[];
   /** Null without the Collector's metrics page (Telemetry:CollectorMetricsUrl) or a fresh sample. */

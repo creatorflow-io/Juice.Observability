@@ -115,6 +115,8 @@ namespace Juice.Observability.Tests
             var capacity = overview.Capacity;
 
             Assert.True(capacity.Calibrated);
+            Assert.Equal(Now - TimeSpan.FromSeconds(5), overview.SampledAt);   // the sample's time, not the request's
+            Assert.Null(PlatformOverview.Build(Status(), null, Now, calibration).SampledAt);
             Assert.StartsWith("Calibrated on 24 cores", capacity.Label);
             Assert.Equal((6d, 7d), (capacity.HeldTo!.Value, capacity.CrossedAt!.Value));
             Assert.Equal(1, capacity.Load.Single(l => l.Signal == "points").Multiple);
