@@ -68,12 +68,28 @@ await step(admin, 'menu-count', async () => {
   await badge.waitFor({ timeout: 15000 });
   waitingBefore = Number(await badge.textContent());
   expect(waitingBefore >= 1, `the count: ${await badge.textContent()}`);
+  // Automation is open here (Agents is in it): its header doesn't repeat the count shown just below.
+  // (It goes a frame after the group opens: wait for that, don't count at once.)
+  expect(await admin.waitForFunction(() => !document.querySelector('juice-nav-menu [data-testid=approvals-group-badge]'), null, { timeout: 3000 }).then(() => true, () => false),
+    'the count twice: on Automation and on Approvals');
+});
+await step(admin, 'menu-count-group-closed', async () => {
+  // Away from Automation's pages the group is closed, Approvals hidden: the group's header carries the count.
+  await admin.goto(`${base}/services`);
+  const badge = admin.locator('juice-nav-menu [data-testid=approvals-group-badge]');
+  await badge.waitFor({ timeout: 15000 });
+  expect(Number(await badge.textContent()) === waitingBefore, `the group's count: ${await badge.textContent()}, Approvals had ${waitingBefore}`);
 });
 await step(operator, 'no-count-for-operator', async () => {
   await operator.goto(`${base}/agents`);
   await operator.waitForSelector('juice-nav-menu mat-icon >> text=approval');
   await operator.waitForTimeout(1500);
   expect(await operator.locator('[data-testid=approvals-badge]').count() === 0, "an operator sees a count of requests they can't decide");
+  // Nor on Automation's header, away from its pages, where the group is closed.
+  await operator.goto(`${base}/services`);
+  await operator.waitForSelector('juice-nav-menu mat-expansion-panel-header');  // the label isn't drawn with the menu folded
+  await operator.waitForTimeout(1500);
+  expect(await operator.locator('[data-testid=approvals-group-badge]').count() === 0, "an operator sees a count on Automation they can't decide");
 });
 let id;
 await step(admin, 'waiting', async () => {

@@ -20,6 +20,12 @@ providers: [
 MenuModule.forRoot([...yourMenus, ...observabilityMenus('/observability', 100)]),
 ```
 
+The menu puts the investigation pages at the top (Overview, Services, Traces, Logs, Metrics, Alerts, Incidents) and the
+rest in three groups: Explore (with Load runs), Automation and Configure. It is made for juice-layout 2.1 or later, which
+opens a group on any of its pages and adds the page switcher: every page one Ctrl+K away, and go-to keys
+for the top pages (`g s` Services, `g t` Traces, `g l` Logs, `g m` Metrics, `g a` Alerts, `g i` Incidents, `g o`
+Overview). On 2.0.2 the groups work too, but a group is open only on its first page and a click on it opens that page.
+
 ```scss
 // styles.scss (the app's global styles, once): the pages' layout, in the Juice Console's teal theme, light and dark (.dark).
 @use '@juice-js/observability';
