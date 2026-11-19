@@ -94,7 +94,7 @@ These are the Juice [signal pack](signal-packs.md), version 2; a deployment with
 |---|---|---|
 | MediatorErrors rule | `juice.mediator.errors`, `juice.mediator.requests` | the rule observes nothing |
 | ConsumerFailures rule | `juice.messaging.consumed` with `juice.dispatch.result` | the rule observes nothing |
-| DeliveryFailureRate rule | `juice.delivery.failures`, `juice.delivery.attempts` (Juice 10.13.1), or the older `delivery_failure_total`, `delivery_attempt_total` | the rule observes nothing |
+| DeliveryFailureRate rule | `juice.delivery.failures`, `juice.delivery.attempts` (Juice 10.14.0), or the older `delivery_failure_total`, `delivery_attempt_total` | the rule observes nothing |
 | Outbox backlog and delivery delay (capacity view, load runs) | Juice's `create` and `deliver` spans (`ScopeName = 'Juice'`, `juice.delivery.outcome`) | no backlog line; the rest of the view works |
 | A failed message dispatch counted as a bad SLO request | `juice.dispatch.result = failure` on a Consumer span | only the span status counts |
 

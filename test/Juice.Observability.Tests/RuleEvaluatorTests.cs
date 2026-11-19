@@ -237,7 +237,7 @@ namespace Juice.Observability.Tests
             var (start, before, last) = (now.AddMinutes(-10), now.AddMinutes(-7), now.AddMinutes(-1));
             var both = $"rules-{_run}-delivery-both";
 
-            // Juice 10.13.1 with delivery.metrics collected: both names, the same counts. Different here, so the test can tell which was read.
+            // Juice 10.14.0 with delivery.metrics collected: both names, the same counts. Different here, so the test can tell which was read.
             (string, string)[] resource = [("service.name", both)];
             await LocalStack.SendAsync("metrics", Otlp.Sum(resource, "juice.delivery.attempts", start, [("juice.publisher", "outbox")], (before, 0), (last, 10)));
             await LocalStack.SendAsync("metrics", Otlp.Sum(resource, "juice.delivery.failures", start, [("juice.publisher", "outbox"), ("error.type", "Timeout")],

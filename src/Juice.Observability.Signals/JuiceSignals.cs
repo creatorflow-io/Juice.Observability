@@ -12,7 +12,7 @@ namespace Juice.Observability.Signals
         public const string Name = "juice";
 
         /// <summary>The contract version: changes when a name below changes or one is added or removed.</summary>
-        /// <para>2: the delivery counters are read as <c>juice.delivery.*</c> (Juice 10.13.1), and as the unprefixed names from a service that
+        /// <para>2: the delivery counters are read as <c>juice.delivery.*</c> (Juice 10.14.0), and as the unprefixed names from a service that
         /// sends only those.</para>
         public const int Version = 2;
 
@@ -24,11 +24,11 @@ namespace Juice.Observability.Signals
         /// <summary>Juice.Messaging: messages consumed, with <see cref="DispatchResult"/>.</summary>
         public const string MessagesConsumed = "juice.messaging.consumed";
 
-        /// <summary>Juice.Messaging: delivery attempts, and those that failed, for outbox delivery and the local routes (Juice 10.13.1).</summary>
+        /// <summary>Juice.Messaging: delivery attempts, and those that failed, for outbox delivery and the local routes (Juice 10.14.0).</summary>
         public const string DeliveryAttempts = "juice.delivery.attempts", DeliveryFailures = "juice.delivery.failures";
 
         /// <summary>
-        /// The same counts under the names Juice recorded before 10.13.1, and still records on its <c>delivery.metrics</c> meter. Read only from a
+        /// The same counts under the names Juice recorded before 10.14.0, and still records on its <c>delivery.metrics</c> meter. Read only from a
         /// service that doesn't send <see cref="DeliveryAttempts"/>, so one that sends both isn't counted twice; never used to tell a Juice service,
         /// since another library may export the same names.
         /// </summary>

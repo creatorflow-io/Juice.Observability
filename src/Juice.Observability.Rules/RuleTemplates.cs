@@ -92,7 +92,7 @@ namespace Juice.Observability.Rules
             """;
 
         // The Juice signal pack's templates (JuiceSignals).
-        // A service on Juice 10.13.1 or later sends juice.delivery.*, and the old names too when it collects delivery.metrics: the old names
+        // A service on Juice 10.14.0 or later sends juice.delivery.*, and the old names too when it collects delivery.metrics: the old names
         // are read only from a service (in an environment) that sends none of the new ones.
         private static string Delivery(string metric, string legacy)
             => $"if(countIf(MetricName IN ('{JuiceSignals.DeliveryAttempts}', '{JuiceSignals.DeliveryFailures}')) > 0, sumIf(increase, MetricName = '{metric}'), sumIf(increase, MetricName = '{legacy}'))";

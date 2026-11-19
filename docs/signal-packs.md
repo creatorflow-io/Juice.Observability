@@ -14,8 +14,8 @@ if any of these names is queried anywhere outside the pack.
 |---|---|---|---|
 | `juice.mediator.requests`, `juice.mediator.errors` | cumulative sum | Juice.MediatR | the MediatorErrors rule template |
 | `juice.messaging.consumed` with `juice.dispatch.result` | cumulative sum | Juice.Messaging | the ConsumerFailures rule template |
-| `juice.delivery.attempts`, `juice.delivery.failures` | cumulative sum | Juice.Messaging (10.13.1), for outbox delivery and the local routes | the DeliveryFailureRate rule template |
-| `delivery_attempt_total`, `delivery_failure_total` | cumulative sum | Juice before 10.13.1, and later with `AddJuiceDeliveryMetrics()` | DeliveryFailureRate, only for a service that sends no `juice.delivery.*` |
+| `juice.delivery.attempts`, `juice.delivery.failures` | cumulative sum | Juice.Messaging (10.14.0), for outbox delivery and the local routes | the DeliveryFailureRate rule template |
+| `delivery_attempt_total`, `delivery_failure_total` | cumulative sum | Juice before 10.14.0, and later with `AddJuiceDeliveryMetrics()` | DeliveryFailureRate, only for a service that sends no `juice.delivery.*` |
 | `juice.dispatch.result = failure` on a Consumer span | span attribute | Juice.Messaging | SLOs: the request is bad, whatever its status (`slo.failed-dispatch`) |
 | `create {destination}` Producer spans and `deliver {destination}` spans with `juice.delivery.outcome`, scope `Juice` | spans | Juice.Messaging.Outbox | the capacity view's outbox backlog and delivery delay, and load runs' backlog (`capacity.outbox`) |
 
