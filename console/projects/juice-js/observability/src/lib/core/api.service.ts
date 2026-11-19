@@ -5,7 +5,7 @@ import { OBSERVABILITY_OPTIONS } from './options';
 import {
   ActionRequest, ActionRequestsWaiting, ActionTarget, Agent, SloDetail, SloSummary, AgentActions, AgentCommand, AgentPackage, EnrollmentToken, AlertDetail, AlertNotifications, Alert, AllowlistEntry, Application, Channel, ChannelTestResult, Delivery, EscalationPolicy, IncidentDetail, IncidentEvent, IncidentSummary, Silence, DependencyEvidence, DependencyStatsPage, DeploymentEnvironment, LoadRun, LoadRunResults, Related, Timeline, Health, LogRecord, MetricInfo, Operation,
   Page, PlatformOverview, ResourceDetail, ResourceSummary, Rule, SearchHit, Series, Capacity, ServiceStats, Tenant, TelemetryPage, Topology, Trace,
-  TraceSummary, Suggestions, CorrelationDecision,
+  TraceSummary, Suggestions, CorrelationDecision, SignalPack
 } from './models';
 
 /**
@@ -79,6 +79,8 @@ export class ApiService {
   topology(environment?: string | null) { return this.get<Topology>('/topology', { environment }); }
 
   rules() { return this.get<Page<Rule>>('/rules', { limit: 200 }); }
+  /** The deployment's signal packs: not a tenant's, so not under it. */
+  signalPacks() { return this.http.get<SignalPack[]>(`${this.base}/signal-packs`); }
   createRule(definition: unknown) { return this.send<Rule>('POST', '/rules', definition); }
   /** With the rule's etag, so a change made since it was read isn't overwritten. */
   updateRule(key: string, definition: unknown, etag: string) { return this.send<Rule>('PUT', `/rules/${key}`, definition, { 'If-Match': `"${etag}"` }); }

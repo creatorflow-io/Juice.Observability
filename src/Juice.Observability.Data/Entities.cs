@@ -54,6 +54,11 @@ namespace Juice.Observability.Data
         /// evaluated, and the inventory leaves it out unless asked; telemetry seen after this brings it back. Null while it is in use.
         /// </summary>
         public DateTimeOffset? RetiredAt { get; set; }
+        /// <summary>
+        /// The signal packs (<c>juice</c>) discovery has seen this service send: a rule template of a pack observes only the services that send it.
+        /// Once seen, kept.
+        /// </summary>
+        public List<string> SignalPacks { get; set; } = [];
     }
 
     /// <summary>

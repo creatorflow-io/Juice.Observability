@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using Juice.Observability.Data;
 using Juice.Observability.Discovery;
+using Juice.Observability.Signals;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using static Juice.Observability.Discovery.ClickHouseTelemetrySource;
@@ -793,10 +794,8 @@ namespace Juice.Observability.Api.Endpoints
 
         // ─── capacity ───
 
-        /// <summary>Juice's own span for a message written to the outbox.</summary>
-        private const string Created = "SpanKind = 'Producer' AND SpanName LIKE 'create %' AND ScopeName = 'Juice'";
-        /// <summary>Juice's own span for a delivery that was sent.</summary>
-        private const string Delivered = "SpanName LIKE 'deliver %' AND ScopeName = 'Juice' AND SpanAttributes['juice.delivery.outcome'] = 'published'";
+        /// <summary>The outbox's spans, from the Juice signal pack: a message written to the outbox, and a delivery that was sent.</summary>
+        private const string Created = JuiceSignals.OutboxCreatedSpan, Delivered = JuiceSignals.OutboxDeliveredSpan;
 
         /// <summary>A week of minutes for five instances.</summary>
         private const int MaxCapacityRows = 50_400;
@@ -814,7 +813,7 @@ namespace Juice.Observability.Api.Endpoints
         /// says which. Messages always come from spans. CPU, memory and the queue come from .NET's <c>System.Runtime</c> meter.
         /// Buckets the window cuts short are left out: they would pair part of the spans with a whole CPU delta.
         /// </summary>
-        private static Task<IResult> GetCapacityAsync(HttpContext http, PlatformDbContext db, ClickHouseTelemetrySource clickHouse,
+        private static Task<IResult> GetCapacityAsync(HttpContext http, PlatformDbContext db, ClickHouseTelemetrySource clickHouse, SignalPacks packs,
             TimeProvider clock, Guid? serviceId, string? environment, DateTimeOffset? from, DateTimeOffset? to, CancellationToken ct) => Run(async () =>
         {
             if (serviceId is null) return Bad("Invalid serviceId", "serviceId is required.");
@@ -895,30 +894,34 @@ namespace Juice.Observability.Api.Endpoints
             var hosts = samples.Select(s => s.Instance.Split('|')[1]).Where(h => h.Length > 0).Distinct().Order(StringComparer.Ordinal).Take(20).ToList();
             var cpuCount = levels.Select(l => l.CpuCount).DefaultIfEmpty(0).Max();
 
-            // Juice's own spans: "create" when a message is written to the outbox, "deliver" with its outcome when it's sent. A
-            // message counts once however many routes it has. A delivery's parent is the span that created its message.
-            var traces = scope.Where("Timestamp");
-            var outboxPoints = await clickHouse.QueryAsync($"""
-                SELECT {Bucket("Timestamp")} AS b, uniqExactIf(SpanAttributes['messaging.message.id'], {Created}), uniqExactIf(SpanAttributes['messaging.message.id'], {Delivered})
-                FROM otel.otel_traces
-                WHERE {traces} AND (({Created}) OR ({Delivered}))
-                GROUP BY b ORDER BY b DESC
-                LIMIT {ClickHouseTelemetrySource.Limit}
-                """, scope.Window, r => new OutboxPoint(Utc(r.GetValue(0)), Convert.ToDouble(r.GetValue(1)), Convert.ToDouble(r.GetValue(2))), ct, scope.Parameters);
-            var whole = outboxPoints.Where(p => p.At >= scope.Window.From && p.At.AddSeconds(step) <= scope.Window.To).ToList();
-            // Only the newest minutes: this joins on the deliveries, and it answers "is it behind now?". A message created
-            // before the window has no create span to join, so a delay longer than the window doesn't show here.
-            var delays = await clickHouse.QueryAsync($"""
-                SELECT quantile(0.95)(dateDiff('millisecond', c.created, d.delivered)) / 1000.0, count()
-                FROM (SELECT TraceId, ParentSpanId, Timestamp AS delivered FROM otel.otel_traces
-                      WHERE {traces} AND {Delivered} AND Timestamp >= {ClickHouseTelemetrySource.To} - INTERVAL {CapacityRecentSeconds} SECOND) AS d
-                INNER JOIN (SELECT TraceId, SpanId, Timestamp AS created FROM otel.otel_traces WHERE {traces} AND {Created}) AS c
-                    ON d.TraceId = c.TraceId AND d.ParentSpanId = c.SpanId
-                """, scope.Window, r => (Seconds: Convert.ToDouble(r.GetValue(0)), Count: Convert.ToInt64(r.GetValue(1))), ct, scope.Parameters);
-            var recentDelay = delays.Count > 0 && delays[0].Count > 0 ? delays[0].Seconds : (double?)null;
-
             return Results.Ok(CapacityEstimate.From(samples, step, truncated, requestRate.Count > 0 ? "metrics" : spans.Count > 0 ? "spans" : "none",
-                hosts, cpuCount > 0 ? (int)cpuCount : null) with { Outbox = CapacityEstimate.Backlog(whole, step, recentDelay) });
+                hosts, cpuCount > 0 ? (int)cpuCount : null) with { Outbox = packs.Juice ? await OutboxAsync() : null });
+
+            // The Juice signal pack's spans: "create" when a message is written to the outbox, "deliver" with its outcome when it's sent. A
+            // message counts once however many routes it has. A delivery's parent is the span that created its message.
+            async Task<OutboxBacklogDto?> OutboxAsync()
+            {
+                var traces = scope.Where("Timestamp");
+                var outboxPoints = await clickHouse.QueryAsync($"""
+                    SELECT {Bucket("Timestamp")} AS b, uniqExactIf(SpanAttributes['messaging.message.id'], {Created}), uniqExactIf(SpanAttributes['messaging.message.id'], {Delivered})
+                    FROM otel.otel_traces
+                    WHERE {traces} AND (({Created}) OR ({Delivered}))
+                    GROUP BY b ORDER BY b DESC
+                    LIMIT {ClickHouseTelemetrySource.Limit}
+                    """, scope.Window, r => new OutboxPoint(Utc(r.GetValue(0)), Convert.ToDouble(r.GetValue(1)), Convert.ToDouble(r.GetValue(2))), ct, scope.Parameters);
+                var whole = outboxPoints.Where(p => p.At >= scope.Window.From && p.At.AddSeconds(step) <= scope.Window.To).ToList();
+                // Only the newest minutes: this joins on the deliveries, and it answers "is it behind now?". A message created
+                // before the window has no create span to join, so a delay longer than the window doesn't show here.
+                var delays = await clickHouse.QueryAsync($"""
+                    SELECT quantile(0.95)(dateDiff('millisecond', c.created, d.delivered)) / 1000.0, count()
+                    FROM (SELECT TraceId, ParentSpanId, Timestamp AS delivered FROM otel.otel_traces
+                          WHERE {traces} AND {Delivered} AND Timestamp >= {ClickHouseTelemetrySource.To} - INTERVAL {CapacityRecentSeconds} SECOND) AS d
+                    INNER JOIN (SELECT TraceId, SpanId, Timestamp AS created FROM otel.otel_traces WHERE {traces} AND {Created}) AS c
+                        ON d.TraceId = c.TraceId AND d.ParentSpanId = c.SpanId
+                    """, scope.Window, r => (Seconds: Convert.ToDouble(r.GetValue(0)), Count: Convert.ToInt64(r.GetValue(1))), ct, scope.Parameters);
+                var recentDelay = delays.Count > 0 && delays[0].Count > 0 ? delays[0].Seconds : (double?)null;
+                return CapacityEstimate.Backlog(whole, step, recentDelay);
+            }
         });
 
         // ─── load runs ───
@@ -933,7 +936,7 @@ namespace Juice.Observability.Api.Endpoints
         /// What each service did during a load run, step by step, and where it started to struggle (<see cref="LoadRunAnalysis"/>). Steps
         /// the window cuts short are left out, since they would read low. A run with no end is read up to now.
         /// </summary>
-        private static Task<IResult> GetLoadRunResultsAsync(HttpContext http, PlatformDbContext db, ClickHouseTelemetrySource clickHouse,
+        private static Task<IResult> GetLoadRunResultsAsync(HttpContext http, PlatformDbContext db, ClickHouseTelemetrySource clickHouse, SignalPacks packs,
             TimeProvider clock, Guid tenantId, Guid runId, CancellationToken ct) => Run(async () =>
         {
             var run = await db.LoadRuns.AsNoTracking().SingleOrDefaultAsync(r => r.TenantId == tenantId && r.Id == runId, ct) ?? throw Missing("Load run");
@@ -949,14 +952,16 @@ namespace Juice.Observability.Api.Endpoints
             var stepParameter = scope.Add("UInt32", (uint)step);
             string Bucket(string time) => $"toStartOfInterval({time}, toIntervalSecond({stepParameter}))";
             const string Namespace = "JuiceServiceNamespace";
+            // Without the Juice signal pack there is no outbox to read: no messages created or delivered, so no backlog.
+            var (created, delivered) = packs.Juice ? (Created, Delivered) : ("false", "false");
 
             var spans = await clickHouse.QueryAsync($"""
                 SELECT {Namespace} AS ns, ServiceName, {Bucket("Timestamp")} AS b,
                        countIf({EntrySpan}) AS entries, countIf({EntrySpan} AND StatusCode = 'Error'), quantileIf(0.95)(Duration, {EntrySpan}) / 1e6,
                        sumIf(Duration, SpanKind = 'Consumer') / 1e9 / {stepParameter} / greatest(1, uniqExact({Instance})),
-                       uniqExactIf(SpanAttributes['messaging.message.id'], {Created}), uniqExactIf(SpanAttributes['messaging.message.id'], {Delivered})
+                       uniqExactIf(SpanAttributes['messaging.message.id'], {created}), uniqExactIf(SpanAttributes['messaging.message.id'], {delivered})
                 FROM otel.otel_traces
-                WHERE {scope.Where("Timestamp")} AND ({EntrySpan} OR ({Created}) OR ({Delivered}))
+                WHERE {scope.Where("Timestamp")} AND ({EntrySpan} OR ({created}) OR ({delivered}))
                 GROUP BY ns, ServiceName, b ORDER BY b
                 LIMIT {ClickHouseTelemetrySource.Limit}
                 """, scope.Window, r => (Service: (r.GetString(0), r.GetString(1)), At: Utc(r.GetValue(2)), Entries: Convert.ToDouble(r.GetValue(3)), Errors: Convert.ToDouble(r.GetValue(4)),

@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Signal packs: the telemetry a particular framework emits beyond OpenTelemetry's semantic conventions, named in one place with
+       a contract version, and switched per deployment. The Juice pack (docs/signal-packs.md) is the only one. -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Juice.Observability.Data\Juice.Observability.Data.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Juice.Observability.Tests" />
+  </ItemGroup>
+
+</Project>

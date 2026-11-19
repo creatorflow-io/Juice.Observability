@@ -57,8 +57,8 @@ namespace Juice.Observability.Tests
         public void Every_column_a_platform_query_names_is_one_the_script_adds()
         {
             // The queries name the columns in their SQL text (review of milestone 5): a misspelt one would compile and fail only in
-            // ClickHouse. JuiceAgent is the agent's entry point, not a column.
-            var columns = ResourceColumns.Keys.Keys.Append("JuiceAgent").ToHashSet(StringComparer.Ordinal);
+            // ClickHouse. JuiceAgent is the agent's entry point and JuiceSignals the Juice signal pack, not columns.
+            var columns = ResourceColumns.Keys.Keys.Append("JuiceAgent").Append("JuiceSignals").ToHashSet(StringComparer.Ordinal);
             var unknown = Directory.EnumerateFiles(Path.Combine(Repository(), "src"), "*.cs", SearchOption.AllDirectories)
                 .SelectMany(file => Regex.Matches(File.ReadAllText(file), @"\bJuice[A-Z][A-Za-z]*\b")
                     .Where(m => !columns.Contains(m.Value))

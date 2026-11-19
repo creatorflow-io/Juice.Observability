@@ -46,6 +46,7 @@ namespace Juice.Observability.Discovery
                     continue; // host-only telemetry
                 }
                 var service = UpsertService(tenantId, key, o.FirstSeen, o.LastSeen);
+                if (o.Juice && !service.SignalPacks.Contains(Signals.JuiceSignals.Name)) service.SignalPacks = [.. service.SignalPacks, Signals.JuiceSignals.Name];
                 var environment = UpsertEnvironment(tenantId, o.Environment, o.FirstSeen, o.LastSeen);
                 UpsertServiceEnvironment(tenantId, service, environment, o.FirstSeen, o.LastSeen);
                 if (normalizer.Instance(o) is { } instanceKey)

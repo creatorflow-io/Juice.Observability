@@ -3,6 +3,7 @@ using System.Diagnostics.Metrics;
 using Juice.MediatR;
 using Juice.Observability.Data;
 using Juice.Observability.Discovery;
+using Juice.Observability.Signals;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -19,7 +20,7 @@ namespace Juice.Observability.Slos
     /// read leaves them as they were and is tried again. One replica at a time.
     /// </summary>
     public sealed class SloCounter(IServiceScopeFactory scopes, ClickHouseTelemetrySource clickHouse, IOptions<SloOptions> options,
-        IOptions<PlatformOptions> platform, TimeProvider clock, ILogger<SloCounter> logger) : BackgroundService
+        IOptions<PlatformOptions> platform, TimeProvider clock, ILogger<SloCounter> logger, SignalPacks? packs = null) : BackgroundService
     {
         private static readonly Meter Meter = new("Juice.Observability");
         private static readonly Counter<long> Passes = Meter.CreateCounter<long>("juice.observability.slos.counted", "{pass}",
@@ -35,9 +36,15 @@ namespace Juice.Observability.Slos
 
         /// <summary>
         /// The request classes and latency slot of one SLO's spans, by minute. Eligibility (Phase 9 plan): health checks are excluded; 408 and 499 are
-        /// excluded or bad; other 4xx are good, bad or excluded; 5xx, 429, an error status without an HTTP code, and Juice's failed dispatch are bad.
+        /// excluded or bad; other 4xx are good, bad or excluded; 5xx, 429 and an error status without an HTTP code are bad, and, with the Juice signal
+        /// pack on, Juice's failed dispatch.
         /// </summary>
-        internal static readonly string CountQuery = $"""
+        internal static readonly string CountQuery = Count(JuiceSignals.FailedDispatchSpan);
+
+        /// <summary><see cref="CountQuery"/> without the Juice signal pack.</summary>
+        internal static readonly string CountQueryWithoutJuice = Count("false");
+
+        private static string Count(string failedDispatch) => $"""
             SELECT minute, cls, slot, count() AS n
             FROM (
                 SELECT toStartOfMinute(Timestamp) AS minute,
@@ -48,7 +55,7 @@ namespace Juice.Observability.Slos
                        arrayExists(p -> route LIKE p OR path LIKE p OR SpanName LIKE p, {"{exclude:Array(String)}"}) AS health,
                        code IN (408, 499) AS cancelled,
                        code >= 400 AND code < 500 AND code NOT IN (408, 429, 499) AS client,
-                       code >= 500 OR code = 429 OR (code = 0 AND StatusCode = 'Error') OR SpanAttributes['juice.dispatch.result'] = 'failure' AS failed,
+                       code >= 500 OR code = 429 OR (code = 0 AND StatusCode = 'Error') OR ({failedDispatch}) AS failed,
                        multiIf(health, {ExcludedHealth},
                                cancelled AND {"{cancel:UInt8}"} = 0, {ExcludedCancelled},
                                client AND {"{client:UInt8}"} = 2, {ExcludedClient},
@@ -472,7 +479,7 @@ namespace Juice.Observability.Slos
             var key = (System.Text.Json.JsonSerializer.Serialize(parameters), from, to);
             if (cache.Counts.TryGetValue(key, out var cached)) return cached;
             var minutes = (int)((to - from).TotalMinutes);
-            var rows = await clickHouse.QueryAsync(CountQuery, new TelemetryWindow(platform.Value.TenantKey, from, to, minutes * (SloHistogram.Slots + 4) + 10),
+            var rows = await clickHouse.QueryAsync((packs ?? SignalPacks.All).Juice ? CountQuery : CountQueryWithoutJuice, new TelemetryWindow(platform.Value.TenantKey, from, to, minutes * (SloHistogram.Slots + 4) + 10),
                 r => (Minute: Utc(r.GetValue(0)), Class: Convert.ToInt32(r.GetValue(1)), Slot: Convert.ToInt32(r.GetValue(2)), Count: Convert.ToInt64(r.GetValue(3))), ct, parameters);
             return cache.Counts[key] = Fold(rows);
         }

@@ -14,9 +14,12 @@ namespace Juice.Observability.Api.Endpoints
     public sealed record ApplicationDto(Guid Id, string Key, string DisplayName, int Services, DateTimeOffset FirstSeen, DateTimeOffset LastSeen,
         int RetiredServices = 0);
 
-    /// <summary><see cref="RetiredAt"/>: when discovery retired the service; null for one in use and for infrastructure.</summary>
+    /// <summary>
+    /// <see cref="RetiredAt"/>: when discovery retired the service; null for one in use and for infrastructure. <see cref="SignalPacks"/>: the signal
+    /// packs the service has been seen sending (docs/signal-packs.md); null for infrastructure.
+    /// </summary>
     public sealed record ResourceSummaryDto(Guid Id, string Type, string Key, string DisplayName, DateTimeOffset FirstSeen, DateTimeOffset LastSeen,
-        DateTimeOffset? RetiredAt = null);
+        DateTimeOffset? RetiredAt = null, IReadOnlyList<string>? SignalPacks = null);
 
     public sealed record InstanceDto(Guid Id, string Environment, string InstanceKey, string KeySource, string? ServiceVersion,
         string State, Guid? HostResourceId, DateTimeOffset FirstSeen, DateTimeOffset LastSeen, string? Health);
@@ -24,7 +27,7 @@ namespace Juice.Observability.Api.Endpoints
     public sealed record ResourceDetailDto(Guid Id, string Type, string Key, string DisplayName, DateTimeOffset FirstSeen,
         DateTimeOffset LastSeen, string? Namespace, string? Name, Guid? ApplicationId, IReadOnlyDictionary<string, string> Attributes,
         IReadOnlyList<InstanceDto> Instances, bool InstancesTruncated, IReadOnlyList<HealthDto> Health, IReadOnlyList<IntegrationLinkDto> Links,
-        DateTimeOffset? RetiredAt = null);
+        DateTimeOffset? RetiredAt = null, IReadOnlyList<string>? SignalPacks = null);
 
     /// <summary><see cref="Health"/> is the node's state in the requested environment (hosts have one state), or null.</summary>
     public sealed record TopologyNodeDto(Guid Id, string Type, string DisplayName, string? Health);
@@ -75,6 +78,8 @@ namespace Juice.Observability.Api.Endpoints
             var api = app.MapGroup("/api/v1").RequireAuthorization(Policies.Read).AddEndpointFilter(NameCallerAsync);
 
             api.MapGet("/tenants", ListTenantsAsync);
+            // The signal packs this deployment reads, and the names each reads (docs/signal-packs.md).
+            api.MapGet("/signal-packs", (Signals.SignalPacks packs) => Results.Ok(packs.Describe()));
 
             var tenant = api.MapGroup("/tenants/{tenantId:guid}").AddEndpointFilter(TenantScopeAsync);
             tenant.MapGet("/environments", ListEnvironmentsAsync);
@@ -203,7 +208,7 @@ namespace Juice.Observability.Api.Endpoints
                 }
                 var rows = await services.OrderBy(s => s.Id).Take(take + 1)
                     .Select(s => new ResourceSummaryDto(s.Id, ServiceType, s.Namespace == "" ? s.Name : s.Namespace + "/" + s.Name,
-                        s.Name, s.FirstSeen, s.LastSeen, s.RetiredAt))
+                        s.Name, s.FirstSeen, s.LastSeen, s.RetiredAt, s.SignalPacks))
                     .ToListAsync(ct);
                 if (rows.Count > take)
                 {
@@ -248,7 +253,7 @@ namespace Juice.Observability.Api.Endpoints
                 return Results.Ok(new ResourceDetailDto(service.Id, ServiceType, HealthRunner.Name(service), service.Name,
                     service.FirstSeen, service.LastSeen, service.Namespace, service.Name, service.ApplicationId,
                     new Dictionary<string, string>(), instances.Items, instances.Truncated, await HealthOf(service.Id),
-                    IntegrationLinks.ForService(integrations.Value, service.Name, clock.GetUtcNow()), service.RetiredAt));
+                    IntegrationLinks.ForService(integrations.Value, service.Name, clock.GetUtcNow()), service.RetiredAt, service.SignalPacks));
             }
             var resource = await db.Resources.AsNoTracking().SingleOrDefaultAsync(r => r.TenantId == tenantId && r.Id == resourceId, ct);
             if (resource is null)

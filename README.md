@@ -4,7 +4,7 @@ Turns telemetry from Juice services into a resource model, health, rules, alerts
 
 | Path | Contents |
 |---|---|
-| [`docs/`](docs) | [Architecture diagram](docs/architecture.md), [requirements and architecture](docs/observability-platform-requirements.md), [phased roadmap](docs/observability-platform-roadmap.md), [Phase 0 decisions](docs/phase-0-decisions.md), [deployment guide](docs/deployment.md), [runbook](docs/runbook.md), [load testing guide](docs/load-testing.md), [MVP acceptance](docs/mvp-acceptance.md), [Juice 10.8 telemetry baseline](docs/juice-opentelemetry-10.8-current-state.md), [telemetry requirements for any OpenTelemetry service](docs/telemetry-requirements.md) |
+| [`docs/`](docs) | [Architecture diagram](docs/architecture.md), [requirements and architecture](docs/observability-platform-requirements.md), [phased roadmap](docs/observability-platform-roadmap.md), [Phase 0 decisions](docs/phase-0-decisions.md), [deployment guide](docs/deployment.md), [runbook](docs/runbook.md), [load testing guide](docs/load-testing.md), [MVP acceptance](docs/mvp-acceptance.md), [Juice 10.8 telemetry baseline](docs/juice-opentelemetry-10.8-current-state.md), [telemetry requirements for any OpenTelemetry service](docs/telemetry-requirements.md), [signal packs](docs/signal-packs.md) |
 | [`console/`](console) | **Juice Console**, the product UI (Angular 22, `juice-layout`): services, operations, traces, logs, metrics, topology, resources, alerts, rules. The pages are the `@juice-js/observability` library (`console/projects`); served by the API image; reads only the Juice API |
 | [`deploy/local/`](deploy/local/README.md) | Local single-tenant stack: OpenTelemetry Collector, ClickHouse, PostgreSQL, Keycloak, optional Grafana, with integration and load tests |
 | `src/Juice.Observability.Data` | PostgreSQL domain model (EF Core) and migrations |
@@ -97,6 +97,7 @@ page's `nextCursor`).
 | Route | Returns |
 |---|---|
 | `GET /api/v1/tenants` | the caller's tenant (from its `platform_tenant` claim) |
+| `GET /api/v1/signal-packs` | the [signal packs](docs/signal-packs.md) the deployment reads, whether each is on, and the names it reads |
 | `GET /api/v1/tenants/{tenantId}/applications` | applications with their service counts |
 | `GET /api/v1/tenants/{tenantId}/resources?type=&retired=` | services first, then hosts, containers, pods, messaging destinations and databases; retired services only with `retired=true`, with their `retiredAt` |
 | `GET /api/v1/tenants/{tenantId}/resources/{id}` | a service with its instances (and `retiredAt` once retired), or a resource (a host lists the instances on it) |
@@ -248,6 +249,13 @@ loaded at startup:
 | `HostMemory` | used / total memory from host metrics |
 | `MediatorErrors` | errors in the window: increase of `juice.mediator.errors` |
 | `ConsumerFailures` | failed messages in the window: increase of `juice.messaging.consumed` with `juice.dispatch.result = failure` |
+
+DeliveryFailureRate, MediatorErrors and ConsumerFailures read the Juice [signal pack](docs/signal-packs.md):
+
+- They observe only the services discovery has seen send Juice signals.
+- An enabled rule scoped to a known service that never has is refused by the API. From the rules file it is listed as
+  `quiet`.
+- With `Signals:Juice:Enabled=false`, an enabled rule can't use them.
 
 Each rule is scoped by `Service` and `Environment` (or `Host`). It also has a schedule (default 1 min), a window,
 a threshold and a recovery threshold (hysteresis), minimum samples, `ForDuration`, `RecoveryDuration` and

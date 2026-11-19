@@ -28,6 +28,7 @@ const TABS = ['overview', 'operations', 'dependencies', 'traces', 'logs', 'metri
       <a [routerLink]="['services'] | jcLink" [queryParams]="ctx.keep()" class="jc-crumb">Services</a>
       <span class="jc-crumb-sep">›</span>
       <h1>{{ service.value()?.key ?? '…' }}</h1>
+      @if (service.value()?.signalPacks?.includes('juice')) { <span class="jc-badge jc-health-none" data-testid="service-juice" title="Sends Juice signals: the Juice rule templates and outbox figures apply">Juice</span> }
       @for (l of service.value()?.links ?? []; track l.url) { <a mat-button [href]="l.url" target="_blank" rel="noopener">{{ l.title }} ↗</a> }
     </jc-context-bar>
     @if (service.isLoading()) { <mat-progress-bar mode="indeterminate" /> }

@@ -1,5 +1,6 @@
 using Juice.Observability.Data;
 using Juice.Observability.Discovery;
+using Juice.Observability.Signals;
 using static Juice.Observability.Discovery.ClickHouseTelemetrySource;
 
 namespace Juice.Observability.Rules
@@ -15,7 +16,7 @@ namespace Juice.Observability.Rules
     /// The platform-owned ClickHouse query of each template (requirements §8). Every query filters on the Collector-stamped
     /// tenant, is bounded by the evidence window and row limit, and takes the rule's scope only as parameters.
     /// </summary>
-    public sealed class RuleTemplates(ClickHouseTelemetrySource clickHouse)
+    public sealed class RuleTemplates(ClickHouseTelemetrySource clickHouse, SignalPacks? packs = null)
     {
         private const string Svc = "{svc:String}", Ns = "{ns:String}", EnvParam = "{env:String}", HostParam = "{host:String}";
 
@@ -70,7 +71,7 @@ namespace Juice.Observability.Rules
             LIMIT {Limit}
             """;
 
-        // Juice's counters are cumulative, and a counter's series appears with its first increment: a first error is a new
+        // These counters are cumulative, and a counter's series appears with its first increment: a first error is a new
         // series whose only point may already be 1. So the increase is measured from the series' last value before the
         // window, or from zero when it has none. A series without a point in the window is left out, so a service that
         // stopped reporting has no data rather than a zero; one that reports without errors has a zero.
@@ -89,19 +90,25 @@ namespace Juice.Observability.Rules
             LIMIT {Limit}
             """;
 
+        // The Juice signal pack's templates (JuiceSignals).
         private static readonly string DeliveryFailureRate = CounterIncrease(
-            "MetricName = 'delivery_failure_total'", "MetricName = 'delivery_attempt_total'",
-            "'delivery_failure_total', 'delivery_attempt_total'");
+            $"MetricName = '{JuiceSignals.DeliveryFailures}'", $"MetricName = '{JuiceSignals.DeliveryAttempts}'",
+            $"'{JuiceSignals.DeliveryFailures}', '{JuiceSignals.DeliveryAttempts}'");
 
         private static readonly string MediatorErrors = CounterIncrease(
-            "MetricName = 'juice.mediator.errors'", "MetricName = 'juice.mediator.requests'",
-            "'juice.mediator.errors', 'juice.mediator.requests'");
+            $"MetricName = '{JuiceSignals.MediatorErrors}'", $"MetricName = '{JuiceSignals.MediatorRequests}'",
+            $"'{JuiceSignals.MediatorErrors}', '{JuiceSignals.MediatorRequests}'");
 
         private static readonly string ConsumerFailures = CounterIncrease(
-            "Attributes['juice.dispatch.result'] = 'failure'", "1", "'juice.messaging.consumed'");
+            $"Attributes['{JuiceSignals.DispatchResult}'] = '{JuiceSignals.DispatchFailure}'", "1", $"'{JuiceSignals.MessagesConsumed}'");
 
+        /// <summary>
+        /// What the rule's template measures now. A template whose signal pack is off observes nothing, so a rule made before the pack was
+        /// switched off holds its open alerts as no data.
+        /// </summary>
         public async Task<IReadOnlyList<RuleObservation>> ObserveAsync(RuleDefinition rule, TelemetryWindow window, CancellationToken cancellationToken)
         {
+            if (!(packs ?? SignalPacks.All).Provides(rule.Template)) return [];
             var (ns, svc) = SplitService(rule.Service);
             var scope = new Dictionary<string, object> { ["svc"] = svc, ["ns"] = ns, ["env"] = rule.Environment, ["host"] = rule.Host.ToLowerInvariant() };
             return rule.Template switch

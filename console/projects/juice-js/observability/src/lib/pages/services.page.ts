@@ -41,6 +41,7 @@ const SEVERITY: HealthState[] = ['Critical', 'Unhealthy', 'Degraded', 'Offline',
             <td><a [routerLink]="['services', s.id] | jcLink" [queryParams]="ctx.keep()">{{ s.key }}</a></td>
             <td class="jc-envs">
               @if (s.retiredAt) { <span class="jc-badge jc-health-none" data-testid="service-retired" [title]="'Retired ' + (s.retiredAt | ago)">Retired</span> }
+              @if (s.signalPacks?.includes('juice')) { <span class="jc-badge jc-health-none" data-testid="service-juice" title="Sends Juice signals: the Juice rule templates and outbox figures apply">Juice</span> }
               @for (h of s.health; track h.environment) {
                 <span><span class="jc-muted jc-small">{{ h.environment ?? '—' }}</span> <jc-health [state]="h.state" [stale]="h.stale" /></span>
               } @empty { @if (!s.retiredAt) { <jc-health [state]="null" /> } }

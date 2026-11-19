@@ -73,7 +73,7 @@ const NEW_RULE: RuleForm = {
           @if (!editing()) { <mat-form-field subscriptSizing="dynamic"><mat-label>Key</mat-label><input matInput name="key" [(ngModel)]="f.key" required></mat-form-field> }
           <mat-form-field subscriptSizing="dynamic" class="jc-field-wide"><mat-label>Name</mat-label><input matInput name="name" [(ngModel)]="f.name" required></mat-form-field>
           <mat-form-field subscriptSizing="dynamic"><mat-label>Template</mat-label>
-            <mat-select name="template" [(ngModel)]="f.template">@for (t of templates; track t) { <mat-option [value]="t">{{ t }}</mat-option> }</mat-select>
+            <mat-select name="template" [(ngModel)]="f.template">@for (t of templates(); track t) { <mat-option [value]="t">{{ t }}</mat-option> }</mat-select>
           </mat-form-field>
           <mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Severity</mat-label>
             <mat-select name="severity" [(ngModel)]="f.severity"><mat-option value="Info">Info</mat-option><mat-option value="Warning">Warning</mat-option><mat-option value="Critical">Critical</mat-option></mat-select>
@@ -85,6 +85,7 @@ const NEW_RULE: RuleForm = {
             <mat-form-field subscriptSizing="dynamic"><mat-label>Environment (all if empty)</mat-label><input matInput name="environment" [(ngModel)]="f.environment"></mat-form-field>
           }
           <p class="jc-muted jc-small jc-form-actions">{{ hint(f.template) }}</p>
+          @if (offPack(f.template); as pack) { <p class="jc-muted jc-small jc-form-actions" data-testid="rule-pack-off">{{ f.template }} reads the {{ pack }} signal pack, which this deployment has switched off: the rule can only be saved disabled.</p> }
           <mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Threshold</mat-label><input matInput type="number" step="any" name="threshold" [(ngModel)]="f.threshold" required></mat-form-field>
           <mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Recovery threshold</mat-label><input matInput type="number" step="any" name="recoveryThreshold" [(ngModel)]="f.recoveryThreshold"></mat-form-field>
           <mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Minimum samples</mat-label><input matInput type="number" name="minimumSamples" [(ngModel)]="f.minimumSamples"></mat-form-field>
@@ -108,7 +109,8 @@ const NEW_RULE: RuleForm = {
       <tbody>
         @for (r of rows(); track r.key) {
           <tr [class.jc-muted]="!r.enabled">
-            <td><strong>{{ r.name }}</strong><div class="jc-muted jc-small">{{ r.key }}@if (!r.enabled) { · disabled }@if (r.managedBy === 'config') { · from the rules file }@if (r.managedBy === 'platform') { · the platform's, for SLOs }</div></td>
+            <td><strong>{{ r.name }}</strong><div class="jc-muted jc-small">{{ r.key }}@if (!r.enabled) { · disabled }@if (r.managedBy === 'config') { · from the rules file }@if (r.managedBy === 'platform') { · the platform's, for SLOs }</div>
+              @if (r.quiet) { <div class="jc-error jc-small" [attr.data-testid]="'rule-quiet-' + r.key">Never observes: {{ r.quiet }}.</div> }</td>
             <td>{{ r.template }}</td>
             <td>{{ r.severity }}</td>
             <td>{{ r.definition['threshold'] ?? '—' }}</td>
@@ -129,8 +131,15 @@ const NEW_RULE: RuleForm = {
 export class RulesPage {
   protected readonly ctx = inject(ContextService);
   private readonly api = inject(ApiService);
-  /** What a rule can be made from: SloBurn is described, but its rules are the platform's own, made for SLOs. */
-  protected readonly templates = Object.keys(TEMPLATES).filter(t => t !== 'SloBurn');
+  /**
+   * What a rule can be made from: SloBurn is described, but its rules are the platform's own, made for SLOs. A template of a signal pack that is
+   * off is left out, except the one the rule being changed has, which it can still be saved with while disabled.
+   */
+  protected readonly templates = computed(() => {
+    const off = new Set((this.data.value()?.packs ?? []).filter(p => !p.enabled).flatMap(p => p.ruleTemplates));
+    const current = this.editing()?.template;
+    return Object.keys(TEMPLATES).filter(t => t !== 'SloBurn' && (!off.has(t) || t === current));
+  });
   protected readonly form = signal<RuleForm | null>(null);
   protected readonly editing = signal<Rule | null>(null);
   protected readonly saving = signal(false);
@@ -140,6 +149,7 @@ export class RulesPage {
       rules: this.api.rules().pipe(map(p => p.items)),
       firing: this.api.allAlerts({ state: 'firing' }).pipe(map(p => p.items)),
       pending: this.api.allAlerts({ state: 'pending' }).pipe(map(p => p.items)),
+      packs: this.api.signalPacks(),
     }),
   });
   protected readonly error = computed(() => problemText(this.data.error()));
@@ -155,6 +165,11 @@ export class RulesPage {
   });
 
   protected hint(template: string): string { return TEMPLATES[template] ?? ''; }
+
+  /** The name of the switched-off signal pack a template reads, if it does. */
+  protected offPack(template: string): string | null {
+    return this.data.value()?.packs.find(p => !p.enabled && p.ruleTemplates.includes(template))?.name ?? null;
+  }
 
   protected startNew() { this.editing.set(null); this.saveError.set(''); this.form.set({ ...NEW_RULE }); }
 

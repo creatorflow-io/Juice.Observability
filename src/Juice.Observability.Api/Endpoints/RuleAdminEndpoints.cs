@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using Juice.MediatR;
 using Juice.Observability.Data;
 using Juice.Observability.Rules;
+using Juice.Observability.Signals;
 using Microsoft.EntityFrameworkCore;
 
 namespace Juice.Observability.Api.Endpoints
@@ -28,7 +29,7 @@ namespace Juice.Observability.Api.Endpoints
         internal static RuleDto ToDto(Rule r) => new(r.Key, r.Name, r.Template.ToString(), r.Severity.ToString(), r.Enabled, RuleDefinition.FromJson(r.Definition), r.LoadedAt, r.ManagedBy, r.DefinitionHash);
 
         /// <summary>The definition from the body; a missing template or threshold is an error, since their defaults would fire on everything.</summary>
-        private static (RuleDefinition? Definition, IResult? Problem) Read(JsonElement body, string? key)
+        private static (RuleDefinition? Definition, IResult? Problem) Read(JsonElement body, string? key, SignalPacks packs)
         {
             try
             {
@@ -45,7 +46,7 @@ namespace Juice.Observability.Api.Endpoints
                     }
                     definition.Key = key;
                 }
-                var errors = definition.Validate().ToList();
+                var errors = definition.Validate(packs).ToList();
                 return errors.Count > 0 ? (null, Mutation.Invalid(errors)) : (definition, null);
             }
             catch (JsonException e)
@@ -58,8 +59,9 @@ namespace Juice.Observability.Api.Endpoints
         {
             var mutation = new Mutation(http, db, tenantId, "rule.create", "rule");
             if (await mutation.RequireAsync(null, ct, Roles.Admin) is { } denied) return denied;
-            var (definition, problem) = Read(body, null);
+            var (definition, problem) = Read(body, null, http.RequestServices.GetRequiredService<SignalPacks>());
             if (problem is not null) return problem;
+            if (await QuietAsync(db, tenantId, definition!, ct) is { } quiet) return quiet;
             if (RuleDefinition.IsReservedKey(definition!.Key)) return Mutation.Invalid([RuleDefinition.ReservedKeyError(definition.Key)]);
             if (await db.Rules.AnyAsync(r => r.TenantId == tenantId && r.Key == definition!.Key, ct))
             {
@@ -102,8 +104,9 @@ namespace Juice.Observability.Api.Endpoints
             {
                 return Mutation.Problem(StatusCodes.Status412PreconditionFailed, "Rule changed", "Someone changed this rule since you read it. Read it again.");
             }
-            var (definition, problem) = Read(body, key);
+            var (definition, problem) = Read(body, key, http.RequestServices.GetRequiredService<SignalPacks>());
             if (problem is not null) return problem;
+            if (await QuietAsync(db, tenantId, definition!, ct) is { } quiet) return quiet;
 
             if (definition!.Hash() == rule.DefinitionHash)
             {
@@ -112,6 +115,11 @@ namespace Juice.Observability.Api.Endpoints
             using var context = PlatformMessageContext.Begin("api", CorrelationId.Get(http));
             return Results.Ok(await mediator.Send(new ChangeRule(tenantId, rule.Id, definition, mutation.Actor, CorrelationId.Get(http)), ct));
         }
+
+        /// <summary>An enabled rule that could never observe its service is refused (<see cref="SignalCoverage"/>); a disabled one isn't watching anything.</summary>
+        private static async Task<IResult?> QuietAsync(PlatformDbContext db, Guid tenantId, RuleDefinition definition, CancellationToken ct)
+            => definition.Enabled && await SignalCoverage.QuietReasonAsync(db, tenantId, definition, ct) is { } reason
+                ? Mutation.Invalid([$"rule '{definition.Key}': {reason}"]) : null;
 
         internal static Dictionary<string, string> Metadata(Rule rule) => new() { ["hash"] = rule.DefinitionHash, ["template"] = rule.Template.ToString(), ["enabled"] = rule.Enabled ? "true" : "false" };
     }

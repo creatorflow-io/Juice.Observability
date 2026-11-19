@@ -87,6 +87,9 @@ inside a span. Severity is read from the log record's severity number.
 
 ## 6. What only Juice services provide
 
+These are the Juice [signal pack](signal-packs.md), version 1; a deployment without Juice services can switch it off
+(`Signals:Juice:Enabled=false`).
+
 | Feature | Reads | Without it |
 |---|---|---|
 | MediatorErrors rule | `juice.mediator.errors`, `juice.mediator.requests` | the rule observes nothing |
