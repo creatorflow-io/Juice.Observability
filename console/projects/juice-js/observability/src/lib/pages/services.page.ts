@@ -25,7 +25,10 @@ const SEVERITY: HealthState[] = ['Critical', 'Unhealthy', 'Degraded', 'Offline',
   imports: [LinkPipe, RouterLink, MatPaginatorModule, MatProgressBarModule, ContextBar, HealthBadge, AgoPipe],
   template: `
     <jc-context-bar><h1>Services</h1>
-      @if (state()) { <span class="jc-chip">{{ state() }} <a [routerLink]="['services'] | jcLink" [queryParams]="ctx.keep()">×</a></span> }
+      @if (state()) { <span class="jc-chip">{{ state() }} <a [routerLink]="['services'] | jcLink" [queryParams]="ctx.keep({ retired: showRetired() || null })">×</a></span> }
+      <a class="jc-small" data-testid="services-retired" [routerLink]="['services'] | jcLink"
+         [queryParams]="ctx.keep({ state: state() || null, retired: showRetired() ? null : 'true' })"
+         title="Discovery retires a service after Discovery:ServiceRetireAfter without telemetry (14 days by default)">{{ showRetired() ? 'Hide retired' : 'Show retired' }}</a>
     </jc-context-bar>
     @if (data.isLoading()) { <mat-progress-bar mode="indeterminate" /> }
     @if (data.error()) { <p class="jc-error">{{ error() }}</p> }
@@ -37,9 +40,11 @@ const SEVERITY: HealthState[] = ['Critical', 'Unhealthy', 'Degraded', 'Offline',
           <tr>
             <td><a [routerLink]="['services', s.id] | jcLink" [queryParams]="ctx.keep()">{{ s.key }}</a></td>
             <td class="jc-envs">
+              @if (s.retiredAt) { <span class="jc-badge jc-health-none" data-testid="service-retired" [title]="'Retired ' + (s.retiredAt | ago)">Retired</span> }
+              @if (s.signalPacks?.includes('juice')) { <span class="jc-badge jc-health-none" data-testid="service-juice" title="Sends Juice signals: the Juice rule templates and outbox figures apply">Juice</span> }
               @for (h of s.health; track h.environment) {
                 <span><span class="jc-muted jc-small">{{ h.environment ?? '—' }}</span> <jc-health [state]="h.state" [stale]="h.stale" /></span>
-              } @empty { <jc-health [state]="null" /> }
+              } @empty { @if (!s.retiredAt) { <jc-health [state]="null" /> } }
             </td>
             <td class="jc-small">{{ s.worst?.reasons?.slice(0, 2)?.map(reason)?.join(' · ') }}</td>
             <td>{{ s.lastSeen | ago }}</td>
@@ -56,13 +61,17 @@ export class ServicesPage implements SearchablePage {
   protected readonly ctx = inject(ContextService);
   private readonly api = inject(ApiService);
   readonly state = input<string>();
+  /** `?retired=true`: retired services too, listed after the others. */
+  readonly retired = input<string>();
+  protected readonly showRetired = computed(() => this.retired() === 'true');
   protected readonly filter = signal('');
   private readonly reasonPipe = new ReasonPipe();
   protected readonly reason = (r: string) => this.reasonPipe.transform(r);
 
   protected readonly data = apiResource({
-    stream: () => forkJoin({
-      services: this.api.resources('service'),
+    params: () => ({ retired: this.showRetired() }),
+    stream: ({ params }) => forkJoin({
+      services: this.api.resources('service', params.retired),
       health: this.api.health({ subjectType: 'service' }),
     }).pipe(map(({ services, health }) => ({
       services: services.items, health: health.items, capped: services.nextCursor !== null || health.nextCursor !== null,
@@ -88,7 +97,9 @@ export class ServicesPage implements SearchablePage {
       .filter(s => !env || s.health.length > 0)
       .filter(s => !q || s.key.toLowerCase().includes(q))
       .filter(s => !this.state() || s.health.some(h => h.state === this.state()))
-      .sort((a, b) => SEVERITY.indexOf(a.worst?.state ?? 'Unknown') - SEVERITY.indexOf(b.worst?.state ?? 'Unknown') || a.key.localeCompare(b.key));
+      // Retired services last (they have no health), then the worst state first, then by key.
+      .sort((a, b) => Number(!!a.retiredAt) - Number(!!b.retiredAt)
+        || SEVERITY.indexOf(a.worst?.state ?? 'Unknown') - SEVERITY.indexOf(b.worst?.state ?? 'Unknown') || a.key.localeCompare(b.key));
   });
 
   protected readonly pages = screenPages(this.rows);

@@ -2,7 +2,7 @@
 #
 #   OTLP (TLS + bearer token)  localhost:4317 gRPC, localhost:4318 HTTP
 #   Grafana (optional)         http://localhost:3000  (--profile grafana; sign in with Keycloak; demo users in README.md)
-#   Keycloak                   http://localhost:8080  (realm juice; admin console: admin / KEYCLOAK_ADMIN_PASSWORD)
+#   Keycloak                   http://localhost:8080  (shared: ../../../dev-infra, started first; realm juice, SSO with the other Juice apps)
 #   ClickHouse HTTP            http://localhost:8123  (bound to 127.0.0.1)
 #   PostgreSQL                 localhost:5433         (platform domain database, used by Track B)
 #
@@ -195,36 +195,8 @@ services:
       # Grafana's row policy reads the tenant column (clickhouse/resource-columns.sh).
       clickhouse-columns:
         condition: service_healthy
-      keycloak:
-        condition: service_healthy
-
-  # Local identity provider for Grafana login. Dev mode (in-container H2 database): the realm is imported from
-  # keycloak/juice-realm.json when the container is created, so changes made in the admin console are lost on recreate.
-  keycloak:
-    image: quay.io/keycloak/keycloak:26.7.5
-    command: ["start-dev", "--import-realm"]
-    environment:
-      KC_BOOTSTRAP_ADMIN_USERNAME: admin
-      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?run scripts/init.sh}
-      # The issuer of every token is http://PUBLIC_HOST:8080/realms/juice, whatever address the browser used.
-      KC_HOSTNAME: http://${PUBLIC_HOST:-localhost}:8080
-      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
-      KC_HEALTH_ENABLED: "true"
-      # Values for the ${...} placeholders in the realm file
-      GRAFANA_OIDC_CLIENT_SECRET: ${GRAFANA_OIDC_CLIENT_SECRET}
-      KEYCLOAK_DEMO_PASSWORD: ${KEYCLOAK_DEMO_PASSWORD}
-      JUICE_PLATFORM_TENANT_ID: ${JUICE_PLATFORM_TENANT_ID}
-      PUBLIC_HOST: ${PUBLIC_HOST:-localhost}
-    volumes:
-      - ./keycloak/juice-realm.json:/opt/keycloak/data/import/juice-realm.json:ro
-    ports:
-      - "8080:8080"
-    healthcheck:
-      # The image has no curl or wget; ask the management port for readiness over bash's /dev/tcp.
-      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
-      interval: 5s
-      timeout: 3s
-      retries: 60
+    # Keycloak is the shared one (dev-infra), reached as keycloak:8080 on the juice-dev network.
+    networks: [default, juice-dev]
 
   postgres:
     image: postgres:17.10-alpine
@@ -315,8 +287,8 @@ services:
       # Its queries read the resource columns (clickhouse/resource-columns.sh).
       clickhouse-columns:
         condition: service_healthy
-      keycloak:
-        condition: service_healthy
+    # Keycloak is the shared one (dev-infra), reached as keycloak:8080 on the juice-dev network.
+    networks: [default, juice-dev]
 
   # A Juice Agent on this machine, to try Phase 7. console/e2e/agent.mjs creates its enrollment token and starts it:
   #   docker compose --profile platform --profile agent up -d agent
@@ -350,6 +322,11 @@ services:
     depends_on:
       platform-api:
         condition: service_healthy
+
+networks:
+  # The shared dev infrastructure's network (../../../dev-infra: docker compose up -d there first), for its Keycloak.
+  juice-dev:
+    external: true
 
 volumes:
   agent-data:

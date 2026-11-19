@@ -11,7 +11,7 @@ read-only Grafana with a provisioned data source and dashboard.
 | Grafana | `grafana/grafana:13.2.5` + `grafana-clickhouse-datasource` 4.22.1 | exploration, starter dashboard |
 | PostgreSQL | `postgres:17.10-alpine` | platform database (the API migrates it) |
 | Platform API | built from `Dockerfile` (profile `platform`) | `/api/v1` and the platform workers; `docker compose --profile platform up -d --build --wait` |
-| Keycloak | `quay.io/keycloak/keycloak:26.7.5` | OIDC identity provider for Grafana sign-in (realm `juice`) |
+| Keycloak | shared, from `../../../dev-infra` | OIDC identity provider (realm `juice`), one sign-in for every Juice app; start it first (`docker compose up -d --wait` there) |
 
 ## Start
 
@@ -31,7 +31,7 @@ sets it without asking, and otherwise it is `local-dev`. It is set once, when `.
 | OTLP gRPC / HTTP | `https://localhost:4317` / `https://localhost:4318` (CA `secrets/tls/ca.crt`, token in `secrets/otlp-tokens`) |
 | Juice Console | http://localhost:5180 with `--profile platform` (or `npm start` in `console/` on :4200); sign in with a demo user below |
 | Grafana (optional, `--profile grafana`) | http://localhost:3000, **Sign in with Keycloak** (demo users below); dashboard **Juice › Juice overview** |
-| Keycloak | http://localhost:8080, admin console user `admin`, `KEYCLOAK_ADMIN_PASSWORD` |
+| Keycloak | http://localhost:8080 (the shared one, dev-infra), admin console user `admin`, `KEYCLOAK_ADMIN_PASSWORD` from dev-infra's `.env` |
 | ClickHouse HTTP | http://127.0.0.1:8123 (admin user `admin`, `CLICKHOUSE_ADMIN_PASSWORD`) |
 | PostgreSQL | `127.0.0.1:5433`, database `juice_observability`, user `juice`, `POSTGRES_PASSWORD` |
 | Collector self-metrics / health | http://127.0.0.1:8888/metrics, http://127.0.0.1:13133 |
@@ -42,10 +42,11 @@ sets it without asking, and otherwise it is `local-dev`. It is set once, when `.
 ### Another machine
 
 To open the Console, Keycloak and Grafana by the machine's address instead of `localhost`, set `PUBLIC_HOST` in
-`.env` (for example `PUBLIC_HOST=10.10.10.147`) and recreate them:
+`.env`, and in dev-infra's `.env` for Keycloak (for example `PUBLIC_HOST=10.10.10.147`), and recreate them:
 
 ```bash
-docker compose --profile platform --profile grafana up -d --wait keycloak grafana platform-api
+(cd ../../../dev-infra && docker compose up -d --wait --force-recreate keycloak)
+docker compose --profile platform --profile grafana up -d --wait grafana platform-api
 ```
 
 - Keycloak then issues every token as `http://<PUBLIC_HOST>:8080/realms/juice`; the Console's `config.json`, Grafana's
@@ -174,9 +175,12 @@ username/password form is hidden. Grafana roles come from the `grafana` client r
 All demo users share the password `KEYCLOAK_DEMO_PASSWORD` from `.env`. To add a person, create the user in the
 Keycloak admin console and assign a `grafana` client role.
 
-- **Dev mode.** Keycloak runs `start-dev` with its built-in database, and `keycloak/juice-realm.json` is imported when
-  the container is created. Users added in the console are lost when the container is recreated, so put lasting
-  changes in the realm file. Placeholders like `${GRAFANA_OIDC_CLIENT_SECRET}` in that file are filled from `.env`.
+- **Dev mode, shared.** Keycloak is the dev infrastructure's (`../../../dev-infra`, 19 Nov 2026): one realm `juice` for
+  Observability, Juice.Notifications and the juice-layout demo, so one sign-in opens each (alice is also a Notifications platform
+  admin; tess, a Notifications tenant admin, is an Observability viewer). It runs `start-dev` with its built-in database, and
+  `dev-infra/keycloak/juice-realm.json` is imported when the container is created. Users added in the console are lost when the
+  container is recreated, so put lasting changes in the realm file. Placeholders like `${GRAFANA_OIDC_CLIENT_SECRET}` in that file are
+  filled from dev-infra's `.env`, whose `scripts/init.sh` takes them from this `.env` and says if the two differ.
   Users in the file have fixed ids. Grafana links each account to the token's `sub`, so a new id on re-import would
   lock the user out with `user.sync ... user not found`.
 - **Separate clients, separate tokens.** The same realm serves the platform API: client `juice-platform` (the audience,

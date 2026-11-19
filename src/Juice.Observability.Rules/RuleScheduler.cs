@@ -4,6 +4,7 @@ using System.Diagnostics.Metrics;
 using Juice.MediatR;
 using Juice.Observability.Data;
 using Juice.Observability.Discovery;
+using Juice.Observability.Signals;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -328,7 +329,7 @@ namespace Juice.Observability.Rules
     /// rule). Each change writes an <see cref="AuditRecord"/> in the same transaction. The file owns what it lists, taking over a key the API
     /// created; a rule it no longer lists is disabled and handed to the API; a rule the API created and the file never listed is left alone.
     /// </summary>
-    public sealed class RuleProvisioner(IServiceScopeFactory scopes, IOptions<RulesOptions> options, ILogger<RuleProvisioner> logger) : IHostedService
+    public sealed class RuleProvisioner(IServiceScopeFactory scopes, IOptions<RulesOptions> options, ILogger<RuleProvisioner> logger, SignalPacks? packs = null) : IHostedService
     {
         public const string Actor = "deployment-config";
         public const string ClosedRuleDisabled = "rule_disabled";
@@ -341,7 +342,7 @@ namespace Juice.Observability.Rules
         public async Task StartAsync(CancellationToken cancellationToken)
         {
             var definitions = options.Value.Definitions;
-            var errors = definitions.SelectMany(d => d.Validate()).ToList();
+            var errors = definitions.SelectMany(d => d.Validate(packs ?? SignalPacks.All)).ToList();
             errors.AddRange(definitions.GroupBy(d => d.Key).Where(g => g.Count() > 1).Select(g => $"rule '{g.Key}': defined more than once"));
             if (errors.Count > 0)
             {
@@ -481,6 +482,7 @@ namespace Juice.Observability.Rules
         public static IServiceCollection AddPlatformRules(this IServiceCollection services, IConfiguration configuration)
         {
             services.Configure<RulesOptions>(configuration.GetSection(RulesOptions.Section));
+            services.AddSignalPacks(configuration);
             services.AddSingleton<RuleTemplates>();
             services.AddSingleton<RuleEvaluator>();
             services.AddHostedService<RuleProvisioner>();

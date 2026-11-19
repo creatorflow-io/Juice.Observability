@@ -11,8 +11,12 @@ using Microsoft.Extensions.Options;
 
 namespace Juice.Observability.Api.Endpoints
 {
-    /// <summary><c>Etag</c> goes in <c>If-Match</c> when changing the rule.</summary>
-    public sealed record RuleDto(string Key, string Name, string Template, string Severity, bool Enabled, RuleDefinition Definition, DateTimeOffset LoadedAt, string ManagedBy, string Etag);
+    /// <summary>
+    /// <c>Etag</c> goes in <c>If-Match</c> when changing the rule. <c>Quiet</c>, in a listing: why the rule can never observe the service it names
+    /// (<see cref="SignalCoverage"/>), or null.
+    /// </summary>
+    public sealed record RuleDto(string Key, string Name, string Template, string Severity, bool Enabled, RuleDefinition Definition, DateTimeOffset LoadedAt, string ManagedBy, string Etag,
+        string? Quiet = null);
 
     public sealed record AlertDto(Guid Id, string Rule, string SubjectKey, string SubjectType, Guid? SubjectId, string? Environment,
         string Severity, string State, DateTimeOffset BreachStartedAt, DateTimeOffset? FiredAt, DateTimeOffset? ResolvedAt,
@@ -49,6 +53,8 @@ namespace Juice.Observability.Api.Endpoints
             if (after is not null) query = query.Where(r => r.Id > after.After);
             var rows = await query.OrderBy(r => r.Id).Take(take + 1).ToListAsync(ct);
             var page = rows.Take(take).Select(RuleAdminEndpoints.ToDto).ToList();
+            var quiet = await SignalCoverage.QuietReasonsAsync(db, tenantId, page.Where(r => r.Enabled).Select(r => r.Definition).ToList(), ct);
+            page = [.. page.Select(r => quiet.TryGetValue(r.Key, out var reason) ? r with { Quiet = reason } : r)];
             return Results.Ok(new Page<RuleDto>(page, rows.Count > take ? new Cursor("r", rows[take - 1].Id).Encode() : null));
         }
 

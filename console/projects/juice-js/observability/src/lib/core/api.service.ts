@@ -5,7 +5,7 @@ import { OBSERVABILITY_OPTIONS } from './options';
 import {
   ActionRequest, ActionRequestsWaiting, ActionTarget, Agent, SloDetail, SloSummary, AgentActions, AgentCommand, AgentPackage, EnrollmentToken, AlertDetail, AlertNotifications, Alert, AllowlistEntry, Application, Channel, ChannelTestResult, Delivery, EscalationPolicy, IncidentDetail, IncidentEvent, IncidentSummary, Silence, DependencyEvidence, DependencyStatsPage, DeploymentEnvironment, LoadRun, LoadRunResults, Related, Timeline, Health, LogRecord, MetricInfo, Operation,
   Page, PlatformOverview, ResourceDetail, ResourceSummary, Rule, SearchHit, Series, Capacity, ServiceStats, Tenant, TelemetryPage, Topology, Trace,
-  TraceSummary, Suggestions, CorrelationDecision,
+  TraceSummary, Suggestions, CorrelationDecision, SignalPack
 } from './models';
 
 /**
@@ -70,12 +70,17 @@ export class ApiService {
 
   environments() { return this.get<Page<DeploymentEnvironment>>('/environments'); }
   applications() { return this.get<Page<Application>>('/applications', { limit: 200 }); }
-  resources(type?: string) { return this.all<ResourceSummary>('/resources', { type }); }
+  /** With `retired`, retired services too (the API leaves them out by default). */
+  resources(type?: string, retired = false) { return this.all<ResourceSummary>('/resources', { type, retired: retired ? 'true' : null }); }
+  /** Forgets a retired service and what discovery and health keep about it (admin). */
+  forgetService(id: string) { return this.send<void>('DELETE', `/resources/${id}`); }
   resource(id: string) { return this.get<ResourceDetail>(`/resources/${id}`); }
   health(query: Query) { return this.all<Health>('/health', query); }
   topology(environment?: string | null) { return this.get<Topology>('/topology', { environment }); }
 
   rules() { return this.get<Page<Rule>>('/rules', { limit: 200 }); }
+  /** The deployment's signal packs: not a tenant's, so not under it. */
+  signalPacks() { return this.http.get<SignalPack[]>(`${this.base}/signal-packs`); }
   createRule(definition: unknown) { return this.send<Rule>('POST', '/rules', definition); }
   /** With the rule's etag, so a change made since it was read isn't overwritten. */
   updateRule(key: string, definition: unknown, etag: string) { return this.send<Rule>('PUT', `/rules/${key}`, definition, { 'If-Match': `"${etag}"` }); }

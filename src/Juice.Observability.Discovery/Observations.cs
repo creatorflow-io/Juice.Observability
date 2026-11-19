@@ -22,6 +22,8 @@ namespace Juice.Observability.Discovery
         public DateTimeOffset FirstSeen { get; init; }
         public DateTimeOffset LastSeen { get; init; }
         public long Records { get; init; }
+        /// <summary>Whether any of the records is one the Juice signal pack names (<c>JuiceSignals.DetectedIn</c>).</summary>
+        public bool Juice { get; init; }
     }
 
     /// <summary>A service-to-service interaction: a client or producer span whose child server or consumer span is in another service.</summary>

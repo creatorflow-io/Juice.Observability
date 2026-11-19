@@ -8,6 +8,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Juice.Observability.Discovery\Juice.Observability.Discovery.csproj" />
+    <!-- The Juice templates' metric names, and whether the Juice signal pack is on. -->
+    <ProjectReference Include="..\Juice.Observability.Signals\Juice.Observability.Signals.csproj" />
   </ItemGroup>
 
   <ItemGroup>

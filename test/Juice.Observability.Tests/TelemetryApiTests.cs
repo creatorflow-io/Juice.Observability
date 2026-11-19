@@ -537,6 +537,12 @@ namespace Juice.Observability.Tests
             Assert.Equal(10d / 60, outbox.GetProperty("deliveredPerSecond").GetDouble(), 6);
             Assert.Equal(20, outbox.GetProperty("recentDelaySeconds").GetDouble(), 1);
             Assert.True(outbox.GetProperty("fallingBehind").GetBoolean());
+
+            // Without the Juice signal pack the outbox isn't read.
+            await using var withoutJuice = new ApiFactory(database, settings: new Dictionary<string, string> { ["Signals:Juice:Enabled"] = "false" });
+            using var other = withoutJuice.CreateClient();
+            var capacity = await JsonAsync(await Get(other, $"/api/v1/tenants/{tenant}/telemetry/capacity?serviceId={id2}&{window}", token));
+            Assert.Equal(System.Text.Json.JsonValueKind.Null, capacity.GetProperty("outbox").ValueKind);
         }
 
         private static Task DiscoverAsync(ScratchDatabase database)

@@ -9,6 +9,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Juice.Observability.Data\Juice.Observability.Data.csproj" />
+    <!-- Which signal packs a service sends. -->
+    <ProjectReference Include="..\Juice.Observability.Signals\Juice.Observability.Signals.csproj" />
   </ItemGroup>
 
   <ItemGroup>

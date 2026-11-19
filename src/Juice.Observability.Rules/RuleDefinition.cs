@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using Juice.Observability.Data;
+using Juice.Observability.Signals;
 
 namespace Juice.Observability.Rules
 {
@@ -58,9 +59,14 @@ namespace Juice.Observability.Rules
         [JsonIgnore]
         public bool UsesSamples => Template is RuleTemplate.ErrorRate or RuleTemplate.LatencyP95 or RuleTemplate.DeliveryFailureRate;
 
-        public IEnumerable<string> Validate()
+        /// <summary>
+        /// What is wrong with the definition. With <paramref name="packs"/>, an enabled rule whose template's signal pack is off is wrong too; a
+        /// disabled one isn't, so a rule made before the pack was switched off can still be disabled.
+        /// </summary>
+        public IEnumerable<string> Validate(SignalPacks? packs = null)
         {
             var at = string.IsNullOrEmpty(Key) ? "rule" : $"rule '{Key}'";
+            if (Enabled && Enum.IsDefined(Template) && packs?.Refusal(Template) is { } refusal) yield return $"{at}: {refusal}";
             if (!KeyPattern().IsMatch(Key)) yield return $"{at}: Key must match {KeyPattern()}";
             if (Name.Length is 0 or > 200) yield return $"{at}: Name is required (at most 200 characters)";
             if (!Enum.IsDefined(Template)) yield return $"{at}: unknown Template";

@@ -38,6 +38,8 @@ namespace Juice.Observability.Discovery
             "Records created by discovery, by kind");
         private static readonly Counter<long> Truncated = Meter.CreateCounter<long>("juice.observability.discovery.truncated", "{value}",
             "Telemetry values or windows cut to their bounds, by kind");
+        private static readonly Counter<long> Retirements = Meter.CreateCounter<long>("juice.observability.discovery.retirements", "{service}",
+            "Services retired after Discovery:ServiceRetireAfter without telemetry, or restored when they reported again, by change");
 
         public async Task<DiscoveryRunResult> RunOnceAsync(CancellationToken cancellationToken)
         {
@@ -115,7 +117,7 @@ namespace Juice.Observability.Discovery
 
                 var normalizer = new Normalizer(settings.Aliases);
                 await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
-                var result = await new Reconciler(db, normalizer, settings, clock).ApplyAsync(tenant.Id, resources, links, uses, cancellationToken);
+                var result = await new Reconciler(db, normalizer, settings, clock).ApplyAsync(tenant.Id, resources, links, uses, cancellationToken, readThrough: to);
                 var checkpoint = await db.Checkpoints.SingleOrDefaultAsync(c => c.TenantId == tenant.Id && c.Source == checkpointSource, cancellationToken);
                 if (checkpoint is null)
                 {
@@ -176,11 +178,13 @@ namespace Juice.Observability.Discovery
             Created.Add(result.Resources, new KeyValuePair<string, object?>("kind", "resource"));
             Created.Add(result.Dependencies, new KeyValuePair<string, object?>("kind", "dependency"));
             Truncated.Add(truncatedValues, new KeyValuePair<string, object?>("kind", "value"));
+            Retirements.Add(result.Retired, new KeyValuePair<string, object?>("change", "retired"));
+            Retirements.Add(result.Restored, new KeyValuePair<string, object?>("change", "restored"));
         }
 
         private static ReconcileResult Add(ReconcileResult a, ReconcileResult b)
             => new(a.Services + b.Services, a.Instances + b.Instances, a.Resources + b.Resources,
-                a.Dependencies + b.Dependencies, a.Deactivated + b.Deactivated, a.Pruned + b.Pruned);
+                a.Dependencies + b.Dependencies, a.Deactivated + b.Deactivated, a.Pruned + b.Pruned, a.Retired + b.Retired, a.Restored + b.Restored);
 
         private static DateTimeOffset Min(DateTimeOffset a, DateTimeOffset b) => a < b ? a : b;
     }

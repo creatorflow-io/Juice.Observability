@@ -228,6 +228,34 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
+        public async Task Delivery_failures_are_read_as_juice_delivery_and_the_old_names_only_without_them_Async()
+        {
+            LocalStack.RequireAvailable();
+            var templates = new RuleTemplates(new ClickHouseTelemetrySource(Options.Create(new ClickHouseOptions { ConnectionString = LocalStack.ClickHouseReader })));
+            var now = DateTimeOffset.UtcNow;
+            var window = new TelemetryWindow(LocalStack.TenantKey, now.AddMinutes(-5), now, 100);
+            var (start, before, last) = (now.AddMinutes(-10), now.AddMinutes(-7), now.AddMinutes(-1));
+            var both = $"rules-{_run}-delivery-both";
+
+            // Juice 10.14.0 with delivery.metrics collected: both names, the same counts. Different here, so the test can tell which was read.
+            (string, string)[] resource = [("service.name", both)];
+            await LocalStack.SendAsync("metrics", Otlp.Sum(resource, "juice.delivery.attempts", start, [("juice.publisher", "outbox")], (before, 0), (last, 10)));
+            await LocalStack.SendAsync("metrics", Otlp.Sum(resource, "juice.delivery.failures", start, [("juice.publisher", "outbox"), ("error.type", "Timeout")],
+                (before, 0), (last, 1)));
+            await LocalStack.SendAsync("metrics", Otlp.Sum(resource, "delivery_attempt_total", start, [("publisher", "outbox")], (before, 0), (last, 10)));
+            await LocalStack.SendAsync("metrics", Otlp.Sum(resource, "delivery_failure_total", start, [("publisher", "outbox"), ("error_type", "Timeout")],
+                (before, 0), (last, 9)));
+            for (var i = 0; i < 50 && int.Parse(await LocalStack.ClickHouseAsync($"SELECT count() FROM otel.otel_metrics_sum WHERE ServiceName = '{both}'")) < 8; i++)
+            {
+                await Task.Delay(200, Ct);
+            }
+
+            var observed = Assert.Single(await templates.ObserveAsync(
+                new RuleDefinition { Key = "t", Name = "t", Template = RuleTemplate.DeliveryFailureRate, Service = both }, window, Ct));
+            Assert.Equal((0.1, 10L), (observed.Value, observed.Samples));   // 1 of 10, not 9 of 10 nor 10 of 20
+        }
+
+        [Fact]
         public async Task Count_templates_measure_counter_increases_Async()
         {
             LocalStack.RequireAvailable();

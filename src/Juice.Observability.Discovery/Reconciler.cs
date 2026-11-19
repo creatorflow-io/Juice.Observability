@@ -3,12 +3,15 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Juice.Observability.Discovery
 {
-    public sealed record ReconcileResult(int Services, int Instances, int Resources, int Dependencies, int Deactivated, int Pruned);
+    /// <summary><see cref="Retired"/>: services retired in this pass; <see cref="Restored"/>: retired services that reported again.</summary>
+    public sealed record ReconcileResult(int Services, int Instances, int Resources, int Dependencies, int Deactivated, int Pruned,
+        int Retired = 0, int Restored = 0);
 
     /// <summary>
     /// Upserts observations into the domain model by natural key, within one tenant. Applying the same observations
     /// again changes nothing: first-seen only moves earlier and last-seen only later. Never deletes services or
-    /// resources; instances go inactive and are pruned after the retention (D3). The caller owns the transaction.
+    /// resources; instances go inactive and are pruned after the retention (D3), and services silent for
+    /// <see cref="DiscoveryOptions.ServiceRetireAfter"/> are retired, and restored when they report again. The caller owns the transaction.
     /// </summary>
     public sealed class Reconciler(PlatformDbContext db, Normalizer normalizer, DiscoveryOptions options, TimeProvider clock)
     {
@@ -21,10 +24,16 @@ namespace Juice.Observability.Discovery
         private readonly Dictionary<(Guid, Guid, DependencyRelation, Guid?, Guid?), Dependency> _dependencies = new();
         // Dependencies created by this pass: their spans before the checkpoint were never counted.
         private readonly HashSet<(Guid, Guid, DependencyRelation, Guid?, Guid?)> _created = new();
-        private int _newServices, _newInstances, _newResources, _newDependencies;
+        private int _newServices, _newInstances, _newResources, _newDependencies, _restored;
 
+        /// <summary>
+        /// Applies one window's observations. <c>readThrough</c> is how far discovery has read (the window's end): retirement is measured
+        /// from it rather than the clock, so a discovery catching up after an outage doesn't retire services whose newer telemetry it has
+        /// yet to read. Null: the clock.
+        /// </summary>
         public async Task<ReconcileResult> ApplyAsync(Guid tenantId, IReadOnlyList<ResourceObservation> resources,
-            IReadOnlyList<ServiceLinkObservation> links, IReadOnlyList<ResourceUseObservation> uses, CancellationToken cancellationToken)
+            IReadOnlyList<ServiceLinkObservation> links, IReadOnlyList<ResourceUseObservation> uses, CancellationToken cancellationToken,
+            DateTimeOffset? readThrough = null)
         {
             await LoadAsync(tenantId, resources, links, uses, cancellationToken);
             var versions = new List<(Service Service, DeploymentEnvironment Environment, string Version, string? Known, DateTimeOffset At)>();
@@ -37,6 +46,7 @@ namespace Juice.Observability.Discovery
                     continue; // host-only telemetry
                 }
                 var service = UpsertService(tenantId, key, o.FirstSeen, o.LastSeen);
+                if (o.Juice && !service.SignalPacks.Contains(Signals.JuiceSignals.Name)) service.SignalPacks = [.. service.SignalPacks, Signals.JuiceSignals.Name];
                 var environment = UpsertEnvironment(tenantId, o.Environment, o.FirstSeen, o.LastSeen);
                 UpsertServiceEnvironment(tenantId, service, environment, o.FirstSeen, o.LastSeen);
                 if (normalizer.Instance(o) is { } instanceKey)
@@ -104,7 +114,17 @@ namespace Juice.Observability.Discovery
                 .Where(i => i.TenantId == tenantId && i.State == InstanceState.Inactive && i.LastSeen < pruneBefore)
                 .ExecuteDeleteAsync(cancellationToken);
 
-            return new ReconcileResult(_newServices, _newInstances, _newResources, _newDependencies, deactivated, pruned);
+            var retired = 0;
+            if (options.ServiceRetireAfter > TimeSpan.Zero)
+            {
+                var through = readThrough ?? now;
+                var retireBefore = (through < now ? through : now) - options.ServiceRetireAfter;
+                retired = await db.Services
+                    .Where(s => s.TenantId == tenantId && s.RetiredAt == null && s.LastSeen < retireBefore)
+                    .ExecuteUpdateAsync(s => s.SetProperty(x => x.RetiredAt, now), cancellationToken);
+            }
+
+            return new ReconcileResult(_newServices, _newInstances, _newResources, _newDependencies, deactivated, pruned, retired, _restored);
         }
 
         /// <summary>
@@ -211,6 +231,13 @@ namespace Juice.Observability.Discovery
                 db.Services.Add(service);
                 _services[key] = service;
                 _newServices++;
+            }
+            // Telemetry newer than any it had brings a retired service back; the overlap's re-read of what it had already seen doesn't.
+            // Compared at PostgreSQL's precision (microseconds): telemetry times are finer, so a re-read row is otherwise a few ticks "newer".
+            if (service.RetiredAt is not null && last.UtcTicks / 10 > service.LastSeen.UtcTicks / 10)
+            {
+                service.RetiredAt = null;
+                _restored++;
             }
             Seen(service, first, last, (s, f) => s.FirstSeen = f, (s, l) => s.LastSeen = l, s => s.FirstSeen, s => s.LastSeen);
             if (service.ApplicationId is { } applicationId

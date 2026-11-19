@@ -124,10 +124,11 @@ namespace Juice.Observability.Discovery
             => table.StartsWith("otel_metrics_", StringComparison.Ordinal) ? TelemetrySignals.Metrics : TelemetrySignals.SpansAndLogs;
 
         private static string ResourcesQueryOf(IEnumerable<(string Table, string Time)> tables) => $"""
-            SELECT {ResourceKeys}, min(first_seen) AS first_seen, max(last_seen) AS last_seen, sum(records) AS records
+            SELECT {ResourceKeys}, min(first_seen) AS first_seen, max(last_seen) AS last_seen, sum(records) AS records, max(juice) AS juice
             FROM (
             {string.Join("\nUNION ALL\n", tables.Select(t => $"""
-                SELECT {ResourceSelect}, min({t.Time}) AS first_seen, max({t.Time}) AS last_seen, count() AS records
+                SELECT {ResourceSelect}, min({t.Time}) AS first_seen, max({t.Time}) AS last_seen, count() AS records,
+                       toUInt8(max({Signals.JuiceSignals.DetectedIn(t.Table)})) AS juice
                 FROM otel.{t.Table}
                 WHERE {Tenant} AND {t.Time} >= {From} AND {t.Time} < {To}
                 GROUP BY {ResourceKeys}
@@ -200,6 +201,7 @@ namespace Juice.Observability.Discovery
                 FirstSeen = Utc(r.GetValue(12)),
                 LastSeen = Utc(r.GetValue(13)),
                 Records = Convert.ToInt64(r.GetValue(14)),
+                Juice = Convert.ToInt32(r.GetValue(15)) != 0,
             }, cancellationToken);
 
         public Task<IReadOnlyList<ServiceLinkObservation>> ReadServiceLinksAsync(TelemetryWindow window, CancellationToken cancellationToken)

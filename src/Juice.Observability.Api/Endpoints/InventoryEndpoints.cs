@@ -10,16 +10,24 @@ namespace Juice.Observability.Api.Endpoints
 
     public sealed record EnvironmentDto(Guid Id, string Key, string Type, DateTimeOffset FirstSeen, DateTimeOffset LastSeen);
 
-    public sealed record ApplicationDto(Guid Id, string Key, string DisplayName, int Services, DateTimeOffset FirstSeen, DateTimeOffset LastSeen);
+    /// <summary><see cref="Services"/> counts the services in use; <see cref="RetiredServices"/> those retired (Discovery:ServiceRetireAfter).</summary>
+    public sealed record ApplicationDto(Guid Id, string Key, string DisplayName, int Services, DateTimeOffset FirstSeen, DateTimeOffset LastSeen,
+        int RetiredServices = 0);
 
-    public sealed record ResourceSummaryDto(Guid Id, string Type, string Key, string DisplayName, DateTimeOffset FirstSeen, DateTimeOffset LastSeen);
+    /// <summary>
+    /// <see cref="RetiredAt"/>: when discovery retired the service; null for one in use and for infrastructure. <see cref="SignalPacks"/>: the signal
+    /// packs the service has been seen sending (docs/signal-packs.md); null for infrastructure.
+    /// </summary>
+    public sealed record ResourceSummaryDto(Guid Id, string Type, string Key, string DisplayName, DateTimeOffset FirstSeen, DateTimeOffset LastSeen,
+        DateTimeOffset? RetiredAt = null, IReadOnlyList<string>? SignalPacks = null);
 
     public sealed record InstanceDto(Guid Id, string Environment, string InstanceKey, string KeySource, string? ServiceVersion,
         string State, Guid? HostResourceId, DateTimeOffset FirstSeen, DateTimeOffset LastSeen, string? Health);
 
     public sealed record ResourceDetailDto(Guid Id, string Type, string Key, string DisplayName, DateTimeOffset FirstSeen,
         DateTimeOffset LastSeen, string? Namespace, string? Name, Guid? ApplicationId, IReadOnlyDictionary<string, string> Attributes,
-        IReadOnlyList<InstanceDto> Instances, bool InstancesTruncated, IReadOnlyList<HealthDto> Health, IReadOnlyList<IntegrationLinkDto> Links);
+        IReadOnlyList<InstanceDto> Instances, bool InstancesTruncated, IReadOnlyList<HealthDto> Health, IReadOnlyList<IntegrationLinkDto> Links,
+        DateTimeOffset? RetiredAt = null, IReadOnlyList<string>? SignalPacks = null);
 
     /// <summary><see cref="Health"/> is the node's state in the requested environment (hosts have one state), or null.</summary>
     public sealed record TopologyNodeDto(Guid Id, string Type, string DisplayName, string? Health);
@@ -70,12 +78,15 @@ namespace Juice.Observability.Api.Endpoints
             var api = app.MapGroup("/api/v1").RequireAuthorization(Policies.Read).AddEndpointFilter(NameCallerAsync);
 
             api.MapGet("/tenants", ListTenantsAsync);
+            // The signal packs this deployment reads, and the names each reads (docs/signal-packs.md).
+            api.MapGet("/signal-packs", (Signals.SignalPacks packs) => Results.Ok(packs.Describe()));
 
             var tenant = api.MapGroup("/tenants/{tenantId:guid}").AddEndpointFilter(TenantScopeAsync);
             tenant.MapGet("/environments", ListEnvironmentsAsync);
             tenant.MapGet("/applications", ListApplicationsAsync);
             tenant.MapGet("/resources", ListResourcesAsync);
             tenant.MapGet("/resources/{resourceId:guid}", GetResourceAsync);
+            tenant.MapDelete("/resources/{resourceId:guid}", ServiceRetirement.ForgetAsync);
             tenant.MapGet("/topology", GetTopologyAsync);
             tenant.MapHealthEndpoints();
             tenant.MapAlertEndpoints();
@@ -150,16 +161,17 @@ namespace Juice.Observability.Api.Endpoints
             }
             var rows = await query.OrderBy(a => a.Id).Take(take + 1)
                 .Select(a => new ApplicationDto(a.Id, a.Key, a.DisplayName,
-                    db.Services.Count(s => s.TenantId == tenantId && s.ApplicationId == a.Id), a.FirstSeen, a.LastSeen))
+                    db.Services.Count(s => s.TenantId == tenantId && s.ApplicationId == a.Id && s.RetiredAt == null), a.FirstSeen, a.LastSeen,
+                    db.Services.Count(s => s.TenantId == tenantId && s.ApplicationId == a.Id && s.RetiredAt != null)))
                 .ToListAsync(ct);
             return Results.Ok(PageOf(rows, take, a => new Cursor("a", a.Id)));
         }
 
         /// <summary>
         /// Services and infrastructure resources, filtered by <c>type</c>. Without a filter, services come first, then
-        /// resources; the cursor phase says which list it continues.
+        /// resources; the cursor phase says which list it continues. Retired services only with <c>retired=true</c>.
         /// </summary>
-        private static async Task<IResult> ListResourcesAsync(Guid tenantId, string? type, int? limit, string? cursor,
+        private static async Task<IResult> ListResourcesAsync(Guid tenantId, string? type, int? limit, string? cursor, bool? retired,
             PlatformDbContext db, CancellationToken ct)
         {
             if (Cursor.Validate(limit, cursor, out var take, out var after) is { } invalid)
@@ -186,13 +198,17 @@ namespace Juice.Observability.Api.Endpoints
             if (servicesPhase && (type is null || type == ServiceType))
             {
                 var services = db.Services.AsNoTracking().Where(s => s.TenantId == tenantId);
+                if (retired != true)
+                {
+                    services = services.Where(s => s.RetiredAt == null);
+                }
                 if (after is not null)
                 {
                     services = services.Where(s => s.Id > after.After);
                 }
                 var rows = await services.OrderBy(s => s.Id).Take(take + 1)
                     .Select(s => new ResourceSummaryDto(s.Id, ServiceType, s.Namespace == "" ? s.Name : s.Namespace + "/" + s.Name,
-                        s.Name, s.FirstSeen, s.LastSeen))
+                        s.Name, s.FirstSeen, s.LastSeen, s.RetiredAt, s.SignalPacks))
                     .ToListAsync(ct);
                 if (rows.Count > take)
                 {
@@ -237,7 +253,7 @@ namespace Juice.Observability.Api.Endpoints
                 return Results.Ok(new ResourceDetailDto(service.Id, ServiceType, HealthRunner.Name(service), service.Name,
                     service.FirstSeen, service.LastSeen, service.Namespace, service.Name, service.ApplicationId,
                     new Dictionary<string, string>(), instances.Items, instances.Truncated, await HealthOf(service.Id),
-                    IntegrationLinks.ForService(integrations.Value, service.Name, clock.GetUtcNow())));
+                    IntegrationLinks.ForService(integrations.Value, service.Name, clock.GetUtcNow()), service.RetiredAt, service.SignalPacks));
             }
             var resource = await db.Resources.AsNoTracking().SingleOrDefaultAsync(r => r.TenantId == tenantId && r.Id == resourceId, ct);
             if (resource is null)
@@ -271,7 +287,9 @@ namespace Juice.Observability.Api.Endpoints
         /// </summary>
         private static async Task<IResult> GetTopologyAsync(Guid tenantId, string? environment, PlatformDbContext db, CancellationToken ct)
         {
-            var edges = db.Dependencies.AsNoTracking().Where(d => d.TenantId == tenantId);
+            // Without retired services, and so without the calls to and from them.
+            var edges = db.Dependencies.AsNoTracking().Where(d => d.TenantId == tenantId
+                && !db.Services.Any(s => s.TenantId == tenantId && s.RetiredAt != null && (s.Id == d.SourceServiceId || s.Id == d.TargetServiceId)));
             Guid? environmentId = null;
             if (environment is not null)
             {

@@ -51,6 +51,12 @@ namespace Juice.Observability.Discovery
         /// <summary>Inactive instances older than this are deleted (D3).</summary>
         public TimeSpan InstanceRetention { get; set; } = TimeSpan.FromDays(30);
 
+        /// <summary>
+        /// A service without telemetry for this long, up to what discovery has read, is retired (<see cref="Data.Service.RetiredAt"/>): no
+        /// longer evaluated or listed by default, its history kept. Telemetry seen later brings it back. Zero never retires.
+        /// </summary>
+        public TimeSpan ServiceRetireAfter { get; set; } = TimeSpan.FromDays(14);
+
         /// <summary>Renamed services: telemetry under <c>From</c> is recorded on <c>To</c> (D3).</summary>
         public List<ServiceAlias> Aliases { get; set; } = [];
     }
