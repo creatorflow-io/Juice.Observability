@@ -1,5 +1,6 @@
 import { Routes } from '@angular/router';
 import { Menus } from '@juice-js/core';
+import { APPROVALS_MENU_ID } from './core/approval-count';
 import { normalizeBasePath } from './core/options';
 
 function page(path: string, title: string, load: Routes[number]['loadComponent']): Routes[number] {
@@ -42,8 +43,8 @@ export const OBSERVABILITY_ROUTES: Routes = [
  * The side menu entries (juice-layout), linking under `basePath`. The pages an investigation starts from sit at the top
  * with a `shortcut` for the shell's go-to keys; the rest are grouped (Explore, Automation, Configure).
  *
- * A group links to its first page and keeps its pages' own links (`replaceChildRouterLink: false`): juice-layout 2.1
- * only opens and closes the group on a click (it has no page of its own), 2.0.2 opens that page.
+ * A group links to its first page and keeps its pages' own links (`replaceChildRouterLink: false`): juice-layout only
+ * opens and closes the group on a click (it has no page of its own).
  * Group ids carry an `observability-` prefix, as the host's menu sits beside them.
  */
 export function observabilityMenus(basePath = '/', order = 1): Menus {
@@ -68,7 +69,7 @@ export function observabilityMenus(basePath = '/', order = 1): Menus {
     ]),
     group('observability-automation', 'Automation', 'precision_manufacturing', [
       { id: 'agents', label: 'Agents', icon: 'smart_toy', routerLink: link('agents') },
-      { id: 'approvals', label: 'Approvals', icon: 'approval', routerLink: link('approvals') },
+      { id: APPROVALS_MENU_ID, label: 'Approvals', icon: 'approval', routerLink: link('approvals') },
     ]),
     group('observability-configure', 'Configure', 'tune', [
       { id: 'rules', label: 'Rules', icon: 'rule', routerLink: link('rules') },
