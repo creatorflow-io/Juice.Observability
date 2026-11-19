@@ -12,7 +12,9 @@ namespace Juice.Observability.Signals
         public const string Name = "juice";
 
         /// <summary>The contract version: changes when a name below changes or one is added or removed.</summary>
-        public const int Version = 1;
+        /// <para>2: the delivery counters are read as <c>juice.delivery.*</c> (Juice 10.13.1), and as the unprefixed names from a service that
+        /// sends only those.</para>
+        public const int Version = 2;
 
         // ─── metrics (cumulative sums in otel_metrics_sum) ───
 
@@ -22,8 +24,15 @@ namespace Juice.Observability.Signals
         /// <summary>Juice.Messaging: messages consumed, with <see cref="DispatchResult"/>.</summary>
         public const string MessagesConsumed = "juice.messaging.consumed";
 
-        /// <summary>Juice.Messaging.Outbox.Delivery: delivery attempts, and those that failed.</summary>
-        public const string DeliveryAttempts = "delivery_attempt_total", DeliveryFailures = "delivery_failure_total";
+        /// <summary>Juice.Messaging: delivery attempts, and those that failed, for outbox delivery and the local routes (Juice 10.13.1).</summary>
+        public const string DeliveryAttempts = "juice.delivery.attempts", DeliveryFailures = "juice.delivery.failures";
+
+        /// <summary>
+        /// The same counts under the names Juice recorded before 10.13.1, and still records on its <c>delivery.metrics</c> meter. Read only from a
+        /// service that doesn't send <see cref="DeliveryAttempts"/>, so one that sends both isn't counted twice; never used to tell a Juice service,
+        /// since another library may export the same names.
+        /// </summary>
+        public const string LegacyDeliveryAttempts = "delivery_attempt_total", LegacyDeliveryFailures = "delivery_failure_total";
 
         // ─── attributes and spans ───
 
@@ -55,7 +64,7 @@ namespace Juice.Observability.Signals
         public static string DetectedIn(string table) => table switch
         {
             "otel_traces" => $"ScopeName = '{Scope}'",
-            "otel_metrics_sum" => $"MetricName IN ('{MediatorRequests}', '{MediatorErrors}', '{MessagesConsumed}')",
+            "otel_metrics_sum" => $"MetricName IN ('{MediatorRequests}', '{MediatorErrors}', '{MessagesConsumed}', '{DeliveryAttempts}', '{DeliveryFailures}')",
             _ => "false",
         };
 
@@ -71,7 +80,7 @@ namespace Juice.Observability.Signals
         internal static SignalPackDto Describe(bool enabled) => new(Name, Version, enabled,
             [.. RuleTemplates.Select(t => t.ToString()).Order(StringComparer.Ordinal)],
             [OutboxBacklogFeature, FailedDispatchSloFeature],
-            [MediatorRequests, MediatorErrors, MessagesConsumed, DeliveryAttempts, DeliveryFailures],
+            [MediatorRequests, MediatorErrors, MessagesConsumed, DeliveryAttempts, DeliveryFailures, LegacyDeliveryAttempts, LegacyDeliveryFailures],
             [DispatchResult, DeliveryOutcome],
             [Scope]);
     }

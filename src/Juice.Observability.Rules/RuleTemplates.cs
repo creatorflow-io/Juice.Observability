@@ -75,8 +75,9 @@ namespace Juice.Observability.Rules
         // series whose only point may already be 1. So the increase is measured from the series' last value before the
         // window, or from zero when it has none. A series without a point in the window is left out, so a service that
         // stopped reporting has no data rather than a zero; one that reports without errors has a zero.
+        // failed and total are aggregates over the series' increase (sumIf(increase, ...)).
         private static string CounterIncrease(string failed, string total, string metrics) => $"""
-            SELECT ns, svc, env, sumIf(increase, {failed}) AS failed, sumIf(increase, {total}) AS total
+            SELECT ns, svc, env, {failed} AS failed, {total} AS total
             FROM (
                 SELECT {ServiceKeys}, MetricName, Attributes, StartTimeUnix,
                        greatest(maxIf(Value, TimeUnix >= {From}) - maxIf(Value, TimeUnix < {From}), 0) AS increase
@@ -91,16 +92,21 @@ namespace Juice.Observability.Rules
             """;
 
         // The Juice signal pack's templates (JuiceSignals).
+        // A service on Juice 10.13.1 or later sends juice.delivery.*, and the old names too when it collects delivery.metrics: the old names
+        // are read only from a service (in an environment) that sends none of the new ones.
+        private static string Delivery(string metric, string legacy)
+            => $"if(countIf(MetricName IN ('{JuiceSignals.DeliveryAttempts}', '{JuiceSignals.DeliveryFailures}')) > 0, sumIf(increase, MetricName = '{metric}'), sumIf(increase, MetricName = '{legacy}'))";
+
         private static readonly string DeliveryFailureRate = CounterIncrease(
-            $"MetricName = '{JuiceSignals.DeliveryFailures}'", $"MetricName = '{JuiceSignals.DeliveryAttempts}'",
-            $"'{JuiceSignals.DeliveryFailures}', '{JuiceSignals.DeliveryAttempts}'");
+            Delivery(JuiceSignals.DeliveryFailures, JuiceSignals.LegacyDeliveryFailures), Delivery(JuiceSignals.DeliveryAttempts, JuiceSignals.LegacyDeliveryAttempts),
+            $"'{JuiceSignals.DeliveryFailures}', '{JuiceSignals.DeliveryAttempts}', '{JuiceSignals.LegacyDeliveryFailures}', '{JuiceSignals.LegacyDeliveryAttempts}'");
 
         private static readonly string MediatorErrors = CounterIncrease(
-            $"MetricName = '{JuiceSignals.MediatorErrors}'", $"MetricName = '{JuiceSignals.MediatorRequests}'",
+            $"sumIf(increase, MetricName = '{JuiceSignals.MediatorErrors}')", $"sumIf(increase, MetricName = '{JuiceSignals.MediatorRequests}')",
             $"'{JuiceSignals.MediatorErrors}', '{JuiceSignals.MediatorRequests}'");
 
         private static readonly string ConsumerFailures = CounterIncrease(
-            $"Attributes['{JuiceSignals.DispatchResult}'] = '{JuiceSignals.DispatchFailure}'", "1", $"'{JuiceSignals.MessagesConsumed}'");
+            $"sumIf(increase, Attributes['{JuiceSignals.DispatchResult}'] = '{JuiceSignals.DispatchFailure}')", "sum(increase)", $"'{JuiceSignals.MessagesConsumed}'");
 
         /// <summary>
         /// What the rule's template measures now. A template whose signal pack is off observes nothing, so a rule made before the pack was

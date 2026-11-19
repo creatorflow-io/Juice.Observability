@@ -70,7 +70,7 @@ namespace Juice.Observability.Tests
             var src = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src"));
             Assert.True(Directory.Exists(src), src);
             var names = new[] { JuiceSignals.MediatorRequests, JuiceSignals.MediatorErrors, JuiceSignals.MessagesConsumed, JuiceSignals.DeliveryAttempts,
-                JuiceSignals.DeliveryFailures, JuiceSignals.DispatchResult, JuiceSignals.DeliveryOutcome, $"ScopeName = '{JuiceSignals.Scope}'" };
+                JuiceSignals.DeliveryFailures, JuiceSignals.LegacyDeliveryAttempts, JuiceSignals.LegacyDeliveryFailures, JuiceSignals.DispatchResult, JuiceSignals.DeliveryOutcome, $"ScopeName = '{JuiceSignals.Scope}'" };
             var outside = Directory.EnumerateFiles(src, "*.cs", SearchOption.AllDirectories)
                 .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}") && !f.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}"))
                 .Where(f => !f.Contains("Juice.Observability.Signals"))
@@ -90,7 +90,7 @@ namespace Juice.Observability.Tests
                 var (viewer, _, _, _) = await Caller.AllAsync(client, database);
                 var packs = await Caller.JsonAsync(await viewer.GetAsync("/api/v1/signal-packs"));
                 var juice = Assert.Single(packs.EnumerateArray());
-                Assert.Equal(("juice", 1, true), (juice.GetProperty("name").GetString(), juice.GetProperty("version").GetInt32(), juice.GetProperty("enabled").GetBoolean()));
+                Assert.Equal(("juice", 2, true), (juice.GetProperty("name").GetString(), juice.GetProperty("version").GetInt32(), juice.GetProperty("enabled").GetBoolean()));
                 Assert.Equal(["ConsumerFailures", "DeliveryFailureRate", "MediatorErrors"], juice.GetProperty("ruleTemplates").EnumerateArray().Select(t => t.GetString()));
                 Assert.Contains("juice.mediator.errors", juice.GetProperty("metrics").EnumerateArray().Select(m => m.GetString()));
             }

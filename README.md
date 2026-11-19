@@ -245,7 +245,7 @@ loaded at startup:
 | `ErrorRate` | failed / all server and consumer spans |
 | `LatencyP95` | p95 duration of server and consumer spans, ms |
 | `ThroughputAbsent` | requests in the window, for services with traffic in the hour before (fires at or below) |
-| `DeliveryFailureRate` | increase of `delivery_failure_total` / `delivery_attempt_total` |
+| `DeliveryFailureRate` | increase of `juice.delivery.failures` / `juice.delivery.attempts`; from a service on Juice before 10.13.1, of `delivery_failure_total` / `delivery_attempt_total` |
 | `HostMemory` | used / total memory from host metrics |
 | `MediatorErrors` | errors in the window: increase of `juice.mediator.errors` |
 | `ConsumerFailures` | failed messages in the window: increase of `juice.messaging.consumed` with `juice.dispatch.result = failure` |
