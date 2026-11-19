@@ -1998,6 +1998,10 @@ namespace Juice.Observability.Data.Migrations
                         .HasColumnType("character varying(256)")
                         .HasColumnName("namespace");
 
+                    b.Property<DateTimeOffset?>("RetiredAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("retired_at");
+
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uuid")
                         .HasColumnName("tenant_id");

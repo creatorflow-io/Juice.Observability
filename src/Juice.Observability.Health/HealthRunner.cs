@@ -186,12 +186,17 @@ namespace Juice.Observability.Health
             // while this runs, and separate reads could see the instance without its service.
             var snapshot = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead, cancellationToken);
             var environments = await db.Environments.AsNoTracking().Where(e => e.TenantId == tenant.Id).ToDictionaryAsync(e => e.Id, cancellationToken);
-            var services = await db.Services.AsNoTracking().Where(s => s.TenantId == tenant.Id).ToDictionaryAsync(s => s.Id, cancellationToken);
-            var instances = await db.Instances.AsNoTracking()
-                .Where(i => i.TenantId == tenant.Id && i.State == InstanceState.Active).ToListAsync(cancellationToken);
+            // Retired services aren't evaluated (Discovery:ServiceRetireAfter): their states are removed below, their history kept.
+            var all = await db.Services.AsNoTracking().Where(s => s.TenantId == tenant.Id).ToListAsync(cancellationToken);
+            var services = all.Where(s => s.RetiredAt is null).ToDictionary(s => s.Id);
+            var retired = all.Where(s => s.RetiredAt is not null).Select(s => s.Id).ToList();
+            var instances = (await db.Instances.AsNoTracking()
+                .Where(i => i.TenantId == tenant.Id && i.State == InstanceState.Active).ToListAsync(cancellationToken))
+                .Where(i => services.ContainsKey(i.ServiceId)).ToList();
             var hosts = await db.Resources.AsNoTracking().Where(r => r.TenantId == tenant.Id && r.Type == ResourceType.Host).ToListAsync(cancellationToken);
-            var seenIn = await db.ServiceEnvironments.AsNoTracking().Where(x => x.TenantId == tenant.Id)
-                .ToDictionaryAsync(x => (Service: x.ServiceId, Environment: x.EnvironmentId), x => x.LastSeen, cancellationToken);
+            var seenIn = (await db.ServiceEnvironments.AsNoTracking().Where(x => x.TenantId == tenant.Id).ToListAsync(cancellationToken))
+                .Where(x => services.ContainsKey(x.ServiceId))
+                .ToDictionary(x => (Service: x.ServiceId, Environment: x.EnvironmentId), x => x.LastSeen);
             // Calls seen within the grace: an older edge may be a call the service no longer makes.
             var callsSince = now - policy.FreshnessGrace;
             var calls = (await db.Dependencies.AsNoTracking()
@@ -276,12 +281,23 @@ namespace Juice.Observability.Health
                     hostSeen.TryGetValue(host.Key, out var seen) ? seen : null, memoryByHost.GetValueOrDefault(host.Key))));
             }
 
-            var transitions = await PersistAsync(db, tenant.Id, results, version, now, from, to, cancellationToken);
+            // The current states of what is retired: the services, their instances, and applications with no service left in use.
+            var liveApplications = services.Values.Select(s => s.ApplicationId).ToHashSet();
+            var gone = retired.Select(id => (HealthSubject.Service, id))
+                .Concat(all.Where(s => s.ApplicationId is { } a && !liveApplications.Contains(a)).Select(s => (HealthSubject.Application, s.ApplicationId!.Value)))
+                .ToHashSet();
+            if (retired.Count > 0)
+            {
+                gone.UnionWith((await db.Instances.AsNoTracking().Where(i => i.TenantId == tenant.Id && retired.Contains(i.ServiceId))
+                    .Select(i => i.Id).ToListAsync(cancellationToken)).Select(id => (HealthSubject.Instance, id)));
+            }
+
+            var transitions = await PersistAsync(db, tenant.Id, results, gone, version, now, from, to, cancellationToken);
             return new HealthRunResult(to, results.Count, transitions);
         }
 
         private async Task<int> PersistAsync(PlatformDbContext db, Guid tenantId,
-            List<(HealthSubject Type, Guid Id, Guid? Environment, Assessment Assessment)> results, string version,
+            List<(HealthSubject Type, Guid Id, Guid? Environment, Assessment Assessment)> results, HashSet<(HealthSubject, Guid)> gone, string version,
             DateTimeOffset now, DateTimeOffset from, DateTimeOffset to, CancellationToken cancellationToken)
         {
             await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
@@ -335,6 +351,8 @@ namespace Juice.Observability.Health
             var withEnvironment = results.Where(r => r.Type == HealthSubject.Service && r.Environment is not null).Select(r => r.Id).ToHashSet();
             db.HealthSnapshots.RemoveRange(snapshots.Values.Where(h =>
                 h.SubjectType == HealthSubject.Service && h.EnvironmentId is null && withEnvironment.Contains(h.SubjectId)));
+            // Retired subjects have no current state; their transitions stay as history.
+            db.HealthSnapshots.RemoveRange(snapshots.Values.Where(h => gone.Contains((h.SubjectType, h.SubjectId))));
             await db.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             if (written > 0)

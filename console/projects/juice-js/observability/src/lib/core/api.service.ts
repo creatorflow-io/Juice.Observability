@@ -70,7 +70,10 @@ export class ApiService {
 
   environments() { return this.get<Page<DeploymentEnvironment>>('/environments'); }
   applications() { return this.get<Page<Application>>('/applications', { limit: 200 }); }
-  resources(type?: string) { return this.all<ResourceSummary>('/resources', { type }); }
+  /** With `retired`, retired services too (the API leaves them out by default). */
+  resources(type?: string, retired = false) { return this.all<ResourceSummary>('/resources', { type, retired: retired ? 'true' : null }); }
+  /** Forgets a retired service and what discovery and health keep about it (admin). */
+  forgetService(id: string) { return this.send<void>('DELETE', `/resources/${id}`); }
   resource(id: string) { return this.get<ResourceDetail>(`/resources/${id}`); }
   health(query: Query) { return this.all<Health>('/health', query); }
   topology(environment?: string | null) { return this.get<Topology>('/topology', { environment }); }

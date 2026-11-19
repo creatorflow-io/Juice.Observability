@@ -4,7 +4,7 @@ Turns telemetry from Juice services into a resource model, health, rules, alerts
 
 | Path | Contents |
 |---|---|
-| [`docs/`](docs) | [Architecture diagram](docs/architecture.md), [requirements and architecture](docs/observability-platform-requirements.md), [phased roadmap](docs/observability-platform-roadmap.md), [Phase 0 decisions](docs/phase-0-decisions.md), [deployment guide](docs/deployment.md), [runbook](docs/runbook.md), [load testing guide](docs/load-testing.md), [MVP acceptance](docs/mvp-acceptance.md), [Juice 10.8 telemetry baseline](docs/juice-opentelemetry-10.8-current-state.md) |
+| [`docs/`](docs) | [Architecture diagram](docs/architecture.md), [requirements and architecture](docs/observability-platform-requirements.md), [phased roadmap](docs/observability-platform-roadmap.md), [Phase 0 decisions](docs/phase-0-decisions.md), [deployment guide](docs/deployment.md), [runbook](docs/runbook.md), [load testing guide](docs/load-testing.md), [MVP acceptance](docs/mvp-acceptance.md), [Juice 10.8 telemetry baseline](docs/juice-opentelemetry-10.8-current-state.md), [telemetry requirements for any OpenTelemetry service](docs/telemetry-requirements.md) |
 | [`console/`](console) | **Juice Console**, the product UI (Angular 22, `juice-layout`): services, operations, traces, logs, metrics, topology, resources, alerts, rules. The pages are the `@juice-js/observability` library (`console/projects`); served by the API image; reads only the Juice API |
 | [`deploy/local/`](deploy/local/README.md) | Local single-tenant stack: OpenTelemetry Collector, ClickHouse, PostgreSQL, Keycloak, optional Grafana, with integration and load tests |
 | `src/Juice.Observability.Data` | PostgreSQL domain model (EF Core) and migrations |
@@ -98,8 +98,9 @@ page's `nextCursor`).
 |---|---|
 | `GET /api/v1/tenants` | the caller's tenant (from its `platform_tenant` claim) |
 | `GET /api/v1/tenants/{tenantId}/applications` | applications with their service counts |
-| `GET /api/v1/tenants/{tenantId}/resources?type=` | services first, then hosts, containers, pods, messaging destinations and databases |
-| `GET /api/v1/tenants/{tenantId}/resources/{id}` | a service with its instances, or a resource (a host lists the instances on it) |
+| `GET /api/v1/tenants/{tenantId}/resources?type=&retired=` | services first, then hosts, containers, pods, messaging destinations and databases; retired services only with `retired=true`, with their `retiredAt` |
+| `GET /api/v1/tenants/{tenantId}/resources/{id}` | a service with its instances (and `retiredAt` once retired), or a resource (a host lists the instances on it) |
+| `DELETE /api/v1/tenants/{tenantId}/resources/{id}` | forget a retired service (admin, audited): it goes with its instances, dependencies and health, and its application if that has no other service. 409 for a service in use, one with open alerts, or an infrastructure resource |
 | `GET /api/v1/tenants/{tenantId}/topology?environment=` | services and resources with the dependencies between them, each with its evidence and confidence; with an environment, each node's health |
 | `GET /api/v1/tenants/{tenantId}/health?subjectType=&environment=&state=` | current health with reasons, policy version, evidence window and `stale` |
 | `GET /api/v1/tenants/{tenantId}/rules` | the rules, each with who owns it (`managedBy`) and its `etag` |
@@ -168,6 +169,11 @@ plus the overlap is still missed.
 - **Services** are keyed by namespace and name, across environments. Each namespace is one application.
 - **Instances** are keyed by `service.instance.id`, or by host and process id (marked derived). An instance goes
   inactive after 15 minutes without telemetry and is deleted 30 days later.
+- **Retired services.** A service without telemetry for `Discovery:ServiceRetireAfter` (14 days; `0` never), counted up to
+  what discovery has read, is retired: health stops evaluating it and drops its current state (transitions stay), and the
+  inventory, application counts and topology leave it out unless asked (`retired=true`, the Console's *Show retired*). Its
+  detail, alerts, incidents and timeline stay. Telemetry newer than any it had brings it back. An admin can then forget it
+  (`DELETE …/resources/{id}`, the service page's *Forget service*); telemetry seen after that makes it a new service.
 - **Resources:**
 
   | Resource | Key |

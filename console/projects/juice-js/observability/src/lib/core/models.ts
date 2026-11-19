@@ -7,8 +7,10 @@ export interface TelemetryPage<T> { items: T[]; truncated: boolean; nextCursor?:
 /** `canOperate`: the user is an operator or admin, who sees the platform panel (Phase 11 R8). */
 export interface Tenant { id: string; key: string; displayName: string; canOperate?: boolean; }
 export interface DeploymentEnvironment { id: string; key: string; type: string; firstSeen: string; lastSeen: string; }
-export interface Application { id: string; key: string; displayName: string; services: number; firstSeen: string; lastSeen: string; }
-export interface ResourceSummary { id: string; type: string; key: string; displayName: string; firstSeen: string; lastSeen: string; }
+/** `services`: in use; `retiredServices`: retired after Discovery:ServiceRetireAfter without telemetry. */
+export interface Application { id: string; key: string; displayName: string; services: number; retiredServices: number; firstSeen: string; lastSeen: string; }
+/** `retiredAt`: when discovery retired the service (null in use, and for infrastructure). */
+export interface ResourceSummary { id: string; type: string; key: string; displayName: string; firstSeen: string; lastSeen: string; retiredAt: string | null; }
 
 export type HealthState = 'Healthy' | 'Degraded' | 'Unhealthy' | 'Critical' | 'Offline' | 'Unknown';
 
@@ -28,7 +30,7 @@ export interface IntegrationLink { integration: string; title: string; url: stri
 export interface ResourceDetail {
   id: string; type: string; key: string; displayName: string; firstSeen: string; lastSeen: string;
   namespace: string | null; name: string | null; applicationId: string | null; attributes: Record<string, string>;
-  instances: Instance[]; instancesTruncated: boolean; health: Health[]; links: IntegrationLink[];
+  instances: Instance[]; instancesTruncated: boolean; health: Health[]; links: IntegrationLink[]; retiredAt: string | null;
 }
 
 export interface TopologyNode { id: string; type: string; displayName: string; health: HealthState | null; }

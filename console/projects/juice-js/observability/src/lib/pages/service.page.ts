@@ -1,5 +1,5 @@
 import { LinkPipe, ObservabilityLinks } from '../core/options';
-import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, input, signal } from '@angular/core';
 import { apiResource } from '../shared/resource';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatTabsModule } from '@angular/material/tabs';
@@ -34,6 +34,21 @@ const TABS = ['overview', 'operations', 'dependencies', 'traces', 'logs', 'metri
     @if (service.error()) { <p class="jc-error">{{ error() }}</p> }
 
     @if (service.value(); as s) {
+      @if (s.retiredAt) {
+        <div class="jc-notice" data-testid="service-retired-notice">
+          <p><strong>Retired {{ s.retiredAt | ago }}</strong>, with no telemetry since {{ s.lastSeen | ago }}. It isn't evaluated, and the
+            Services list and topology leave it out unless asked. Telemetry from it brings it back.</p>
+          <p class="jc-small">Forgetting it removes the service with its instances, dependencies and health history. Alerts, incidents and the
+            audit log keep their records; telemetry seen later makes it a new service.</p>
+          @if (confirmingForget()) {
+            <button mat-flat-button color="warn" type="button" data-testid="forget-confirm" [disabled]="forgetting()" (click)="forget()">Forget {{ s.key }}</button>
+            <button mat-button type="button" (click)="confirmingForget.set(false)">Cancel</button>
+          } @else {
+            <button mat-stroked-button type="button" data-testid="forget" (click)="forget()">Forget service</button>
+          }
+          @if (forgetError()) { <span class="jc-error" data-testid="forget-error">{{ forgetError() }}</span> }
+        </div>
+      }
       <div class="jc-health-strip">
         @for (h of health(); track h.environment) {
           <div class="jc-card jc-health-card" [class.jc-selected]="h.environment === ctx.environment()">
@@ -52,7 +67,7 @@ const TABS = ['overview', 'operations', 'dependencies', 'traces', 'logs', 'metri
               <button mat-button (click)="ctx.set({ env: h.environment })">Investigate {{ h.environment }}</button>
             }
           </div>
-        } @empty { <p class="jc-muted">No health evaluated yet: no data.</p> }
+        } @empty { <p class="jc-muted">{{ s.retiredAt ? 'Not evaluated while retired.' : 'No health evaluated yet: no data.' }}</p> }
       </div>
 
       <p><a mat-stroked-button [routerLink]="['timeline'] | jcLink" [queryParams]="ctx.keep({ service: id() })" data-testid="service-timeline">Timeline</a></p>
@@ -195,6 +210,9 @@ export class ServicePage {
   });
 
   protected readonly error = computed(() => problemText(this.service.error()));
+  protected readonly confirmingForget = signal(false);
+  protected readonly forgetting = signal(false);
+  protected readonly forgetError = signal('');
   protected readonly health = computed(() => (this.service.value()?.health ?? []).filter(h => h.subjectType === 'service'));
   protected readonly instances = computed(() => {
     const env = this.ctx.environment();
@@ -242,5 +260,20 @@ export class ServicePage {
 
   openTab(index: number) {
     void this.router.navigate([], { queryParams: { tab: TABS[index] }, queryParamsHandling: 'merge' });
+  }
+
+  /** Forgets a retired service (admin), after a second click to confirm, then back to the list. */
+  protected forget() {
+    if (!this.confirmingForget()) { this.confirmingForget.set(true); return; }
+    this.forgetting.set(true);
+    this.forgetError.set('');
+    this.api.forgetService(this.id()).subscribe({
+      next: () => { this.forgetting.set(false); void this.router.navigate(this.links.to('services'), { queryParams: this.ctx.keep() }); },
+      error: e => {
+        this.forgetting.set(false);
+        this.confirmingForget.set(false);
+        this.forgetError.set((e as { status?: number }).status === 403 ? 'Forgetting a service needs the admin role.' : problemText(e));
+      },
+    });
   }
 }
