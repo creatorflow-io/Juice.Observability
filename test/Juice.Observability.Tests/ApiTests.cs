@@ -260,6 +260,49 @@ namespace Juice.Observability.Tests
             Assert.Contains("belongs to tenant 'other-tenant'", error.ToString());
         }
 
+        /// <summary>The tenant pattern: a deployment named before it moves to its Id; a name is no tenant Id.</summary>
+        [Fact]
+        public async Task Startup_renames_a_tenant_from_its_old_name_and_refuses_a_name_as_the_tenant_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var named = await LocalStack.CreateDatabaseAsync(provisionTenant: false);
+            Guid id;
+            await using (var db = named.Context())
+            {
+                var tenant = new PlatformTenant { Key = "old-site", DisplayName = "Old site" };
+                db.Tenants.Add(tenant);
+                await db.SaveChangesAsync();
+                id = tenant.Id;
+            }
+            await using (var factory = new ApiFactory(named, settings: new Dictionary<string, string> { ["Platform:PreviousTenantKey"] = "old-site" }))
+            {
+                factory.CreateClient().Dispose();
+            }
+            await using (var db = named.Context())
+            {
+                var tenant = await db.Tenants.SingleAsync();
+                Assert.Equal((id, LocalStack.TenantKey), (tenant.Id, tenant.Key));
+                var audit = await db.AuditRecords.SingleAsync(a => a.Operation == "tenant.rekey");
+                Assert.Equal(("old-site", LocalStack.TenantKey), (audit.Metadata["from"], audit.Metadata["to"]));
+            }
+
+            await using var empty = await LocalStack.CreateDatabaseAsync(provisionTenant: false);
+            await using var byName = new ApiFactory(empty, settings: new Dictionary<string, string> { ["Platform:TenantKey"] = "local-dev" });
+            Assert.Contains("must be the tenant's Id", Assert.ThrowsAny<Exception>(() => byName.CreateClient()).ToString());
+        }
+
+        [Fact]
+        public void Commands_are_signed_with_the_old_tenant_only_for_agents_that_still_hold_it_or_never_say()
+        {
+            var moving = new Juice.Observability.Discovery.PlatformOptions { TenantKey = LocalStack.TenantKey, PreviousTenantKey = "old-site" };
+            Assert.Equal("old-site", Juice.Observability.Api.Endpoints.AgentEndpoints.TenantFor(moving, null));
+            Assert.Equal("old-site", Juice.Observability.Api.Endpoints.AgentEndpoints.TenantFor(moving, "old-site"));
+            Assert.Equal(LocalStack.TenantKey, Juice.Observability.Api.Endpoints.AgentEndpoints.TenantFor(moving, LocalStack.TenantKey));
+            var settled = new Juice.Observability.Discovery.PlatformOptions { TenantKey = LocalStack.TenantKey };
+            Assert.Equal(LocalStack.TenantKey, Juice.Observability.Api.Endpoints.AgentEndpoints.TenantFor(settled, null));
+            Assert.Equal(LocalStack.TenantKey, Juice.Observability.Api.Endpoints.AgentEndpoints.TenantFor(settled, "old-site"));
+        }
+
         // ─── helpers ──────────────────────────────────────────────────────────
 
         internal static CancellationToken Ct => TestContext.Current.CancellationToken;

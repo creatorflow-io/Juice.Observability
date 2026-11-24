@@ -39,7 +39,7 @@ stamped="otel.otel_traces otel.otel_logs otel.otel_metrics_gauge otel.otel_metri
     otel.otel_metrics_exponential_histogram otel.otel_metrics_summary"
 
 # Grafana's queries don't filter by tenant, and one ClickHouse can hold more than one tenant's telemetry (the local stack's test
-# Collector writes local-test beside it). Each table that carries the Collector's tenant stamp gets a policy, so Grafana sees only
+# Collector writes the integration tests' tenant beside it). Each table that carries the Collector's tenant stamp gets a policy, so Grafana sees only
 # this deployment's rows whatever it asks. A policy names its table (a database-wide one would fail on otel_traces_trace_id_ts,
 # which has no ResourceAttributes). That index, the Collector's (trace ID, start, end) table, and its materialized view
 # otel_traces_trace_id_ts_mv stay readable: Grafana's trace view reads a trace's time range from the index. They hold no span

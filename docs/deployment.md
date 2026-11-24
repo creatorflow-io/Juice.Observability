@@ -24,7 +24,8 @@ tests/verify.sh                                     # ingestion, tenant stamping
 docker compose --profile test stop otel-collector-test
 ```
 
-`init.sh` asks for the tenant id, or takes it from `JUICE_PLATFORM_TENANT_ID`. Set `PUBLIC_HOST` before it runs, or run
+`init.sh` asks for the tenant Id, or takes it from `JUICE_PLATFORM_TENANT_ID`: the tenant's Id from juice-tenants, a GUID (the tenant
+pattern, juice-docs decision record). Locally it defaults to the local stacks' tenant, `0193f0aa-0000-7000-8000-0000000000a1`. Set `PUBLIC_HOST` before it runs, or run
 `scripts/init.sh --reissue-cert` after changing it, so the Collector certificate names the address hosts send to.
 `tests/verify.sh` sends through the test Collector, so its records stay out of the deployment's tenant.
 
@@ -35,7 +36,7 @@ The API applies database migrations on start (`Database:Migrate`). It creates th
 
 | What | Where | Notes |
 |---|---|---|
-| Tenant | `.env` `JUICE_PLATFORM_TENANT_ID` | stamped by the Collector, provisioned by the API; never changes after install |
+| Tenant | `.env` `JUICE_PLATFORM_TENANT_ID` | the tenant's Id (a GUID); stamped by the Collector, provisioned by the API; a deployment named before the tenant pattern moves to its Id once (below) |
 | OTLP clients | `secrets/otlp-tokens`, one token per line | restart the Collector after a change (runbook) |
 | Rules | `rules.json` (`Rules:File`), or the API and Console | validated at start; an invalid rule stops the API; every change audited |
 | Channels and allowlist | `webhooks.json` (`Webhooks:File`), or the API and Console | secrets as `env:NAME` or `file:/path`, never in the file |
@@ -172,6 +173,39 @@ an audit record for each. What the API creates lives in the platform database in
   `occurredAt`, `tenant`, and `request`: `id`, `agent` (`id`, `hostname`), `action`, `parameters`, `risk`, `policy`, `reason`,
   `requestedBy`, `requestedAt`, `expiresAt`, `state`, `decidedBy`, `decidedAt` and `comment`. Slack, Teams and email get it written for
   people, with a link to the Console's Approvals page when `Webhooks:ConsoleUrl` is set.
+
+## Moving to a tenant Id
+
+A deployment installed before the tenant pattern names its tenant (`local-dev`, say). The pattern makes the tenant its Id from juice-tenants,
+a GUID that doesn't depend on the name (owner, 24 November 2026). The API refuses a name as `Platform:TenantKey`. To move, once per
+deployment:
+
+1. **Back up:** `scripts/backup.sh` and `scripts/backup-telemetry.sh`.
+2. **In `.env`:** set `JUICE_PLATFORM_PREVIOUS_TENANT_ID` to the old name, and `JUICE_PLATFORM_TENANT_ID` to the tenant's Id.
+3. **Keycloak:** the platform's clients issue `platform_tenant` from `JUICE_PLATFORM_TENANT_ID`, so update the shared Keycloak's realm the
+   same way. A token still naming the old tenant gets 403 until then.
+4. **Restart:** `docker compose up -d`, every API replica together. A replica still running with the old name finds no tenant once the
+   rename lands.
+   - The Collector stamps the Id from now on, and Grafana's row policy follows it.
+   - The API renames the tenant at start. It is the same row, so every rule, SLO, alert and audit record stays, and the rename is recorded
+     as `tenant.rekey`.
+5. **Rewrite the stamped telemetry, right after the restart:** `scripts/rekey-tenant.sh <old name> <Id>` rewrites the telemetry stamped
+   with the old name, on every table that carries the stamp.
+   - Until it has run, the workers (rules, health, discovery) see no history under the Id: rules may fire on missing data, and services
+     may look silent. On a large deployment, turn the workers off until it's done.
+   - A second run finds nothing to do.
+6. **Agents:**
+   - An agent that says it holds the old tenant is told the new one on its next poll. The message is signed for that agent by a command key
+     it trusts, and the agent checks that signature. An agent adopts a new tenant only from a name, so an Id never moves again.
+   - Until an agent has adopted the new tenant, its commands are signed with the old name, and so are the commands of agents too old to
+     say which tenant they hold. A command signed before the change still runs after it.
+   - Adopting the Id is one-way: an agent older than this version can't read its identity afterwards.
+   - **Before removing `JUICE_PLATFORM_PREVIOUS_TENANT_ID`**, every active agent must report the Id. Upgrade the ones that report nothing,
+     and wait for any that are offline:
+     `SELECT hostname, reported_tenant FROM agents WHERE status = 'Active' AND reported_tenant IS DISTINCT FROM '<Id>';` lists the ones left.
+     Then remove it and restart. The API warns at start while any are left; set the old name again (the `tenant.rekey` audit record has
+     it) until they catch up.
+7. **Backups taken before the move:** these still carry the old name. Restore one, then run `rekey-tenant.sh` again.
 
 ## Connecting a Juice service
 

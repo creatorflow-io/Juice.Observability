@@ -1264,6 +1264,11 @@ namespace Juice.Observability.Data.Migrations
                         .HasColumnType("character varying(64)")
                         .HasColumnName("previous_certificate_serial");
 
+                    b.Property<string>("ReportedTenant")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("reported_tenant");
+
                     b.Property<Guid?>("ResourceId")
                         .HasColumnType("uuid")
                         .HasColumnName("resource_id");

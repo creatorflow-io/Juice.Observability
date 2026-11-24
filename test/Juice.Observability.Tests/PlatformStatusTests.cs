@@ -481,7 +481,7 @@ namespace Juice.Observability.Tests
         {
             LocalStack.RequireAvailable();
             await using var database = await LocalStack.CreateDatabaseAsync(provisionTenant: false);
-            await using var factory = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string> { ["Platform:TenantKey"] = "another-deployment" });
+            await using var factory = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string> { ["Platform:TenantKey"] = "0193f0aa-0000-7000-8000-0000000000e9" /* another deployment's tenant Id */ });
             using var client = factory.CreateClient();
             using var response = await ApiTests.Get(client, "/api/v1/platform/status", await LocalStack.TokenAsync("erin"));
             Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);

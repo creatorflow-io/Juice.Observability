@@ -284,6 +284,13 @@ namespace Juice.Observability.Agents
             var now = clock.GetUtcNow();
             agent.LastSeenAt = now;
             if (http.Request.Headers[AgentRoutes.VersionHeader].ToString() is { Length: > 0 } version) agent.Version = Clip(version, 64);
+            // The tenant it holds: its commands are signed with it while the deployment moves to a new tenant (AgentEndpoints.TenantFor).
+            // Kept when the header is missing (a version from before it, after a downgrade): what it last said still decides how its commands are signed.
+            var reportedTenant = http.Request.Headers[AgentRoutes.TenantHeader].ToString() is { Length: > 0 } held ? Clip(held, 64) : null;
+            if (reportedTenant is not null)
+            {
+                agent.ReportedTenant = reportedTenant;
+            }
             if (http.Request.Headers[AgentRoutes.HostnameHeader].ToString() is { Length: > 0 } hostname && hostname != agent.Hostname)
             {
                 agent.Hostname = Clip(hostname, 253);
@@ -302,6 +309,12 @@ namespace Juice.Observability.Agents
             if (keys is not null)
             {
                 return Results.Ok(new PollResponse([], keys));
+            }
+            // It holds the deployment's old tenant: the new one, signed, before any command (each is signed with what it holds until it adopts it).
+            var platform = http.RequestServices.GetRequiredService<IOptions<PlatformOptions>>().Value;
+            if (platform.PreviousTenantKey is { Length: > 0 } previous && reportedTenant == previous && previous != platform.TenantKey)
+            {
+                return Results.Ok(new PollResponse([], null, http.RequestServices.GetRequiredService<AgentAuthority>().SignTenant(agent.Id, previous, platform.TenantKey)));
             }
 
             var until = now + TimeSpan.FromSeconds(Math.Clamp(wait ?? 25, 0, 55));

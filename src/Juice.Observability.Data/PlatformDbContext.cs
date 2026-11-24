@@ -375,6 +375,7 @@ namespace Juice.Observability.Data
                 e.Property(x => x.RevokedBy).HasMaxLength(256);
                 e.Property(x => x.RevokeReason).HasMaxLength(500);
                 e.Property(x => x.Actions).HasColumnType("jsonb");
+                e.Property(x => x.ReportedTenant).HasMaxLength(64);
                 e.HasIndex(x => x.CertificateSerial).IsUnique();
                 e.HasIndex(x => new { x.TenantId, x.Status });
                 e.HasOne<Resource>().WithMany().HasForeignKey(x => x.ResourceId).OnDelete(DeleteBehavior.SetNull);

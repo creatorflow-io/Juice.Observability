@@ -136,10 +136,12 @@ namespace Juice.Observability.Agent
                         }
                         await SendAsync(connection.Client, unsent, stoppingToken);
                         actionsReported = actionsReported || await ReportActionsAsync(connection.Client, stoppingToken);
-                        var poll = await connection.Client.PollAsync(options.Value.PollWaitSeconds, Version, Dns.GetHostName(), stoppingToken, identity.CommandKeys.Keys);
+                        var poll = await connection.Client.PollAsync(options.Value.PollWaitSeconds, Version, Dns.GetHostName(), stoppingToken, identity.CommandKeys.Keys,
+                            identity.Tenant);
                         // It reached the platform with its certificate: a version on trial has proved itself.
                         Updater.Confirm();
                         identity = TrustAnnounced(poll.Keys, identity);
+                        identity = AdoptTenant(poll.Tenant, identity);
                         var client = connection.Client;
                         foreach (var command in poll.Commands)
                         {
@@ -215,6 +217,27 @@ namespace Juice.Observability.Agent
             {
                 connection?.Dispose();
             }
+        }
+
+        /// <summary>
+        /// Adopts the deployment's new tenant when the platform announced it, signed by a trusted key, from this agent's own tenant; ignores it
+        /// otherwise. Returns the identity to use from now on.
+        /// </summary>
+        internal AgentIdentity AdoptTenant(SignedTenant? announcement, AgentIdentity identity)
+        {
+            if (announcement is null || announcement.To == identity.Tenant)
+            {
+                return identity;
+            }
+            if (!CommandVerifier.VerifyTenant(announcement, identity))
+            {
+                logger.LogWarning("Ignored a tenant change from {From} to {To}: it isn't signed by a key this agent trusts, or isn't from its tenant",
+                    announcement.From, announcement.To);
+                return identity;
+            }
+            Store.ChangeTenant(announcement.To, clock.GetUtcNow());
+            logger.LogInformation("The deployment's tenant is now {To} (was {From})", announcement.To, announcement.From);
+            return Store.LoadIdentity();
         }
 
         /// <summary>Adds the first announced key that a trusted key signed; ignores the rest. Returns the identity to use from now on.</summary>

@@ -312,6 +312,50 @@ namespace Juice.Observability.Tests
             }
         }
 
+        /// <summary>
+        /// The tenant pattern: the deployment moves from its old name to its Id (Platform:PreviousTenantKey). An agent that holds the old name is told
+        /// the new one, signed, before any command; until it adopts it, its commands name the old one, and they still run after it has.
+        /// </summary>
+        [Fact]
+        public async Task An_agent_holding_the_old_tenant_learns_the_new_one_and_keeps_running_commands_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            using var pki = new AgentPki();
+            await using var host = new AgentHost(database, pki, extra: new Dictionary<string, string> { ["Platform:PreviousTenantKey"] = "old-site" });
+            using var users = host.Users();
+            var (_, @operator, admin, tenant) = await Caller.AllAsync(users, database);
+            var data = TempDirectory();
+            var (store, enrolled) = await EnrollAsync(host, pki, await TokenAsync(admin, tenant), data);
+            // As if enrolled before the move: it holds the old name.
+            store.ChangeTenant("old-site", DateTimeOffset.UtcNow.AddDays(-30));
+            var old = store.LoadIdentity();
+            Assert.Equal("old-site", old.Tenant);
+
+            var before = await IssueAsync(@operator, tenant, enrolled.AgentId, AgentActions.HostSummary, new { });
+            using var client = new PlatformClient(Options(host, pki, TempDirectory()), store.LoadCertificate());
+            var announced = await client.PollAsync(1, "test", "test-host", Ct, old.CommandKeys.Keys, old.Tenant);
+            Assert.Empty(announced.Commands);
+            Assert.Equal(("old-site", LocalStack.TenantKey), (announced.Tenant!.From, announced.Tenant.To));
+
+            var service = new AgentService(Microsoft.Extensions.Options.Options.Create(Options(host, pki, data)),
+                Microsoft.Extensions.Options.Options.Create(Allowlist()), TimeProvider.System, new TestLog<AgentService>());
+            var adopted = service.AdoptTenant(announced.Tenant, old);
+            Assert.Equal(LocalStack.TenantKey, adopted.Tenant);
+
+            // The command issued before it adopted the Id names the old tenant, and still runs.
+            var first = CommandVerifier.Verify(Assert.Single((await client.PollAsync(1, "test", "test-host", Ct, adopted.CommandKeys.Keys, adopted.Tenant)).Commands),
+                adopted, Allowlist(), DateTimeOffset.UtcNow);
+            Assert.Equal((before, (string?)null, "old-site"), (first.CommandId!.Value, first.Rejection, first.Command!.Envelope.Tenant));
+            // It now says it holds the Id: one issued after names the Id.
+            var after = await IssueAsync(@operator, tenant, enrolled.AgentId, AgentActions.HostSummary, new { });
+            var second = CommandVerifier.Verify(Assert.Single((await client.PollAsync(1, "test", "test-host", Ct, adopted.CommandKeys.Keys, adopted.Tenant)).Commands),
+                adopted, Allowlist(), DateTimeOffset.UtcNow);
+            Assert.Equal((after, (string?)null, LocalStack.TenantKey), (second.CommandId!.Value, second.Rejection, second.Command!.Envelope.Tenant));
+            await using var db = database.Context();
+            Assert.Equal(LocalStack.TenantKey, (await db.Agents.SingleAsync(a => a.Id == enrolled.AgentId)).ReportedTenant);
+        }
+
         [Fact]
         public async Task An_agent_gets_only_its_own_commands_and_cant_answer_another_agents_Async()
         {

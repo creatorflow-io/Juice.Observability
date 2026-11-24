@@ -74,8 +74,18 @@ namespace Juice.Observability.Discovery
     {
         public const string Section = "Platform";
 
-        /// <summary>The tenant slug the Collector stamps (<c>JUICE_PLATFORM_TENANT_ID</c>).</summary>
+        /// <summary>
+        /// The deployment's tenant as the Collector stamps it (<c>JUICE_PLATFORM_TENANT_ID</c>): its Id from juice-tenants, a GUID in its standard
+        /// form (the tenant pattern, juice-docs decision record).
+        /// </summary>
         public string TenantKey { get; set; } = "";
+
+        /// <summary>
+        /// The tenant's name from before the tenant pattern (<c>JUICE_PLATFORM_PREVIOUS_TENANT_ID</c>, such as <c>local-dev</c>), while a deployment
+        /// moves to <see cref="TenantKey"/>: the API renames the tenant at start, and agents enrolled with the old name are told the new one
+        /// (signed) and get commands they still accept until they have. Remove it once every agent reports the new tenant.
+        /// </summary>
+        public string? PreviousTenantKey { get; set; }
 
         public string TenantDisplayName { get; set; } = "";
     }

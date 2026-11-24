@@ -1,6 +1,6 @@
 // Phase 10, milestone 1: tenant context through the Console (docs/phase-10-console.md, plan P2). One deployment serves one tenant, but
-// one ClickHouse can hold more than one tenant's telemetry: the test Collector writes local-test beside the deployment's tenant. This run
-// sends a probe service through the test Collector (tenant local-test) and a control service through the main one (the deployment's
+// one ClickHouse can hold more than one tenant's telemetry: the test Collector writes the integration tests' tenant beside the deployment's. This run
+// sends a probe service through the test Collector (the integration tests' tenant) and a control service through the main one (the deployment's
 // tenant), both named after the run, with the same kind of telemetry: server spans, a log record, a counter. Then:
 //   1. the API reads and pages where the probe would show if tenant scoping broke ("can leak") must show the control and never the
 //      probe; the other reads the Console makes are smoke checks (scoped to the control's ID, or to things the probe doesn't produce:
@@ -15,7 +15,7 @@ import { randomBytes } from 'node:crypto';
 import { base, env, expect, finish, launch, local, signIn, steps, tokenFor } from './lib.mjs';
 
 const run = randomBytes(4).toString('hex');
-const probe = `tenant-probe-${run}`;     // local-test: must never be seen
+const probe = `tenant-probe-${run}`;     // the integration tests' tenant: must never be seen
 const control = `tenant-control-${run}`; // the deployment's tenant: must be seen
 const problems = [];
 const step = steps('tenant', problems);
@@ -91,7 +91,7 @@ const victor = apiAs('victor');
 const tenants = await victor('/tenants');
 const tenant = tenants.json?.items?.[0]?.id;
 if (!tenant) { problems.push(`victor has no tenant: ${tenants.status} ${tenants.text.slice(0, 200)}`); finish(problems); }
-console.log(`run ${run}: probe ${probe} → ${probePort === 4318 ? 'THIS tenant (self-test)' : 'local-test'}, control ${control} → ${env.JUICE_PLATFORM_TENANT_ID}`);
+console.log(`run ${run}: probe ${probe} → ${probePort === 4318 ? 'THIS tenant (self-test)' : 'the test tenant'}, control ${control} → ${env.JUICE_PLATFORM_TENANT_ID}`);
 
 // Discovery reads every 30 s; send until the control is a service (150 s at most). The probe is sent alongside, so it has had the same
 // chances to be (wrongly) discovered. Without the control nothing below can tell anything, so the check stops there.

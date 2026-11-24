@@ -36,6 +36,11 @@ namespace Juice.Observability.Data
         /// </summary>
         public string? Actions { get; set; }
         public DateTimeOffset? ActionsReportedAt { get; set; }
+        /// <summary>
+        /// The tenant it said it holds on its last poll; null for an agent from before it said. Commands are signed with it while the deployment
+        /// moves from an old tenant name to its Id (<c>Platform:PreviousTenantKey</c>), so they verify on an agent that hasn't heard yet.
+        /// </summary>
+        public string? ReportedTenant { get; set; }
     }
 
     /// <summary>A one-time token an admin creates for enrolling one agent. Only its SHA-256 is stored; the token itself is shown once.</summary>

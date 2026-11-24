@@ -50,4 +50,16 @@ namespace Juice.Observability.Agent.Contracts
         /// <summary>What the announcing key signs: the new key's id and its public key, so neither can be swapped.</summary>
         public static byte[] Content(string keyId, string publicKeyPem) => Encoding.UTF8.GetBytes($"juice-agent-command-key\n{keyId}\n{publicKeyPem.Trim()}");
     }
+
+    /// <summary>
+    /// The deployment's tenant changed from <see cref="From"/> (the agent's tenant at enrollment: a name from before the tenant pattern) to
+    /// <see cref="To"/> (its Id). It is announced signed by the command key <see cref="SignedBy"/>, which the agent already trusts. The agent adopts
+    /// it only when the signature verifies and <see cref="From"/> is its own tenant, so the platform can't move an agent to another tenant any other
+    /// way.
+    /// </summary>
+    public sealed record SignedTenant(string From, string To, string SignedBy, string Signature)
+    {
+        /// <summary>What the announcing key signs: the agent and both tenants, so none can be swapped and it moves only that agent.</summary>
+        public static byte[] Content(Guid agentId, string from, string to) => Encoding.UTF8.GetBytes($"juice-agent-tenant\n{agentId:D}\n{from}\n{to}");
+    }
 }

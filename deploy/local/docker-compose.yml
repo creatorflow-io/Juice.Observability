@@ -82,7 +82,7 @@ services:
     extends: { service: otel-collector }
     profiles: [test]
     environment:
-      JUICE_PLATFORM_TENANT_ID: local-test
+      JUICE_PLATFORM_TENANT_ID: 0193f0aa-0000-7000-8000-0000000000f1   # the integration tests' tenant Id (it was local-test)
       JUICE_COLLECTOR_INSTANCE: otel-collector-test
     ports: !override
       - "127.0.0.1:14318:4318"
@@ -240,6 +240,8 @@ services:
       Telemetry__CollectorMetricsUrl: http://otel-collector:8888/metrics
       Capacity__CalibrationFile: /config/capacity/calibration.json
       Platform__TenantKey: ${JUICE_PLATFORM_TENANT_ID}
+      # Set while the deployment moves from its old tenant name to its Id (scripts/rekey-tenant.sh); empty otherwise.
+      Platform__PreviousTenantKey: ${JUICE_PLATFORM_PREVIOUS_TENANT_ID:-}
       # Metadata and keys over the compose network; the issuer stays http://PUBLIC_HOST:8080/realms/juice (KC_HOSTNAME).
       Auth__Authority: http://keycloak:8080/realms/juice
       Auth__RequireHttpsMetadata: "false"

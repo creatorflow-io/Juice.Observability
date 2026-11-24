@@ -4,7 +4,7 @@
     "tracker": "https://claude.ai/artifact/PPUBLFLKaTKePJDu6fKbrP",
     "architecture": "https://claude.ai/artifact/5GuMPfEX4FojS3oxoTTxGC"
   },
-  "asOf": "2026-11-18",
+  "asOf": "2026-11-24",
   "groupStatus": {
     "p5": {
       "status": "done",
@@ -33,6 +33,10 @@
     "p10": {
       "status": "done",
       "note": "Five milestones done; gate accepted by the owner 2026-11-17. docs/phase-10-acceptance.md"
+    },
+    "tenancy": {
+      "status": "in_progress",
+      "note": "The tenant pattern (juice-docs decision record, accepted 2026-11-24): the tenant is its Id from juice-tenants, a GUID that does not depend on a name (owner)."
     }
   },
   "tasks": [
@@ -205,6 +209,16 @@
       "ref": "docs/phase-11-acceptance.md",
       "status": "done",
       "note": "Started 2026-11-16: deployment.md Sizing and scaling (R18: what one machine carries 1x-10x, what scales out, the six leased workers and their switches, levers, each panel figure to its action, calibrating on another machine; replaces the replicas section that named three workers); version 1.3.0; docs/phase-11-acceptance.md (gate lines to evidence); a gate-2 test (overview answers at once with ClickHouse hanging); tests/upgrade-drill.sh (api-1.2.0 installed, 10 min of 1x, upgraded in place to HEAD: init.sh, compose up, apply-clickhouse-access.sh; checks nothing lost, migrations, columns on old parts, row policy, platform_monitor, platform pipeline, heartbeats, /health/platform). Drill run twice: the first failed only its migration check (wrong history table name, __ef_migrations_history); fixed, rerun build/upgrade-drill-20261116T1151: every check passed, 600,027 spans and all records kept, migrations 19 to 21, 52 s to upgrade; docs/drills.md, runbook Upgrade rewritten to the drilled steps. 745 tests pass. Review loop (R16): round 1, 10 findings, all fixed (cffd8de): the drill can't run outside its worktree (an unchecked cd could have rewritten the working .env), removes an earlier drill project, a missing count is lost, every platform table counted, migrations against the release's files, a failed load or access script fails it, the old traces read through the new columns by the upgraded API (the column comparison couldn't fail); gate-2 test's accept loop thread-safe; MODIFY TTL advice. Round 2, 10 findings, 9 fixed (34aa398): every enabled worker passing, leak check by the reported service names, a non-numeric before count fails, ports checked whoever holds them, one psql call, warm-up before the gate-2 timing, the acceptance command; kept: shared counting with restore-drill (they count different things). Confirmation, 8 findings, all fixed: ports read from the compose file and checked before anything is removed (with a 1 s timeout), each table counted alone if the one query fails, all 8 workers with each replica's row judged alone, psql helper reused. Drill runs 3 to 5 passed (record build/upgrade-drill-20261116T1308: 13 of 13 checks, 36 s compose up). Milestone 7 done. Phase 11 accepted by the owner 2026-11-16 (with the as-built R2 and R5); 1.3.0 released 2026-11-16 (owner: push): release/1.0 and the tags pushed, GitHub releases api-1.3.0 and console-1.3.0 published, both Release workflows succeeded (nuget.org, npm). Follow-ups 2026-11-17 (docs/scale-tests.md, Phase 11 follow-ups): the export cap was the ClickHouse driver's pool (10 by default; inserts in flight ~11 whatever the consumers); max_open_conns and max_idle_conns 32 shipped (895da77): 20x ingest stored 99.6 % (about 200,000 points/s) against 55 %; async_insert false 89.7 % at 4x the CPU, 32 consumers no better. Health whole read +46 % of its CPU at 1x. Full-mix rerun with the pool at 32 (docs/scale-tests.md, Rerun with the driver's pool at 32): 1x-6x held every line (6x crossed with one burst on 16 Nov); 7x, 8x and 10x crossed only in ClickHouse CPU bursts (all 24 cores for 20 s to a minute; points lost 0.7 %, 1.1 %, 2.6 %; spans, logs, workers, freshness, API in line); on a stack already holding 36 GB. Calibration (owner): 4x held out, held to 6x, crossed at 7x, -14 % (within +-25 %); deployment.md plans at 5x. report.mjs and the Overview counted each lost point twice (refused + enqueue failed): now refused + failed sends; reports rewritten. Agent fix (030ee7c): manifest.json had an empty version since 40c9870, the local agent restart-looped. Review loop on the follow-ups (18 Nov): 3 rounds; round 3 found the capacity lines (a 15 s sample against step means flaps at bursts; peaks tried and reverted, owner). Follow-ups: compare a rolling ~5-min mean with the step means; insert p95 lines from the calibration file; capture ClickHouse metric_log/part_log during bursts before teardown."
+    },
+    {
+      "doc_id": "tenancy-t5",
+      "group": "tenancy",
+      "order": 1,
+      "kind": "task",
+      "title": "Move the tenant from its name to its Id (TENANCY-PLAN T5)",
+      "ref": "docs/deployment.md",
+      "status": "in_progress",
+      "note": "Branch feat/tenant-id (2026-11-24). Platform:TenantKey must be a GUID; Platform:PreviousTenantKey (JUICE_PLATFORM_PREVIOUS_TENANT_ID) renames the tenant at start (tenant.rekey audited). scripts/rekey-tenant.sh rewrites telemetry stamped with the old name (ResourceAttributes and JuiceTenant). Agents: the poll announces the new tenant signed by a trusted command key (SignedTenant, Juice-Agent-Tenant header); commands are signed with the tenant an agent holds until it adopts the Id (agents.reported_tenant, migration AgentReportedTenant); a command signed before the change still runs. Test tenant local-test is now 0193f0aa-0000-7000-8000-0000000000f1 (realm juice-platform-test). Not done: moving the running local stack (.env, realm claim, rekey script) waits for the owner."
     }
   ],
   "architecturePageUpdates": [

@@ -227,6 +227,19 @@ namespace Juice.Observability.Api.Endpoints
             ? JsonSerializer.SerializeToElement(new SortedDictionary<string, JsonElement>(parameters.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.Clone()), StringComparer.Ordinal))
             : parameters;
 
+        /// <summary>
+        /// The tenant to sign an agent's command with: the deployment's, unless it is moving from an old tenant name
+        /// (<see cref="PlatformOptions.PreviousTenantKey"/>) and the agent still holds that one, or never says what it holds (a version from before
+        /// tenant changes, which still needs commands it accepts, such as the update that brings the newer version).
+        /// </summary>
+        internal static string TenantFor(PlatformOptions platform, string? reportedTenant)
+            => platform.PreviousTenantKey is { Length: > 0 } previous && previous != platform.TenantKey && (reportedTenant is null || reportedTenant == previous)
+                ? previous
+                : platform.TenantKey;
+
+        internal static async Task<string> TenantForAsync(PlatformDbContext db, PlatformOptions platform, Guid agentId, CancellationToken ct)
+            => TenantFor(platform, await db.Agents.AsNoTracking().Where(a => a.Id == agentId).Select(a => a.ReportedTenant).SingleOrDefaultAsync(ct));
+
         /// <summary>A command for one agent, signed: what the agent will receive, and verify, as it is.</summary>
         internal static AgentCommand Sign(AgentAuthority authority, string tenantKey, Guid tenantId, Guid agentId, string action, JsonElement parameters, string issuedBy,
             DateTimeOffset now, TimeSpan lifetime, string? approvalReference)
@@ -297,7 +310,7 @@ namespace Juice.Observability.Api.Endpoints
                 await ActionRequestEndpoints.LockAsync(db, agentId, action.Name, approved.Parameters, ct);
                 if (await ActionRequestEndpoints.OpenDuplicateAsync(db, agentId, action.Name, approved.Parameters, now, ct) is { } open) return ActionRequestEndpoints.Duplicate(open);
             }
-            var command = Sign(authority, platform.Value.TenantKey, tenantId, agentId, action.Name, action.Parameters, mutation.Actor, now, lifetime,
+            var command = Sign(authority, TenantFor(platform.Value, agent.ReportedTenant), tenantId, agentId, action.Name, action.Parameters, mutation.Actor, now, lifetime,
                 approved is null ? null : ActionRequestEndpoints.Reference(approved));
             db.AgentCommands.Add(command);
             if (approved is not null)
