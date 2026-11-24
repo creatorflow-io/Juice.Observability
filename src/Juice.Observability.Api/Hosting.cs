@@ -112,13 +112,22 @@ namespace Juice.Observability.Api
         public async Task StartAsync(CancellationToken cancellationToken)
         {
             var key = platform.Value.TenantKey;
-            if (!TenantKey().IsMatch(key))
+            // The tenant's Id (the tenant pattern, juice-docs decision record): a GUID in its standard form, never a name.
+            if (!Guid.TryParse(key, out var id) || key != id.ToString("D") || id == Guid.Empty)
             {
-                throw new InvalidOperationException($"Platform:TenantKey '{key}' must match {TenantKey()}");
+                throw new InvalidOperationException(
+                    $"Platform:TenantKey '{key}' must be the tenant's Id, a GUID such as 0193f0aa-0000-7000-8000-0000000000a1 (lowercase, with hyphens). "
+                    + "A deployment named before the tenant pattern sets its old name as Platform:PreviousTenantKey (JUICE_PLATFORM_PREVIOUS_TENANT_ID).");
             }
-            if (string.Equals(key, ReservedTenant.Key, StringComparison.OrdinalIgnoreCase))
+            var previous = platform.Value.PreviousTenantKey is { Length: > 0 } old ? old : null;
+            if (previous is not null && !TenantKey().IsMatch(previous))
             {
-                throw new InvalidOperationException($"Platform:TenantKey '{key}' is reserved for the platform's own telemetry (docs/platform-metrics.md)");
+                throw new InvalidOperationException($"Platform:PreviousTenantKey '{previous}' must match {TenantKey()}");
+            }
+            // The platform's own telemetry is stamped with this name: no tenant had it, so none moves from it.
+            if (string.Equals(previous, ReservedTenant.Key, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException($"Platform:PreviousTenantKey '{previous}' is reserved for the platform's own telemetry (docs/platform-metrics.md)");
             }
             await using var scope = scopes.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
@@ -127,14 +136,49 @@ namespace Juice.Observability.Api
                 await db.Database.MigrateAsync(cancellationToken);
             }
             var tenants = await db.Tenants.AsNoTracking().ToListAsync(cancellationToken);
-            if (tenants.Any(t => t.Key == key))
+            if (tenants.SingleOrDefault(t => t.Key == key) is { } current)
             {
+                // Agents still holding an old name, or not saying, get commands they refuse once the old name is no longer set.
+                if (previous is null)
+                {
+                    var behind = await db.Agents.AsNoTracking().CountAsync(a => a.TenantId == current.Id && a.Status == AgentStatus.Active
+                        && (a.ReportedTenant == null || a.ReportedTenant != key), cancellationToken);
+                    if (behind > 0)
+                    {
+                        logger.LogWarning("{Count} active agents haven't adopted tenant {Tenant}: until they do, set Platform:PreviousTenantKey to the old name " +
+                            "(the tenant.rekey audit record has it), and upgrade agents that don't report their tenant", behind, key);
+                    }
+                }
+                return;
+            }
+            // The deployment moves from its old name to its Id: the one tenant is renamed, recorded, and kept (every row refers to it by its own id).
+            // Only if it still has the old name, in one transaction with its audit record, so two replicas starting together rename it once.
+            if (previous is not null && tenants.Count == 1 && tenants[0].Key == previous)
+            {
+                await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+                var renamed = await db.Tenants.Where(t => t.Id == tenants[0].Id && t.Key == previous)
+                    .ExecuteUpdateAsync(s => s.SetProperty(t => t.Key, key), cancellationToken);
+                if (renamed == 1)
+                {
+                    db.AuditRecords.Add(new AuditRecord
+                    {
+                        TenantId = tenants[0].Id, Actor = "system", Operation = "tenant.rekey", TargetType = "tenant",
+                        TargetId = tenants[0].Id.ToString(), Outcome = AuditOutcome.Succeeded,
+                        Metadata = new() { ["from"] = previous, ["to"] = key },
+                    });
+                    await db.SaveChangesAsync(cancellationToken);
+                }
+                await transaction.CommitAsync(cancellationToken);
+                if (renamed == 1)
+                {
+                    logger.LogWarning("Platform tenant {From} is now {To}: rewrite the telemetry stamped with the old name now (scripts/rekey-tenant.sh)", previous, key);
+                }
                 return;
             }
             if (tenants.Count > 0)
             {
                 throw new InvalidOperationException(
-                    $"The database belongs to tenant '{tenants[0].Key}', not the configured '{key}'. A single-tenant deployment holds one tenant.");
+                    $"The database belongs to tenant '{tenants[0].Key}', not the configured '{key}'. A single-tenant deployment holds one tenant. If '{tenants[0].Key}' is this deployment's old name, set it as Platform:PreviousTenantKey.");
             }
             var tenant = new PlatformTenant
             {

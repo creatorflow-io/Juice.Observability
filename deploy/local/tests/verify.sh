@@ -3,7 +3,7 @@
 #   tests/verify.sh            ingestion security, tenant stamping, redaction, Grafana (when running)
 #   tests/verify.sh --outage   also stops ClickHouse, sends while it is down, and checks the queued data lands after restart
 # Needs: a running stack (docker compose --profile test up -d --wait), curl, openssl.
-# What it sends goes through the test Collector, the main one's configuration with the tenant local-test, so its services
+# What it sends goes through the test Collector, the main one's configuration with the integration tests' tenant Id, so its services
 # stay out of the tenant the running API works on. The main Collector gets only requests it refuses.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -14,7 +14,7 @@ docker compose --profile test ps --status running --services 2>/dev/null | grep 
   || { echo "the test Collector is not running: docker compose --profile test up -d --wait"; exit 1; }
 
 OTLP=https://localhost:14318
-TENANT=local-test
+TENANT=0193f0aa-0000-7000-8000-0000000000f1   # the integration tests' tenant Id (the test Collector stamps it)
 METRICS=http://localhost:18888/metrics
 # Grafana's sign-in sets its cookie on the address it is called by and returns to PUBLIC_HOST, so both must be the same.
 PUBLIC=${PUBLIC_HOST:-localhost}

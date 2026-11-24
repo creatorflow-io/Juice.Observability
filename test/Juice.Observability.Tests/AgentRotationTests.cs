@@ -138,6 +138,45 @@ namespace Juice.Observability.Tests
             }
         }
 
+        /// <summary>The tenant pattern: the deployment's tenant moves from its old name to its Id, and agents learn it signed.</summary>
+        [Fact]
+        public void An_agent_adopts_a_tenant_change_only_when_signed_by_a_trusted_key_from_its_own_tenant()
+        {
+            var identity = EnrolledBefore();   // tenant "acme"
+            var clock = new StepClock(Now);
+            var service = new AgentService(Options.Create(new AgentOptions { DataDirectory = _data }), Options.Create(new LocalAllowlist()), clock, NullLogger<AgentService>.Instance);
+            const string id = "0193f0aa-0000-7000-8000-0000000000a1";
+
+            // Refused: an untrusted key, another tenant, a name rather than an Id, a changed signature.
+            Assert.Equal("acme", service.AdoptTenant(_rotated.SignTenant(identity.AgentId, "acme", id), identity).Tenant);   // a key it doesn't trust yet
+            Assert.Equal("acme", service.AdoptTenant(_old.SignTenant(identity.AgentId, "other", id), identity).Tenant);
+            Assert.Equal("acme", service.AdoptTenant(_old.SignTenant(identity.AgentId, "acme", "new-name"), identity).Tenant);
+            Assert.Equal("acme", service.AdoptTenant(_old.SignTenant(identity.AgentId, "acme", id) with { To = "0193f0aa-0000-7000-8000-0000000000b2" }, identity).Tenant);
+            // Refused: made for another agent (a clone of this deployment's announcement replayed here).
+            Assert.Equal("acme", service.AdoptTenant(_old.SignTenant(Guid.CreateVersion7(), "acme", id), identity).Tenant);
+            Assert.Equal("acme", new AgentStore(_data).LoadIdentity().Tenant);
+            // An enrollment written by this version holds no tenant-change fields, so an older agent (which refuses fields it doesn't know) reads it.
+            Assert.DoesNotContain("previousTenant", File.ReadAllText(Path.Combine(_data, "identity.json")), StringComparison.OrdinalIgnoreCase);
+
+            var issuedBefore = Now.AddSeconds(-30);
+            clock.Advance(TimeSpan.FromSeconds(1));
+            var changed = service.AdoptTenant(_old.SignTenant(identity.AgentId, "acme", id), identity);
+            Assert.Equal((id, "acme"), (changed.Tenant, changed.PreviousTenant));
+            Assert.Equal(changed.Tenant, new AgentStore(_data).LoadIdentity().Tenant);
+            // An Id never moves again, even signed.
+            Assert.Equal(id, service.AdoptTenant(_old.SignTenant(identity.AgentId, id, "0193f0aa-0000-7000-8000-0000000000b2"), changed).Tenant);
+
+            var allow = new LocalAllowlist { Actions = { [AgentActions.HostSummary] = new ActionPolicy() } };
+            string? Verify(string tenant, DateTimeOffset issued) => CommandVerifier.Verify(_old.Sign(new CommandEnvelope(CommandEnvelope.CurrentVersion,
+                Guid.CreateVersion7(), tenant, identity.AgentId, AgentActions.HostSummary, JsonSerializer.SerializeToElement(new { }), issued, issued.AddMinutes(5),
+                AgentAuthority.Token(), AgentAuthority.Token(), null)), changed, allow, clock.GetUtcNow()).Rejection;
+            Assert.Null(Verify(id, clock.GetUtcNow()));
+            // Signed with the old tenant before the change: still runs. Signed with it after: refused.
+            Assert.Null(Verify("acme", issuedBefore));
+            Assert.Equal(RejectionReasons.WrongTenant, Verify("acme", clock.GetUtcNow().AddMinutes(3)));
+            Assert.Equal(RejectionReasons.WrongTenant, Verify("other", clock.GetUtcNow()));
+        }
+
         [Fact]
         public void A_second_rotation_drops_the_oldest_key()
         {
@@ -167,6 +206,15 @@ namespace Juice.Observability.Tests
             new AgentStore(_data).SaveEnrollment(key, new EnrollResponse(Guid.CreateVersion7(), "acme", "unused", _old.CommandKeyPem, _old.CommandKeyId));
 
             Assert.Equal([_old.CommandKeyId], new AgentStore(_data).LoadIdentity().CommandKeys.Keys);
+        }
+
+        private sealed class StepClock(DateTimeOffset now) : TimeProvider
+        {
+            private DateTimeOffset _now = now;
+
+            public override DateTimeOffset GetUtcNow() => _now;
+
+            public void Advance(TimeSpan by) => _now += by;
         }
 
         public void Dispose()

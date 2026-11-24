@@ -24,7 +24,9 @@ tests/verify.sh                            # ingestion security, tenant stamping
 ```
 
 `init.sh` asks for the tenant id of this deployment when run in a terminal; `JUICE_PLATFORM_TENANT_ID=<id> scripts/init.sh`
-sets it without asking, and otherwise it is `local-dev`. It is set once, when `.env` is created.
+sets it without asking, and otherwise it is the local stacks' tenant, `0193f0aa-0000-7000-8000-0000000000a1`. It is the tenant's Id, a GUID (the
+tenant pattern, juice-docs decision record), set once, when `.env` is created. A stack set up with a name (`local-dev`) moves to the Id
+once: docs/deployment.md, "Moving to a tenant Id".
 
 | Endpoint | Address |
 |---|---|
@@ -135,7 +137,7 @@ with `resource_detection` so application telemetry never gets the Collector's ho
   result rows 1,000,000 and memory 4 GB, each capped with `MAX` so a client cannot raise it. The Grafana data source
   sets `queryTimeout` 50 s to stay under the cap.
 
-  **Row policies.** One ClickHouse can hold more than one tenant (the test Collector writes `local-test` here), and
+  **Row policies.** One ClickHouse can hold more than one tenant (the test Collector writes the integration tests' tenant here), and
   Grafana's queries don't filter by tenant, so `grafana_tenant` limits `grafana_reader` to rows whose
   `JuiceTenant` (the tenant stamp, as a column) is `JUICE_PLATFORM_TENANT_ID`, on each of the seven tables that carry
   it. `all_tenants` lets the other users read every row. `clickhouse/access.xml` turns off ClickHouse's default of letting a user
@@ -148,7 +150,7 @@ with `resource_detection` so application telemetry never gets the Collector's ho
 - **Backups.** `scripts/backup.sh` (PostgreSQL) and `scripts/backup-telemetry.sh` (ClickHouse `otel`) write to
   `backups/`, which git ignores. Each run is a full backup and nothing prunes old ones. See the runbook.
 - **Integration test tenant.** `--profile test` adds `otel-collector-test` on `127.0.0.1:14318`, the same configuration
-  stamping the tenant `local-test`, and the tests get their tokens from the Keycloak client `juice-platform-test`. What
+  stamping the integration tests' tenant Id `0193f0aa-0000-7000-8000-0000000000f1` (once `local-test`), and the tests get their tokens from the Keycloak client `juice-platform-test`. What
   they write stays out of the tenant the running API works on. `tests/verify.sh` and `tests/load.sh` send to it too. Only
   `tests/breach-to-alert.sh` sends to the main Collector, because it waits for the running API's alert, so each run leaves
   a `breach-<id>` service in the Console.
@@ -220,7 +222,7 @@ index (above).
 
 | Script | Checks |
 |---|---|
-| `tests/verify.sh` | Plain HTTP refused; missing and unknown token give 401; untrusted certificate refused. Forged tenant at resource, scope and record level, on traces, metrics and logs, is stored as only the trusted tenant. Redaction. TTL present. `grafana_reader` cannot write or read `system.users`, can't see this run's `local-test` records or any other tenant in the last hour, and every table with the tenant stamp has both row policies; `platform_reader` still reads every tenant. The platform's own telemetry: `platform_monitor` can't read or write telemetry; the platform receiver refuses no token and an application token; the platform's and the Collector's metrics arrive under `juice-platform`, none under the deployment's tenant, with only allowlisted attribute keys; discovery doesn't list them as services; `grafana_reader` sees none of it. Grafana data source healthy; anonymous access refused. OIDC sign-in, run headless with curl through Keycloak: alice → Admin, erin → Editor, victor → Viewer, nora and a wrong password refused, no OIDC user is server admin; a Grafana access token carries no platform audience or roles. Prints this run's ingestion freshness. |
+| `tests/verify.sh` | Plain HTTP refused; missing and unknown token give 401; untrusted certificate refused. Forged tenant at resource, scope and record level, on traces, metrics and logs, is stored as only the trusted tenant. Redaction. TTL present. `grafana_reader` cannot write or read `system.users`, can't see this run's records of the integration tests' tenant or any other tenant in the last hour, and every table with the tenant stamp has both row policies; `platform_reader` still reads every tenant. The platform's own telemetry: `platform_monitor` can't read or write telemetry; the platform receiver refuses no token and an application token; the platform's and the Collector's metrics arrive under `juice-platform`, none under the deployment's tenant, with only allowlisted attribute keys; discovery doesn't list them as services; `grafana_reader` sees none of it. Grafana data source healthy; anonymous access refused. OIDC sign-in, run headless with curl through Keycloak: alice → Admin, erin → Editor, victor → Viewer, nora and a wrong password refused, no OIDC user is server admin; a Grafana access token carries no platform audience or roles. Prints this run's ingestion freshness. |
 | `tests/verify.sh --outage` | Also: ClickHouse stopped, a record accepted and held in the exporter queue, then stored after ClickHouse returns. |
 | `tests/breach-to-alert.sh [runs]` | Through the running platform: sends a failing service and times rule `service-error-rate` firing after its ForDuration (§9: ≤ 2 min). |
 | `node tests/api-latency.mjs [seconds]` | Platform API reads at 20 requests/s, p50/p95 (§9: p95 ≤ 500 ms). |

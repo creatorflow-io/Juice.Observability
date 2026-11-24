@@ -11,7 +11,12 @@ namespace Juice.Observability.Agent
     /// </summary>
     public sealed class AgentStore(string directory)
     {
-        private sealed record Identity(Guid AgentId, string Tenant, string CommandKeyPem, string CommandKeyId);
+        // The tenant change's fields are left out while unset, so an enrollment stays readable by an agent from before them (it refuses fields it
+        // doesn't know). Once the agent adopts a new tenant they are written: an older version can't read the identity after that, so the change is
+        // one-way (install this version or later again).
+        private sealed record Identity(Guid AgentId, string Tenant, string CommandKeyPem, string CommandKeyId,
+            [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] string? PreviousTenant = null,
+            [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] DateTimeOffset? TenantChangedAt = null);
 
         /// <summary>The certificate and its key in one file, so they're always replaced together: a crash mid-renewal leaves the old pair or the new, never a mix.</summary>
         private string CredentialFile => Path.Combine(directory, "agent.pem");
@@ -72,7 +77,15 @@ namespace Juice.Observability.Agent
                 }
                 keys[entry.KeyId] = key;
             }
-            return new AgentIdentity(identity.AgentId, identity.Tenant, keys, trusted[^1].KeyId);
+            return new AgentIdentity(identity.AgentId, identity.Tenant, keys, trusted[^1].KeyId, identity.PreviousTenant, identity.TenantChangedAt);
+        }
+
+        /// <summary>The deployment's tenant changed (a verified <see cref="SignedTenant"/>): the identity holds the new one, and the old one with when.</summary>
+        public void ChangeTenant(string tenant, DateTimeOffset at)
+        {
+            var identity = JsonSerializer.Deserialize<Identity>(File.ReadAllBytes(IdentityFile), CommandSignature.Json)!;
+            Replace(IdentityFile, JsonSerializer.Serialize(identity with { Tenant = tenant, PreviousTenant = identity.Tenant, TenantChangedAt = at },
+                CommandSignature.Json));
         }
 
         /// <summary>

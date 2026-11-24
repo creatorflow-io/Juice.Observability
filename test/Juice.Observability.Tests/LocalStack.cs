@@ -21,7 +21,8 @@ namespace Juice.Observability.Tests
     /// </summary>
     public static class LocalStack
     {
-        public const string TenantKey = "local-test";
+        /// <summary>The integration tests' tenant Id, which the test Collector stamps (it was local-test before the tenant pattern).</summary>
+        public const string TenantKey = "0193f0aa-0000-7000-8000-0000000000f1";
 
         private static readonly Lazy<string?> Directory = new(() =>
         {

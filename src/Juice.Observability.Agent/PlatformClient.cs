@@ -70,11 +70,17 @@ namespace Juice.Observability.Agent
         /// Waits for commands. With <c>trustedKeys</c>, the command keys the agent trusts, the platform can announce its current one; without, no
         /// header is sent, as an agent from before rotation did.
         /// </summary>
-        public async Task<PollResponse> PollAsync(int waitSeconds, string version, string hostname, CancellationToken cancellationToken, IEnumerable<string>? trustedKeys = null)
+        public async Task<PollResponse> PollAsync(int waitSeconds, string version, string hostname, CancellationToken cancellationToken, IEnumerable<string>? trustedKeys = null,
+            string? tenant = null)
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, $"{AgentRoutes.Commands}?wait={waitSeconds}");
             request.Headers.Add(AgentRoutes.VersionHeader, version);
             request.Headers.Add(AgentRoutes.HostnameHeader, hostname);
+            // The tenant it holds, so the platform can announce the deployment's new one.
+            if (tenant is not null)
+            {
+                request.Headers.Add(AgentRoutes.TenantHeader, tenant);
+            }
             if (trustedKeys is not null)
             {
                 request.Headers.Add(AgentRoutes.KeysHeader, string.Join(',', trustedKeys));

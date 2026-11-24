@@ -5,7 +5,7 @@
 # This exercises the Collector → ClickHouse path only; it is not evidence of Juice export (see tests/verify.sh and the
 # sample for that). One resource per signal, so it does not model 10 services / 100 instances.
 # Needs docker compose --profile test: the load goes through the test Collector, the main one's configuration with the
-# tenant local-test, so it stays out of the tenant the running API works on.
+# integration tests' tenant (0193f0aa-...f1), so it stays out of the tenant the running API works on.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 export MSYS_NO_PATHCONV=1

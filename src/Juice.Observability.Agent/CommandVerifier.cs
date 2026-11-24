@@ -9,7 +9,14 @@ namespace Juice.Observability.Agent
     /// Who this agent is, from its enrollment, and the keys it trusts commands from by id: the one from enrollment, or after a rotation the newest
     /// (<see cref="CommandKeyId"/>) and the one that announced it.
     /// </summary>
-    public sealed record AgentIdentity(Guid AgentId, string Tenant, IReadOnlyDictionary<string, ECDsa> CommandKeys, string CommandKeyId)
+    /// <param name="AgentId">Its id, from enrollment.</param>
+    /// <param name="Tenant">The deployment's tenant, as commands must name it.</param>
+    /// <param name="CommandKeys">The command keys it trusts, by id.</param>
+    /// <param name="CommandKeyId">The newest of them.</param>
+    /// <param name="PreviousTenant">The tenant it held before the deployment's tenant changed (<see cref="SignedTenant"/>), if it did.</param>
+    /// <param name="TenantChangedAt">When it adopted <see cref="Tenant"/>: a command issued before then may still name <see cref="PreviousTenant"/>.</param>
+    public sealed record AgentIdentity(Guid AgentId, string Tenant, IReadOnlyDictionary<string, ECDsa> CommandKeys, string CommandKeyId,
+        string? PreviousTenant = null, DateTimeOffset? TenantChangedAt = null)
     {
         public AgentIdentity(Guid agentId, string tenant, ECDsa commandKey, string commandKeyId)
             : this(agentId, tenant, new Dictionary<string, ECDsa> { [commandKeyId] = commandKey }, commandKeyId)
@@ -78,7 +85,12 @@ namespace Juice.Observability.Agent
             var id = envelope.CommandId;
             if (envelope.Version != CommandEnvelope.CurrentVersion) return Verification.Reject(RejectionReasons.UnsupportedVersion, id);
             if (envelope.AgentId != identity.AgentId) return Verification.Reject(RejectionReasons.WrongTarget, id);
-            if (!string.Equals(envelope.Tenant, identity.Tenant, StringComparison.Ordinal)) return Verification.Reject(RejectionReasons.WrongTenant, id);
+            // Its tenant, or the one it held before the deployment's tenant changed for a command issued before the change (signed then, and expired
+            // within CommandLimits.MaxLifetime of it).
+            var tenantMatches = string.Equals(envelope.Tenant, identity.Tenant, StringComparison.Ordinal)
+                || (identity.PreviousTenant is { } previous && identity.TenantChangedAt is { } changedAt
+                    && string.Equals(envelope.Tenant, previous, StringComparison.Ordinal) && envelope.IssuedAt <= changedAt + CommandLimits.ClockSkew);
+            if (!tenantMatches) return Verification.Reject(RejectionReasons.WrongTenant, id);
             if (envelope.IssuedAt > now + CommandLimits.ClockSkew) return Verification.Reject(RejectionReasons.NotYetValid, id);
             if (envelope.ExpiresAt + CommandLimits.ClockSkew <= now) return Verification.Reject(RejectionReasons.Expired, id);
             if (envelope.ExpiresAt - envelope.IssuedAt > CommandLimits.MaxLifetime || envelope.ExpiresAt <= envelope.IssuedAt)
@@ -123,6 +135,18 @@ namespace Juice.Observability.Agent
             key.Dispose();
             return null;
         }
+
+        /// <summary>
+        /// Whether to adopt an announced tenant change. A key this agent trusts signed it for this agent. It moves from this agent's own tenant,
+        /// which is a name (a tenant from before the tenant pattern; an Id never moves again), to a tenant Id (a GUID in its standard form). The
+        /// platform can't change an agent's tenant any other way, and an announcement made for another agent doesn't verify here.
+        /// </summary>
+        public static bool VerifyTenant(SignedTenant announcement, AgentIdentity identity)
+            => identity.CommandKeys.TryGetValue(announcement.SignedBy, out var announcer)
+                && string.Equals(announcement.From, identity.Tenant, StringComparison.Ordinal)
+                && !Guid.TryParse(announcement.From, out _)
+                && Guid.TryParse(announcement.To, out var to) && announcement.To == to.ToString("D") && to != Guid.Empty
+                && CommandSignature.Verify(announcer, SignedTenant.Content(identity.AgentId, announcement.From, announcement.To), announcement.Signature);
 
         /// <summary>The command id of a payload that failed its checks, so the refusal can be reported against it; null if even that doesn't read.</summary>
         private static Guid? PeekId(byte[] payload)

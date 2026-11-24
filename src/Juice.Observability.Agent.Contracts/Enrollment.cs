@@ -25,7 +25,7 @@ namespace Juice.Observability.Agent.Contracts
     /// <summary>
     /// What a poll returns: the commands waiting for this agent, oldest first, and any command key the agent should add, announced by one it trusts.
     /// </summary>
-    public sealed record PollResponse(IReadOnlyList<SignedCommand> Commands, IReadOnlyList<SignedKey>? Keys = null);
+    public sealed record PollResponse(IReadOnlyList<SignedCommand> Commands, IReadOnlyList<SignedKey>? Keys = null, SignedTenant? Tenant = null);
 
     /// <summary>The platform took a bundle: where it keeps it.</summary>
     /// <param name="Id">The bundle's id, for the command's result.</param>
@@ -47,6 +47,10 @@ namespace Juice.Observability.Agent.Contracts
         public const string PackageSignatureHeader = "Juice-Package-Signature";
         /// <summary>The command keys the agent trusts, by id, comma-separated: the platform announces its current one when it's missing.</summary>
         public const string KeysHeader = "Juice-Agent-Keys";
+        /// <summary>
+        /// The tenant the agent holds. When it is the deployment's old tenant, the platform announces the new one (<see cref="SignedTenant"/>).
+        /// </summary>
+        public const string TenantHeader = "Juice-Agent-Tenant";
         /// <summary>Headers an agent sends on each poll, so the platform knows its version and host.</summary>
         public const string VersionHeader = "Juice-Agent-Version";
         public const string HostnameHeader = "Juice-Agent-Hostname";

@@ -520,10 +520,12 @@ namespace Juice.Observability.Tests
         [Fact]
         public async Task The_reserved_tenant_key_is_refused_Async()
         {
-            var provisioner = new TenantProvisioner(new ServiceCollection().BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
-                Options.Create(new PlatformOptions { TenantKey = ReservedTenant.Key }), new ConfigurationBuilder().Build(), NullLogger<TenantProvisioner>.Instance);
-            var refused = await Assert.ThrowsAsync<InvalidOperationException>(() => provisioner.StartAsync(TestContext.Current.CancellationToken));
-            Assert.Contains("reserved", refused.Message);
+            async Task<string> RefusedAsync(PlatformOptions options) => (await Assert.ThrowsAsync<InvalidOperationException>(() => new TenantProvisioner(
+                new ServiceCollection().BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(), Options.Create(options), new ConfigurationBuilder().Build(),
+                NullLogger<TenantProvisioner>.Instance).StartAsync(TestContext.Current.CancellationToken))).Message;
+            // It isn't a tenant Id (the tenant pattern), nor can it be a deployment's old name.
+            Assert.Contains("must be the tenant's Id", await RefusedAsync(new PlatformOptions { TenantKey = ReservedTenant.Key }));
+            Assert.Contains("reserved", await RefusedAsync(new PlatformOptions { TenantKey = LocalStack.TenantKey, PreviousTenantKey = ReservedTenant.Key }));
         }
 
         /// <summary>

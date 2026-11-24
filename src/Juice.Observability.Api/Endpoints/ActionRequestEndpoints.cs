@@ -183,7 +183,8 @@ namespace Juice.Observability.Api.Endpoints
                 request.State = ActionRequestState.Issued;
                 request.DecidedBy = self ? mutation.Actor : null;
                 request.DecidedAt = now;
-                command = AgentEndpoints.Sign(authority, platform.Value.TenantKey, tenantId, agentId, action.Name, action.Parameters, mutation.Actor, now,
+                command = AgentEndpoints.Sign(authority, await AgentEndpoints.TenantForAsync(db, platform.Value, agentId, ct), tenantId, agentId, action.Name,
+                    action.Parameters, mutation.Actor, now,
                     AgentEndpoints.DefaultLifetime(action), Reference(request));
                 request.CommandId = command.Id;
                 request.Verification = request.TargetId is null ? ActionVerification.None : ActionVerification.Verifying;
@@ -315,7 +316,8 @@ namespace Juice.Observability.Api.Endpoints
             request.DecidedBy = mutation.Actor;
             request.DecidedAt = now;
             request.Comment = ChangeSanitizer.Text(decision?.Comment, 500) is { Length: > 0 } comment ? comment : null;
-            var command = AgentEndpoints.Sign(authority, platform.Value.TenantKey, tenantId, request.AgentId, action.Name, action.Parameters, mutation.Actor, now,
+            var command = AgentEndpoints.Sign(authority, await AgentEndpoints.TenantForAsync(db, platform.Value, request.AgentId, ct), tenantId, request.AgentId,
+                action.Name, action.Parameters, mutation.Actor, now,
                 AgentEndpoints.DefaultLifetime(action), Reference(request));
             request.CommandId = command.Id;
             request.Verification = request.TargetId is null ? ActionVerification.None : ActionVerification.Verifying;

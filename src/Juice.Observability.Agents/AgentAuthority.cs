@@ -227,6 +227,10 @@ namespace Juice.Observability.Agents
             return null;
         }
 
+        /// <summary>The deployment's tenant change for one agent that holds <paramref name="from"/>, signed by the current command key.</summary>
+        public SignedTenant SignTenant(Guid agentId, string from, string to)
+            => new(from, to, CommandKeyId, CommandSignature.Sign(_commandKey, SignedTenant.Content(agentId, from, to)));
+
         /// <summary>Signs an envelope as it will be sent: the exact bytes, with the key id.</summary>
         public SignedCommand Sign(CommandEnvelope envelope)
         {
