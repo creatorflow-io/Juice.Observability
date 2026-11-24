@@ -9,7 +9,10 @@
 // primary; errors from warn. A theme has no slot for "healthy", "degraded" or a categorical palette, so pass those in
 // $status and $series; without them they use Material's green, amber and a mix of its palettes at the theme's lightness.
 //
-// Without colors(), the pages use the Juice Console's teal, amber and red theme. They sit under zero-specificity :where()
+// Without colors(), the pages follow juice-layout's theme: with layout.theme() (Material 3) in the app, they take its
+// --juice-* tokens (surfaces, text, accent, and the ok, warn, bad and off tones), so they show the palette the viewer
+// picked, light and dark, like the rest of the app. crit, none and the chart series keep their own colours. Without
+// layout.theme(), they use the Juice Console's teal, amber and red theme. They sit under zero-specificity :where()
 // selectors, so the app's colors() wins whatever the order.
 @use '@angular/material' as mat;
 @use 'sass:color';
@@ -31,6 +34,22 @@
 /// @param $status optional overrides: (ok, warn, bad, crit, off, none) — each a colour; backgrounds are tinted from them
 /// @param $series optional list of colours for services in a trace and lines in a chart
 @mixin colors($theme, $status: (), $series: null) {
+  @include _colors($theme, $status, $series, false);
+}
+
+// juice-layout's --juice-* token each --jc-* property follows by default (the rest keep the theme's value).
+$_layout-tokens: (bg: bg, surface: surface, border: border, text: text, muted: muted, accent: accent, select: select,
+  ok: ok, warn: warn, bad: bad, off: none);
+
+// A value, or with $follow the layout's token for it when the app has layout.theme(), falling back to the value.
+@function _follow($name, $value, $follow) {
+  @if $follow and map.has-key($_layout-tokens, $name) {
+    @return var(--juice-#{map.get($_layout-tokens, $name)}, #{$value});
+  }
+  @return $value;
+}
+
+@mixin _colors($theme, $status, $series, $follow) {
   $config: mat.m2-get-color-config($theme);
   $is-dark: map.get($config, is-dark);
   $background: map.get($config, background);
@@ -50,20 +69,25 @@
   );
   $status: map.merge($defaults, $status);
 
-  --jc-bg: #{map.get($background, background)};
-  --jc-surface: #{$surface};
-  --jc-border: #{map.get($foreground, divider)};
-  --jc-text: #{map.get($foreground, text)};
-  --jc-muted: #{map.get($foreground, secondary-text)};
-  --jc-accent: #{_hue($primary, 700, 200, $is-dark)};
-  --jc-select: #{_tint(_hue($primary, 500, 300, $is-dark), $surface, $tint)};
+  --jc-bg: #{_follow(bg, map.get($background, background), $follow)};
+  --jc-surface: #{_follow(surface, $surface, $follow)};
+  --jc-border: #{_follow(border, map.get($foreground, divider), $follow)};
+  --jc-text: #{_follow(text, map.get($foreground, text), $follow)};
+  --jc-muted: #{_follow(muted, map.get($foreground, secondary-text), $follow)};
+  --jc-accent: #{_follow(accent, _hue($primary, 700, 200, $is-dark), $follow)};
+  --jc-select: #{_follow(select, _tint(_hue($primary, 500, 300, $is-dark), $surface, $tint), $follow)};
   @each $name, $value in $status {
     @if meta.type-of($value) == color and color.alpha($value) < 1 {
       // Foreground palette entries are translucent: flatten them on the surface so the tint below is solid.
       $value: color.mix(color.change($value, $alpha: 1), $surface, color.alpha($value) * 100%);
     }
-    --jc-#{$name}: #{$value};
-    --jc-#{$name}-bg: #{_tint($value, $surface, $tint)};
+    --jc-#{$name}: #{_follow($name, $value, $follow)};
+    @if $follow {
+      // Tinted on the surface in use, which is the layout's when the app has one.
+      --jc-#{$name}-bg: color-mix(in srgb, var(--jc-#{$name}) #{$tint}, var(--jc-surface));
+    } @else {
+      --jc-#{$name}-bg: #{_tint($value, $surface, $tint)};
+    }
   }
 
   $series: if(sass($series != null): $series; else: (
@@ -239,7 +263,7 @@
 $_accent: mat.m2-define-palette(mat.$m2-amber-palette);
 $_warn: mat.m2-define-palette(mat.$m2-red-palette);
 
-:where(:root) { @include colors(mat.m2-define-light-theme((color: (
-  primary: mat.m2-define-palette(mat.$m2-teal-palette, 700), accent: $_accent, warn: $_warn)))); }
-:where(.dark) { @include colors(mat.m2-define-dark-theme((color: (
-  primary: mat.m2-define-palette(mat.$m2-teal-palette, 300), accent: $_accent, warn: $_warn)))); }
+:where(:root) { @include _colors(mat.m2-define-light-theme((color: (
+  primary: mat.m2-define-palette(mat.$m2-teal-palette, 700), accent: $_accent, warn: $_warn))), (), null, true); }
+:where(.dark) { @include _colors(mat.m2-define-dark-theme((color: (
+  primary: mat.m2-define-palette(mat.$m2-teal-palette, 300), accent: $_accent, warn: $_warn))), (), null, true); }

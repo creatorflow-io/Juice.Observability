@@ -1,29 +1,13 @@
 @use '@angular/material' as mat;
 @use '@juice-js/layout' as layout;
-// The Juice Observability pages (a host app uses '@juice-js/observability'): their layout, with colours from this theme below.
+// The Juice Observability pages (a host app uses '@juice-js/observability'): their layout; their colours follow the layout's palette.
 @use '../projects/juice-js/observability/styles/observability';
 
-// Angular Material and juice-layout themes, light and dark (juice-layout's dark-mode toggle sets body.dark).
-@include mat.elevation-classes();
-@include mat.app-background();
-
-$primary: mat.m2-define-palette(mat.$m2-teal-palette, 700);
-$accent: mat.m2-define-palette(mat.$m2-amber-palette);
-$warn: mat.m2-define-palette(mat.$m2-red-palette);
-$light: mat.m2-define-light-theme((color: (primary: $primary, accent: $accent, warn: $warn),
-  typography: mat.m2-define-typography-config(), density: -2));
-$dark: mat.m2-define-dark-theme((color: (primary: mat.m2-define-palette(mat.$m2-teal-palette, 300), accent: $accent, warn: $warn)));
-
-@include mat.all-component-themes($light);
-@include layout.layout-component-themes($light);
-:root { @include observability.colors($light); }
+// Material 3 through juice-layout: Material, the layout, the palettes the viewer switches between (the palette button beside the dark mode
+// switch, which sets body.dark), and the --juice-* tokens the pages read, so the Juice Consoles look alike.
+@include layout.theme((density: -2));
 // Below -1, Material hides the label of fill form fields, and the filters have no placeholder to fall back on.
 html { @include mat.form-field-density(-1); }
-.dark {
-  @include mat.all-component-colors($dark);
-  @include layout.layout-component-colors($dark);
-  @include observability.colors($dark);
-}
 
 html, body { height: 100%; }
 body { margin: 0; font-family: Roboto, 'Helvetica Neue', sans-serif; background: var(--jc-bg); color: var(--jc-text); }
@@ -33,4 +17,3 @@ a:hover { text-decoration: underline; }
 h1 { font-size: 20px; margin: 0; font-weight: 500; }
 h2 { font-size: 16px; margin: 0 0 8px; font-weight: 500; }
 h3 { font-size: 14px; margin: 16px 0 6px; font-weight: 500; color: var(--jc-muted); text-transform: uppercase; letter-spacing: .04em; }
-
