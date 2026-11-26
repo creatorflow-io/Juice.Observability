@@ -535,7 +535,8 @@ namespace Juice.Observability.Api.Endpoints
             mutation.Audit(AuditOutcome.Succeeded, destination);
             mutation.RecordChange($"webhook_allowlist {destination}: remove", clock.GetUtcNow());
             await db.SaveChangesAsync(ct);
-            if (await AliasWriteAsync(transaction, alias, http.RequestServices, $"allowlist entry {destination}", null,
+            // Legacy's removal always stands (review of #10): a destination notifications keeps under another owner stays theirs, and is logged.
+            if (await AliasWriteAsync(transaction, alias, http.RequestServices, $"allowlist entry {destination}", () => Task.FromResult(false),
                     () => alias.RemoveAllowlistAsync(AllowlistMapping.Map(new LegacyAllowlistEntry(destination!, entry.Ports)).Value?.Destination ?? destination!, ct), ct)
                 is { Count: > 0 } refused)
             {
