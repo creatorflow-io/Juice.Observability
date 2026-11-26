@@ -8,6 +8,7 @@ using Juice.Observability.Data;
 using Juice.Observability.Discovery;
 using Juice.Observability.Health;
 using Juice.Observability.Notifications;
+using Juice.Observability.Notifications.Migration;
 using Juice.Observability.Rules;
 using Juice.Observability.Slos;
 using Juice.Observability.Webhooks;
@@ -59,6 +60,7 @@ namespace Juice.Observability.Api
             services.Configure<LocalChannelOptions>(configuration.GetSection(LocalChannelSection));
             // After the platform's messaging and the provisioner: its schema migrates after the platform's (I60).
             services.AddPlatformNotifications(configuration);
+            services.AddPlatformNotificationsMigration(configuration);
             services.AddPlatformDiscovery(configuration);
             services.AddPlatformHealth(configuration);
             services.AddPlatformRules(configuration);
