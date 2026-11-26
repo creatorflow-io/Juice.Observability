@@ -469,5 +469,139 @@ namespace Juice.Observability.Tests
             }
             Assert.Equal(keptIn == "shadow" ? 0 : 1, receivers.Own.Requests.Count);
         }
+
+        // ─── A held resolve at release (review #13): resolved then only if it wasn't at plan, and never once the alert fired again ────────
+
+        /// <summary>The alert fires again: a new firing transition, committed and not planned yet.</summary>
+        private static async Task<Guid> RefireAsync(ScratchDatabase database, Guid alertId)
+        {
+            await using var db = database.Context();
+            var alert = await db.Alerts.SingleAsync(a => a.Id == alertId, Ct);
+            var now = DateTimeOffset.UtcNow;
+            var transition = new AlertTransition { TenantId = alert.TenantId, AlertId = alert.Id, FromState = AlertState.Resolved, ToState = AlertState.Firing, At = now, Reason = "for_duration_met" };
+            db.AlertTransitions.Add(transition);
+            (alert.State, alert.ResolvedAt, alert.FiredAt) = (AlertState.Firing, null, now);
+            await db.SaveChangesAsync(Ct);
+            return transition.Id;
+        }
+
+        private static async Task EndAsync(ScratchDatabase database, Guid silence)
+        {
+            await using var db = database.Context();
+            await db.Silences.Where(s => s.Id == silence).ExecuteUpdateAsync(s => s.SetProperty(x => x.CancelledAt, DateTimeOffset.UtcNow), Ct);
+        }
+
+        private static async Task<(ApiTests.ApiFactory Factory, string? File)> DownAsync(ScratchDatabase database) => await HostAsync(database, "new", down: true);
+
+        /// <summary>
+        /// Reviewer-2's case: a resolve held under a silence (resolved at plan), the silence ends and the alert fires again before the release
+        /// pass gets to it. Its escalation is the recurrence's: the release pass leaves it open, so a recurrence right after maintenance is paged.
+        /// </summary>
+        [Fact]
+        public async Task A_held_resolve_released_after_the_alert_fired_again_leaves_the_recurrence_open_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var (alert, firing) = await FireAsync(database, TimeSpan.Zero);
+            var (up, _) = await HostAsync(database, "new");
+            await using (up)
+            {
+                await PlanAsync(up, database, firing);
+                var silence = await SilenceAsync(database);
+                var resolved = await ResolveAsync(database, alert);
+                await PlanAsync(up, database, resolved);
+                Assert.Equal((NotificationHoldReasons.Silence, true), await HoldAsync(database, resolved) is var h ? (h.Reason, h.ResolveAsked) : default);
+                Assert.Equal("Resolved", await CorrelationStateAsync(database, $"alert:{alert}"));
+
+                await EndAsync(database, silence);
+                var again = await RefireAsync(database, alert);
+                await PlanAsync(up, database, again);
+                Assert.Equal("Open", await CorrelationStateAsync(database, $"alert:{alert}"));
+
+                await Release(up).ReleaseOnceAsync(Ct);
+
+                Assert.Equal("Open", await CorrelationStateAsync(database, $"alert:{alert}"));
+                Assert.NotNull((await HoldAsync(database, resolved)).DecidedAt);
+            }
+        }
+
+        /// <summary>Both apply: a resolve kept under a silence while the pipeline was down wasn't resolved at plan, so the release pass resolves it.</summary>
+        [Fact]
+        public async Task A_resolve_kept_under_a_silence_while_down_is_resolved_at_release_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var (alert, firing) = await FireAsync(database, TimeSpan.Zero);
+            var (up, _) = await HostAsync(database, "new");
+            await using (up)
+            {
+                await PlanAsync(up, database, firing);
+            }
+            var silence = await SilenceAsync(database);
+            var resolved = await ResolveAsync(database, alert);
+            var (down, file) = await DownAsync(database);
+            try
+            {
+                await using (down)
+                {
+                    await PlanAsync(down, database, resolved);
+                }
+            }
+            finally
+            {
+                File.Delete(file!);
+            }
+            Assert.Equal((NotificationHoldReasons.Silence, false), await HoldAsync(database, resolved) is var h ? (h.Reason, h.ResolveAsked) : default);
+            Assert.Equal("Open", await CorrelationStateAsync(database, $"alert:{alert}"));
+
+            (up, _) = await HostAsync(database, "new");
+            await using (up)
+            {
+                await EndAsync(database, silence);
+                await Release(up).ReleaseOnceAsync(Ct);
+            }
+            Assert.Equal("Resolved", await CorrelationStateAsync(database, $"alert:{alert}"));
+        }
+
+        /// <summary>A resolve kept while the pipeline was down, then held by a silence made later: still not resolved at plan, so resolved at release.</summary>
+        [Fact]
+        public async Task A_resolve_kept_while_down_and_moved_under_a_later_silence_is_resolved_at_release_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var (alert, firing) = await FireAsync(database, TimeSpan.Zero);
+            var (up, _) = await HostAsync(database, "new");
+            await using (up)
+            {
+                await PlanAsync(up, database, firing);
+            }
+            var resolved = await ResolveAsync(database, alert);
+            var (down, file) = await DownAsync(database);
+            try
+            {
+                await using (down)
+                {
+                    await PlanAsync(down, database, resolved);
+                }
+            }
+            finally
+            {
+                File.Delete(file!);
+            }
+
+            // A silence covers it by the time the pipeline is back: the release pass moves it under that silence.
+            var silence = await SilenceAsync(database);
+            (up, _) = await HostAsync(database, "new");
+            await using (up)
+            {
+                await Release(up).ReleaseOnceAsync(Ct);
+                Assert.Equal(silence, (await HoldAsync(database, resolved)).SilenceId);
+                Assert.Equal("Open", await CorrelationStateAsync(database, $"alert:{alert}"));
+
+                await EndAsync(database, silence);
+                await Release(up).ReleaseOnceAsync(Ct);
+            }
+            Assert.Equal("Resolved", await CorrelationStateAsync(database, $"alert:{alert}"));
+        }
     }
 }

@@ -13,7 +13,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Juice.Observability.Data.Migrations
 {
     [DbContext(typeof(PlatformDbContext))]
-    [Migration("20261126105306_PipelineModeKept")]
+    [Migration("20261126132759_PipelineModeKept")]
     partial class PipelineModeKept
     {
         /// <inheritdoc />
@@ -1869,6 +1869,10 @@ namespace Juice.Observability.Data.Migrations
                         .IsRequired()
                         .HasColumnType("jsonb")
                         .HasColumnName("request");
+
+                    b.Property<bool>("ResolveAsked")
+                        .HasColumnType("boolean")
+                        .HasColumnName("resolve_asked");
 
                     b.Property<Guid>("SilenceId")
                         .HasColumnType("uuid")

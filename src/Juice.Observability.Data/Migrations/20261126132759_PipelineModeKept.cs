@@ -32,9 +32,18 @@ namespace Juice.Observability.Data.Migrations
                 nullable: false,
                 defaultValue: "");
 
-            // Holds kept before: the reason their silence says (none, Guid.Empty, is the pipeline not started); their mode wasn't kept.
+            migrationBuilder.AddColumn<bool>(
+                name: "resolve_asked",
+                table: "notification_holds",
+                type: "boolean",
+                nullable: false,
+                defaultValue: false);
+
+            // Holds kept before: the reason their silence says (none, Guid.Empty, is the pipeline not started); their mode wasn't kept. A
+            // silence's resolve was resolved at plan then (the release pass resolved only those kept while the pipeline was down).
             migrationBuilder.Sql(
-                "UPDATE notification_holds SET reason = CASE WHEN silence_id = '00000000-0000-0000-0000-000000000000' THEN 'pipeline_unavailable' ELSE 'silence' END");
+                "UPDATE notification_holds SET reason = CASE WHEN silence_id = '00000000-0000-0000-0000-000000000000' THEN 'pipeline_unavailable' ELSE 'silence' END, "
+                + "resolve_asked = (event = 'alert.resolved' AND silence_id <> '00000000-0000-0000-0000-000000000000')");
         }
 
         /// <inheritdoc />
@@ -50,6 +59,10 @@ namespace Juice.Observability.Data.Migrations
 
             migrationBuilder.DropColumn(
                 name: "reason",
+                table: "notification_holds");
+
+            migrationBuilder.DropColumn(
+                name: "resolve_asked",
                 table: "notification_holds");
         }
     }

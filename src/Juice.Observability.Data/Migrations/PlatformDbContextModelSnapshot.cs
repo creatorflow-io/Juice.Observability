@@ -1867,6 +1867,10 @@ namespace Juice.Observability.Data.Migrations
                         .HasColumnType("jsonb")
                         .HasColumnName("request");
 
+                    b.Property<bool>("ResolveAsked")
+                        .HasColumnType("boolean")
+                        .HasColumnName("resolve_asked");
+
                     b.Property<Guid>("SilenceId")
                         .HasColumnType("uuid")
                         .HasColumnName("silence_id");

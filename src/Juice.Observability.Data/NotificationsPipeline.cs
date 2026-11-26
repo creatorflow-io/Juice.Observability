@@ -80,6 +80,11 @@ namespace Juice.Observability.Data
         public required string Reason { get; init; }
         /// <summary>The pipeline mode when it was kept (<c>legacy</c>, <c>shadow</c>, <c>new</c>); null for a hold kept before the mode was.</summary>
         public string? Pipeline { get; init; }
+        /// <summary>
+        /// A held resolve whose correlation was resolved when it was planned (the pipeline was up): the release pass doesn't resolve it again,
+        /// which would close an escalation the alert reopened since (review #13).
+        /// </summary>
+        public bool ResolveAsked { get; init; }
         /// <summary><see cref="NotificationHoldOutcomes.Sent"/>, <see cref="NotificationHoldOutcomes.Dropped"/> or <see cref="NotificationHoldOutcomes.Failed"/>, once decided.</summary>
         public string? Outcome { get; set; }
         /// <summary>Tries that failed (an error, not the pipeline's refusal); at <see cref="NotificationHoldOutcomes.MaxAttempts"/> it is decided failed.</summary>

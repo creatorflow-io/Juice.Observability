@@ -94,6 +94,8 @@ namespace Juice.Observability.Notifications
                     Event = transition.ToState == AlertState.Firing ? NotificationPlan.Firing : NotificationPlan.Resolved,
                     Request = JsonSerializer.Serialize(request, JsonSerializerOptions.Web),
                     Reason = silence is null ? NotificationHoldReasons.PipelineUnavailable : NotificationHoldReasons.Silence, Pipeline = Mode,
+                    // Resolved above unless the pipeline was down (whatever the reason it is kept).
+                    ResolveAsked = transition.ToState != AlertState.Firing && !Unavailable,
                 });
                 return;
             }
