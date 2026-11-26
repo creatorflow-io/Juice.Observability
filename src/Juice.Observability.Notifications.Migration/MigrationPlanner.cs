@@ -301,6 +301,14 @@ namespace Juice.Observability.Notifications.Migration
                     items.Add(new(item.Subject, item.Key, MigrationAction.Conflict, problems));
                     continue;
                 }
+                var definition = mapped.Value!;
+                current.Policies.TryGetValue(definition.Key, out var existing);
+                if (existing is not null && existing.ManagedBy != AliasVocabulary.WebhooksAlias)
+                {
+                    items.Add(new(item.Subject, item.Key, MigrationAction.Conflict, [Taken("escalation policy", definition.Key, existing.ManagedBy)]));
+                    continue;
+                }
+                // A row in the way is a conflict first: waiting would not clear it.
                 if (!StepsNameRoutes)
                 {
                     items.Add(new(item.Subject, item.Key, MigrationAction.PendingFeature, [new(ProblemCodes.PendingFeature,
@@ -311,13 +319,6 @@ namespace Juice.Observability.Notifications.Migration
                 {
                     items.Add(new(item.Subject, item.Key, MigrationAction.PendingFeature, [new(ProblemCodes.PendingFeature,
                         $"A step names {string.Join(", ", waitsFor)}, which migrates with notifications M46-1 (its group window); the policy migrates then, unchanged.")]));
-                    continue;
-                }
-                var definition = mapped.Value!;
-                current.Policies.TryGetValue(definition.Key, out var existing);
-                if (existing is not null && existing.ManagedBy != AliasVocabulary.WebhooksAlias)
-                {
-                    items.Add(new(item.Subject, item.Key, MigrationAction.Conflict, [Taken("escalation policy", definition.Key, existing.ManagedBy)]));
                     continue;
                 }
                 var action = existing is null ? MigrationAction.Create
