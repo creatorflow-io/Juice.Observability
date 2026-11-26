@@ -242,8 +242,23 @@ namespace Juice.Observability.Tests
             Assert.Equal([("pager", ShadowDifferenceKinds.MissingInLegacy), ("sre", ShadowDifferenceKinds.MissingInNew)], findings.Select(f => (f.EndpointKey, f.Kind)));
         }
 
+
+        /// <summary>
+        /// A body rendered by the type's default template (template version 0: none ported for the channel yet) is explained as
+        /// templates_not_ported; the same difference from a ported template is not.
+        /// </summary>
+        [Fact]
+        public void A_body_from_a_default_template_is_explained()
+        {
+            var a = Alert();
+            var envelope = JsonSerializer.Serialize(new { ContentType = "application/json", Body = """{"id":"x","type":"observability.alert.firing","data":{}}""" });
+            var unported = ShadowCompare.Compare(Unit(a.Alert.Id), [Legacy(Payload(a))], [New(envelope) with { DefaultTemplate = true }], Options);
+            Assert.Equal((ShadowDifferenceKinds.Body, ShadowRules.TemplatesNotPorted), (Assert.Single(unported).Kind, unported[0].Rule));
+            var ported = ShadowCompare.Compare(Unit(a.Alert.Id), [Legacy(Payload(a))], [New(envelope)], Options);
+            Assert.Null(Assert.Single(ported).Rule);
+        }
         [Fact]
         public void Every_rule_is_named_in_the_vocabulary()
-            => Assert.Equal(5, ShadowRules.All.Distinct().Count());
+            => Assert.Equal(6, ShadowRules.All.Distinct().Count());
     }
 }

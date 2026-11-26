@@ -17,7 +17,7 @@ namespace Juice.Observability.Notifications.Shadow
     /// One delivery the new pipeline planned for the unit, through the integration of the endpoint's key; <c>Content</c> is what it rendered
     /// (a webhook's body and type, a chat message, an email).
     /// </summary>
-    public sealed record NewSent(string IntegrationKey, string Channel, string Content, NewStatus Status, DateTimeOffset CreatedAt);
+    public sealed record NewSent(string IntegrationKey, string Channel, string Content, NewStatus Status, DateTimeOffset CreatedAt, bool DefaultTemplate = false);
 
     /// <summary>
     /// What is compared: a transition's own notifications (step 0), or one escalation step of its alert. <c>ResolvedSince</c>: the alert
@@ -129,7 +129,9 @@ namespace Juice.Observability.Notifications.Shadow
                 };
                 if (problem is not null && seen.Add(problem.Detail))
                 {
-                    yield return new(legacy.EndpointKey, problem.Kind, problem.Rule, problem.Detail);
+                    // Rendered by the type's default template (none ported for the channel yet): a different body is that, not a defect.
+                    var rule = problem.Rule ?? (d.DefaultTemplate && problem.Kind is ShadowDifferenceKinds.Body or ShadowDifferenceKinds.Shape ? ShadowRules.TemplatesNotPorted : null);
+                    yield return new(legacy.EndpointKey, problem.Kind, rule, problem.Detail);
                 }
             }
         }

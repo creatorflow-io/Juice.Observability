@@ -74,7 +74,13 @@ namespace Juice.Observability.Data
         public const string ToldPerAlert = "told_per_alert";
         /// <summary>An email endpoint with several recipients: one message per recipient in the new pipeline, one to all in legacy (Q13).</summary>
         public const string EmailFanOut = "email_fan_out";
+        /// <summary>
+        /// The new pipeline rendered the delivery with the type's default template (template version 0): no template for the channel is ported
+        /// yet (M46c), so its body differs from legacy's by design. Explained, so the soak and the dead-man's shadow cause don't fire on every
+        /// unit until the templates are in.
+        /// </summary>
+        public const string TemplatesNotPorted = "templates_not_ported";
 
-        public static readonly IReadOnlyList<string> All = [DigestBoundary, ResolveCancelsFiring, BlockedByPolicyInLegacy, ToldPerAlert, EmailFanOut];
+        public static readonly IReadOnlyList<string> All = [DigestBoundary, ResolveCancelsFiring, BlockedByPolicyInLegacy, ToldPerAlert, EmailFanOut, TemplatesNotPorted];
     }
 }

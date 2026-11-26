@@ -43,8 +43,8 @@ namespace Juice.Observability.Tests
                 ["Notifications:Shadow:Interval"] = "01:00:00",
             });
 
-        private static ShadowComparer Comparer(WebApplicationFactory<Program> factory)
-            => new(factory.Services.GetRequiredService<IServiceScopeFactory>(), Options.Create(new ShadowOptions { Grace = TimeSpan.Zero }),
+        private static ShadowComparer Comparer(WebApplicationFactory<Program> factory, int batch = 100)
+            => new(factory.Services.GetRequiredService<IServiceScopeFactory>(), Options.Create(new ShadowOptions { Grace = TimeSpan.Zero, Batch = batch }),
                 factory.Services.GetRequiredService<IOptions<WebhookOptions>>(), TimeProvider.System, NullLogger<ShadowComparer>.Instance);
 
         private static async Task SendAsync<T>(WebApplicationFactory<Program> factory, Juice.MediatR.IRequest<Juice.Notifications.Outcome<T>> command)
@@ -222,6 +222,13 @@ namespace Juice.Observability.Tests
                 Rule = ShadowRules.DigestBoundary, Detail = "explained", DetectedAt = now,
             });
             await db.SaveChangesAsync(Ct);
+            // Bodies of a type's default template are explained too (templates_not_ported): the dead-man's cause stays quiet on them.
+            db.ShadowDifferences.Add(new ShadowDifference
+            {
+                TenantId = tenant, TransitionId = transition, AlertId = alert, Event = NotificationPlan.Firing, EndpointKey = "ops", Kind = ShadowDifferenceKinds.Body,
+                Rule = ShadowRules.TemplatesNotPorted, Detail = "default template", DetectedAt = now,
+            });
+            await db.SaveChangesAsync(Ct);
             Assert.Null(await report.FailingAsync(Ct));   // compared, and explained
 
             db.ShadowDifferences.Add(new ShadowDifference
@@ -253,7 +260,10 @@ namespace Juice.Observability.Tests
             await ProducerAdapterTests.PlanAsync(factory, database, transition);
             await Flow.Dispatcher(database, o => o.MaxAttempts = 8).DispatchOnceAsync(Ct);   // a 503: retrying
 
-            Assert.Equal(1, await Comparer(factory).CompareOnceAsync(Ct));
+            // Nothing recorded, and the unit waits for its next look: a second pass at once doesn't take it again (review of #12, no spin).
+            var comparer = Comparer(factory, batch: 1);
+            Assert.Equal(0, await comparer.CompareOnceAsync(Ct));
+            Assert.Equal(0, await comparer.CompareOnceAsync(Ct));
 
             await using var db = database.Context();
             Assert.False(await db.ShadowComparisons.AnyAsync(c => c.TransitionId == transition, Ct));

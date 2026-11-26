@@ -71,7 +71,8 @@ namespace Juice.Observability.Notifications.Shadow
                     if (await lease.TryHoldAsync(stoppingToken))
                     {
                         using var pass = WorkerPulse.Begin(Worker, stoppingToken);
-                        while (await CompareOnceAsync(stoppingToken) >= options.Value.Batch)
+                        // Until nothing more is recorded: unsettled units wait for their next look, so this never spins on them.
+                        while (await CompareOnceAsync(stoppingToken) > 0)
                         {
                         }
                         pass.Succeeded();
@@ -85,26 +86,50 @@ namespace Juice.Observability.Notifications.Shadow
             while (await timer.WaitForNextTickAsync(stoppingToken));
         }
 
-        /// <summary>Compares up to one batch of units that are due; returns how many it looked at.</summary>
+        /// <summary>
+        /// Units still sending on a side when last looked at, and when to look again (review of #12): a pass skips them until then, so it never
+        /// spins on the same unsettled batch. Lost on a restart (or a lease handed over), when they are simply looked at again.
+        /// </summary>
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<(Guid Transition, int Step), DateTimeOffset> _deferred = new();
+
+        /// <summary>When the shadow run began (the pipeline's first request), once known: it never moves back.</summary>
+        private DateTimeOffset? _first;
+
+        /// <summary>The embedded application's id in the pipeline, once known: its requests' keys are unique per (tenant, application).</summary>
+        private Guid? _application;
+
+        /// <summary>Compares up to one batch of units that are due; returns how many it recorded (0 when nothing more is due now).</summary>
         public async Task<int> CompareOnceAsync(CancellationToken cancellationToken)
         {
             await using var scope = scopes.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
             var pipeline = scope.ServiceProvider.GetRequiredService<NotificationsDbContext>();
-            var tenant = scope.ServiceProvider.GetRequiredService<NotificationsEmbeddedOptions>().TenantId;
+            var embedded = scope.ServiceProvider.GetRequiredService<NotificationsEmbeddedOptions>();
+            var tenant = embedded.TenantId;
             var settings = options.Value;
             var now = clock.GetUtcNow();
             var due = now - settings.Grace;
+            _application ??= await pipeline.Applications.AsNoTracking().Where(a => a.Key == embedded.ApplicationKey).Select(a => (Guid?)a.Id).SingleOrDefaultAsync(cancellationToken);
+            if (_application is not { } application)
+            {
+                return 0;
+            }
             // The shadow run began with the new pipeline's first request: nothing before it was ever asked of the new side.
-            var first = await pipeline.Requests.AsNoTracking().Where(r => r.TenantId == tenant).MinAsync(r => (DateTimeOffset?)r.AcceptedAt, cancellationToken);
-            if (first is null)
+            _first ??= await pipeline.Requests.AsNoTracking().Where(r => r.TenantId == tenant && r.ApplicationId == application)
+                .MinAsync(r => (DateTimeOffset?)r.AcceptedAt, cancellationToken);
+            if (_first is not { } first)
             {
                 return 0;
             }
             // Within the lookback: each pass reads a bounded window, however long the run has gone on.
-            var since = first.Value > now - settings.Lookback ? first.Value : now - settings.Lookback;
-            var units = await DueAsync(db, pipeline, tenant, since, due, settings.Batch, cancellationToken);
+            var since = first > now - settings.Lookback ? first : now - settings.Lookback;
+            foreach (var key in _deferred.Where(d => d.Value <= now).Select(d => d.Key).ToList())
+            {
+                _deferred.TryRemove(key, out _);
+            }
+            var units = await DueAsync(db, pipeline, tenant, application, since, due, settings.Batch, [.. _deferred.Keys.Select(k => k.Transition).Distinct()], cancellationToken);
             var compare = new ShadowCompareOptions(settings.TimingTolerance, webhooks.Value.ConsoleUrl);
+            var recorded = 0;
             foreach (var (platformTenant, transitionId, step, unitAt) in units)
             {
                 var transition = await db.AlertTransitions.AsNoTracking().SingleAsync(t => t.Id == transitionId, cancellationToken);
@@ -113,57 +138,66 @@ namespace Juice.Observability.Notifications.Shadow
                     await db.AlertTransitions.AnyAsync(t => t.AlertId == transition.AlertId && t.ToState == AlertState.Resolved && t.At > transition.At, cancellationToken),
                     await db.NotificationHolds.AnyAsync(h => h.TransitionId == transitionId, cancellationToken));
                 var legacy = await LegacyAsync(db, transitionId, step, cancellationToken);
-                var @new = await NewAsync(pipeline, tenant, transitionId, step, cancellationToken);
+                var @new = await NewAsync(pipeline, tenant, application, transitionId, step, cancellationToken);
                 var findings = ShadowCompare.Compare(unit, legacy, @new, compare);
-                // Still sending on one side: looked at again next pass, until the wait runs out.
+                // Still sending on one side: looked at again after the next interval, until the wait runs out.
                 if (findings.Any(f => f.Kind == ShadowDifferenceKinds.Unsettled) && now - unitAt < settings.MaxWait)
                 {
+                    var next = now + settings.Interval;
+                    _deferred[(transitionId, step)] = next < unitAt + settings.MaxWait ? next : unitAt + settings.MaxWait;
                     continue;
                 }
                 await RecordAsync(db, unit, legacy, @new, findings, now, cancellationToken);
+                recorded++;
             }
-            return units.Count;
+            return recorded;
         }
 
         /// <summary>
         /// Units due: transitions the platform planned since the shadow run began and at least the grace ago, and escalation steps either
-        /// pipeline sent at least the grace ago, not yet compared. Oldest first.
+        /// pipeline ran at least the grace ago, not yet compared and not deferred. Oldest first. The new side's steps come from its escalations
+        /// (one row a notification, with the steps it ran), not from scanning its recipients.
         /// </summary>
         private static async Task<List<(Guid Tenant, Guid Transition, int Step, DateTimeOffset At)>> DueAsync(PlatformDbContext db, NotificationsDbContext pipeline,
-            Guid tenant, DateTimeOffset since, DateTimeOffset due, int batch, CancellationToken ct)
+            Guid tenant, Guid application, DateTimeOffset since, DateTimeOffset due, int batch, List<Guid> deferred, CancellationToken ct)
         {
             var transitions = await db.AlertTransitions.AsNoTracking()
                 // Planned once the shadow run began (the first request is accepted in the plan's transaction, a moment after its time).
                 .Where(t => t.NotificationsPlannedAt >= since - PlanSlack && t.At <= due && (t.ToState == AlertState.Firing || t.ToState == AlertState.Resolved))
                 .Where(t => !db.ShadowComparisons.Any(c => c.TenantId == t.TenantId && c.TransitionId == t.Id && c.EscalationStep == 0))
+                .Where(t => !deferred.Contains(t.Id))
                 .OrderBy(t => t.At).Take(batch)
                 .Select(t => new { t.TenantId, t.Id, t.At }).ToListAsync(ct);
             var legacySteps = await db.WebhookDeliveries.AsNoTracking()
                 .Where(d => d.EscalationStep > 0 && d.TransitionId != null && d.CreatedAt >= since && d.CreatedAt <= due)
                 .Where(d => !db.ShadowComparisons.Any(c => c.TenantId == d.TenantId && c.TransitionId == d.TransitionId && c.EscalationStep == d.EscalationStep))
+                .Where(d => !deferred.Contains(d.TransitionId!.Value))
                 .GroupBy(d => new { d.TenantId, Transition = d.TransitionId!.Value, d.EscalationStep })
                 .Select(g => new { g.Key.TenantId, g.Key.Transition, g.Key.EscalationStep, At = g.Min(d => d.CreatedAt) })
                 .OrderBy(x => x.At).Take(batch).ToListAsync(ct);
-            var newSteps = await (from r in pipeline.Recipients.AsNoTracking()
-                                  join n in pipeline.Notifications.AsNoTracking() on new { r.TenantId, Id = r.NotificationId } equals new { n.TenantId, n.Id }
-                                  join q in pipeline.Requests.AsNoTracking() on new { n.TenantId, Id = n.RequestId } equals new { q.TenantId, q.Id }
-                                  where r.TenantId == tenant && r.EscalationStep > 0 && r.CreatedAt >= since && r.CreatedAt <= due && q.IdempotencyKey.StartsWith("transition:")
-                                  group r by new { q.IdempotencyKey, r.EscalationStep } into g
-                                  select new { g.Key.IdempotencyKey, g.Key.EscalationStep, At = g.Min(x => x.CreatedAt) })
-                .OrderBy(x => x.At).Take(batch).ToListAsync(ct);
+            var escalations = await (from e in pipeline.Escalations.AsNoTracking()
+                                     join n in pipeline.Notifications.AsNoTracking() on new { e.TenantId, Id = e.NotificationId } equals new { n.TenantId, n.Id }
+                                     join q in pipeline.Requests.AsNoTracking() on new { n.TenantId, Id = n.RequestId } equals new { q.TenantId, q.Id }
+                                     where e.TenantId == tenant && e.NextStep > 0 && e.UpdatedAt >= since && e.UpdatedAt <= due
+                                         && q.ApplicationId == application && q.IdempotencyKey.StartsWith("transition:")
+                                     orderby e.UpdatedAt
+                                     select new { q.IdempotencyKey, e.NextStep, e.UpdatedAt })
+                .Take(batch).ToListAsync(ct);
             var units = transitions.Select(t => (t.TenantId, t.Id, 0, t.At))
                 .Concat(legacySteps.Select(s => (s.TenantId, s.Transition, s.EscalationStep, s.At)))
                 .ToList();
-            // New-side steps legacy never sent: the transition's tenant is the platform's, read with the transition.
-            var newOnly = newSteps.Select(s => (Transition: Guid.TryParse(s.IdempotencyKey["transition:".Length..], out var id) ? id : Guid.Empty, s.EscalationStep, s.At))
-                .Where(s => s.Transition != Guid.Empty && !units.Any(u => u.Item2 == s.Transition && u.Item3 == s.EscalationStep)).ToList();
+            // New-side steps legacy never sent (steps 1 up to the escalation's next): the transition's tenant is the platform's, read with it.
+            var newOnly = escalations
+                .SelectMany(e => Enumerable.Range(1, e.NextStep).Select(step =>
+                    (Transition: Guid.TryParse(e.IdempotencyKey["transition:".Length..], out var id) ? id : Guid.Empty, Step: step, At: e.UpdatedAt)))
+                .Where(s => s.Transition != Guid.Empty && !deferred.Contains(s.Transition) && !units.Any(u => u.Item2 == s.Transition && u.Item3 == s.Step)).ToList();
             if (newOnly.Count > 0)
             {
                 var ids = newOnly.Select(s => s.Transition).Distinct().ToList();
                 var known = await db.AlertTransitions.AsNoTracking().Where(t => ids.Contains(t.Id)).Select(t => new { t.Id, t.TenantId }).ToDictionaryAsync(t => t.Id, t => t.TenantId, ct);
                 var compared = await db.ShadowComparisons.AsNoTracking().Where(c => ids.Contains(c.TransitionId)).Select(c => new { c.TransitionId, c.EscalationStep }).ToListAsync(ct);
-                units.AddRange(newOnly.Where(s => known.ContainsKey(s.Transition) && !compared.Any(c => c.TransitionId == s.Transition && c.EscalationStep == s.EscalationStep))
-                    .Select(s => (known[s.Transition], s.Transition, s.EscalationStep, s.At)));
+                units.AddRange(newOnly.Where(s => known.ContainsKey(s.Transition) && !compared.Any(c => c.TransitionId == s.Transition && c.EscalationStep == s.Step))
+                    .Select(s => (known[s.Transition], s.Transition, s.Step, s.At)));
             }
             return [.. units.OrderBy(u => u.Item4).Take(batch)];
         }
@@ -188,7 +222,7 @@ namespace Juice.Observability.Notifications.Shadow
         }
 
         /// <summary>What the new pipeline planned for the unit: the deliveries carrying the transition's request's recipients of that step.</summary>
-        internal static async Task<List<NewSent>> NewAsync(NotificationsDbContext pipeline, Guid tenant, Guid transitionId, int step, CancellationToken ct)
+        internal static async Task<List<NewSent>> NewAsync(NotificationsDbContext pipeline, Guid tenant, Guid application, Guid transitionId, int step, CancellationToken ct)
         {
             var key = ProducerAdapter.TransitionKey(transitionId);
             return await (from q in pipeline.Requests.AsNoTracking()
@@ -196,9 +230,9 @@ namespace Juice.Observability.Notifications.Shadow
                           join r in pipeline.Recipients.AsNoTracking() on new { i.TenantId, Id = i.RecipientId } equals new { r.TenantId, r.Id }
                           join d in pipeline.Deliveries.AsNoTracking() on new { i.TenantId, Id = i.DeliveryId } equals new { d.TenantId, d.Id }
                           join g in pipeline.Integrations.AsNoTracking() on new { d.TenantId, Id = d.IntegrationId } equals new { g.TenantId, g.Id }
-                          where q.TenantId == tenant && q.IdempotencyKey == key && r.EscalationStep == step
-                          select new { d.Id, g.Key, d.Channel, d.Content, d.Status, d.CreatedAt })
-                .Distinct().Select(x => new NewSent(x.Key, x.Channel, x.Content, x.Status, x.CreatedAt)).ToListAsync(ct);
+                          where q.TenantId == tenant && q.ApplicationId == application && q.IdempotencyKey == key && r.EscalationStep == step
+                          select new { d.Id, g.Key, d.Channel, d.Content, d.Status, d.CreatedAt, d.TemplateVersion })
+                .Distinct().Select(x => new NewSent(x.Key, x.Channel, x.Content, x.Status, x.CreatedAt, x.TemplateVersion == 0)).ToListAsync(ct);
         }
 
         private static async Task RecordAsync(PlatformDbContext db, ShadowUnit unit, IReadOnlyList<LegacySent> legacy, IReadOnlyList<NewSent> @new,

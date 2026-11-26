@@ -28,7 +28,7 @@ namespace Juice.Observability.Notifications.Shadow
     {
         private sealed record DayRow(DateOnly Day, int Compared, int Differences, int Unexplained);
 
-        public const int MaxLatest = 100;
+        public const int MaxLatest = 200;
 
         public async Task<ShadowReportView> GetAsync(Guid tenantId, DateTimeOffset from, DateTimeOffset to, int latest, CancellationToken ct)
         {
@@ -38,7 +38,7 @@ namespace Juice.Observability.Notifications.Shadow
             var matched = await comparisons.CountAsync(c => c.Differences == 0, ct);
             var byRule = await differences.GroupBy(d => new { d.Rule, d.Kind }).Select(g => new { g.Key.Rule, g.Key.Kind, Count = g.Count() }).ToListAsync(ct);
             var unexplained = await differences.Where(d => d.Rule == null).OrderByDescending(d => d.DetectedAt).ThenBy(d => d.Id)
-                .Take(Math.Clamp(latest, 0, MaxLatest)).ToListAsync(ct);
+                .Take(Math.Clamp(latest, 1, MaxLatest)).ToListAsync(ct);
             // By UTC day, in the database (one row a day however many units).
             var days = await db.Database.SqlQuery<DayRow>($"""
                 SELECT (compared_at AT TIME ZONE 'UTC')::date AS day, count(*)::int AS compared, coalesce(sum(differences), 0)::int AS differences,

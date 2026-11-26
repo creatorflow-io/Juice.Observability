@@ -35,7 +35,7 @@ namespace Juice.Observability.Api.Endpoints
             {
                 return Mutation.Problem(StatusCodes.Status400BadRequest, "Invalid window", $"from is before to, at most {MaxWindow.TotalDays} days apart.");
             }
-            return Results.Ok(await report.GetAsync(tenantId, start, end, latest ?? 20, ct));
+            return Results.Ok(await report.GetAsync(tenantId, start, end, Math.Clamp(latest ?? 20, 1, ShadowReport.MaxLatest), ct));
         }
     }
 }
