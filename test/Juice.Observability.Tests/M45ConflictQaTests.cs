@@ -111,10 +111,10 @@ namespace Juice.Observability.Tests
 
         /// <summary>
         /// An acknowledgement whose pipeline call stays refused past the inline retries is saved (2xx) and "left to heal". A silence's hold is
-        /// healed by the hold pass; an acknowledgement has no such pass, so the pipeline's correlation stays open and its escalation goes on paging
-        /// an alert someone acknowledged.
+        /// healed by the hold pass; an acknowledgement is kept and replayed by the release pass (D4, M45-3), so the pipeline's correlation ends acknowledged and
+        /// its escalation stops paging an alert someone acknowledged.
         /// </summary>
-        [Fact(Skip = "QA defect D4: an acknowledgement left to heal after concurrent_change is never told to the pipeline.")]
+        [Fact]
         public async Task An_acknowledgement_left_to_heal_reaches_the_pipeline_once_the_race_is_over_Async()
         {
             LocalStack.RequireAvailable();
