@@ -220,6 +220,8 @@ services:
     profiles: ["platform"]
     build:
       context: ../..
+      # The Juice.Notifications alphas come from GitHub Packages: the credentials nuget.config names, from the environment (secrets below).
+      secrets: [github_package_username, github_package_token]
     # The host user that owns secrets/agents (scripts/init.sh writes JUICE_UID), so keys readable by their owner only can be read here.
     user: "${JUICE_UID:-1654}"
     # A crashed API is started again: without it every worker stays down until someone notices (docs/scale-tests.md, the workers ceiling).
@@ -329,6 +331,13 @@ networks:
   # The shared dev infrastructure's network (../../../dev-infra: docker compose up -d there first), for its Keycloak.
   juice-dev:
     external: true
+
+# The GitHub Packages credentials for the API's image build (GITHUB_PACKAGE_USERNAME and GITHUB_PACKAGE_TOKEN in the environment).
+secrets:
+  github_package_username:
+    environment: GITHUB_PACKAGE_USERNAME
+  github_package_token:
+    environment: GITHUB_PACKAGE_TOKEN
 
 volumes:
   agent-data:

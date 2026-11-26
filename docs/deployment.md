@@ -24,6 +24,9 @@ tests/verify.sh                                     # ingestion, tenant stamping
 docker compose --profile test stop otel-collector-test
 ```
 
+The API's image restores the Juice.Notifications packages from GitHub Packages (`nuget.config`): set `GITHUB_PACKAGE_USERNAME` and
+`GITHUB_PACKAGE_TOKEN` (a token with `read:packages`) in the environment before `--build`. They reach the build as secrets, never a layer.
+
 `init.sh` asks for the tenant Id, or takes it from `JUICE_PLATFORM_TENANT_ID`: the tenant's Id from juice-tenants, a GUID (the tenant
 pattern, juice-docs decision record). Locally it defaults to the local stacks' tenant, `0193f0aa-0000-7000-8000-0000000000a1`. Set `PUBLIC_HOST` before it runs, or run
 `scripts/init.sh --reissue-cert` after changing it, so the Collector certificate names the address hosts send to.
