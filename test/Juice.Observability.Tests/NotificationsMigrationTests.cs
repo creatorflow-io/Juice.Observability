@@ -343,12 +343,8 @@ namespace Juice.Observability.Tests
             Assert.Equal(MigrationAction.Create, Assert.Single(report.Items, i => i.Key == "ops").Action);
         }
 
-        /// <summary>Whether the notifications alpha takes a route recipient by key in a step (M46-0); policies can't be applied before.</summary>
-        private static bool StepsNameRoutes()
-        {
-            using var steps = JsonDocument.Parse("""[{"afterMinutes":5,"recipients":[{"kind":"route","key":"ops"}]}]""");
-            return EscalationRules.Parse(steps.RootElement, []).Errors.Count == 0;
-        }
+        /// <summary>Whether the notifications alpha takes a route recipient by key in a step (M46-0), as the planner asks it.</summary>
+        private static bool StepsNameRoutes() => MigrationPlanner.StepsNameRoutes;
 
         [Fact]
         public async Task A_policy_is_applied_with_relative_steps_naming_routes()
@@ -378,9 +374,10 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
-        public async Task A_policy_the_notifications_alpha_refuses_rolls_the_whole_apply_back()
+        public async Task Before_steps_name_routes_a_policy_waits_and_the_endpoints_migrate()
         {
-            // Before M46-0 a step can't name a route by key: notifications refuses the policy, and the endpoints written before it go too.
+            // Before M46-0 a step can't name a route by key, and notifications would refuse the policy and roll back the endpoints written
+            // before it (QA, D2): the report says the policy waits, and the apply does what it said.
             Assert.SkipWhen(StepsNameRoutes(), "M46-0 is in: the policy is taken (A_policy_is_applied_with_relative_steps_naming_routes)");
             await using var stack = await StartAsync();
             await SeedAsync(stack, db =>
@@ -389,11 +386,15 @@ namespace Juice.Observability.Tests
                 db.EscalationPolicies.Add(new Data.EscalationPolicy { TenantId = stack.TenantId, Key = "paging", Name = "Paging", Steps = [new() { AfterMinutes = 5, EndpointKeys = ["ops"] }] });
             });
 
+            var predicted = await stack.ReportAsync();
             var report = await stack.ApplyAsync();
 
-            Assert.False(report.Applied);
-            Assert.Equal(MigrationAction.Conflict, Assert.Single(report.Items, i => i.Key == "paging").Action);
-            Assert.False(await stack.InScopeAsync(sp => sp.GetRequiredService<NotificationsDbContext>().Integrations.AnyAsync(i => i.TenantId == stack.Notifications && i.Key == "ops")));
+            Assert.True(report.Applied);
+            Assert.Equal(predicted.Items.Select(i => (i.Key, i.Action)), report.Items.Select(i => (i.Key, i.Action)));
+            var policy = Assert.Single(report.Items, i => i.Key == "paging");
+            Assert.Equal((MigrationAction.PendingFeature, ProblemCodes.PendingFeature), (policy.Action, Assert.Single(policy.Problems).Code));
+            Assert.Equal(MigrationAction.Create, Assert.Single(report.Items, i => i.Key == "ops").Action);
+            Assert.True(await stack.InScopeAsync(sp => sp.GetRequiredService<NotificationsDbContext>().Integrations.AnyAsync(i => i.TenantId == stack.Notifications && i.Key == "ops")));
         }
 
         [Fact]

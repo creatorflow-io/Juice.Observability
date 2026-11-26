@@ -93,6 +93,14 @@ namespace Juice.Observability.Notifications.Migration
         /// <summary>Whether the pinned notifications alpha writes a route's digestSeconds (M46-1, decision G2). True, and passed to PutRoute, once it is pinned.</summary>
         internal static bool RouteDigestSupported => false;
 
+        /// <summary>
+        /// Whether the pinned notifications takes a route by its key in an escalation step (M46-0), as every migrated policy's steps name their
+        /// endpoints. Asked of its own step rules, not guessed from its version: before M46-0 they refuse such a step, and the apply would roll
+        /// back.
+        /// </summary>
+        internal static bool StepsNameRoutes { get; } = EscalationRules.Parse(
+            JsonDocument.Parse("""[{ "afterMinutes": 0, "recipients": [{ "kind": "route", "key": "probe" }] }]""").RootElement, null).Errors.Count == 0;
+
         public async Task<MigrationReport> ReportAsync(LegacySetup legacy, CancellationToken ct)
         {
             Check(legacy);
@@ -291,6 +299,12 @@ namespace Juice.Observability.Notifications.Migration
                 if (problems.Count > 0)
                 {
                     items.Add(new(item.Subject, item.Key, MigrationAction.Conflict, problems));
+                    continue;
+                }
+                if (!StepsNameRoutes)
+                {
+                    items.Add(new(item.Subject, item.Key, MigrationAction.PendingFeature, [new(ProblemCodes.PendingFeature,
+                        "Its steps name endpoints' routes by key, which the notifications version this host runs can't take yet (M46-0); the policy migrates once it can, unchanged.")]));
                     continue;
                 }
                 if (waitsFor.Count > 0)
