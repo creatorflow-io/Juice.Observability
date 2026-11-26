@@ -64,6 +64,16 @@ namespace Juice.Observability.Notifications
                 services.AddHostedService<NotificationsReleasePass>();
                 services.AddHostedService<SilenceHoldPass>();
             }
+            // The shadow run's comparison (M47): its report is read in any mode; the comparer runs in shadow only, after the pipeline's start.
+            services.Configure<Shadow.ShadowOptions>(configuration.GetSection(Shadow.ShadowOptions.Section));
+            services.AddScoped<Shadow.ShadowReport>();
+            if (mode == NotificationsPipeline.Shadow)
+            {
+                services.AddHostedService<Shadow.ShadowComparer>();
+                // The dead-man's shadow cause (M49) asks it each pass; outside shadow it isn't registered, and the cause stays quiet.
+                Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddScoped<Juice.Observability.Health.DeadMan.IShadowReport>(services,
+                    sp => sp.GetRequiredService<Shadow.ShadowReport>());
+            }
             // After a failed start, none of the pipeline's other services starts (they would poll tables that aren't there); in legacy, none runs.
             PipelineStart.GateTheRest(services, before, guarded, runs: mode != NotificationsPipeline.Legacy);
             // The platform's transaction leaves the pipeline's commands to the pipeline's own (by its list, not by name).

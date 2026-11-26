@@ -817,6 +817,9 @@ namespace Juice.Observability.Data.Migrations
                     b.HasKey("Id")
                         .HasName("pk_alert_transitions");
 
+                    b.HasIndex("NotificationsPlannedAt")
+                        .HasDatabaseName("ix_alert_transitions_notifications_planned_at");
+
                     b.HasIndex("TenantId")
                         .HasDatabaseName("ix_alert_transitions_tenant_id");
 
@@ -2329,6 +2332,131 @@ namespace Juice.Observability.Data.Migrations
                     b.ToTable("service_instances", (string)null);
                 });
 
+            modelBuilder.Entity("Juice.Observability.Data.ShadowComparison", b =>
+                {
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<Guid>("TransitionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("transition_id");
+
+                    b.Property<int>("EscalationStep")
+                        .HasColumnType("integer")
+                        .HasColumnName("escalation_step");
+
+                    b.Property<Guid>("AlertId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("alert_id");
+
+                    b.Property<DateTimeOffset>("ComparedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("compared_at");
+
+                    b.Property<int>("Differences")
+                        .HasColumnType("integer")
+                        .HasColumnName("differences");
+
+                    b.Property<string>("Event")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("event");
+
+                    b.Property<int>("Legacy")
+                        .HasColumnType("integer")
+                        .HasColumnName("legacy");
+
+                    b.Property<int>("New")
+                        .HasColumnType("integer")
+                        .HasColumnName("new");
+
+                    b.Property<int>("Unexplained")
+                        .HasColumnType("integer")
+                        .HasColumnName("unexplained");
+
+                    b.HasKey("TenantId", "TransitionId", "EscalationStep")
+                        .HasName("pk_shadow_comparisons");
+
+                    b.HasIndex("TenantId", "ComparedAt")
+                        .HasDatabaseName("ix_shadow_comparisons_tenant_id_compared_at");
+
+                    b.ToTable("shadow_comparisons", (string)null);
+                });
+
+            modelBuilder.Entity("Juice.Observability.Data.ShadowDifference", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("AlertId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("alert_id");
+
+                    b.Property<string>("Detail")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("detail");
+
+                    b.Property<DateTimeOffset>("DetectedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("detected_at");
+
+                    b.Property<string>("EndpointKey")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("endpoint_key");
+
+                    b.Property<int>("EscalationStep")
+                        .HasColumnType("integer")
+                        .HasColumnName("escalation_step");
+
+                    b.Property<string>("Event")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("event");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("kind");
+
+                    b.Property<string>("Rule")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("rule");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<Guid>("TransitionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("transition_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_shadow_differences");
+
+                    b.HasIndex("TenantId", "DetectedAt")
+                        .HasDatabaseName("ix_shadow_differences_unexplained")
+                        .HasFilter("rule IS NULL");
+
+                    b.HasIndex("TenantId", "TransitionId", "EscalationStep")
+                        .HasDatabaseName("ix_shadow_differences_tenant_id_transition_id_escalation_step");
+
+                    b.HasIndex("TenantId", "DetectedAt", "Rule", "Kind")
+                        .HasDatabaseName("ix_shadow_differences_tenant_id_detected_at_rule_kind");
+
+                    b.ToTable("shadow_differences", (string)null);
+                });
+
             modelBuilder.Entity("Juice.Observability.Data.Silence", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2927,6 +3055,10 @@ namespace Juice.Observability.Data.Migrations
 
                     b.HasIndex("AlertId")
                         .HasDatabaseName("ix_webhook_deliveries_alert_id");
+
+                    b.HasIndex("CreatedAt")
+                        .HasDatabaseName("ix_webhook_deliveries_escalation_steps")
+                        .HasFilter("escalation_step > 0");
 
                     b.HasIndex("EndpointId")
                         .HasDatabaseName("ix_webhook_deliveries_endpoint_id");
@@ -3653,6 +3785,26 @@ namespace Juice.Observability.Data.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_service_instances_platform_tenants_tenant_id");
+                });
+
+            modelBuilder.Entity("Juice.Observability.Data.ShadowComparison", b =>
+                {
+                    b.HasOne("Juice.Observability.Data.PlatformTenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_shadow_comparisons_platform_tenants_tenant_id");
+                });
+
+            modelBuilder.Entity("Juice.Observability.Data.ShadowDifference", b =>
+                {
+                    b.HasOne("Juice.Observability.Data.PlatformTenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_shadow_differences_platform_tenants_tenant_id");
                 });
 
             modelBuilder.Entity("Juice.Observability.Data.Silence", b =>
