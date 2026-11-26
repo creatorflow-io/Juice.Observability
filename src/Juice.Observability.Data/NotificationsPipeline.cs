@@ -73,11 +73,31 @@ namespace Juice.Observability.Data
         public required string Request { get; init; }
         public DateTimeOffset CreatedAt { get; init; }
         public DateTimeOffset? DecidedAt { get; set; }
+        /// <summary>
+        /// Why it was kept (<see cref="NotificationHoldReasons"/>; architecture §6.4 A): a silence (legacy held it too: real in any mode), or the
+        /// pipeline not started (legacy sent it if that was in shadow). A silence wins when both apply. Kept as it was, whichever silence holds it later.
+        /// </summary>
+        public required string Reason { get; init; }
+        /// <summary>The pipeline mode when it was kept (<c>legacy</c>, <c>shadow</c>, <c>new</c>); null for a hold kept before the mode was.</summary>
+        public string? Pipeline { get; init; }
+        /// <summary>
+        /// A held resolve whose correlation was resolved when it was planned (the pipeline was up): the release pass doesn't resolve it again,
+        /// which would close an escalation the alert reopened since (review #13).
+        /// </summary>
+        public bool ResolveAsked { get; init; }
         /// <summary><see cref="NotificationHoldOutcomes.Sent"/>, <see cref="NotificationHoldOutcomes.Dropped"/> or <see cref="NotificationHoldOutcomes.Failed"/>, once decided.</summary>
         public string? Outcome { get; set; }
         /// <summary>Tries that failed (an error, not the pipeline's refusal); at <see cref="NotificationHoldOutcomes.MaxAttempts"/> it is decided failed.</summary>
         public int Attempts { get; set; }
         public string? LastError { get; set; }
+    }
+
+    public static class NotificationHoldReasons
+    {
+        /// <summary>A silence covered the alert: sent for real once released, in any mode.</summary>
+        public const string Silence = "silence";
+        /// <summary>The pipeline didn't start: kept in <c>shadow</c>, legacy sent it, so it is sent dry; otherwise for real.</summary>
+        public const string PipelineUnavailable = "pipeline_unavailable";
     }
 
     public static class NotificationHoldOutcomes
@@ -117,6 +137,11 @@ namespace Juice.Observability.Data
         public string? By { get; init; }
         /// <summary>The request to send (a <c>NotificationToSend</c>, as JSON).</summary>
         public string? Request { get; init; }
+        /// <summary>
+        /// The pipeline mode when it was parked (<c>legacy</c>, <c>shadow</c>, <c>new</c>; architecture §6.4): a send parked in shadow, which legacy
+        /// sent, is replayed dry. Null for a call parked before the mode was kept, replayed as it was.
+        /// </summary>
+        public string? Pipeline { get; init; }
         public DateTimeOffset CreatedAt { get; init; }
         public DateTimeOffset? ReplayedAt { get; set; }
         /// <summary>Replays that failed; at <see cref="NotificationHoldOutcomes.MaxAttempts"/> it is given up (replayed, with its error).</summary>

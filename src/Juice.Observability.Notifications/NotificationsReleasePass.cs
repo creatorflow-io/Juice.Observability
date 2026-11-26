@@ -119,8 +119,10 @@ namespace Juice.Observability.Notifications
                 var sent = false;
                 var error = await EachAsync(transaction, async () =>
                 {
-                    // Kept while the pipeline was down: its resolve wasn't asked then (a silence's hold was resolved at plan; again is no change).
-                    if (hold.Event == NotificationPlan.Resolved && hold.SilenceId == ProducerAdapter.PipelineUnavailable)
+                    // Its resolve first, if it wasn't asked at plan (the pipeline was down, whatever the reason it was kept: a silence wins when
+                    // both apply, and it may have moved under a later silence), and never once the alert has fired again since: that closes
+                    // the escalation of the recurrence (review #13).
+                    if (hold.Event == NotificationPlan.Resolved && !hold.ResolveAsked && !await FiredSinceAsync(db, hold, alert, cancellationToken))
                     {
                         await adapter.ResolveAlertAsync(hold.AlertId, null, cancellationToken);
                     }
@@ -168,5 +170,17 @@ namespace Juice.Observability.Notifications
         }
 
         private static string Bounded(string error) => error.Length > 1000 ? error[..1000] : error;
+
+        /// <summary>Whether the alert fired again after the held transition: firing now, or a later firing transition (resolved again since).</summary>
+        private static async Task<bool> FiredSinceAsync(PlatformDbContext db, NotificationHold hold, Alert alert, CancellationToken cancellationToken)
+        {
+            if (alert.State == AlertState.Firing)
+            {
+                return true;
+            }
+            var at = await db.AlertTransitions.AsNoTracking().Where(t => t.TenantId == hold.TenantId && t.Id == hold.TransitionId).Select(t => t.At).SingleAsync(cancellationToken);
+            return await db.AlertTransitions.AsNoTracking()
+                .AnyAsync(t => t.TenantId == hold.TenantId && t.AlertId == hold.AlertId && t.ToState == AlertState.Firing && t.At > at, cancellationToken);
+        }
     }
 }

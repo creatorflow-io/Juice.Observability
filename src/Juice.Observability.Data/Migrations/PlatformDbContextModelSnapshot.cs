@@ -1851,10 +1851,25 @@ namespace Juice.Observability.Data.Migrations
                         .HasColumnType("character varying(20)")
                         .HasColumnName("outcome");
 
+                    b.Property<string>("Pipeline")
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasColumnName("pipeline");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("reason");
+
                     b.Property<string>("Request")
                         .IsRequired()
                         .HasColumnType("jsonb")
                         .HasColumnName("request");
+
+                    b.Property<bool>("ResolveAsked")
+                        .HasColumnType("boolean")
+                        .HasColumnName("resolve_asked");
 
                     b.Property<Guid>("SilenceId")
                         .HasColumnType("uuid")
@@ -1920,6 +1935,11 @@ namespace Juice.Observability.Data.Migrations
                         .HasMaxLength(1000)
                         .HasColumnType("character varying(1000)")
                         .HasColumnName("last_error");
+
+                    b.Property<string>("Pipeline")
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasColumnName("pipeline");
 
                     b.Property<DateTimeOffset?>("ReplayedAt")
                         .HasColumnType("timestamp with time zone")
