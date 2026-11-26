@@ -42,7 +42,7 @@ namespace Juice.Observability.Notifications.Migration
         public async Task<IReadOnlyList<AliasEndpoint>> ListAsync(IReadOnlyDictionary<Guid, string>? legacyOwners, CancellationToken ct)
         {
             var integrations = await notifications.Integrations.AsNoTracking()
-                .Where(i => i.TenantId == Tenant && i.ManagedBy == AliasVocabulary.WebhooksAlias).OrderBy(i => i.Key).ToListAsync(ct);
+                .Where(i => i.TenantId == Tenant && (i.ManagedBy == AliasVocabulary.WebhooksAlias || i.ManagedBy == AliasVocabulary.AliasConfig)).OrderBy(i => i.Key).ToListAsync(ct);
             var endpoints = new List<AliasEndpoint>();
             foreach (var integration in integrations)
             {
@@ -56,11 +56,11 @@ namespace Juice.Observability.Notifications.Migration
 
         /// <summary>Whether the alias holds an endpoint of this id (its integration, written by the alias): false for one it never could map.</summary>
         public Task<bool> HoldsAsync(Guid id, CancellationToken ct)
-            => notifications.Integrations.AsNoTracking().AnyAsync(i => i.TenantId == Tenant && i.Id == id && i.ManagedBy == AliasVocabulary.WebhooksAlias, ct);
+            => notifications.Integrations.AsNoTracking().AnyAsync(i => i.TenantId == Tenant && i.Id == id && (i.ManagedBy == AliasVocabulary.WebhooksAlias || i.ManagedBy == AliasVocabulary.AliasConfig), ct);
 
         /// <summary>The endpoint with this id (its integration's), or null.</summary>
         public async Task<AliasEndpoint?> FindAsync(Guid id, IReadOnlyDictionary<Guid, string>? legacyOwners, CancellationToken ct)
-            => await notifications.Integrations.AsNoTracking().SingleOrDefaultAsync(i => i.TenantId == Tenant && i.Id == id && i.ManagedBy == AliasVocabulary.WebhooksAlias, ct)
+            => await notifications.Integrations.AsNoTracking().SingleOrDefaultAsync(i => i.TenantId == Tenant && i.Id == id && (i.ManagedBy == AliasVocabulary.WebhooksAlias || i.ManagedBy == AliasVocabulary.AliasConfig), ct)
                 is { } integration ? await AnswerAsync(integration, legacyOwners, ct) : null;
 
         private async Task<AliasEndpoint?> AnswerAsync(Integration integration, IReadOnlyDictionary<Guid, string>? legacyOwners, CancellationToken ct)
@@ -70,8 +70,9 @@ namespace Juice.Observability.Notifications.Migration
                 return null;
             }
             // Who owns it as legacy says: the legacy row's owner while legacy rows are written; else the file, if it declares the key.
+            // The alias's configuration's rows are the deployment's (M46c), as legacy's file-declared endpoints were.
             var owner = legacyOwners?.GetValueOrDefault(integration.Id)
-                ?? (webhooks.Value.Endpoints.Any(e => e.Key == integration.Key) ? Data.ManagedBy.Configuration : Data.ManagedBy.Api);
+                ?? (integration.ManagedBy == AliasVocabulary.AliasConfig || webhooks.Value.Endpoints.Any(e => e.Key == integration.Key) ? Data.ManagedBy.Configuration : Data.ManagedBy.Api);
             return new AliasEndpoint(integration.Id, definition, owner, integration.UpdatedAt);
         }
 
@@ -99,9 +100,10 @@ namespace Juice.Observability.Notifications.Migration
         }
 
         /// <summary>The allowlist entries the alias holds (new: legacy's table isn't written), with when each last changed.</summary>
-        public async Task<IReadOnlyList<(LegacyAllowlistEntry Entry, DateTimeOffset UpdatedAt)>> ListAllowlistAsync(CancellationToken ct)
-            => [.. (await notifications.Allowlist.AsNoTracking().Where(a => a.TenantId == Tenant && a.ManagedBy == AliasVocabulary.WebhooksAlias)
-                .OrderBy(a => a.Destination).ToListAsync(ct)).Select(a => (AllowlistMapping.Unmap(new AllowlistDefinition(a.Destination, a.Ports)), a.UpdatedAt))];
+        public async Task<IReadOnlyList<(LegacyAllowlistEntry Entry, DateTimeOffset UpdatedAt, string ManagedBy)>> ListAllowlistAsync(CancellationToken ct)
+            => [.. (await notifications.Allowlist.AsNoTracking().Where(a => a.TenantId == Tenant && (a.ManagedBy == AliasVocabulary.WebhooksAlias || a.ManagedBy == AliasVocabulary.AliasConfig))
+                .OrderBy(a => a.Destination).ToListAsync(ct)).Select(a => (AllowlistMapping.Unmap(new AllowlistDefinition(a.Destination, a.Ports)), a.UpdatedAt,
+                    a.ManagedBy == AliasVocabulary.AliasConfig ? Data.ManagedBy.Configuration : Data.ManagedBy.Api))];
 
         /// <summary>An allowlist entry's notifications row, in the caller's transaction.</summary>
         public async Task<IReadOnlyList<MappingProblem>> PutAllowlistAsync(LegacyAllowlistEntry entry, CancellationToken ct)

@@ -23,17 +23,17 @@ namespace Juice.Observability.Notifications.Migration
         /// has (<paramref name="surplus"/>), after the route stops naming them. Stops at the first refusal.
         /// </summary>
         public static async Task<MappingProblem?> PutAsync(ISetupSender sender, Guid tenant, EndpointSetup setup, IReadOnlyList<string> surplus, Guid? id,
-            CancellationToken ct)
+            CancellationToken ct, string owner = AliasVocabulary.WebhooksAlias)
         {
             var i = setup.Integration;
             if (await sender.SendAsync(new PutIntegration(tenant, i.Key, i.Channel, i.Kind, JsonElement.Parse(i.Settings), i.SecretRef, i.Priority, i.Enabled)
-                { ManagedBy = AliasVocabulary.WebhooksAlias, Id = id }, ct) is { } refused)
+                { ManagedBy = owner, Id = id }, ct) is { } refused)
             {
                 return refused;
             }
             foreach (var t in setup.Targets)
             {
-                if (await sender.SendAsync(new PutTarget(tenant, t.IntegrationKey, t.Key, t.Address, t.AddressRef, t.Enabled) { ManagedBy = AliasVocabulary.WebhooksAlias }, ct)
+                if (await sender.SendAsync(new PutTarget(tenant, t.IntegrationKey, t.Key, t.Address, t.AddressRef, t.Enabled) { ManagedBy = owner }, ct)
                     is { } target)
                 {
                     return target;
@@ -41,13 +41,13 @@ namespace Juice.Observability.Notifications.Migration
             }
             var r = setup.Route;
             if (await sender.SendAsync(new PutRoute(tenant, r.Key, JsonElement.Parse(r.Match), r.Targets, r.Enabled, r.DigestSeconds)
-                { ManagedBy = AliasVocabulary.WebhooksAlias }, ct) is { } route)
+                { ManagedBy = owner }, ct) is { } route)
             {
                 return route;
             }
             foreach (var key in surplus)
             {
-                if (await sender.SendAsync(new DeleteTarget(tenant, i.Key, key) { ManagedBy = AliasVocabulary.WebhooksAlias }, ct) is { } deleted)
+                if (await sender.SendAsync(new DeleteTarget(tenant, i.Key, key) { ManagedBy = owner }, ct) is { } deleted)
                 {
                     return deleted;
                 }

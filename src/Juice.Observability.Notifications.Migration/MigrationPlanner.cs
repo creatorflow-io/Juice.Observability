@@ -83,6 +83,17 @@ namespace Juice.Observability.Notifications.Migration
         public const string Source = "webhooks-migration";
 
 
+        /// <summary>
+        /// Whether this run is the alias's provisioner's (at start, from the deployment's file): what legacy's configuration declares is then
+        /// written as <see cref="AliasVocabulary.AliasConfig"/>. The migration tool (its endpoint and host command) writes only the alias's own,
+        /// and reports a configuration row in its way as a conflict.
+        /// </summary>
+        internal bool AsProvisioner { get; set; }
+
+        /// <summary>The owner a legacy row's notifications rows are written as.</summary>
+        private string OwnerOf(string legacyOwner)
+            => AsProvisioner && legacyOwner == Juice.Observability.Data.ManagedBy.Configuration ? AliasVocabulary.AliasConfig : AliasVocabulary.WebhooksAlias;
+
         /// <summary>For the tests of a failure part-way: throws after this many writes.</summary>
         internal int? FailAfterWrites { get; set; }
 
@@ -229,18 +240,19 @@ namespace Juice.Observability.Notifications.Migration
                         [new(ProblemCodes.KeyTaken, $"Several legacy entries are the destination {row.Destination}; keep one.")]));
                     continue;
                 }
+                var owner = OwnerOf(entry.ManagedBy);
                 current.Allowlist.TryGetValue(row.Destination, out var existing);
-                if (existing is not null && existing.ManagedBy != AliasVocabulary.WebhooksAlias)
+                if (existing is not null && !AliasVocabulary.Writes(owner, existing.ManagedBy))
                 {
                     items.Add(new(item.Subject, item.Key, MigrationAction.Conflict, [Taken("allowlist entry", row.Destination, existing.ManagedBy)]));
                     continue;
                 }
                 var action = existing is null ? MigrationAction.Create
-                    : existing.Ports.Order().SequenceEqual(row.Ports) ? MigrationAction.Unchanged : MigrationAction.Update;
+                    : existing.Ports.Order().SequenceEqual(row.Ports) && existing.ManagedBy == owner ? MigrationAction.Unchanged : MigrationAction.Update;
                 items.Add(new(item.Subject, item.Key, action, []));
                 if (action != MigrationAction.Unchanged)
                 {
-                    writes.Add(new(item, (p, ct) => p.PutAsync(new PutAllowlistEntry(tenant, row.Destination, row.Ports) { ManagedBy = AliasVocabulary.WebhooksAlias }, ct)));
+                    writes.Add(new(item, (p, ct) => p.PutAsync(new PutAllowlistEntry(tenant, row.Destination, row.Ports) { ManagedBy = owner }, ct)));
                 }
             }
 
@@ -275,7 +287,8 @@ namespace Juice.Observability.Notifications.Migration
                     waiting.Add(endpoint.Key);
                     continue;
                 }
-                var (action, problems, surplus) = Compare(setup, current);
+                var owner = OwnerOf(endpoint.ManagedBy);
+                var (action, problems, surplus) = Compare(setup, current, owner);
                 items.Add(new(item.Subject, item.Key, action, problems));
                 if (action == MigrationAction.Conflict)
                 {
@@ -288,7 +301,7 @@ namespace Juice.Observability.Notifications.Migration
                 }
                 // A new integration keeps the legacy endpoint's id (decision on Q-B): its id never changes, whichever pipeline answers.
                 var keep = action == MigrationAction.Create ? endpoint.Id : (Guid?)null;
-                writes.Add(new(item, (p, ct) => p.PutEndpointAsync(tenant, setup, surplus, keep, ct)));
+                writes.Add(new(item, (p, ct) => p.PutEndpointAsync(tenant, setup, surplus, keep, owner, ct)));
             }
 
             // Policies: their steps name the routes of endpoints that migrate.
@@ -312,7 +325,7 @@ namespace Juice.Observability.Notifications.Migration
                 }
                 var definition = mapped.Value!;
                 current.Policies.TryGetValue(definition.Key, out var existing);
-                if (existing is not null && existing.ManagedBy != AliasVocabulary.WebhooksAlias)
+                if (existing is not null && !AliasVocabulary.Writes(AliasVocabulary.WebhooksAlias, existing.ManagedBy))
                 {
                     items.Add(new(item.Subject, item.Key, MigrationAction.Conflict, [Taken("escalation policy", definition.Key, existing.ManagedBy)]));
                     continue;
@@ -347,12 +360,12 @@ namespace Juice.Observability.Notifications.Migration
         /// How the rows there compare with an endpoint's setup: a conflict when a row in the way isn't the alias's; unchanged when every row is as
         /// mapped and the integration has no other target; else an update, with the alias's targets the setup no longer has (to delete).
         /// </summary>
-        private static (MigrationAction, IReadOnlyList<MappingProblem>, IReadOnlyList<string>) Compare(EndpointSetup setup, Current current)
+        private static (MigrationAction, IReadOnlyList<MappingProblem>, IReadOnlyList<string>) Compare(EndpointSetup setup, Current current, string owner)
         {
             var problems = new List<MappingProblem>();
             current.Integrations.TryGetValue(setup.Integration.Key, out var integration);
             current.Routes.TryGetValue(setup.Route.Key, out var route);
-            if (integration is not null && integration.ManagedBy != AliasVocabulary.WebhooksAlias)
+            if (integration is not null && !AliasVocabulary.Writes(owner, integration.ManagedBy))
             {
                 problems.Add(Taken("integration", integration.Key, integration.ManagedBy));
             }
@@ -360,16 +373,16 @@ namespace Juice.Observability.Notifications.Migration
             {
                 problems.Add(new(ProblemCodes.KeyTaken, $"The alias's integration '{integration.Key}' is a {integration.Channel} one, and an integration's channel is fixed: delete it in notifications first."));
             }
-            if (route is not null && route.ManagedBy != AliasVocabulary.WebhooksAlias)
+            if (route is not null && !AliasVocabulary.Writes(owner, route.ManagedBy))
             {
                 problems.Add(Taken("route", route.Key, route.ManagedBy));
             }
             foreach (var target in setup.Targets)
             {
                 if (current.Targets.TryGetValue(target.Key, out var existing)
-                    && (existing.ManagedBy != AliasVocabulary.WebhooksAlias || current.IntegrationKeys.GetValueOrDefault(existing.IntegrationId) != setup.Integration.Key))
+                    && (!AliasVocabulary.Writes(owner, existing.ManagedBy) || current.IntegrationKeys.GetValueOrDefault(existing.IntegrationId) != setup.Integration.Key))
                 {
-                    problems.Add(existing.ManagedBy != AliasVocabulary.WebhooksAlias ? Taken("target", target.Key, existing.ManagedBy)
+                    problems.Add(!AliasVocabulary.Writes(owner, existing.ManagedBy) ? Taken("target", target.Key, existing.ManagedBy)
                         : new(ProblemCodes.KeyTaken, $"The target '{target.Key}' is the alias's, under the integration {current.IntegrationKeys.GetValueOrDefault(existing.IntegrationId)}."));
                 }
             }
@@ -379,7 +392,7 @@ namespace Juice.Observability.Notifications.Migration
             }
             var others = integration is null ? []
                 : current.Targets.Values.Where(t => t.IntegrationId == integration.Id && !setup.Targets.Any(d => d.Key == t.Key)).Select(t => t.Key).Order().ToList();
-            var foreign = others.Where(k => current.Targets[k].ManagedBy != AliasVocabulary.WebhooksAlias).ToList();
+            var foreign = others.Where(k => !AliasVocabulary.Writes(owner, current.Targets[k].ManagedBy)).ToList();
             if (foreign.Count > 0)
             {
                 return (MigrationAction.Conflict, [new(ProblemCodes.KeyTaken, $"The integration '{integration!.Key}' has targets the alias doesn't own: {string.Join(", ", foreign)}.")], []);
@@ -388,7 +401,9 @@ namespace Juice.Observability.Notifications.Migration
             {
                 return (MigrationAction.Create, [], []);
             }
+            // Written as another owner (the alias's configuration taking over the alias's row): an update, though nothing else changed.
             var same = integration is not null && route is not null && others.Count == 0
+                && integration.ManagedBy == owner && route.ManagedBy == owner && setup.Targets.All(t => current.Targets[t.Key].ManagedBy == owner)
                 && Equals(Definition(integration), setup.Integration with { Settings = "" }) && EndpointMapping.Same(integration.Settings, setup.Integration.Settings)
                 && route.Targets.SequenceEqual(setup.Route.Targets) && route.Enabled == setup.Route.Enabled && route.DigestSeconds == setup.Route.DigestSeconds && EndpointMapping.Same(route.Match, setup.Route.Match)
                 && setup.Targets.All(t => current.Targets[t.Key] is var x && (x.Address, x.AddressRef, x.Enabled) == (t.Address, t.AddressRef, t.Enabled));
@@ -401,8 +416,8 @@ namespace Juice.Observability.Notifications.Migration
         /// <summary>The setup the alias's rows for one endpoint key make, or null when they aren't all there: what the alias (M46b) reads back.</summary>
         public static async Task<EndpointSetup?> ReadSetupAsync(NotificationsDbContext db, Guid tenantId, string key, CancellationToken ct)
         {
-            var integration = await db.Integrations.AsNoTracking().SingleOrDefaultAsync(i => i.TenantId == tenantId && i.Key == key && i.ManagedBy == AliasVocabulary.WebhooksAlias, ct);
-            var route = await db.Routes.AsNoTracking().SingleOrDefaultAsync(r => r.TenantId == tenantId && r.Key == key && r.ManagedBy == AliasVocabulary.WebhooksAlias, ct);
+            var integration = await db.Integrations.AsNoTracking().SingleOrDefaultAsync(i => i.TenantId == tenantId && i.Key == key && (i.ManagedBy == AliasVocabulary.WebhooksAlias || i.ManagedBy == AliasVocabulary.AliasConfig), ct);
+            var route = await db.Routes.AsNoTracking().SingleOrDefaultAsync(r => r.TenantId == tenantId && r.Key == key && (r.ManagedBy == AliasVocabulary.WebhooksAlias || r.ManagedBy == AliasVocabulary.AliasConfig), ct);
             if (integration is null || route is null)
             {
                 return null;
@@ -420,8 +435,8 @@ namespace Juice.Observability.Notifications.Migration
 
         // ─── The writes ───────────────────────────────────────────────────────
 
-        private Task<MappingProblem?> PutEndpointAsync(Guid tenant, EndpointSetup setup, IReadOnlyList<string> surplus, Guid? id, CancellationToken ct)
-            => EndpointWrites.PutAsync(new Sender(this), tenant, setup, surplus, id, ct);
+        private Task<MappingProblem?> PutEndpointAsync(Guid tenant, EndpointSetup setup, IReadOnlyList<string> surplus, Guid? id, string owner, CancellationToken ct)
+            => EndpointWrites.PutAsync(new Sender(this), tenant, setup, surplus, id, ct, owner);
 
         private async Task<MappingProblem?> PutAsync<T>(IRequest<Outcome<T>> command, CancellationToken ct)
             => EndpointWrites.Problem(await mediator.Send(command, ct));
