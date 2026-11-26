@@ -137,7 +137,7 @@ The rule scheduler has no single pass: it shows as busy slots instead.
 | `juice.observability.notifications.escalations` | counter | outcome | `unreachable` rising |
 | `juice.observability.notifications.released` | counter | outcome | `dropped` rising: what the notification pipeline held under a silence and dropped after it (`shadow`, `new`) |
 | `juice.observability.notifications.refused` | counter | call, code | any: the notification pipeline refused a request the platform made (`shadow`, `new`); the log names it |
-| `juice.observability.notifications.deadman` | counter | cause, event, outcome | any `firing` sent: the notification pipeline stopped keeping up (`stalled`, `failing`, `shadow`, `unreadable`); `failed`: the alarm itself couldn't be posted |
+| `juice.observability.notifications.deadman` | counter | cause, event, outcome | any `firing` sent: the notification pipeline stopped keeping up (`stalled`, `failing`, `no-success`, `stuck-in-retry`, `shadow`, `unreadable`); `failed`: the alarm itself couldn't be posted |
 | `juice.observability.process.uptime` | gauge, s | – | Resets: the process restarted |
 
 ### ClickHouse queries the platform makes

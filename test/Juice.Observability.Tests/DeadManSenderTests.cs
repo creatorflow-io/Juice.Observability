@@ -51,9 +51,10 @@ namespace Juice.Observability.Tests
             public ValueTask<string?> FailingAsync(CancellationToken cancellationToken) => ValueTask.FromResult(Failing);
         }
 
-        private static PipelineHealth Reading(TimeSpan? dispatcherDue = null, int dispatcherFailing = 0) => new()
+        private static PipelineHealth Reading(TimeSpan? dispatcherDue = null, int dispatcherFailing = 0, SendHealth? sends = null) => new()
         {
             Running = true,
+            Sends = sends ?? new SendHealth { Succeeded = 3 },
             OldestDueAny = dispatcherDue,
             Stages = new Dictionary<string, StageHealth>
             {
@@ -203,6 +204,65 @@ namespace Juice.Observability.Tests
             await setup.Sender.RunOnceAsync(Ct);
             Assert.True(DateTimeOffset.UtcNow - started < TimeSpan.FromSeconds(5), "a read that never answers is cut at the read timeout");
             Assert.Contains("no answer", setup.Posted().Last(p => p.GetProperty("cause").GetString() == DeadManCauses.Unreadable).GetProperty("detail").GetString());
+        }
+
+        [Fact]
+        public async Task Nothing_getting_out_is_raised_on_two_reads_apart_rate_limited_and_resolved_by_one_success_Async()
+        {
+            await using var setup = await SetupAsync();
+            setup.Health.Health = Reading(sends: new SendHealth { Window = TimeSpan.FromMinutes(15), Failed = 6, Succeeded = 0 });
+
+            await setup.Sender.RunOnceAsync(Ct);
+            Assert.Empty(setup.Receiver.Requests);
+            setup.Clock.Advance(TimeSpan.FromMinutes(10));
+            await setup.Sender.RunOnceAsync(Ct);
+            var firing = Assert.Single(setup.Posted());
+            Assert.Equal(DeadManCauses.NoSuccess, firing.GetProperty("cause").GetString());
+            Assert.Equal(6, firing.GetProperty("pipeline").GetProperty("sends").GetProperty("failed").GetInt32());
+            setup.Clock.Advance(TimeSpan.FromMinutes(1));
+            await setup.Sender.RunOnceAsync(Ct);
+            Assert.Single(setup.Posted());
+
+            // One send got out: something is.
+            setup.Health.Health = Reading(sends: new SendHealth { Window = TimeSpan.FromMinutes(15), Failed = 6, Succeeded = 1 });
+            await setup.Sender.RunOnceAsync(Ct);
+            Assert.Equal(("observability.deadman.resolved", DeadManCauses.NoSuccess),
+                (setup.Posted()[^1].GetProperty("type").GetString(), setup.Posted()[^1].GetProperty("cause").GetString()));
+        }
+
+        [Fact]
+        public async Task Too_few_failures_or_a_quiet_window_is_not_an_outage_Async()
+        {
+            await using var setup = await SetupAsync();
+            setup.Health.Health = Reading(sends: new SendHealth { Failed = 4, Succeeded = 0 });
+            await setup.Sender.RunOnceAsync(Ct);
+            setup.Clock.Advance(TimeSpan.FromMinutes(11));
+            await setup.Sender.RunOnceAsync(Ct);
+            setup.Health.Health = Reading(sends: new SendHealth());
+            setup.Clock.Advance(TimeSpan.FromMinutes(11));
+            await setup.Sender.RunOnceAsync(Ct);
+            Assert.Empty(setup.Receiver.Requests);
+        }
+
+        [Fact]
+        public async Task A_delivery_stuck_in_retry_is_raised_rate_limited_and_resolved_Async()
+        {
+            await using var setup = await SetupAsync();
+            setup.Health.Health = Reading(sends: new SendHealth { Succeeded = 1, OldestUndelivered = TimeSpan.FromMinutes(29) });
+            await setup.Sender.RunOnceAsync(Ct);
+            Assert.Empty(setup.Receiver.Requests);
+
+            setup.Health.Health = Reading(sends: new SendHealth { Succeeded = 1, OldestUndelivered = TimeSpan.FromMinutes(31) });
+            await setup.Sender.RunOnceAsync(Ct);
+            Assert.Equal(DeadManCauses.StuckInRetry, Assert.Single(setup.Posted()).GetProperty("cause").GetString());
+            setup.Clock.Advance(TimeSpan.FromMinutes(5));
+            await setup.Sender.RunOnceAsync(Ct);
+            Assert.Single(setup.Posted());
+
+            setup.Health.Health = Reading(sends: new SendHealth { Succeeded = 1 });
+            await setup.Sender.RunOnceAsync(Ct);
+            Assert.Equal(("observability.deadman.resolved", DeadManCauses.StuckInRetry),
+                (setup.Posted()[^1].GetProperty("type").GetString(), setup.Posted()[^1].GetProperty("cause").GetString()));
         }
 
         [Fact]

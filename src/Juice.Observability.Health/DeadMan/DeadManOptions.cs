@@ -33,6 +33,15 @@ namespace Juice.Observability.Health.DeadMan
         /// <summary>...on two reads at least this far apart.</summary>
         public TimeSpan FailingFor { get; set; } = TimeSpan.FromMinutes(10);
 
+        /// <summary>
+        /// <b>no success:</b> at least this many failed attempts and none that got out, in the pipeline's send window, on two reads at least
+        /// <see cref="FailingFor"/> apart. A single broken endpoint with no other traffic trips it too: nothing is getting out.
+        /// </summary>
+        public int MinFailedAttempts { get; set; } = 5;
+
+        /// <summary><b>stuck in retry:</b> a delivery still in flight older than this (above a normal retry run, whose longest wait is 10 min).</summary>
+        public TimeSpan UndeliveredThreshold { get; set; } = TimeSpan.FromMinutes(30);
+
         /// <summary><b>unreadable:</b> reading the pipeline's health takes longer than this (or throws).</summary>
         public TimeSpan ReadTimeout { get; set; } = TimeSpan.FromSeconds(5);
 
@@ -71,6 +80,8 @@ namespace Juice.Observability.Health.DeadMan
                     + "below it a slow but working pipeline would raise the alarm.");
             }
             if (FailingThreshold < 1) problems.Add("Notifications:DeadMan:FailingThreshold is at least 1.");
+            if (MinFailedAttempts < 1) problems.Add("Notifications:DeadMan:MinFailedAttempts is at least 1.");
+            if (UndeliveredThreshold < DueThreshold) problems.Add("Notifications:DeadMan:UndeliveredThreshold is at least the DueThreshold.");
             if (FailingFor <= TimeSpan.Zero) problems.Add("Notifications:DeadMan:FailingFor is positive.");
             if (ReadTimeout <= TimeSpan.Zero) problems.Add("Notifications:DeadMan:ReadTimeout is positive.");
             if (Interval <= TimeSpan.Zero) problems.Add("Notifications:DeadMan:Interval is positive.");

@@ -22,13 +22,19 @@ namespace Juice.Observability.Health.DeadMan
         /// <summary>Some stage kept <see cref="DeadManOptions.FailingThreshold"/> failing rows for <see cref="DeadManOptions.FailingFor"/>.</summary>
         public const string Failing = "failing";
 
+        /// <summary>Failed attempts and none that got out, for <see cref="DeadManOptions.FailingFor"/>: nothing is getting out.</summary>
+        public const string NoSuccess = "no-success";
+
+        /// <summary>A delivery still in flight older than <see cref="DeadManOptions.UndeliveredThreshold"/>.</summary>
+        public const string StuckInRetry = "stuck-in-retry";
+
         /// <summary>The shadow comparison is failing (<see cref="IShadowReport"/>, M47).</summary>
         public const string Shadow = "shadow";
 
         /// <summary>The pipeline's health couldn't be read (an error, or longer than <see cref="DeadManOptions.ReadTimeout"/>).</summary>
         public const string Unreadable = "unreadable";
 
-        public static readonly string[] All = [Stalled, Failing, Shadow, Unreadable];
+        public static readonly string[] All = [Stalled, Failing, NoSuccess, StuckInRetry, Shadow, Unreadable];
     }
 
     /// <summary>
@@ -101,6 +107,8 @@ namespace Juice.Observability.Health.DeadMan
                 // Unread, the pipeline's own causes are unknown: left as they were, neither raised nor resolved.
                 [DeadManCauses.Stalled] = health is null ? Keep(DeadManCauses.Stalled) : Stalled(health),
                 [DeadManCauses.Failing] = health is null ? Keep(DeadManCauses.Failing) : Failing(health, now),
+                [DeadManCauses.NoSuccess] = health is null ? Keep(DeadManCauses.NoSuccess) : NoSuccess(health, now),
+                [DeadManCauses.StuckInRetry] = health is null ? Keep(DeadManCauses.StuckInRetry) : StuckInRetry(health),
                 [DeadManCauses.Shadow] = shadow is null ? null : await shadow.FailingAsync(cancellationToken),
             };
             foreach (var (cause, detail) in standing)
@@ -188,6 +196,25 @@ namespace Juice.Observability.Health.DeadMan
             return failing.Count > 0 ? string.Join(", ", failing) : null;
         }
 
+        private DateTimeOffset? _noSuccessSince;
+
+        private string? NoSuccess(PipelineHealth health, DateTimeOffset now)
+        {
+            if (health.Sends.Failed < options.Value.MinFailedAttempts || health.Sends.Succeeded > 0)
+            {
+                _noSuccessSince = null;
+                return null;
+            }
+            _noSuccessSince ??= now;
+            // Two reads at least FailingFor apart: one bad minute isn't an alarm.
+            return now - _noSuccessSince >= options.Value.FailingFor
+                ? $"{health.Sends.Failed}{(health.Sends.Failed >= SendHealth.MaxCount ? "+" : "")} failed attempts and none sent in the last {Minutes(health.Sends.Window)}, for {Minutes(now - _noSuccessSince.Value)}"
+                : null;
+        }
+
+        private string? StuckInRetry(PipelineHealth health)
+            => health.Sends.OldestUndelivered is { } oldest && oldest > options.Value.UndeliveredThreshold ? $"a delivery in flight for {Minutes(oldest)}" : null;
+
         private static string Minutes(TimeSpan span) => span.TotalMinutes >= 1 ? $"{span.TotalMinutes:0.#} min" : $"{span.TotalSeconds:0} s";
 
         /// <summary>Posts one alarm, signed (Standard Webhooks); true when the endpoint took it (2xx).</summary>
@@ -208,6 +235,8 @@ namespace Juice.Observability.Health.DeadMan
                 {
                     running = health.Running,
                     oldestDue = health.OldestDueAny?.TotalSeconds,
+                    sends = new { window = health.Sends.Window.TotalSeconds, succeeded = health.Sends.Succeeded, failed = health.Sends.Failed,
+                        oldestUndelivered = health.Sends.OldestUndelivered?.TotalSeconds },
                     stages = health.Stages.ToDictionary(s => s.Key, s => new
                     {
                         oldestDue = s.Value.OldestDue?.TotalSeconds, failing = s.Value.Failing, lastPassEndedAt = s.Value.LastPassEndedAt,
