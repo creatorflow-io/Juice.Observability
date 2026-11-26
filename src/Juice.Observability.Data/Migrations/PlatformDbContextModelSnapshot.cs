@@ -817,6 +817,9 @@ namespace Juice.Observability.Data.Migrations
                     b.HasKey("Id")
                         .HasName("pk_alert_transitions");
 
+                    b.HasIndex("NotificationsPlannedAt")
+                        .HasDatabaseName("ix_alert_transitions_notifications_planned_at");
+
                     b.HasIndex("TenantId")
                         .HasDatabaseName("ix_alert_transitions_tenant_id");
 
@@ -3052,6 +3055,10 @@ namespace Juice.Observability.Data.Migrations
 
                     b.HasIndex("AlertId")
                         .HasDatabaseName("ix_webhook_deliveries_alert_id");
+
+                    b.HasIndex("CreatedAt")
+                        .HasDatabaseName("ix_webhook_deliveries_escalation_steps")
+                        .HasFilter("escalation_step > 0");
 
                     b.HasIndex("EndpointId")
                         .HasDatabaseName("ix_webhook_deliveries_endpoint_id");

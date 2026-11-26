@@ -65,6 +65,17 @@ namespace Juice.Observability.Data.Migrations
                 });
 
             migrationBuilder.CreateIndex(
+                name: "ix_webhook_deliveries_escalation_steps",
+                table: "webhook_deliveries",
+                column: "created_at",
+                filter: "escalation_step > 0");
+
+            migrationBuilder.CreateIndex(
+                name: "ix_alert_transitions_notifications_planned_at",
+                table: "alert_transitions",
+                column: "notifications_planned_at");
+
+            migrationBuilder.CreateIndex(
                 name: "ix_shadow_comparisons_tenant_id_compared_at",
                 table: "shadow_comparisons",
                 columns: new[] { "tenant_id", "compared_at" });
@@ -94,6 +105,14 @@ namespace Juice.Observability.Data.Migrations
 
             migrationBuilder.DropTable(
                 name: "shadow_differences");
+
+            migrationBuilder.DropIndex(
+                name: "ix_webhook_deliveries_escalation_steps",
+                table: "webhook_deliveries");
+
+            migrationBuilder.DropIndex(
+                name: "ix_alert_transitions_notifications_planned_at",
+                table: "alert_transitions");
         }
     }
 }

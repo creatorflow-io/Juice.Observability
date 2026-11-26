@@ -25,6 +25,11 @@ namespace Juice.Observability.Notifications.Shadow
         public TimeSpan TimingTolerance { get; set; } = TimeSpan.FromSeconds(60);
         public TimeSpan Interval { get; set; } = TimeSpan.FromSeconds(30);
         public int Batch { get; set; } = 100;
+        /// <summary>
+        /// How far back a pass looks for units not yet compared, so each pass reads a bounded window. A unit older than this was never compared
+        /// (the comparer was down that long); the dead-man's shadow cause says so while it is within it.
+        /// </summary>
+        public TimeSpan Lookback { get; set; } = TimeSpan.FromDays(2);
         /// <summary>How far back the dead-man looks for a difference no rule explains (M49's shadow cause).</summary>
         public TimeSpan AlarmWindow { get; set; } = TimeSpan.FromHours(1);
     }
@@ -91,12 +96,14 @@ namespace Juice.Observability.Notifications.Shadow
             var now = clock.GetUtcNow();
             var due = now - settings.Grace;
             // The shadow run began with the new pipeline's first request: nothing before it was ever asked of the new side.
-            var since = await pipeline.Requests.AsNoTracking().Where(r => r.TenantId == tenant).MinAsync(r => (DateTimeOffset?)r.AcceptedAt, cancellationToken);
-            if (since is null)
+            var first = await pipeline.Requests.AsNoTracking().Where(r => r.TenantId == tenant).MinAsync(r => (DateTimeOffset?)r.AcceptedAt, cancellationToken);
+            if (first is null)
             {
                 return 0;
             }
-            var units = await DueAsync(db, pipeline, tenant, since.Value, due, settings.Batch, cancellationToken);
+            // Within the lookback: each pass reads a bounded window, however long the run has gone on.
+            var since = first.Value > now - settings.Lookback ? first.Value : now - settings.Lookback;
+            var units = await DueAsync(db, pipeline, tenant, since, due, settings.Batch, cancellationToken);
             var compare = new ShadowCompareOptions(settings.TimingTolerance, webhooks.Value.ConsoleUrl);
             foreach (var (platformTenant, transitionId, step, unitAt) in units)
             {
@@ -140,7 +147,7 @@ namespace Juice.Observability.Notifications.Shadow
             var newSteps = await (from r in pipeline.Recipients.AsNoTracking()
                                   join n in pipeline.Notifications.AsNoTracking() on new { r.TenantId, Id = r.NotificationId } equals new { n.TenantId, n.Id }
                                   join q in pipeline.Requests.AsNoTracking() on new { n.TenantId, Id = n.RequestId } equals new { q.TenantId, q.Id }
-                                  where r.TenantId == tenant && r.EscalationStep > 0 && r.CreatedAt <= due && q.IdempotencyKey.StartsWith("transition:")
+                                  where r.TenantId == tenant && r.EscalationStep > 0 && r.CreatedAt >= since && r.CreatedAt <= due && q.IdempotencyKey.StartsWith("transition:")
                                   group r by new { q.IdempotencyKey, r.EscalationStep } into g
                                   select new { g.Key.IdempotencyKey, g.Key.EscalationStep, At = g.Min(x => x.CreatedAt) })
                 .OrderBy(x => x.At).Take(batch).ToListAsync(ct);

@@ -70,6 +70,11 @@ namespace Juice.Observability.Notifications.Shadow
             }
             // Planned while the comparer ran (it has compared something), and past every wait.
             var started = await db.ShadowComparisons.AsNoTracking().MinAsync(c => (DateTimeOffset?)c.ComparedAt, cancellationToken);
+            // Only within the lookback: an older one can't be compared any more, and isn't asked about for ever.
+            if (started is { } s && s < now - settings.Lookback)
+            {
+                started = now - settings.Lookback;
+            }
             var overdue = now - settings.Grace - settings.MaxWait - settings.AlarmWindow;
             if (started is { } first && await db.AlertTransitions.AsNoTracking().AnyAsync(t => t.NotificationsPlannedAt >= first && t.NotificationsPlannedAt < overdue
                     && (t.ToState == AlertState.Firing || t.ToState == AlertState.Resolved)

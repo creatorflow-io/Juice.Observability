@@ -676,6 +676,8 @@ namespace Juice.Observability.Data
                 e.Property(x => x.Reason).HasMaxLength(200);
                 e.Property(x => x.NotificationsPlannedAt).IsConcurrencyToken();
                 e.HasIndex(x => new { x.AlertId, x.At });
+                // The shadow comparer (M47) finds the transitions planned in its window.
+                e.HasIndex(x => x.NotificationsPlannedAt).HasDatabaseName("ix_alert_transitions_notifications_planned_at");
                 e.HasOne<Alert>().WithMany().HasForeignKey(x => x.AlertId).OnDelete(DeleteBehavior.Cascade);
             });
 
@@ -731,6 +733,8 @@ namespace Juice.Observability.Data
                 // One delivery per transition, endpoint and escalation step, so a replayed evaluation or escalation cannot notify twice.
                 e.HasIndex(x => new { x.TransitionId, x.EndpointId, x.EscalationStep }).IsUnique();
                 e.HasIndex(x => new { x.TenantId, x.AlertId });
+                // The shadow comparer (M47) finds escalation steps by when they were made.
+                e.HasIndex(x => x.CreatedAt).HasFilter("escalation_step > 0").HasDatabaseName("ix_webhook_deliveries_escalation_steps");
                 // One per request, endpoint and event: a decision retried can't notify twice.
                 e.HasIndex(x => new { x.ActionRequestId, x.EndpointId, x.Event }).IsUnique();
                 e.HasOne<WebhookEndpoint>().WithMany().HasForeignKey(x => x.EndpointId).OnDelete(DeleteBehavior.Restrict);
