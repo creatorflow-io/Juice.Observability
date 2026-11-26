@@ -76,8 +76,8 @@ namespace Juice.Observability.Tests
             {
                 ["Notifications:Database:Migrate"] = "true",
                 ["Notifications:Stages:Run"] = "false",
-                ["Notifications:Delivery:ApiSecretEnvPrefix"] = "JUICE_WEBHOOK_",
-                ["Notifications:Delivery:ApiSecretDirectory"] = "/run/secrets/juice",
+                ["Notifications:Delivery:AliasSecretEnvPrefix"] = "JUICE_WEBHOOK_",
+                ["Notifications:Delivery:AliasSecretDirectory"] = "/run/secrets/juice",
                 ["Notifications:Delivery:SmtpServers:observability:Host"] = "smtp.example.com",
             });
             builder.Services.AddJuiceNotificationsEmbedded(builder.Configuration.GetSection("Notifications"), o =>
@@ -367,7 +367,7 @@ namespace Juice.Observability.Tests
             // An admin's rows through the notifications API: a route "routed", a target "targeted" under its own integration, the same allowlist
             // destination and a policy "paging".
             Assert.NotNull((await stack.SendAsync(new PutIntegration(stack.Notifications, "admins", "webhook", "webhook", JsonDocument.Parse("{}").RootElement,
-                "env:JUICE_WEBHOOK_ADMIN", 0, true))).Value);
+                "env:NOTIFICATIONS_SECRET_ADMIN", 0, true))).Value);
             Assert.NotNull((await stack.SendAsync(new PutTarget(stack.Notifications, "admins", "targeted", "https://admin.example/hook", null, true))).Value);
             Assert.NotNull((await stack.SendAsync(new PutTarget(stack.Notifications, "admins", "admin-target", "https://admin.example/other", null, true))).Value);
             Assert.NotNull((await stack.SendAsync(new PutRoute(stack.Notifications, "routed", JsonDocument.Parse("{}").RootElement, ["admin-target"], true))).Value);
