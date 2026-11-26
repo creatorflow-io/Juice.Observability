@@ -43,13 +43,13 @@ namespace Juice.Observability.Tests
 
         internal static async Task<Guid> TenantAsync(PlatformDbContext db) => (await db.Tenants.SingleAsync(t => t.Key == LocalStack.TenantKey, Ct)).Id;
 
-        internal static async Task<WebhookEndpoint> EndpointAsync(ScratchDatabase database, Receiver? receiver, string key = "ops", ChannelKind kind = ChannelKind.Webhook, int group = 0, string[]? events = null, string[]? environments = null, string[]? recipients = null)
+        internal static async Task<WebhookEndpoint> EndpointAsync(ScratchDatabase database, Receiver? receiver, string key = "ops", ChannelKind kind = ChannelKind.Webhook, int group = 0, string[]? events = null, string[]? environments = null, string[]? recipients = null, string? secretVariable = null)
         {
             await using var db = database.Context();
             var tenant = await TenantAsync(db);
             var endpoint = new WebhookEndpoint
             {
-                TenantId = tenant, Key = key, Kind = kind, Url = kind == ChannelKind.Webhook ? receiver!.Url : "", SecretRef = kind == ChannelKind.Email ? "" : $"env:{SecretVariable}",
+                TenantId = tenant, Key = key, Kind = kind, Url = kind == ChannelKind.Webhook ? receiver!.Url : "", SecretRef = kind == ChannelKind.Email ? "" : $"env:{secretVariable ?? SecretVariable}",
                 Events = events ?? [NotificationPlan.Firing, NotificationPlan.Resolved], GroupWindowSeconds = group, Environments = environments ?? [], Recipients = recipients ?? [], DefinitionHash = "h", LoadedAt = DateTimeOffset.UtcNow, ManagedBy = ManagedBy.Api,
             };
             db.WebhookEndpoints.Add(endpoint);

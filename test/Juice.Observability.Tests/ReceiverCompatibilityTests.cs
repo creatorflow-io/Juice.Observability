@@ -23,7 +23,10 @@ namespace Juice.Observability.Tests
         /// <summary>The secret the receiver was given when it was set up, and the endpoint's secret reference names.</summary>
         private const string Secret = "flow-secret";
 
-        static ReceiverCompatibilityTests() => Environment.SetEnvironmentVariable(Flow.SecretVariable, Secret);
+        /// <summary>The receiver's own variable: NotificationFlowTests sets its shared one to chat URLs while other classes run.</summary>
+        private const string SecretVariable = "JUICE_WEBHOOK_RECEIVER_COMPAT";
+
+        static ReceiverCompatibilityTests() => Environment.SetEnvironmentVariable(SecretVariable, Secret);
 
         public enum Pipeline { Old, New }
 
@@ -124,7 +127,7 @@ namespace Juice.Observability.Tests
             Require(pipeline);
             await using var receiver = await Receiver.StartAsync(503);
             await using var database = await LocalStack.CreateDatabaseAsync();
-            await Flow.EndpointAsync(database, receiver);
+            await Flow.EndpointAsync(database, receiver, secretVariable: SecretVariable);
             var dispatcher = Flow.Dispatcher(database);
 
             var alert = await Flow.FireAsync(database);
@@ -154,8 +157,8 @@ namespace Juice.Observability.Tests
             await using var receiver = await Receiver.StartAsync();
             await using var pager = await Receiver.StartAsync();
             await using var database = await LocalStack.CreateDatabaseAsync();
-            await Flow.EndpointAsync(database, receiver);
-            await Flow.EndpointAsync(database, pager, "pager", events: [NotificationPlan.Resolved]);
+            await Flow.EndpointAsync(database, receiver, secretVariable: SecretVariable);
+            await Flow.EndpointAsync(database, pager, "pager", events: [NotificationPlan.Resolved], secretVariable: SecretVariable);
             await using (var db = database.Context())
             {
                 db.EscalationPolicies.Add(new EscalationPolicy
@@ -195,7 +198,7 @@ namespace Juice.Observability.Tests
             Require(pipeline);
             await using var receiver = await Receiver.StartAsync();
             await using var database = await LocalStack.CreateDatabaseAsync();
-            await Flow.EndpointAsync(database, receiver, group: 30);
+            await Flow.EndpointAsync(database, receiver, group: 30, secretVariable: SecretVariable);
             for (var i = 0; i < 3; i++)
             {
                 await Flow.FireAsync(database, $"service:s{i}@production", ruleKey: $"rule-{i}");
@@ -229,7 +232,7 @@ namespace Juice.Observability.Tests
             Require(pipeline);
             await using var receiver = await Receiver.StartAsync();
             await using var database = await LocalStack.CreateDatabaseAsync();
-            await Flow.EndpointAsync(database, receiver);
+            await Flow.EndpointAsync(database, receiver, secretVariable: SecretVariable);
             var dispatcher = Flow.Dispatcher(database);
             await Flow.FireAsync(database);
             await DrainAsync(dispatcher, receiver, 1);
