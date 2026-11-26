@@ -19,15 +19,18 @@ namespace Juice.Observability.Notifications
         /// The notification pipeline in the platform's host (phase-5-plan I57), on the platform's PostgreSQL (its <c>notifications</c> schema) and
         /// tenant (the platform tenant's Id, never one from input), writing in the platform's transaction (<see cref="PlatformNotificationTransaction"/>).
         /// Register after the platform's messaging and the tenant provisioner: the pipeline's schema migrates after the platform's (I60), when the
-        /// platform's does (<c>Database:Migrate</c>). <c>legacy</c>, the default and the only mode until M45, runs none of its stages.
+        /// platform's does (<c>Database:Migrate</c>). <c>Notifications:Pipeline</c>: <c>legacy</c> (the default) runs none of its stages;
+        /// <c>shadow</c> runs them in dry run beside legacy; <c>new</c> is the only path.
         /// </summary>
         public static IServiceCollection AddPlatformNotifications(this IServiceCollection services, IConfiguration configuration)
         {
             var section = configuration.GetSection(PlatformNotificationsOptions.Section);
             var mode = section.GetValue(nameof(PlatformNotificationsOptions.Pipeline), NotificationsPipeline.Legacy);
-            if (mode != NotificationsPipeline.Legacy)
+            // Shadow must never really send beside legacy (M45 review focus 5): without the pipeline's dry run it would.
+            if (mode == NotificationsPipeline.Shadow && !DryRunAvailable)
             {
-                throw new InvalidOperationException($"Notifications:Pipeline '{mode}' isn't available yet: only 'legacy' is, until M45 adds 'shadow' and 'new'.");
+                throw new InvalidOperationException("Notifications:Pipeline 'shadow' needs the notification pipeline's dry run (Juice.Notifications M44-2), "
+                    + "which this version doesn't have: it would send for real beside legacy. Use 'legacy' or 'new'.");
             }
             services.Configure<PlatformNotificationsOptions>(section);
             services.AddSingleton<PlatformCommitActions>();
@@ -43,6 +46,8 @@ namespace Juice.Observability.Notifications
                 embedded.Types.AddRange(ObservabilityTypes.All());
             });
             services.AddChatProviders();
+            // Its changes to the setup, as the platform's audit records, in the change's transaction (I62).
+            services.AddScoped<INotificationsAuditSink, PlatformAuditSink>();
             // The schema migrated by the platform, and the pipeline's start failing readiness, not the host.
             PipelineStart.Guard(services, MigratesSchema(section, configuration));
             // The producer adapter (I64): the platform's domain events and action request notices, in their own transactions.
@@ -50,9 +55,21 @@ namespace Juice.Observability.Notifications
             services.AddScoped<IActionRequestNotifications, ActionRequestNotifications>();
             services.AddTransient<Juice.MediatR.INotificationHandler<AlertNotificationsPlanned>, OnNotificationsPlanned>();
             services.AddTransient<Juice.MediatR.INotificationHandler<AlertAcknowledged>, OnAlertAcknowledged>();
+            if (mode != NotificationsPipeline.Legacy)
+            {
+                // After the migrations and the provisioning (hosted services start in order).
+                services.AddHostedService<NotificationsReleasePass>();
+            }
             Coexistence.Isolate(services);
             return services;
         }
+
+        /// <summary>
+        /// Whether the pipeline's dry run works (<c>DeliveryOptions.DryRunSupported</c>: the option arrives with M44-0, refused at start until M44-2
+        /// makes it work). Read by reflection, so an alpha without the flag counts as without a dry run.
+        /// </summary>
+        internal static bool DryRunAvailable { get; } = typeof(Juice.Notifications.Providers.DeliveryOptions) is var options
+            && (options.GetProperty("DryRunSupported")?.GetValue(null) ?? options.GetField("DryRunSupported")?.GetValue(null)) is true;
 
         /// <summary>
         /// Whether the platform migrates the pipeline's schema at start: when it migrates its own (<c>Database:Migrate</c>), unless the section
@@ -63,7 +80,9 @@ namespace Juice.Observability.Notifications
 
         /// <summary>
         /// The pipeline's settings: the host's <c>Notifications</c> section, with the switch's decisions on top. <c>legacy</c> runs no stage
-        /// (<c>Stages:Run=false</c>). The pipeline never migrates at start itself (its migrator throws on a failure): <see cref="PipelineStart"/> does.
+        /// (<c>Stages:Run=false</c>); <c>shadow</c> runs them in dry run (<c>Delivery:DryRun=true</c>), which records what would be sent and sends
+        /// nothing; <c>new</c> runs them as the section says. The pipeline never migrates at start itself (its migrator throws on a failure):
+        /// <see cref="PipelineStart"/> does.
         /// </summary>
         internal static IConfiguration PipelineSettings(IConfigurationSection section, IConfiguration configuration, NotificationsPipeline mode)
         {
@@ -71,6 +90,10 @@ namespace Juice.Observability.Notifications
             if (mode == NotificationsPipeline.Legacy)
             {
                 overrides["Stages:Run"] = "false";
+            }
+            if (mode == NotificationsPipeline.Shadow)
+            {
+                overrides["Delivery:DryRun"] = "true";
             }
             return new ConfigurationBuilder().AddConfiguration(section).AddInMemoryCollection(overrides).Build();
         }

@@ -1,4 +1,5 @@
 using System.Net;
+using Juice.Observability.Data;
 using Juice.Observability.Notifications;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
@@ -66,6 +67,47 @@ namespace Juice.Observability.Tests
 
             Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/health/ready", Ct)).StatusCode);
             Assert.Null(Start(factory).Failure);
+        }
+
+        [Fact]
+        public async Task A_good_start_is_ready_and_its_setup_is_in_the_platforms_audit_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            // The pipeline's provisioning file sets up one integration for the platform's tenant at start: a change to its setup.
+            var file = Path.Combine(Path.GetTempPath(), $"juice-obs-provisioning-{Guid.NewGuid():N}.json");
+            await File.WriteAllTextAsync(file, $$"""
+                { "tenants": { "{{LocalStack.TenantKey}}": { "integrations": {
+                  "mail": { "channel": "email", "kind": "smtp", "settings": { "server": "local", "from": "alerts@example.invalid" },
+                            "targets": { "ops": { "address": "ops@example.invalid" } } } } } } }
+                """, Ct);
+            try
+            {
+                await using var factory = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string>
+                {
+                    ["Notifications:Provisioning:Path"] = file, ["Notifications:Delivery:SmtpServers:local:Host"] = "localhost", ["Notifications:Delivery:SmtpServers:local:Port"] = "1025",
+                    ["Notifications:Delivery:SmtpServers:local:Security"] = "None",
+                });
+                using var client = factory.CreateClient();
+
+                using var ready = await client.GetAsync("/health/ready", Ct);
+                Assert.True(ready.StatusCode == HttpStatusCode.OK, (Start(factory)).Failure);
+                await using var db = database.Context();
+                var records = await db.AuditRecords.AsNoTracking().Where(a => a.Operation.StartsWith("notifications.")).ToListAsync(Ct);
+                // Recorded as the provisioning's change, in the platform tenant, with the fields that changed and none of their values.
+                var integration = Assert.Single(records, r => r.TargetType == "integrations");
+                Assert.Equal(("notifications.integrations.inserted", "deployment-config", AuditOutcome.Succeeded),
+                    (integration.Operation.ToLowerInvariant(), integration.Actor, integration.Outcome));
+                Assert.Equal((await db.Tenants.SingleAsync(Ct)).Id, integration.TenantId);
+                Assert.Contains("settings", integration.Metadata["fields"], StringComparison.OrdinalIgnoreCase);
+                Assert.All(records, r => Assert.Equal("notifications", r.Metadata["source"]));
+                Assert.All(records, r => Assert.DoesNotContain("alerts@example.invalid", string.Join(" ", r.Metadata.Values) + r.TargetId));
+                Assert.Contains(records, r => r.TargetType == "integration_targets");
+            }
+            finally
+            {
+                File.Delete(file);
+            }
         }
     }
 }

@@ -952,7 +952,8 @@ namespace Juice.Observability.Webhooks
     public static class WebhookServiceCollectionExtensions
     {
         /// <summary>
-        /// Webhook provisioning and the consumer that plans an alert transition's notifications always; the dispatcher when <c>Webhooks:Enabled</c>.
+        /// Webhook provisioning and the consumer that plans an alert transition's notifications always; the dispatcher when <c>Webhooks:Enabled</c>,
+        /// unless the notification pipeline sends instead (<c>Notifications:Pipeline</c> <c>new</c>: no dispatch, no release or escalate pass).
         /// Register after the rules, with the platform's messaging (the mediator, its TransactionBehavior and the <c>local</c> outbox route).
         /// </summary>
         public static IServiceCollection AddPlatformWebhooks(this IServiceCollection services, IConfiguration configuration)
@@ -960,7 +961,9 @@ namespace Juice.Observability.Webhooks
             services.Configure<WebhookOptions>(configuration.GetSection(WebhookOptions.Section));
             services.AddMessaging().AddLocalConsumer(consumer => consumer.Subscribe<AlertTransitionedIntegrationEvent, AlertTransitionedConsumer>());
             services.AddHostedService<WebhookProvisioner>();
-            if (configuration.GetSection(WebhookOptions.Section).GetValue(nameof(WebhookOptions.Enabled), true))
+            var pipeline = configuration.GetSection(PlatformNotificationsOptions.Section)
+                .GetValue(nameof(PlatformNotificationsOptions.Pipeline), NotificationsPipeline.Legacy);
+            if (pipeline != NotificationsPipeline.New && configuration.GetSection(WebhookOptions.Section).GetValue(nameof(WebhookOptions.Enabled), true))
             {
                 services.AddSingleton<WebhookDispatcher>();
                 services.AddHostedService(sp => sp.GetRequiredService<WebhookDispatcher>());

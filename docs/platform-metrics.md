@@ -135,6 +135,8 @@ The rule scheduler has no single pass: it shows as busy slots instead.
 | `juice.observability.webhooks.dispatch_delay` | histogram, s | – | Past 30 s (§9 webhook dispatch) |
 | `juice.observability.notifications.held` | counter | outcome | `dropped` rising |
 | `juice.observability.notifications.escalations` | counter | outcome | `unreachable` rising |
+| `juice.observability.notifications.released` | counter | outcome | `dropped` rising: what the notification pipeline held under a silence and dropped after it (`shadow`, `new`) |
+| `juice.observability.notifications.refused` | counter | call, code | any: the notification pipeline refused a request the platform made (`shadow`, `new`); the log names it |
 | `juice.observability.process.uptime` | gauge, s | – | Resets: the process restarted |
 
 ### ClickHouse queries the platform makes

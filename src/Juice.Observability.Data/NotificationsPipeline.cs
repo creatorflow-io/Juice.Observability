@@ -35,12 +35,13 @@ namespace Juice.Observability.Data
 
     /// <summary>
     /// A transition's notifications were planned (<see cref="AlertTransition.NotificationsPlannedAt"/> set): raised on the alert in the plan's
-    /// transaction, so the request it becomes is written in that transaction (phase-5-plan I64).
+    /// transaction, so the request it becomes is written in that transaction (phase-5-plan I64). Its handlers run one after another
+    /// (<see cref="ISequenceNotification"/>): they share the command's context and its connection, which can't take two operations at once.
     /// </summary>
-    public sealed record AlertNotificationsPlanned(Guid PlatformTenantId, Guid AlertId, Guid TransitionId) : MessageBase, INotification;
+    public sealed record AlertNotificationsPlanned(Guid PlatformTenantId, Guid AlertId, Guid TransitionId) : MessageBase, ISequenceNotification;
 
-    /// <summary>Someone acknowledged an open alert: raised on the alert in the acknowledgement's transaction.</summary>
-    public sealed record AlertAcknowledged(Guid PlatformTenantId, Guid AlertId, string By) : MessageBase, INotification;
+    /// <summary>Someone acknowledged an open alert: raised on the alert in the acknowledgement's transaction; its handlers run one after another.</summary>
+    public sealed record AlertAcknowledged(Guid PlatformTenantId, Guid AlertId, string By) : MessageBase, ISequenceNotification;
 
     /// <summary>
     /// What happened to an action request, told to the notification pipeline (<c>shadow</c> and <c>new</c>), in the transaction that made it

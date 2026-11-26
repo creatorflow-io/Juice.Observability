@@ -119,8 +119,8 @@ namespace Juice.Observability.Notifications
             _ => true,
         };
 
-        /// <summary>Sends a request kept by a hold, now that no silence covers it.</summary>
-        internal Task SendHeldAsync(NotificationHold hold, CancellationToken cancellationToken)
+        /// <summary>Sends a request kept by a hold, now that no silence covers it; false when the pipeline refused it.</summary>
+        internal Task<bool> SendHeldAsync(NotificationHold hold, CancellationToken cancellationToken)
             => SendAsync(JsonSerializer.Deserialize<NotificationToSend>(hold.Request, JsonSerializerOptions.Web)!, cancellationToken);
 
         internal NotificationToSend Firing(Rule rule, Alert alert, AlertTransition transition, AlertContext context, string? policy)
@@ -189,28 +189,31 @@ namespace Juice.Observability.Notifications
 
         private static string? Bounded(string? value, int max) => value is { Length: > 0 } ? value.Length > max ? value[..max] : value : null;
 
-        private async Task SendAsync(NotificationToSend request, CancellationToken cancellationToken)
-            => await TolerateAsync("send", async () => await client.SendAsync(request, cancellationToken), request.IdempotencyKey);
+        private Task<bool> SendAsync(NotificationToSend request, CancellationToken cancellationToken)
+            => TolerateAsync("send", async () => await client.SendAsync(request, cancellationToken), request.IdempotencyKey);
 
         /// <summary>
         /// A refusal is the pipeline's answer, not a failure of the platform's change: a correlation it doesn't have (its firing was never sent) or
-        /// one already closed is expected; anything else is logged as an error and counted.
+        /// one already closed is expected; anything else is logged as an error and counted. True when the pipeline took the call.
         /// </summary>
-        private async Task TolerateAsync<T>(string call, Func<Task<T>> work, string? key = null)
+        private async Task<bool> TolerateAsync<T>(string call, Func<Task<T>> work, string? key = null)
         {
             try
             {
                 await work();
+                return true;
             }
             catch (NotificationRefusedException refused) when (refused.Code is ErrorCodes.NotFound or ErrorCodes.CorrelationClosed && call != "send")
             {
                 logger.LogDebug("Notifications {Call}: {Code} ({Message})", call, refused.Code, refused.Message);
+                return false;
             }
             catch (NotificationRefusedException refused)
             {
                 Refused.Add(1, new KeyValuePair<string, object?>("call", call), new KeyValuePair<string, object?>("code", refused.Code));
                 logger.LogError("The notification pipeline refused {Call} {Key}: {Code} {Message} {Errors}", call, key, refused.Code, refused.Message,
                     string.Join("; ", refused.Errors?.Select(e => $"{e.Pointer} {e.Message}") ?? []));
+                return false;
             }
         }
     }
