@@ -26,6 +26,9 @@ namespace Juice.Observability.Data
 
         public NotificationsPipeline Pipeline { get; set; } = NotificationsPipeline.Legacy;
 
+        /// <summary>How often silences that start or end by time become holds and releases in the pipeline (Q5: 15 s by default).</summary>
+        public TimeSpan HoldPassInterval { get; set; } = TimeSpan.FromSeconds(15);
+
         /// <summary>Whether the legacy webhooks plan and send (<c>legacy</c> and <c>shadow</c>).</summary>
         public bool LegacySends => Pipeline != NotificationsPipeline.New;
 
