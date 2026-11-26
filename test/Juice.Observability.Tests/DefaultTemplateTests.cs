@@ -40,9 +40,12 @@ namespace Juice.Observability.Tests
             return JsonSerializer.SerializeToElement(node);
         }
 
-        private static Task<string> RenderAsync(string template, string payload, IReadOnlyDictionary<string, string>? links = null)
-            => TemplateRenderer.RenderAsync(template, new RenderModel(AliasVocabulary.FiringType, 1, "Alert firing", NotificationPriority.High, Data(payload),
+        private static async Task<string> RenderAsync(string template, string payload, IReadOnlyDictionary<string, string>? links = null)
+        {
+            await TemplateWarmUp.EnsureAsync();
+            return await TemplateRenderer.RenderAsync(template, new RenderModel(AliasVocabulary.FiringType, 1, "Alert firing", NotificationPriority.High, Data(payload),
                 new Dictionary<string, string>(), links ?? new Dictionary<string, string>()), TestContext.Current.CancellationToken);
+        }
 
         /// <summary>The legacy payload as the template writes it before M46-0 gives it the delivery id: the same bytes, with <c>"id":null</c>.</summary>
         private static string WithoutId(string payload, Guid id) => payload.Replace($"\"id\":\"{id}\",\"type\"", "\"id\":null,\"type\"", StringComparison.Ordinal);
@@ -102,6 +105,7 @@ namespace Juice.Observability.Tests
         [Fact]
         public async Task An_escalated_body_has_the_escalated_type_its_step_and_the_deliverys_id()
         {
+            await TemplateWarmUp.EnsureAsync();
             var (rule, alert, transition) = Alert();
             var id = Guid.CreateVersion7();
             // Legacy's escalated payload: the firing transition, type alert.escalated, the policy and the step.
@@ -118,6 +122,7 @@ namespace Juice.Observability.Tests
         [Fact]
         public async Task The_webhook_body_carries_the_deliverys_id()
         {
+            await TemplateWarmUp.EnsureAsync();
             var (rule, alert, transition) = Alert();
             var id = Guid.CreateVersion7();
             var legacy = NotificationPlan.Payload(id, NotificationPlan.Firing, "t", rule, alert, transition, null);
