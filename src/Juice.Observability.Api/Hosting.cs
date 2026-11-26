@@ -113,12 +113,7 @@ namespace Juice.Observability.Api
         {
             var key = platform.Value.TenantKey;
             // The tenant's Id (the tenant pattern, juice-docs decision record): a GUID in its standard form, never a name.
-            if (!Guid.TryParse(key, out var id) || key != id.ToString("D") || id == Guid.Empty)
-            {
-                throw new InvalidOperationException(
-                    $"Platform:TenantKey '{key}' must be the tenant's Id, a GUID such as 0193f0aa-0000-7000-8000-0000000000a1 (lowercase, with hyphens). "
-                    + "A deployment named before the tenant pattern sets its old name as Platform:PreviousTenantKey (JUICE_PLATFORM_PREVIOUS_TENANT_ID).");
-            }
+            PlatformOptions.TenantId(key);
             var previous = platform.Value.PreviousTenantKey is { Length: > 0 } old ? old : null;
             if (previous is not null && !TenantKey().IsMatch(previous))
             {

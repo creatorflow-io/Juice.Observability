@@ -88,6 +88,17 @@ namespace Juice.Observability.Discovery
         public string? PreviousTenantKey { get; set; }
 
         public string TenantDisplayName { get; set; } = "";
+
+        /// <summary>
+        /// <see cref="TenantKey"/> as the tenant's Id (the tenant pattern, juice-docs decision record): a GUID in its standard form, never a name.
+        /// Throws when it isn't one; the tenant provisioner and the embedded notification pipeline refuse it the same way.
+        /// </summary>
+        public static Guid TenantId(string? key)
+            => Guid.TryParse(key, out var id) && key == id.ToString("D") && id != Guid.Empty
+                ? id
+                : throw new InvalidOperationException(
+                    $"Platform:TenantKey '{key}' must be the tenant's Id, a GUID such as 0193f0aa-0000-7000-8000-0000000000a1 (lowercase, with hyphens). "
+                    + "A deployment named before the tenant pattern sets its old name as Platform:PreviousTenantKey (JUICE_PLATFORM_PREVIOUS_TENANT_ID).");
     }
 
     /// <summary>Configuration section <c>ClickHouse</c>.</summary>

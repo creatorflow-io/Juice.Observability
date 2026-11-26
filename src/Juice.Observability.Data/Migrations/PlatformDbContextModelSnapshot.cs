@@ -18,7 +18,7 @@ namespace Juice.Observability.Data.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.14")
+                .HasAnnotation("ProductVersion", "10.0.15")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -86,7 +86,7 @@ namespace Juice.Observability.Data.Migrations
 
                     b.HasIndex("CreationTime")
                         .HasDatabaseName("IX_OutboxDeliveries_Pending")
-                        .HasFilter("state = 0")
+                        .HasFilter("\"state\" = 0")
                         .HasAnnotation("SqlServer:Include", new[] { "EventId", "PublisherKey" });
 
                     NpgsqlIndexBuilderExtensions.IncludeProperties(b.HasIndex("CreationTime"), new[] { "EventId", "PublisherKey" });
@@ -96,14 +96,14 @@ namespace Juice.Observability.Data.Migrations
 
                     b.HasIndex("NextAttemptOn")
                         .HasDatabaseName("IX_OutboxDeliveries_Retry")
-                        .HasFilter("state = 3 AND next_attempt_on IS NOT NULL")
+                        .HasFilter("\"state\" = 3 AND \"next_attempt_on\" IS NOT NULL")
                         .HasAnnotation("SqlServer:Include", new[] { "EventId", "PublisherKey" });
 
                     NpgsqlIndexBuilderExtensions.IncludeProperties(b.HasIndex("NextAttemptOn"), new[] { "EventId", "PublisherKey" });
 
                     b.HasIndex("ProcessedOn")
                         .HasDatabaseName("IX_OutboxDeliveries_Recovery")
-                        .HasFilter("state = 1")
+                        .HasFilter("\"state\" = 1")
                         .HasAnnotation("SqlServer:Include", new[] { "EventId", "PublisherKey" });
 
                     NpgsqlIndexBuilderExtensions.IncludeProperties(b.HasIndex("ProcessedOn"), new[] { "EventId", "PublisherKey" });

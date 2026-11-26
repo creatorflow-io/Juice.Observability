@@ -38,6 +38,7 @@
     <ProjectReference Include="..\Juice.Observability.Slos\Juice.Observability.Slos.csproj" />
     <ProjectReference Include="..\Juice.Observability.Webhooks\Juice.Observability.Webhooks.csproj" />
     <ProjectReference Include="..\Juice.Observability.Agents\Juice.Observability.Agents.csproj" />
+    <ProjectReference Include="..\Juice.Observability.Notifications\Juice.Observability.Notifications.csproj" />
   </ItemGroup>
 
   <ItemGroup>

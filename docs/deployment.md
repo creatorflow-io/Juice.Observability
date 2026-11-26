@@ -24,6 +24,9 @@ tests/verify.sh                                     # ingestion, tenant stamping
 docker compose --profile test stop otel-collector-test
 ```
 
+The API's image restores the Juice.Notifications packages from GitHub Packages (`nuget.config`): set `GITHUB_PACKAGE_USERNAME` and
+`GITHUB_PACKAGE_TOKEN` (a token with `read:packages`) in the environment before `--build`. They reach the build as secrets, never a layer.
+
 `init.sh` asks for the tenant Id, or takes it from `JUICE_PLATFORM_TENANT_ID`: the tenant's Id from juice-tenants, a GUID (the tenant
 pattern, juice-docs decision record). Locally it defaults to the local stacks' tenant, `0193f0aa-0000-7000-8000-0000000000a1`. Set `PUBLIC_HOST` before it runs, or run
 `scripts/init.sh --reissue-cert` after changing it, so the Collector certificate names the address hosts send to.
@@ -31,6 +34,11 @@ pattern, juice-docs decision record). Locally it defaults to the local stacks' t
 
 The API applies database migrations on start (`Database:Migrate`). It creates the tenant from
 `JUICE_PLATFORM_TENANT_ID`, and refuses to start against a database that belongs to another tenant.
+
+The Juice.Notifications pipeline is embedded in the API (phase 5): its tables are the platform database's `notifications` schema, migrated
+right after the platform's when `Database:Migrate` is on (`Notifications:Database:Migrate` overrides it). `Notifications:Pipeline` says
+which pipeline sends: `legacy`, the default and for now the only one, keeps the platform's own webhooks and runs none of the pipeline's
+stages.
 
 ## Configuration
 
