@@ -21,6 +21,7 @@ namespace Juice.Observability.Notifications.Migration
                 .Bind(configuration.GetSection(Section))
                 .PostConfigure(o => o.SmtpFrom ??= configuration[$"{WebhookOptions.Section}:Smtp:From"] is { Length: > 0 } from ? from : null);
             services.AddScoped<MigrationPlanner>();
+            services.AddScoped<WebhookAlias>();
             // Webhooks:Endpoints through the alias (I69): legacy's provisioner wrapped, in its place.
             AliasProvisioner.Wrap(services);
             return services;

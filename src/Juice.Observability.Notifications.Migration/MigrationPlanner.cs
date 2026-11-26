@@ -89,6 +89,8 @@ namespace Juice.Observability.Notifications.Migration
         /// <summary>The notifications tenant: the platform tenant's Id, which embedded notifications has (its one tenant).</summary>
         private Guid Tenant => embedded.TenantId;
 
+        private NotificationsDbContext Db => db;
+
         /// <summary>Whether the pinned notifications alpha writes a route's digestSeconds (M46-1, decision G2). True, and passed to PutRoute, once it is pinned.</summary>
         internal static bool RouteDigestSupported => true;
 
@@ -411,49 +413,24 @@ namespace Juice.Observability.Notifications.Migration
 
         // ─── The writes ───────────────────────────────────────────────────────
 
-        private async Task<MappingProblem?> PutEndpointAsync(Guid tenant, EndpointSetup setup, IReadOnlyList<string> surplus, Guid? id, CancellationToken ct)
-        {
-            var i = setup.Integration;
-            var problem = await PutAsync(new PutIntegration(tenant, i.Key, i.Channel, i.Kind, JsonElement.Parse(i.Settings), i.SecretRef, i.Priority, i.Enabled)
-                { ManagedBy = AliasVocabulary.WebhooksAlias, Id = id }, ct);
-            foreach (var t in setup.Targets)
-            {
-                if (problem is not null)
-                {
-                    return problem;
-                }
-                await db.SaveChangesAsync(ct);
-                problem = await PutAsync(new PutTarget(tenant, t.IntegrationKey, t.Key, t.Address, t.AddressRef, t.Enabled) { ManagedBy = AliasVocabulary.WebhooksAlias }, ct);
-            }
-            if (problem is not null)
-            {
-                return problem;
-            }
-            await db.SaveChangesAsync(ct);
-            var r = setup.Route;
-            problem = await PutAsync(new PutRoute(tenant, r.Key, JsonElement.Parse(r.Match), r.Targets, r.Enabled, r.DigestSeconds) { ManagedBy = AliasVocabulary.WebhooksAlias }, ct);
-            foreach (var key in surplus)
-            {
-                if (problem is not null)
-                {
-                    return problem;
-                }
-                // After the route stops naming them.
-                await db.SaveChangesAsync(ct);
-                var deleted = await mediator.Send(new DeleteTarget(tenant, i.Key, key) { ManagedBy = AliasVocabulary.WebhooksAlias }, ct);
-                problem = deleted.Kind == OutcomeKind.Ok ? null : Refused(deleted.Code, deleted.Message, deleted.Errors);
-            }
-            return problem;
-        }
+        private Task<MappingProblem?> PutEndpointAsync(Guid tenant, EndpointSetup setup, IReadOnlyList<string> surplus, Guid? id, CancellationToken ct)
+            => EndpointWrites.PutAsync(new Sender(this), tenant, setup, surplus, id, ct);
 
         private async Task<MappingProblem?> PutAsync<T>(IRequest<Outcome<T>> command, CancellationToken ct)
-        {
-            var outcome = await mediator.Send(command, ct);
-            return outcome.Kind is OutcomeKind.Ok or OutcomeKind.Created ? null : Refused(outcome.Code, outcome.Message, outcome.Errors);
-        }
+            => EndpointWrites.Problem(await mediator.Send(command, ct));
 
-        private static MappingProblem Refused(string? code, string? message, IReadOnlyList<FieldError>? errors)
-            => new(code ?? "refused", "Notifications refused the write: " + message
-                + (errors is { Count: > 0 } ? " " + string.Join("; ", errors.Select(e => $"{e.Pointer}: {e.Message}")) : ""));
+        /// <summary>The migration's commands, each saved in its transaction before the next.</summary>
+        private sealed class Sender(MigrationPlanner planner) : ISetupSender
+        {
+            public async Task<MappingProblem?> SendAsync<T>(IRequest<Outcome<T>> command, CancellationToken ct)
+            {
+                var problem = await planner.PutAsync(command, ct);
+                if (problem is null)
+                {
+                    await planner.Db.SaveChangesAsync(ct);
+                }
+                return problem;
+            }
+        }
     }
 }
