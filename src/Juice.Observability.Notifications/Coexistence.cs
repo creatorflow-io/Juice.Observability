@@ -1,41 +1,22 @@
-using Juice.MediatR;
 using Juice.Messaging.Policies;
-using Juice.Notifications.Data;
 using Juice.Observability.Data;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Juice.Observability.Notifications
 {
     /// <summary>
-    /// The pipeline's messaging beside the platform's in one container (M45 coexistence decision, phase-5 waves §5.2): what the host works
-    /// around until the upstream fixes reach published packages. The platform's own half is its own rule, not this: its transaction wraps only its
-    /// commands (<see cref="PlatformCommandsTransaction{TRequest, TResponse}"/>).
-    /// <list type="bullet">
-    /// <item>The pipeline's <c>TransactionBehavior</c> wraps every command, so a platform command opened an empty pipeline transaction: here it
-    /// wraps the pipeline's commands only (<see cref="PipelineCommandsOnly{TRequest, TResponse}"/>). Comes out with U2 (notifications).</item>
-    /// <item>The publishing policies are merged, both answer <c>local</c> for every message, and Juice gave both routes, so each event had two
-    /// outbox deliveries and was handled twice: here identical routes are given once (<c>DistinctRoutes</c>). Comes out with U1 (Juice).</item>
-    /// </list>
+    /// The pipeline's messaging beside the platform's in one container (M45 coexistence decision, phase-5 waves §5.2): what the host still works
+    /// around. The pipeline keeps out of the host's commands and messages itself (its gate, M44-c), and the platform's transaction wraps only the
+    /// platform's commands (<see cref="PlatformCommandsTransaction{TRequest, TResponse}"/>, its own rule). Left: the publishing policies are
+    /// merged, and the platform's catch-all <c>local</c> one answers for the pipeline's messages too, so a message given the same route twice
+    /// would be delivered twice. Identical routes are given once here (<c>DistinctRoutes</c>), until a Juice release with distinct routes (#130)
+    /// is pinned.
     /// </summary>
     internal static class Coexistence
     {
         /// <summary>Call after both the platform's messaging and the pipeline are registered.</summary>
         public static void Isolate(IServiceCollection services)
         {
-            var registered = services.Where(s => s.ServiceType == typeof(IPipelineBehavior<,>) && s.ImplementationType == typeof(NotificationsTransactionBehavior<,>))
-                .ToList();
-            if (registered.Count == 0)
-            {
-                throw new InvalidOperationException("NotificationsTransactionBehavior isn't registered: register the pipeline first.");
-            }
-            foreach (var descriptor in registered)
-            {
-                services.Remove(descriptor);
-            }
-            // The behavior itself, resolved only for the pipeline's commands.
-            services.AddScoped(typeof(NotificationsTransactionBehavior<,>));
-            services.AddScoped(typeof(IPipelineBehavior<,>), typeof(PipelineCommandsOnly<,>));
-
             var policy = services.LastOrDefault(s => s.ServiceType == typeof(IMessagePublishingPolicy))
                 ?? throw new InvalidOperationException("The platform's messaging must be registered before the notification pipeline.");
             services.Remove(policy);
@@ -53,16 +34,13 @@ namespace Juice.Observability.Notifications
                 => [.. (await inner.ResolveAsync(context)).Distinct()];
         }
     }
+}
 
-    /// <summary><see cref="NotificationsTransactionBehavior{TRequest, TResponse}"/> around the pipeline's commands, not the platform's.</summary>
-    internal sealed class PipelineCommandsOnly<TRequest, TResponse>(IServiceProvider services) : IPipelineBehavior<TRequest, TResponse>
-        where TRequest : IRequest<TResponse>
+namespace Juice.Observability.Notifications
+{
+    /// <summary>The pipeline's commands, by its own list (<see cref="Juice.Notifications.Data.NotificationsCommands"/>): the platform's transaction leaves them to the pipeline's.</summary>
+    internal sealed class PipelineCommands(Juice.Notifications.Data.NotificationsCommands commands) : IEmbeddedCommands
     {
-        public int Order => int.MaxValue - 20;
-
-        public ValueTask<TResponse> Handle(TRequest request, RequestHandlerDelegate<TRequest, TResponse> next, CancellationToken cancellationToken)
-            => PlatformCommands.IsEmbeddedProducts(typeof(TRequest))
-                ? services.GetRequiredService<NotificationsTransactionBehavior<TRequest, TResponse>>().Handle(request, next, cancellationToken)
-                : next.Invoke(request, cancellationToken);
+        public bool Owns(Type request) => commands.Owns(request);
     }
 }

@@ -20,29 +20,26 @@ namespace Juice.Observability.Data
     /// that embeds another product with a mediator of its own (the notification pipeline, phase 5) sends that product's commands through the same
     /// mediator: they run in their own product's transaction, never in an empty platform one (M45 coexistence decision, phase-5 waves §5.2).
     /// </summary>
-    public sealed class PlatformCommandsTransaction<TRequest, TResponse>(IServiceProvider services) : IPipelineBehavior<TRequest, TResponse>
+    public sealed class PlatformCommandsTransaction<TRequest, TResponse>(IServiceProvider services, IEnumerable<IEmbeddedCommands> embedded)
+        : IPipelineBehavior<TRequest, TResponse>
         where TRequest : IRequest<TResponse>
     {
         public int Order => int.MaxValue - 20;
 
         public ValueTask<TResponse> Handle(TRequest request, RequestHandlerDelegate<TRequest, TResponse> next, CancellationToken cancellationToken)
-            => PlatformCommands.Owns(typeof(TRequest))
-                ? Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions
-                    .GetRequiredService<PlatformTransactionBehavior<TRequest, TResponse>>(services).Handle(request, next, cancellationToken)
-                : next.Invoke(request, cancellationToken);
+            => embedded.Any(e => e.Owns(typeof(TRequest)))
+                ? next.Invoke(request, cancellationToken)
+                : Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions
+                    .GetRequiredService<PlatformTransactionBehavior<TRequest, TResponse>>(services).Handle(request, next, cancellationToken);
     }
 
-    /// <summary>Which commands are the platform's: all but those of a product embedded in its host.</summary>
-    public static class PlatformCommands
+    /// <summary>
+    /// The commands of a product embedded in the platform's host, which has a transaction of its own: the platform's doesn't wrap them. Each
+    /// embedded product registers one, from its own list of what it owns (the notification pipeline's <c>NotificationsCommands</c>).
+    /// </summary>
+    public interface IEmbeddedCommands
     {
-        /// <summary>
-        /// The embedded notification pipeline's assemblies (<c>Juice.Notifications</c>, <c>Juice.Notifications.*</c>). By name until the pipeline
-        /// publishes its own list of what it owns (U2), which then replaces this.
-        /// </summary>
-        public static bool IsEmbeddedProducts(Type request)
-            => request.Assembly.GetName().Name is { } name && (name == "Juice.Notifications" || name.StartsWith("Juice.Notifications.", StringComparison.Ordinal));
-
-        public static bool Owns(Type request) => !IsEmbeddedProducts(request);
+        bool Owns(Type request);
     }
 
     /// <summary>
