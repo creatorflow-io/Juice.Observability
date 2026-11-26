@@ -47,7 +47,11 @@ namespace Juice.Observability.Notifications.Migration
     /// What the migration does with an item. <see cref="PendingFeature"/>: the mapping is complete, but the pinned notifications alpha can't
     /// write it yet (a route's digest before M46-1, decision G2); it isn't written, and isn't a conflict.
     /// </summary>
-    public enum MigrationAction { Create, Update, Unchanged, Conflict, PendingFeature }
+    /// <summary>
+    /// What the migration does with an item. <c>Remove</c> and <c>Stale</c> are the alias's own rows with nothing left in legacy behind them
+    /// (M46c drift): an allowlist entry removed, an endpoint's route disabled.
+    /// </summary>
+    public enum MigrationAction { Create, Update, Unchanged, Conflict, PendingFeature, Remove, Stale }
 
     /// <summary>One legacy endpoint, policy or allowlist entry, and what the migration does with it.</summary>
     public sealed record MigrationItem(MigrationSubject Subject, string Key, MigrationAction Action, IReadOnlyList<MappingProblem> Problems);
@@ -89,6 +93,14 @@ namespace Juice.Observability.Notifications.Migration
         /// and reports a configuration row in its way as a conflict.
         /// </summary>
         internal bool AsProvisioner { get; set; }
+
+        /// <summary>
+        /// The owners of the alias's rows this run reconciles with legacy's (M46c drift): an allowlist entry legacy no longer has is removed, and
+        /// an endpoint whose legacy row can't be written any more (or is gone) has its route disabled, so nothing stale sends at cutover. Only
+        /// when the legacy setup read is the whole of what those rows mirror: legacy's tables while legacy sends (both owners), the deployment's
+        /// file in new (alias-config). None by default.
+        /// </summary>
+        public IReadOnlySet<string> Reconciles { get; set; } = new HashSet<string>();
 
         /// <summary>The owner a legacy row's notifications rows are written as.</summary>
         private string OwnerOf(string legacyOwner)
@@ -256,6 +268,17 @@ namespace Juice.Observability.Notifications.Migration
                 }
             }
 
+            // The alias's entries legacy no longer has (removed from the file, or through legacy's API while the alias couldn't follow): gone, so the
+            // pipeline reaches no more than legacy does.
+            var kept = destinations.Where(d => d.Mapped.Succeeded).Select(d => d.Mapped.Value!.Destination).ToHashSet(StringComparer.Ordinal);
+            foreach (var entry in current.Allowlist.Values.Where(a => Reconciles.Contains(a.ManagedBy) && !kept.Contains(a.Destination)).OrderBy(a => a.Destination, StringComparer.Ordinal))
+            {
+                var item = (Subject: MigrationSubject.Allowlist, Key: entry.Destination);
+                items.Add(new(item.Subject, item.Key, MigrationAction.Remove, []));
+                var owner = entry.ManagedBy;
+                writes.Add(new(item, (p, ct) => p.PutAsync(new DeleteAllowlistEntry(tenant, entry.Destination) { ManagedBy = owner }, ct)));
+            }
+
             // Endpoints. Target keys are a tenant's (one integration's targets can't take another's), so two endpoints that would make the same
             // key (an email endpoint's ops-2, and an endpoint named ops-2) are both conflicts.
             var mappedEndpoints = legacy.Endpoints.Select(e => (Legacy: e, Mapped: EndpointMapping.Map(LegacyEndpoint.From(e), MappingOptions))).ToList();
@@ -302,6 +325,27 @@ namespace Juice.Observability.Notifications.Migration
                 // A new integration keeps the legacy endpoint's id (decision on Q-B): its id never changes, whichever pipeline answers.
                 var keep = action == MigrationAction.Create ? endpoint.Id : (Guid?)null;
                 writes.Add(new(item, (p, ct) => p.PutEndpointAsync(tenant, setup, surplus, keep, owner, ct)));
+            }
+
+            // The alias's endpoints nothing in legacy writes any more (an edit it can't map, or gone from the file): their routes stop, so nothing
+            // stale sends at cutover; they stay for their history, and are reported.
+            var planned = migrating.Union(waiting).ToHashSet(StringComparer.Ordinal);
+            foreach (var route in current.Routes.Values.Where(r => Reconciles.Contains(r.ManagedBy) && r.Enabled && !planned.Contains(r.Key)).OrderBy(r => r.Key, StringComparer.Ordinal))
+            {
+                var item = (Subject: MigrationSubject.Endpoint, route.Key);
+                var problem = new MappingProblem(ProblemCodes.Stale, items.Any(i => i.Subject == MigrationSubject.Endpoint && i.Key == route.Key)
+                    ? "Legacy's endpoint can't be written to notifications as it is now: the alias's last copy is disabled, so it doesn't send stale."
+                    : "No legacy endpoint has this key any more: the alias's copy is disabled.");
+                if (items.FindIndex(i => i.Subject == MigrationSubject.Endpoint && i.Key == route.Key) is var at && at >= 0)
+                {
+                    items[at] = items[at] with { Problems = [.. items[at].Problems, problem] };
+                }
+                else
+                {
+                    items.Add(new(item.Subject, item.Key, MigrationAction.Stale, [problem]));
+                }
+                var owner = route.ManagedBy;
+                writes.Add(new(item, (p, ct) => p.PutAsync(new PutRoute(tenant, route.Key, null, null, false) { ManagedBy = owner }, ct)));
             }
 
             // Policies: their steps name the routes of endpoints that migrate.

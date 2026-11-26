@@ -49,6 +49,7 @@ namespace Juice.Observability.Api.Endpoints
             await using (var scope = scopes.CreateAsyncScope())
             {
                 var planner = scope.ServiceProvider.GetRequiredService<MigrationPlanner>();
+                ReconcileWhileLegacySends(planner, scope.ServiceProvider);
                 try
                 {
                     report = apply ? await planner.ApplyAsync(legacy, ct, http.User.Actor()) : await planner.ReportAsync(legacy, ct);
@@ -64,6 +65,18 @@ namespace Juice.Observability.Api.Endpoints
                 await db.SaveChangesAsync(ct);
             }
             return Results.Ok(NotificationsMigrationReportDto.From(report));
+        }
+
+        /// <summary>
+        /// While legacy sends, its tables are the whole of what the alias's own rows mirror: the migration also removes and disables what they no
+        /// longer have (M46c drift). In new there is nothing of legacy's to go by, so nothing is reconciled.
+        /// </summary>
+        internal static void ReconcileWhileLegacySends(MigrationPlanner planner, IServiceProvider services)
+        {
+            if (services.GetRequiredService<Microsoft.Extensions.Options.IOptions<PlatformNotificationsOptions>>().Value.LegacySends)
+            {
+                planner.Reconciles = new HashSet<string> { AliasVocabulary.WebhooksAlias };
+            }
         }
 
         internal static Dictionary<string, string> Counts(MigrationReport report)

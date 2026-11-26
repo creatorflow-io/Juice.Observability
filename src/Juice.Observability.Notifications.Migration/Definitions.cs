@@ -77,6 +77,8 @@ namespace Juice.Observability.Notifications.Migration
         public const string KeyStartsWithDigit = "key_starts_with_digit";
         /// <summary>Decision G2: what the pinned notifications alpha can't write yet (a route's digestSeconds before M46-1).</summary>
         public const string PendingFeature = "pending_feature";
+        /// <summary>The alias's copy of an endpoint nothing in legacy writes any more: disabled (M46c drift).</summary>
+        public const string Stale = "stale";
         public const string Events = "unsupported_event";
         public const string Recipients = "invalid_recipients";
         public const string SecretOutOfReach = "secret_out_of_reach";

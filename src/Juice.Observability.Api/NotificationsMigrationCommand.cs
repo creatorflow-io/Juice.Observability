@@ -51,6 +51,7 @@ namespace Juice.Observability.Api
             var key = scope.ServiceProvider.GetRequiredService<NotificationsEmbeddedOptions>().TenantId.ToString("D");
             var tenant = TenantId ?? await db.Tenants.AsNoTracking().Where(t => t.Key == key).Select(t => t.Id).SingleOrDefaultAsync(ct);
             var planner = scope.ServiceProvider.GetRequiredService<MigrationPlanner>();
+            NotificationsMigrationEndpoints.ReconcileWhileLegacySends(planner, scope.ServiceProvider);
             MigrationReport report;
             try
             {
