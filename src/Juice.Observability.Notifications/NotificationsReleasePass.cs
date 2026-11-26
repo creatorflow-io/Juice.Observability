@@ -37,7 +37,7 @@ namespace Juice.Observability.Notifications
                     if (await lease.TryHoldAsync(stoppingToken))
                     {
                         using var pass = WorkerPulse.Begin(Worker, stoppingToken);
-                        while (await ReleaseOnceAsync(stoppingToken) == Batch)
+                        while (await ReleaseOnceAsync(stoppingToken) >= Batch)
                         {
                         }
                         pass.Succeeded();
@@ -51,7 +51,7 @@ namespace Juice.Observability.Notifications
             while (await timer.WaitForNextTickAsync(stoppingToken));
         }
 
-        /// <summary>Decides up to one batch of holds whose silence is over; returns how many it looked at.</summary>
+        /// <summary>Replays the calls kept while the pipeline was down, then decides up to one batch of holds whose silence is over; returns how many it looked at.</summary>
         public async Task<int> ReleaseOnceAsync(CancellationToken cancellationToken)
         {
             await using var scope = scopes.CreateAsyncScope();
@@ -60,6 +60,15 @@ namespace Juice.Observability.Notifications
             using var context = PlatformMessageContext.Begin(Worker);
             var now = clock.GetUtcNow();
             await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+            // Calls kept while the pipeline was down first, in order (an acknowledgement before the transitions kept after it).
+            var parked = await db.NotificationParkedCalls
+                .FromSql($"SELECT * FROM notification_parked_calls WHERE replayed_at IS NULL ORDER BY id LIMIT {Batch} FOR UPDATE SKIP LOCKED")
+                .ToListAsync(cancellationToken);
+            foreach (var call in parked)
+            {
+                await adapter.ReplayAsync(call, cancellationToken);
+                call.ReplayedAt = now;
+            }
             var active = await NotificationWorker.ActiveAsync(db, now, cancellationToken);
             var activeIds = active.Select(s => s.Id).ToArray();
             var holds = await db.NotificationHolds
@@ -67,7 +76,9 @@ namespace Juice.Observability.Notifications
                 .ToListAsync(cancellationToken);
             if (holds.Count == 0)
             {
-                return 0;
+                await db.SaveChangesAsync(cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                return parked.Count;
             }
             var alertIds = holds.Select(h => h.AlertId).Distinct().ToList();
             var alerts = await db.Alerts.AsNoTracking().Where(a => alertIds.Contains(a.Id)).ToDictionaryAsync(a => a.Id, cancellationToken);
@@ -100,7 +111,7 @@ namespace Juice.Observability.Notifications
             }
             await db.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
-            return holds.Count;
+            return parked.Count + holds.Count;
         }
     }
 }

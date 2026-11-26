@@ -69,6 +69,30 @@ namespace Juice.Observability.Data.Migrations
                         onDelete: ReferentialAction.Restrict);
                 });
 
+            migrationBuilder.CreateTable(
+                name: "notification_parked_calls",
+                columns: table => new
+                {
+                    id = table.Column<Guid>(type: "uuid", nullable: false),
+                    tenant_id = table.Column<Guid>(type: "uuid", nullable: false),
+                    kind = table.Column<string>(type: "character varying(20)", maxLength: 20, nullable: false),
+                    correlation_key = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: true),
+                    by = table.Column<string>(type: "character varying(256)", maxLength: 256, nullable: true),
+                    request = table.Column<string>(type: "jsonb", nullable: true),
+                    created_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
+                    replayed_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("pk_notification_parked_calls", x => x.id);
+                    table.ForeignKey(
+                        name: "fk_notification_parked_calls_platform_tenants_tenant_id",
+                        column: x => x.tenant_id,
+                        principalTable: "platform_tenants",
+                        principalColumn: "id",
+                        onDelete: ReferentialAction.Restrict);
+                });
+
             migrationBuilder.CreateIndex(
                 name: "ix_alert_holds_alert_id",
                 table: "alert_holds",
@@ -90,6 +114,17 @@ namespace Juice.Observability.Data.Migrations
                 table: "notification_holds",
                 columns: new[] { "tenant_id", "silence_id" },
                 filter: "decided_at IS NULL");
+
+            migrationBuilder.CreateIndex(
+                name: "ix_notification_parked_calls_pending",
+                table: "notification_parked_calls",
+                column: "id",
+                filter: "replayed_at IS NULL");
+
+            migrationBuilder.CreateIndex(
+                name: "ix_notification_parked_calls_tenant_id",
+                table: "notification_parked_calls",
+                column: "tenant_id");
         }
 
         /// <inheritdoc />
@@ -100,6 +135,9 @@ namespace Juice.Observability.Data.Migrations
 
             migrationBuilder.DropTable(
                 name: "notification_holds");
+
+            migrationBuilder.DropTable(
+                name: "notification_parked_calls");
         }
     }
 }

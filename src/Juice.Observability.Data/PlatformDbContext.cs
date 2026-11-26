@@ -51,6 +51,7 @@ namespace Juice.Observability.Data
         public DbSet<AlertEscalation> AlertEscalations => Set<AlertEscalation>();
         public DbSet<NotificationHold> NotificationHolds => Set<NotificationHold>();
         public DbSet<AlertHold> AlertHolds => Set<AlertHold>();
+        public DbSet<NotificationParkedCall> NotificationParkedCalls => Set<NotificationParkedCall>();
         public DbSet<Incident> Incidents => Set<Incident>();
         public DbSet<IncidentAlert> IncidentAlerts => Set<IncidentAlert>();
         public DbSet<IncidentEvent> IncidentEvents => Set<IncidentEvent>();
@@ -318,6 +319,17 @@ namespace Juice.Observability.Data
                 e.HasKey(x => new { x.TenantId, x.AlertId });
                 Tenant(e);
                 e.HasOne<Alert>().WithMany().HasForeignKey(x => x.AlertId).OnDelete(DeleteBehavior.Cascade);
+            });
+
+            model.Entity<NotificationParkedCall>(e =>
+            {
+                e.ToTable("notification_parked_calls");
+                Tenant(e);
+                e.Property(x => x.Kind).HasMaxLength(20);
+                e.Property(x => x.CorrelationKey).HasMaxLength(200);
+                e.Property(x => x.By).HasMaxLength(256);
+                e.Property(x => x.Request).HasColumnType("jsonb");
+                e.HasIndex(x => x.Id).HasFilter("replayed_at IS NULL").HasDatabaseName("ix_notification_parked_calls_pending");
             });
         }
 

@@ -13,7 +13,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Juice.Observability.Data.Migrations
 {
     [DbContext(typeof(PlatformDbContext))]
-    [Migration("20261126031528_NotificationsAdapter")]
+    [Migration("20261126050524_NotificationsAdapter")]
     partial class NotificationsAdapter
     {
         /// <inheritdoc />
@@ -1879,6 +1879,58 @@ namespace Juice.Observability.Data.Migrations
                     b.ToTable("notification_holds", (string)null);
                 });
 
+            modelBuilder.Entity("Juice.Observability.Data.NotificationParkedCall", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("By")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("by");
+
+                    b.Property<string>("CorrelationKey")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("correlation_key");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("kind");
+
+                    b.Property<DateTimeOffset?>("ReplayedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("replayed_at");
+
+                    b.Property<string>("Request")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("request");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_notification_parked_calls");
+
+                    b.HasIndex("Id")
+                        .HasDatabaseName("ix_notification_parked_calls_pending")
+                        .HasFilter("replayed_at IS NULL");
+
+                    b.HasIndex("TenantId")
+                        .HasDatabaseName("ix_notification_parked_calls_tenant_id");
+
+                    b.ToTable("notification_parked_calls", (string)null);
+                });
+
             modelBuilder.Entity("Juice.Observability.Data.PlatformTenant", b =>
                 {
                     b.Property<Guid>("Id")
@@ -3456,6 +3508,16 @@ namespace Juice.Observability.Data.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_notification_holds_platform_tenants_tenant_id");
+                });
+
+            modelBuilder.Entity("Juice.Observability.Data.NotificationParkedCall", b =>
+                {
+                    b.HasOne("Juice.Observability.Data.PlatformTenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_notification_parked_calls_platform_tenants_tenant_id");
                 });
 
             modelBuilder.Entity("Juice.Observability.Data.ReconciliationCheckpoint", b =>
