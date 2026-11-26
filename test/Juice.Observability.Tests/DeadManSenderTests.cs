@@ -265,6 +265,74 @@ namespace Juice.Observability.Tests
                 (setup.Posted()[^1].GetProperty("type").GetString(), setup.Posted()[^1].GetProperty("cause").GetString()));
         }
 
+        private static List<JsonElement> Reconciled(Setup setup)
+            => [.. setup.Posted().Where(p => p.GetProperty("reconcile").GetBoolean())];
+
+        [Fact]
+        public async Task Taking_the_lease_resolves_every_cause_not_standing_once_Async()
+        {
+            await using var setup = await SetupAsync();
+            // A restart: the cause that was firing cleared while no replica watched, and this one remembers nothing of it.
+            setup.Sender.LeaseAcquired();
+
+            await setup.Sender.RunOnceAsync(Ct);
+
+            var told = Reconciled(setup);
+            Assert.Equal(DeadManCauses.All.Order(), told.Select(p => p.GetProperty("cause").GetString()!).Order());
+            Assert.All(told, p => Assert.Equal("observability.deadman.resolved", p.GetProperty("type").GetString()));
+            // Each post has its own id, for receivers to dedupe on.
+            Assert.Equal(told.Count, setup.Receiver.Requests.Select(r => r.Id).Distinct().Count());
+            // Once: the next pass reconciles nothing.
+            await setup.Sender.RunOnceAsync(Ct);
+            Assert.Equal(told.Count, setup.Posted().Count);
+        }
+
+        [Fact]
+        public async Task Taking_the_lease_fires_a_standing_cause_once_and_the_rate_limit_runs_from_there_Async()
+        {
+            await using var setup = await SetupAsync();
+            setup.Health.Health = Reading(dispatcherDue: TimeSpan.FromMinutes(6));
+            setup.Sender.LeaseAcquired();
+
+            await setup.Sender.RunOnceAsync(Ct);
+            var stalled = Assert.Single(Reconciled(setup), p => p.GetProperty("cause").GetString() == DeadManCauses.Stalled);
+            Assert.Equal("observability.deadman.firing", stalled.GetProperty("type").GetString());
+
+            var count = setup.Posted().Count;
+            setup.Clock.Advance(TimeSpan.FromMinutes(5));
+            await setup.Sender.RunOnceAsync(Ct);
+            Assert.Equal(count, setup.Posted().Count);
+            setup.Clock.Advance(TimeSpan.FromMinutes(11));
+            await setup.Sender.RunOnceAsync(Ct);
+            var again = setup.Posted()[^1];
+            Assert.Equal((DeadManCauses.Stalled, false), (again.GetProperty("cause").GetString(), again.GetProperty("reconcile").GetBoolean()));
+        }
+
+        [Fact]
+        public async Task Without_the_lease_nothing_is_reconciled_Async()
+        {
+            await using var setup = await SetupAsync();
+            await setup.Sender.RunOnceAsync(Ct);
+            Assert.Empty(setup.Receiver.Requests);
+        }
+
+        [Fact]
+        public async Task A_cause_not_known_yet_waits_to_be_reconciled_Async()
+        {
+            await using var setup = await SetupAsync();
+            // Failing rows seen once: whether the cause stands needs a second read, FailingFor later.
+            setup.Health.Health = Reading(dispatcherFailing: 12);
+            setup.Sender.LeaseAcquired();
+
+            await setup.Sender.RunOnceAsync(Ct);
+            Assert.DoesNotContain(Reconciled(setup), p => p.GetProperty("cause").GetString() == DeadManCauses.Failing);
+
+            setup.Clock.Advance(TimeSpan.FromMinutes(10));
+            await setup.Sender.RunOnceAsync(Ct);
+            var failing = Assert.Single(Reconciled(setup), p => p.GetProperty("cause").GetString() == DeadManCauses.Failing);
+            Assert.Equal("observability.deadman.firing", failing.GetProperty("type").GetString());
+        }
+
         [Fact]
         public async Task A_failing_shadow_comparison_is_a_cause_Async()
         {
@@ -311,8 +379,10 @@ namespace Juice.Observability.Tests
             for (var i = 0; i < 100 && receiver.Requests.IsEmpty; i++) await Task.Delay(100, Ct);
 
             // The pipeline's own services were never started; the alarm, which doesn't depend on them, was.
-            var alarm = JsonDocument.Parse(Assert.Single(receiver.Requests).Body).RootElement;
-            Assert.Equal((DeadManCauses.Unreadable, "observability.deadman.firing"), (alarm.GetProperty("cause").GetString(), alarm.GetProperty("type").GetString()));
+            // Its first pass under the lease reconciles: the unreadable pipeline fires; the causes it can't read are left untold.
+            var posted = receiver.Requests.Select(r => JsonDocument.Parse(r.Body).RootElement).ToList();
+            Assert.Contains(posted, p => p.GetProperty("cause").GetString() == DeadManCauses.Unreadable && p.GetProperty("type").GetString() == "observability.deadman.firing");
+            Assert.DoesNotContain(posted, p => p.GetProperty("cause").GetString() is DeadManCauses.Stalled or DeadManCauses.Failing or DeadManCauses.NoSuccess or DeadManCauses.StuckInRetry);
         }
 
         [Theory]

@@ -77,11 +77,19 @@ namespace Juice.Observability.Health.DeadMan
             WorkerPulse.Register(Worker, options.Value.Interval, stopping: stoppingToken);
             await using var lease = WorkerLease.For(scopes, Worker, logger);
             using var timer = new PeriodicTimer(options.Value.Interval);
+            var held = false;
             do
             {
                 try
                 {
-                    if (await lease.TryHoldAsync(stoppingToken))
+                    var holds = await lease.TryHoldAsync(stoppingToken);
+                    if (holds && !held)
+                    {
+                        // This replica just took the lease (a start, or a failover): it doesn't know what the one before it told.
+                        LeaseAcquired();
+                    }
+                    held = holds;
+                    if (holds)
                     {
                         using var pass = WorkerPulse.Begin(Worker, stoppingToken);
                         await RunOnceAsync(stoppingToken);
@@ -95,6 +103,17 @@ namespace Juice.Observability.Health.DeadMan
             }
             while (await timer.WaitForNextTickAsync(stoppingToken));
         }
+
+        /// <summary>Causes still to be reconciled with the receiver, since this replica took the lease.</summary>
+        private readonly HashSet<string> _reconcile = [];
+
+        /// <summary>
+        /// The lease is this replica's now: on its next pass every cause is told as it stands, <c>firing</c> or <c>resolved</c>, marked
+        /// <c>reconcile</c> (receivers take a resolve of a cause that isn't open as a no-op). So a cause that cleared while no replica was
+        /// watching is resolved, and one standing is told again once. A cause whose state isn't known yet (the pipeline unread, or a condition
+        /// that needs a second read) waits until it is.
+        /// </summary>
+        public void LeaseAcquired() => _reconcile.UnionWith(DeadManCauses.All);
 
         /// <summary>Reads the pipeline, decides each cause, and posts what is due: a cause arising (or still standing after the resend time), or one cleared.</summary>
         public async Task RunOnceAsync(CancellationToken cancellationToken)
@@ -111,9 +130,32 @@ namespace Juice.Observability.Health.DeadMan
                 [DeadManCauses.StuckInRetry] = health is null ? Keep(DeadManCauses.StuckInRetry) : StuckInRetry(health),
                 [DeadManCauses.Shadow] = shadow is null ? null : await shadow.FailingAsync(cancellationToken),
             };
+            // Not known yet: unread, or a condition seen once that needs a second read to stand.
+            var unknown = new HashSet<string>();
+            if (health is null)
+            {
+                unknown.UnionWith([DeadManCauses.Stalled, DeadManCauses.Failing, DeadManCauses.NoSuccess, DeadManCauses.StuckInRetry]);
+            }
+            if (standing[DeadManCauses.Failing] is null && _failingSince.Count > 0) unknown.Add(DeadManCauses.Failing);
+            if (standing[DeadManCauses.NoSuccess] is null && _noSuccessSince is not null) unknown.Add(DeadManCauses.NoSuccess);
             foreach (var (cause, detail) in standing)
             {
                 var state = _causes[cause];
+                if (_reconcile.Contains(cause) && !unknown.Contains(cause))
+                {
+                    if (detail is not null && !state.Active)
+                    {
+                        (state.Active, state.Since) = (true, now);
+                    }
+                    state.Detail = detail ?? "";
+                    if (await PostAsync(cause, detail is not null ? "firing" : "resolved", state, health, now, cancellationToken, reconcile: true))
+                    {
+                        _reconcile.Remove(cause);
+                        // The rate limit runs from this post.
+                        (state.Active, state.SentAt) = detail is not null ? (true, (DateTimeOffset?)now) : (false, null);
+                    }
+                    continue;
+                }
                 if (detail is not null)
                 {
                     if (!state.Active)
@@ -218,7 +260,8 @@ namespace Juice.Observability.Health.DeadMan
         private static string Minutes(TimeSpan span) => span.TotalMinutes >= 1 ? $"{span.TotalMinutes:0.#} min" : $"{span.TotalSeconds:0} s";
 
         /// <summary>Posts one alarm, signed (Standard Webhooks); true when the endpoint took it (2xx).</summary>
-        private async Task<bool> PostAsync(string cause, string @event, State state, PipelineHealth? health, DateTimeOffset now, CancellationToken cancellationToken)
+        private async Task<bool> PostAsync(string cause, string @event, State state, PipelineHealth? health, DateTimeOffset now, CancellationToken cancellationToken,
+            bool reconcile = false)
         {
             var id = Guid.CreateVersion7().ToString();
             var body = JsonSerializer.Serialize(new
@@ -227,6 +270,8 @@ namespace Juice.Observability.Health.DeadMan
                 type = $"observability.deadman.{@event}",
                 cause,
                 detail = state.Detail,
+                // Told again by a replica that just took the lease: a resolve of a cause that isn't open is a no-op.
+                reconcile,
                 since = state.Since,
                 occurredAt = now,
                 tenant = platform.Value.TenantKey,

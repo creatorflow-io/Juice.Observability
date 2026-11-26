@@ -147,9 +147,9 @@ Proof point 10 of phase 5 (Juice.Notifications embedded, `Notifications:Pipeline
   | 07:42:03 | the retry delivered; dead-man `resolved` |
 
   The alarm came at the threshold plus one pass (2 s), and each event was posted once.
-- **Not drilled here:** the dispatcher stopped by a restart. The dead-man's state is in memory (by design), so a cause still standing
-  after a restart is posted again by the new process, which then resolves it when it clears. A cause that clears while the host is down is
-  never resolved: the new process didn't see it. The receiver's last word on it stays `firing` until it arises again.
+- **Not drilled here:** the dispatcher stopped by a restart. The dead-man's state is in memory (by design); the replica that takes its lease
+  (at start, or on a failover) reconciles, telling every cause as it stands, so a cause that cleared while the host was down is resolved
+  then (`DeadManSenderTests`).
 
 ## Not drilled
 

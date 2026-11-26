@@ -73,7 +73,9 @@ namespace Juice.Observability.Tests
                 }
                 Note($"dispatcher stalled: delivery {delivery} held, due for its retry");
 
-                JsonElement? Alarm(string type) => alarm.Requests.Select(r => JsonDocument.Parse(r.Body).RootElement.Clone())
+                // What the stall raised: the posts of the first pass under the lease (reconcile) aside.
+                IEnumerable<JsonElement> Raised() => alarm.Requests.Select(r => JsonDocument.Parse(r.Body).RootElement.Clone()).Where(r => !r.GetProperty("reconcile").GetBoolean());
+                JsonElement? Alarm(string type) => Raised()
                     .Where(r => r.GetProperty("type").GetString() == type).Cast<JsonElement?>().FirstOrDefault();
                 for (var i = 0; i < 200 && Alarm("observability.deadman.firing") is null; i++) await Task.Delay(1000, Ct);
                 var firingAlarm = Alarm("observability.deadman.firing");
@@ -90,7 +92,7 @@ namespace Juice.Observability.Tests
                 Assert.NotNull(resolved);
                 Note("delivery sent on its retry; dead-man resolved");
                 // Each once: the alarm isn't repeated inside its resend time.
-                Assert.Equal(2, alarm.Requests.Count);
+                Assert.Equal(2, Raised().Count());
             }
             finally
             {
