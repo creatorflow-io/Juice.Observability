@@ -8,10 +8,11 @@
 // from telemetry: OTLP (default the main Collector, https://localhost:4318), which stamps the host's tenant; STACK_SECRETS names the
 // stack's secrets folder when this checkout isn't the one scripts/init.sh ran in.
 //
-// A host of its own beside the stack's (a branch not yet in the image), on the integration tests' tenant so its alerts stay out of the
-// running platform's: run it on :4200 (a redirect the Console's client allows) with Platform:TenantKey set to that tenant and a scratch
-// database, and run the journeys with BASE=http://localhost:4200 TENANT=<that tenant> OTLP=https://localhost:14318 (the test Collector)
-// TOKEN_CLIENT=juice-platform-test SPLIT_TENANT=1.
+// A host of its own beside the stack's (a branch not yet in the image): run it on :4200 (a redirect the Console's client allows) on the
+// platform tenant (Platform:TenantKey = JUICE_PLATFORM_TENANT_ID of deploy/local/.env), because the browser's juice-console token carries
+// that tenant and the notification pages rightly refuse a caller of another deployment. Link deploy/local/secrets into the checkout (or set
+// STACK_SECRETS), and serve the Console a config.json with the stack's issuer (http://PUBLIC_HOST:8080/realms/juice) and
+// "requireHttps": false. Then run the journeys with BASE=http://localhost:4200.
 import { request } from 'node:https';
 import { createServer } from 'node:http';
 import { networkInterfaces } from 'node:os';
@@ -22,8 +23,7 @@ import { env, local, base, keycloak } from '../lib.mjs';
 export { env, base };
 
 /**
- * A token for `user` (password grant). TOKEN_CLIENT names the client: `juice-platform-cli` (the default) carries the platform tenant's claim,
- * `juice-platform-test` the integration tests' tenant's, for a host on that tenant.
+ * A token for `user` (password grant), from `juice-platform-cli` (TOKEN_CLIENT to name another), which carries the platform tenant's claim.
  */
 export async function tokenFor(user) {
   const r = await fetch(`${keycloak}/realms/juice/protocol/openid-connect/token`, { method: 'POST', body: new URLSearchParams({ grant_type: 'password',
@@ -185,16 +185,9 @@ export { launch, steps, expect, finish } from '../lib.mjs';
 
 /**
  * A page signed in as `user`, at `path`. Page errors go to `problems`, failed calls to `refused` (a journey that expects some sorts them).
- * SPLIT_TENANT=1, for a host on the integration tests' tenant whose browser sign-in still carries the platform tenant's claim: the
- * platform's own pages' calls it refuses for that reason (403 under /api/v1) are left out; the notification pages' never are.
  */
 export async function signIn(browser, user, problems, refused, path = pages) {
-  const split = process.env.SPLIT_TENANT === '1';
-  const page = await platformSignIn(browser, user, problems, e => {
-    if (split && / http 403 .*\/api\/v1\//.test(e) && !e.includes('/notifications/api/')) return;
-    if (split && /console: Failed to load resource: the server responded with a status of 403/.test(e)) return;
-    refused.push(e);
-  });
+  const page = await platformSignIn(browser, user, problems, e => refused.push(e));
   if (path !== '/') await page.goto(`${base}${path}`);
   return page;
 }
