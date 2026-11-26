@@ -60,12 +60,12 @@ namespace Juice.Observability.Api
             services.Configure<LocalChannelOptions>(configuration.GetSection(LocalChannelSection));
             // After the platform's messaging and the provisioner: its schema migrates after the platform's (I60).
             services.AddPlatformNotifications(configuration);
-            services.AddPlatformNotificationsMigration(configuration);
             services.AddPlatformDiscovery(configuration);
             services.AddPlatformHealth(configuration);
             services.AddPlatformRules(configuration);
             services.AddPlatformSlos(configuration);
             services.AddPlatformWebhooks(configuration);
+            services.AddPlatformNotificationsMigration(configuration);
             services.AddPlatformAgents(configuration);
             services.Configure<IntegrationOptions>(configuration.GetSection(IntegrationOptions.Section));
             services.AddPlatformAuthentication(configuration);

@@ -13,7 +13,7 @@ namespace Juice.Observability.Notifications.Migration
         /// The migration tool (phase-5-plan I70, M46b): <see cref="MigrationPlanner"/>, scoped with the pipeline's <c>NotificationsDbContext</c>.
         /// Its email endpoints send through the deployment's server named <c>Notifications:Migration:SmtpServer</c> in notifications'
         /// <c>Delivery:SmtpServers</c>, from <c>Notifications:Migration:SmtpFrom</c>, by default legacy's <c>Webhooks:Smtp:From</c>. Register
-        /// after <c>AddPlatformNotifications</c>.
+        /// after <c>AddPlatformNotifications</c> and <c>AddPlatformWebhooks</c>, whose provisioner the alias wraps.
         /// </summary>
         public static IServiceCollection AddPlatformNotificationsMigration(this IServiceCollection services, IConfiguration configuration)
         {
@@ -21,6 +21,8 @@ namespace Juice.Observability.Notifications.Migration
                 .Bind(configuration.GetSection(Section))
                 .PostConfigure(o => o.SmtpFrom ??= configuration[$"{WebhookOptions.Section}:Smtp:From"] is { Length: > 0 } from ? from : null);
             services.AddScoped<MigrationPlanner>();
+            // Webhooks:Endpoints through the alias (I69): legacy's provisioner wrapped, in its place.
+            AliasProvisioner.Wrap(services);
             return services;
         }
     }

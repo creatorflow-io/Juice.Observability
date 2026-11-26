@@ -154,5 +154,38 @@ namespace Juice.Observability.Tests
             Assert.NotNull(await MigrationPlanner.ReadSetupAsync(scope.ServiceProvider.GetRequiredService<NotificationsDbContext>(), Guid.Parse(LocalStack.TenantKey), "ops", Ct));
             Assert.Equal(1, await new Api.NotificationsMigrationCommand(false, Guid.NewGuid()).RunAsync(factory.Services, output, Ct));
         }
+
+        /// <summary>
+        /// <c>Webhooks:Endpoints</c> through the alias (I69, M46b): in <c>legacy</c>, the file is loaded into legacy's table as before, and the
+        /// notifications rows follow it at start, the integration keeping the endpoint's id; a restart changes nothing.
+        /// </summary>
+        [Fact]
+        public async Task Endpoints_from_configuration_are_loaded_through_the_alias()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var settings = new Dictionary<string, string>(Settings)
+            {
+                ["Webhooks:Enabled"] = "true",
+                ["Webhooks:Endpoints:0:Key"] = "from-file",
+                ["Webhooks:Endpoints:0:Kind"] = "Webhook",
+                ["Webhooks:Endpoints:0:Url"] = "https://receiver.example/hooks/file",
+                ["Webhooks:Endpoints:0:SecretRef"] = "env:JUICE_WEBHOOK_FILE",
+                ["Webhooks:Endpoints:0:MinimumSeverity"] = "Warning",
+            };
+            for (var start = 0; start < 2; start++)
+            {
+                await using var factory = new ApiTests.ApiFactory(database, settings: settings);
+                _ = factory.CreateClient();
+                await using var platform = database.Context();
+                var endpoint = await platform.WebhookEndpoints.AsNoTracking().SingleAsync(e => e.Key == "from-file", Ct);
+                Assert.Equal(ManagedBy.Configuration, endpoint.ManagedBy);
+                await using var scope = factory.Services.CreateAsyncScope();
+                var notifications = scope.ServiceProvider.GetRequiredService<NotificationsDbContext>();
+                var setup = await MigrationPlanner.ReadSetupAsync(notifications, Guid.Parse(LocalStack.TenantKey), "from-file", Ct);
+                Assert.Equal(LegacyEndpoint.From(endpoint), EndpointMapping.Unmap(setup!).Value);
+                Assert.Equal(endpoint.Id, (await notifications.Integrations.AsNoTracking().SingleAsync(i => i.Key == "from-file", Ct)).Id);
+            }
+        }
     }
 }
