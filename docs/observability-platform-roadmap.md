@@ -193,6 +193,23 @@
 
 **Status:** done; split from Phase 10 by the owner 2026-11-13. **Phase-order exception (owner, 2026-11-13):** Phase 11 runs before Phase 10's milestones 4 (drills) and 5 (gate), so the upgrade drill also covers 1.2.0 → 1.3.0. See the [Phase 11 plan](phase-11-plan.md) (approved 2026-11-13; revision 3 the same day turns it toward the data path's throughput). Done: all seven milestones, accepted by the owner 2026-11-16 ([acceptance](phase-11-acceptance.md)); release 1.3.0. Phase 10's milestones 4 (drills: the upgrade drill is done, [drills](drills.md)) and 5 (gate) follow.
 
+## Phase 12 — Any OpenTelemetry metric
+
+**Goal:** any system that sends OpenTelemetry can be alerted on, whatever its language or framework.
+
+**Deliverables:**
+- a MetricThreshold rule template over any gauge, sum or histogram (still typed, no user SQL);
+- HostCpu and HostDisk templates;
+- a Console rule editor with a 24-hour preview;
+- a non-.NET, non-Juice sample service.
+
+**Acceptance gate:**
+- the plan's proof points 1–6;
+- the sample service is alerted on with standard OpenTelemetry only;
+- the 1× and 5× scale steps rerun within the §9 targets.
+
+**Status:** planned; approved by the owner 2026-11-26. See the [Phase 12 plan](phase-12-plan.md).
+
 ## Explicit triggers for deferred infrastructure and SaaS
 
 | Addition | Trigger required before adoption |
@@ -219,4 +236,5 @@
   → 9 Advanced correlation + SLOs + selective streaming
   → 10 Domain console + scale hardening
   → 11 Platform self-observability + capacity + performance
+  → 12 Any OpenTelemetry metric
 ```
