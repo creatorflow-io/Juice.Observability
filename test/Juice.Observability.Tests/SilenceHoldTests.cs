@@ -227,6 +227,108 @@ namespace Juice.Observability.Tests
             Assert.Empty(await RowsAsync(database));
         }
 
+        /// <summary>A host on the same database in new; its provisioning file broken when <paramref name="broken"/> (its start fails).</summary>
+        private static async Task<(ApiTests.ApiFactory Factory, string? File)> NewHostAsync(ScratchDatabase database, bool broken)
+        {
+            var settings = new Dictionary<string, string> { ["Notifications:Pipeline"] = "new" };
+            string? file = null;
+            if (broken)
+            {
+                file = Path.Combine(Path.GetTempPath(), $"juice-obs-broken-{Guid.NewGuid():N}.json");
+                await File.WriteAllTextAsync(file, $$"""{ "tenants": { "{{LocalStack.TenantKey}}": { "integrations": { "mail": { "channel": "email", "kind": "smtp", "settings": { "server": "none" } } } } } }""", Ct);
+                settings["Notifications:Provisioning:Path"] = file;
+            }
+            return (new ApiTests.ApiFactory(database, settings: settings), file);
+        }
+
+        [Fact]
+        public async Task A_silence_cancelled_while_the_pipeline_is_down_is_released_once_it_is_up_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            Guid alert, silence;
+            var (up, _) = await NewHostAsync(database, broken: false);
+            await using (up)
+            {
+                using var client = up.CreateClient();
+                alert = await FiringSentAsync(up, database);
+                var (@operator, silences) = await OperatorAsync(up, database, client);
+                silence = await CreateAsync(@operator, silences);
+                Assert.NotNull((await HoldAsync(database, alert))!.HeldAt);
+            }
+            var (down, file) = await NewHostAsync(database, broken: true);
+            try
+            {
+                await using (down)
+                {
+                    using var client = down.CreateClient();
+                    var (@operator, silences) = await OperatorAsync(down, database, client);
+                    Assert.Equal(HttpStatusCode.NoContent, (await @operator.SendAsync(HttpMethod.Delete, $"{silences}/{silence}")).StatusCode);
+                    // Nothing was asked of the pipeline, and the platform's record of the hold stays: it is what says to release it later.
+                    Assert.NotNull((await HoldAsync(database, alert))!.HeldAt);
+                    Assert.Single(await RowsAsync(database));
+                }
+            }
+            finally
+            {
+                File.Delete(file!);
+            }
+            (up, _) = await NewHostAsync(database, broken: false);
+            await using (up)
+            {
+                _ = up.Server;
+                await Pass(up).RunOnceAsync(Ct);
+                Assert.Null((await HoldAsync(database, alert))!.HeldAt);
+                Assert.Empty(await RowsAsync(database));
+            }
+        }
+
+        [Fact]
+        public async Task A_release_and_a_new_silence_at_once_leave_the_hold_under_the_new_one_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var factory = Factory(database);
+            using var client = factory.CreateClient();
+            var alert = await FiringSentAsync(factory, database);
+            var (@operator, silences) = await OperatorAsync(factory, database, client);
+            var first = await CreateAsync(@operator, silences);
+            // The first silence ends by time, and someone makes a second just as the pass runs.
+            await using (var db = database.Context())
+            {
+                await db.Silences.Where(s => s.Id == first).ExecuteUpdateAsync(s => s.SetProperty(x => x.EndsAt, DateTimeOffset.UtcNow.AddSeconds(-1)), Ct);
+            }
+            var pass = Pass(factory).RunOnceAsync(Ct);
+            var second = CreateAsync(@operator, silences, service: "orders");
+            await Task.WhenAll(pass, second);
+
+            Assert.Equal(ProducerAdapter.SilenceReason(await second), (await HoldAsync(database, alert))!.Reason);
+            Assert.Equal(await second, Assert.Single(await RowsAsync(database)).SilenceId);
+        }
+
+        [Fact]
+        public async Task A_hold_with_no_record_is_released_by_the_pass_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var factory = Factory(database);
+            using var client = factory.CreateClient();
+            var alert = await FiringSentAsync(factory, database);
+            var (@operator, silences) = await OperatorAsync(factory, database, client);
+            var silence = await CreateAsync(@operator, silences);
+            // The record is lost (as an older release lost it) and the silence ends: the pipeline's hold alone remains.
+            await using (var db = database.Context())
+            {
+                await db.AlertHolds.ExecuteDeleteAsync(Ct);
+                await db.Silences.Where(s => s.Id == silence).ExecuteUpdateAsync(s => s.SetProperty(x => x.CancelledAt, DateTimeOffset.UtcNow), Ct);
+            }
+            Assert.NotNull((await HoldAsync(database, alert))!.HeldAt);
+
+            Assert.Equal(1, await Pass(factory).RunOnceAsync(Ct));
+
+            Assert.Null((await HoldAsync(database, alert))!.HeldAt);
+        }
+
         [Fact(Skip = "Needs the M45-n alpha (NotificationToSend.OccurredAt): a firing held past a[0] gets step 1 at release.")]
         public void A_firing_held_past_its_first_step_gets_it_at_release()
         {

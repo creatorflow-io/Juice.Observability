@@ -66,7 +66,17 @@ namespace Juice.Observability.Notifications
                 .ToListAsync(cancellationToken);
             foreach (var call in parked)
             {
-                await adapter.ReplayAsync(call, cancellationToken);
+                if (await EachAsync(transaction, () => adapter.ReplayAsync(call, cancellationToken), cancellationToken) is { } error)
+                {
+                    call.Attempts++;
+                    call.LastError = Bounded(error);
+                    if (call.Attempts >= NotificationHoldOutcomes.MaxAttempts)
+                    {
+                        logger.LogError("Kept call {Call} ({Kind}) given up after {Attempts} tries: {Error}", call.Id, call.Kind, call.Attempts, error);
+                        call.ReplayedAt = now;
+                    }
+                    continue;
+                }
                 call.ReplayedAt = now;
             }
             var active = await NotificationWorker.ActiveAsync(db, now, cancellationToken);
@@ -86,32 +96,77 @@ namespace Juice.Observability.Notifications
             var rules = await db.Rules.AsNoTracking().Where(r => ruleIds.Contains(r.Id)).ToDictionaryAsync(r => r.Id, r => r.Key, cancellationToken);
             // Tracked: a firing decided in this batch counts for its resolved notice, decided after it (ids are in time order).
             var firings = await db.NotificationHolds.Where(h => alertIds.Contains(h.AlertId) && h.Event == NotificationPlan.Firing).ToListAsync(cancellationToken);
+            // A silence being made now takes the same lock until it commits: the silences read below include it.
+            foreach (var tenant in holds.Select(h => h.TenantId).Distinct().Order())
+            {
+                await SilenceHolds.LockTenantAsync(db, tenant, cancellationToken);
+            }
             foreach (var hold in holds)
             {
                 var alert = alerts[hold.AlertId];
                 var alertContext = new AlertContext(rules[alert.RuleId], alert.SubjectKey, alert.Severity);
-                // Another silence covers it too: it stays held, under that one.
-                if (SilenceMatcher.Find(active.Where(s => s.TenantId == hold.TenantId), alertContext, now) is { } other)
+                // Another silence covers it now (read again, just before it would be sent): it stays held, under that one.
+                var covering = SilenceMatcher.Find((await NotificationWorker.ActiveAsync(db, clock.GetUtcNow(), cancellationToken)).Where(s => s.TenantId == hold.TenantId),
+                    alertContext, clock.GetUtcNow());
+                if (covering is not null)
                 {
-                    hold.SilenceId = other.Id;
+                    hold.SilenceId = covering.Id;
                     continue;
-                }
-                // Kept while the pipeline was down: its resolve wasn't asked then (a silence's hold was resolved at plan; again is no change).
-                if (hold.Event == NotificationPlan.Resolved && hold.SilenceId == ProducerAdapter.PipelineUnavailable)
-                {
-                    await adapter.ResolveAlertAsync(hold.AlertId, null, cancellationToken);
                 }
                 var firing = firings.FirstOrDefault(f => f.AlertId == hold.AlertId);
                 var told = firing is null || firing.Outcome == NotificationHoldOutcomes.Sent;
-                var send = HeldNotification.Decide(hold.Event, alert.State, told, alert.AcknowledgedAt is not null) == HeldOutcome.Send
-                    && await adapter.SendHeldAsync(hold, cancellationToken);
+                var decided = HeldNotification.Decide(hold.Event, alert.State, told, alert.AcknowledgedAt is not null) == HeldOutcome.Send;
+                var sent = false;
+                var error = await EachAsync(transaction, async () =>
+                {
+                    // Kept while the pipeline was down: its resolve wasn't asked then (a silence's hold was resolved at plan; again is no change).
+                    if (hold.Event == NotificationPlan.Resolved && hold.SilenceId == ProducerAdapter.PipelineUnavailable)
+                    {
+                        await adapter.ResolveAlertAsync(hold.AlertId, null, cancellationToken);
+                    }
+                    sent = decided && await adapter.SendHeldAsync(hold, cancellationToken);
+                }, cancellationToken);
+                if (error is not null)
+                {
+                    // Only this hold's work is undone; it is tried again next pass, and given up after a few.
+                    hold.Attempts++;
+                    hold.LastError = Bounded(error);
+                    if (hold.Attempts < NotificationHoldOutcomes.MaxAttempts)
+                    {
+                        continue;
+                    }
+                    logger.LogError("Held notification {Hold} given up after {Attempts} tries: {Error}", hold.Id, hold.Attempts, error);
+                }
                 hold.DecidedAt = now;
-                hold.Outcome = send ? NotificationHoldOutcomes.Sent : NotificationHoldOutcomes.Dropped;
+                hold.Outcome = error is not null ? NotificationHoldOutcomes.Failed : sent ? NotificationHoldOutcomes.Sent : NotificationHoldOutcomes.Dropped;
                 Released.Add(1, new KeyValuePair<string, object?>("outcome", hold.Outcome));
             }
             await db.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             return parked.Count + holds.Count;
         }
+
+        /// <summary>
+        /// One item's work under a savepoint of its own: an error undoes that item's writes only (PostgreSQL aborts the whole transaction on an error
+        /// otherwise), so one bad item doesn't block the batch. Returns the error, or null.
+        /// </summary>
+        private async Task<string?> EachAsync(Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction, Func<Task> work, CancellationToken cancellationToken)
+        {
+            await transaction.CreateSavepointAsync("item", cancellationToken);
+            try
+            {
+                await work();
+                await transaction.ReleaseSavepointAsync("item", cancellationToken);
+                return null;
+            }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                await transaction.RollbackToSavepointAsync("item", cancellationToken);
+                logger.LogWarning(ex, "A kept notification failed; the others go on: {Message}", ex.Message);
+                return $"{ex.GetType().Name}: {ex.Message}";
+            }
+        }
+
+        private static string Bounded(string error) => error.Length > 1000 ? error[..1000] : error;
     }
 }

@@ -306,6 +306,7 @@ namespace Juice.Observability.Data
                 e.ToTable("notification_holds");
                 Tenant(e);
                 e.Property(x => x.Event).HasMaxLength(40);
+                e.Property(x => x.LastError).HasMaxLength(1000);
                 e.Property(x => x.Request).HasColumnType("jsonb");
                 e.Property(x => x.Outcome).HasMaxLength(20);
                 e.HasIndex(x => new { x.TenantId, x.TransitionId }).IsUnique();
@@ -325,6 +326,7 @@ namespace Juice.Observability.Data
             {
                 e.ToTable("notification_parked_calls");
                 Tenant(e);
+                e.Property(x => x.LastError).HasMaxLength(1000);
                 e.Property(x => x.Kind).HasMaxLength(20);
                 e.Property(x => x.CorrelationKey).HasMaxLength(200);
                 e.Property(x => x.By).HasMaxLength(256);

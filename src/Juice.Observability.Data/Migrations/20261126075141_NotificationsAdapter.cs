@@ -50,7 +50,9 @@ namespace Juice.Observability.Data.Migrations
                     request = table.Column<string>(type: "jsonb", nullable: false),
                     created_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
                     decided_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
-                    outcome = table.Column<string>(type: "character varying(20)", maxLength: 20, nullable: true)
+                    outcome = table.Column<string>(type: "character varying(20)", maxLength: 20, nullable: true),
+                    attempts = table.Column<int>(type: "integer", nullable: false),
+                    last_error = table.Column<string>(type: "character varying(1000)", maxLength: 1000, nullable: true)
                 },
                 constraints: table =>
                 {
@@ -80,7 +82,9 @@ namespace Juice.Observability.Data.Migrations
                     by = table.Column<string>(type: "character varying(256)", maxLength: 256, nullable: true),
                     request = table.Column<string>(type: "jsonb", nullable: true),
                     created_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
-                    replayed_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true)
+                    replayed_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
+                    attempts = table.Column<int>(type: "integer", nullable: false),
+                    last_error = table.Column<string>(type: "character varying(1000)", maxLength: 1000, nullable: true)
                 },
                 constraints: table =>
                 {
