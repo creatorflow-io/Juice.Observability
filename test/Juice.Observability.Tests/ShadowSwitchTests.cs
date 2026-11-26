@@ -603,5 +603,66 @@ namespace Juice.Observability.Tests
             }
             Assert.Equal("Resolved", await CorrelationStateAsync(database, $"alert:{alert}"));
         }
+
+        /// <summary>
+        /// QA (#13 review round 1, live): a resolve held under a silence, the silence ends, the alert fires again (two minutes ago, so its
+        /// escalation's step is due), and the release pass runs. The recurrence's escalation keeps paging: the pager hears its step, and the held
+        /// resolve neither closes the correlation nor reaches anyone.
+        /// </summary>
+        [Fact]
+        public async Task QA_a_recurrence_after_a_held_resolve_is_paged_by_its_escalation_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var receivers = await Receivers.StartAsync();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var (up, _) = await HostAsync(database, "new");
+            await using (up)
+            {
+                await ConfigureAsync(up, database, receivers);
+                var (alert, firing) = await FireAsync(database, TimeSpan.Zero);
+                await PlanAsync(up, database, firing);
+                await WaitAsync(async () => receivers.Own.Requests.Count >= 1, "the first firing at its own receiver", database);
+                var silence = await SilenceAsync(database);
+                var resolved = await ResolveAsync(database, alert);
+                await PlanAsync(up, database, resolved);
+                Assert.Equal((NotificationHoldReasons.Silence, true), await HoldAsync(database, resolved) is var h ? (h.Reason, h.ResolveAsked) : default);
+                await EndAsync(database, silence);
+
+                // The recurrence, fired two minutes ago: its step (a minute after it fired) is due as soon as it is planned.
+                Guid again;
+                await using (var db = database.Context())
+                {
+                    var a = await db.Alerts.SingleAsync(x => x.Id == alert, Ct);
+                    var at = DateTimeOffset.UtcNow.AddMinutes(-2);
+                    var t = new AlertTransition { TenantId = a.TenantId, AlertId = a.Id, FromState = AlertState.Resolved, ToState = AlertState.Firing, At = at, Reason = "for_duration_met" };
+                    db.AlertTransitions.Add(t);
+                    (a.State, a.ResolvedAt, a.FiredAt) = (AlertState.Firing, null, at);
+                    await db.SaveChangesAsync(Ct);
+                    again = t.Id;
+                }
+                await PlanAsync(up, database, again);
+                await Release(up).ReleaseOnceAsync(Ct);
+
+                await WaitAsync(async () => receivers.Pager.Requests.Count >= 1, "the recurrence's escalation step at the pager", database);
+                await Task.Delay(TimeSpan.FromSeconds(2), Ct);
+                Assert.Equal("Open", await CorrelationStateAsync(database, $"alert:{alert}"));
+                // Two escalations: the first firing's, stopped by its resolve; the recurrence's, which ran its step (one step: then exhausted).
+                await using (var connection = new NpgsqlConnection(database.ConnectionString))
+                {
+                    await connection.OpenAsync(Ct);
+                    await using var read = new NpgsqlCommand("SELECT state || ':' || coalesce(stop_reason, '-') || ':' || next_step FROM notifications.escalations ORDER BY created_at", connection);
+                    var states = new List<string>();
+                    await using (var reader = await read.ExecuteReaderAsync(Ct)) while (await reader.ReadAsync(Ct)) states.Add(reader.GetString(0));
+                    Assert.True(states.Count == 2, string.Join(" | ", states));
+                    Assert.StartsWith("Stopped:resolved", states[0]);
+                    Assert.False(states[1].StartsWith("Stopped", StringComparison.Ordinal), $"the recurrence's escalation: {states[1]}");
+                }
+                Assert.NotNull((await HoldAsync(database, resolved)).DecidedAt);
+                // The firing and the recurrence at their own receiver. The held resolve's own notice is sent at release too (its receiver was told
+                // of the firing: HeldNotification.Decide, as legacy decides it), after the recurrence's firing: noted in QA's report, not asserted.
+                Assert.Equal(2, receivers.Own.Requests.Count(r => r.Body.Contains("alert.firing")));
+                Assert.Single(receivers.Pager.Requests);
+            }
+        }
     }
 }
