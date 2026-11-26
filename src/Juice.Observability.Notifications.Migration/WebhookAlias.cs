@@ -8,6 +8,8 @@ using Juice.Observability.Webhooks;
 using History = Juice.Notifications.History;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using NotificationsPipeline = Juice.Observability.Data.NotificationsPipeline;
+using PlatformNotificationsOptions = Juice.Observability.Data.PlatformNotificationsOptions;
 
 namespace Juice.Observability.Notifications.Migration
 {

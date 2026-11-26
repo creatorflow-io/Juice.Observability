@@ -6,6 +6,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using NotificationsPipeline = Juice.Observability.Data.NotificationsPipeline;
+using PlatformNotificationsOptions = Juice.Observability.Data.PlatformNotificationsOptions;
 
 namespace Juice.Observability.Notifications.Migration
 {
