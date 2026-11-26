@@ -37,8 +37,17 @@ The API applies database migrations on start (`Database:Migrate`). It creates th
 
 The Juice.Notifications pipeline is embedded in the API (phase 5): its tables are the platform database's `notifications` schema, migrated
 right after the platform's when `Database:Migrate` is on (`Notifications:Database:Migrate` overrides it). `Notifications:Pipeline` says
-which pipeline sends: `legacy`, the default and for now the only one, keeps the platform's own webhooks and runs none of the pipeline's
-stages.
+which pipeline sends:
+
+- `legacy` (the default): the platform's own webhooks, as before; nothing of the pipeline runs beyond its schema and provisioning.
+- `new`: the pipeline only. Alert transitions, acknowledgements and action requests become its requests, in the same transaction;
+  silences hold escalations (`Notifications:HoldPassInterval`, 15 s, for silences that start or end by time). The webhook dispatcher
+  and its release and escalate passes don't run.
+- `shadow`: legacy sends, and the pipeline plans the same notifications in dry run. Refused at start until the pipeline's dry run
+  works (Juice.Notifications M44-2), since it would otherwise send twice.
+
+If the pipeline's start fails (its migration or provisioning), `/health/ready` reports it (check `notifications`) and the platform runs on.
+In `new`, what the platform would have sent is kept and sent once a restart brings the pipeline up.
 
 ## Configuration
 
