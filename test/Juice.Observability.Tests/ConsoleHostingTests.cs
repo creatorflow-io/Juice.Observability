@@ -30,6 +30,10 @@ namespace Juice.Observability.Tests
                 Assert.Equal("text/html", route.Content.Headers.ContentType?.MediaType);
                 Assert.Equal("DENY", route.Headers.GetValues("X-Frame-Options").Single());
 
+                // A notification page whose link ends in a key with dots (M48) is a route, not a file.
+                using var typePage = await client.GetAsync("/alerts/notifications/tenants/0b9e/types/observability.alert.firing", Ct);
+                Assert.Equal((HttpStatusCode.OK, "text/html"), (typePage.StatusCode, typePage.Content.Headers.ContentType?.MediaType));
+
                 // A missing file is never answered with the index page (a stale chunk must fail, not load HTML as script).
                 using var missingFile = await client.GetAsync("/chunk-GONE.js", Ct);
                 Assert.NotEqual(HttpStatusCode.OK, missingFile.StatusCode);
