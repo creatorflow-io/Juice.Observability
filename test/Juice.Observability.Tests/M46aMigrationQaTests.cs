@@ -176,10 +176,10 @@ namespace Juice.Observability.Tests
         public Task A_copy_of_the_real_endpoints_reports_applies_and_a_second_run_changes_nothing() => RealCopyAsync(withPolicies: false);
 
         /// <summary>
-        /// With the real policies too. Before notifications M46-0 a step can't name a route, so notifications refuses every policy at apply and
-        /// the whole apply rolls back, though the report said create: the report must say what the apply will do.
+        /// With the real policies too. Before notifications M46-0 a step can't name a route: the report says each policy waits (pending_feature, QA
+        /// defect D2), and the apply does what the report said.
         /// </summary>
-        [Fact(Skip = "QA defect D2: the report says create for a policy the pinned alpha refuses at apply, and the apply rolls everything back.")]
+        [Fact]
         public Task A_copy_of_the_real_rows_with_policies_reports_what_the_apply_does() => RealCopyAsync(withPolicies: true);
 
         private async Task RealCopyAsync(bool withPolicies)
