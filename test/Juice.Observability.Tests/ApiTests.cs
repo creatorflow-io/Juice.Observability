@@ -368,6 +368,12 @@ namespace Juice.Observability.Tests
                 builder.UseSetting("Database:Migrate", "true");
                 builder.UseSetting("Rules:Enabled", "false");
                 builder.UseSetting("Webhooks:Enabled", "false");
+                // The notification tests run against each pipeline (phase-5-plan I74): JUICE_TEST_NOTIFICATIONS_PIPELINE=new or shadow; a test's own
+                // setting still wins.
+                if (LocalStack.NotificationsPipeline is { } pipeline)
+                {
+                    builder.UseSetting("Notifications:Pipeline", pipeline);
+                }
                 foreach (var (key, value) in settings ?? new Dictionary<string, string>())
                 {
                     builder.UseSetting(key, value);

@@ -26,7 +26,8 @@ namespace Juice.Observability.Tests
         private const string Console = "https://console.example/";
 
         internal static WebApplicationFactory<Program> Factory(ScratchDatabase database, Action<IServiceCollection>? configure = null)
-            => new ApiTests.ApiFactory(database, settings: new Dictionary<string, string> { ["Webhooks:ConsoleUrl"] = Console })
+            // The pipeline registered as legacy (no stage, no pass of its own runs) and producing as new: each test drives what it checks.
+            => new ApiTests.ApiFactory(database, settings: new Dictionary<string, string> { ["Webhooks:ConsoleUrl"] = Console, ["Notifications:Pipeline"] = "legacy" })
                 .WithWebHostBuilder(builder => builder.ConfigureServices(services =>
                 {
                     services.PostConfigure<PlatformNotificationsOptions>(o => o.Pipeline = NotificationsPipeline.New);

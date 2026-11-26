@@ -152,7 +152,7 @@ namespace Juice.Observability.Tests
         {
             LocalStack.RequireAvailable();
             await using var database = await EmptyDatabaseAsync();
-            await using var factory = new ApiTests.ApiFactory(database);
+            await using var factory = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string> { ["Notifications:Pipeline"] = "legacy" });
             _ = factory.Server;
             await AssertBothSchemasAsync(database);
         }
@@ -182,7 +182,7 @@ namespace Juice.Observability.Tests
             }
             Assert.Equal(0, await CountAsync(database, "SELECT count(*) FROM information_schema.schemata WHERE schema_name = 'notifications'"));
 
-            await using (var factory = new ApiTests.ApiFactory(database))
+            await using (var factory = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string> { ["Notifications:Pipeline"] = "legacy" }))
             {
                 _ = factory.Server;
             }
@@ -194,7 +194,7 @@ namespace Juice.Observability.Tests
             }
 
             // A second start is a no-op for both.
-            await using (var again = new ApiTests.ApiFactory(database))
+            await using (var again = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string> { ["Notifications:Pipeline"] = "legacy" }))
             {
                 _ = again.Server;
             }
@@ -303,7 +303,8 @@ namespace Juice.Observability.Tests
         }
 
         private static WebApplicationFactory<Program> Factory(ScratchDatabase database)
-            => new ApiTests.ApiFactory(database).WithWebHostBuilder(builder => builder.ConfigureServices(services =>
+            // Legacy: what these check is how the pipeline keeps out of the platform when it runs nothing (the switch's other modes run its stages).
+            => new ApiTests.ApiFactory(database, settings: new Dictionary<string, string> { ["Notifications:Pipeline"] = "legacy" }).WithWebHostBuilder(builder => builder.ConfigureServices(services =>
             {
                 services.AddTransient<IRequestHandler<FireAlert, bool>, FireAlertHandler>();
                 services.AddTransient<IRequestHandler<EmbeddedCompositionTests.SendInCommand, bool>, EmbeddedCompositionTests.SendInCommandHandler>();
