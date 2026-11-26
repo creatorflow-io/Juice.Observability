@@ -18,12 +18,12 @@ namespace Juice.Observability.Tests
     public class M45AdapterQaTests
     {
         private static CancellationToken Ct => TestContext.Current.CancellationToken;
-        private const string SecretVariable = "JUICE_WEBHOOK_QA_ADAPTER";
+        // Within the notifications API's own limits (M46-3): its integration is the API's, not the alias's.
+        private const string SecretVariable = "NOTIFICATIONS_SECRET_QA_ADAPTER";
 
         private static Dictionary<string, string> New() => new()
         {
             ["Notifications:Pipeline"] = "new",
-            ["Notifications:Delivery:ApiSecretEnvPrefix"] = "JUICE_WEBHOOK_",
             // The receiver is http on a private address, as legacy allows with Webhooks:AllowHttpToAllowlisted; the pipeline has its own switch.
             ["Notifications:Delivery:AllowHttpToAllowlisted"] = "true",
             ["Notifications:Stages:Planner:Poll"] = "00:00:00.200",
