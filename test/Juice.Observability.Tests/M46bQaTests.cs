@@ -2,7 +2,6 @@ using System.Net.Http.Json;
 using Juice.Observability.Api.Endpoints;
 using Juice.Observability.Data;
 using Juice.Observability.Health.Delivery;
-using Juice.Observability.Webhooks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
@@ -163,6 +162,87 @@ namespace Juice.Observability.Tests
             var body = await listed.Content.ReadAsStringAsync(Ct);
             Assert.True(listed.IsSuccessStatusCode, body);
             Assert.Contains("\"key\":\"made-before\"", body);
+        }
+
+        // ─── Endpoints the alias can't map, through the legacy API and the file; the pipeline down ────────
+
+        [Theory]
+        [InlineData("legacy")]
+        [InlineData("shadow")]
+        public async Task Endpoints_the_alias_cant_map_from_the_file_and_the_api_are_listed_and_the_apis_editable_Async(string pipeline)
+        {
+            LocalStack.RequireAvailable();
+            Environment.SetEnvironmentVariable("QA_OTHER_SECRET", "qa-other");
+            Environment.SetEnvironmentVariable(SecretVariable, Secret);
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            // The file: a key with a digit first, and one whose secret is outside the alias's limits (any variable, as the file may name).
+            await using var factory = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string>
+            {
+                ["Notifications:Pipeline"] = pipeline,
+                ["Webhooks:Endpoints:0:Key"] = "9cfg", ["Webhooks:Endpoints:0:Url"] = "https://hooks.example.com/digit", ["Webhooks:Endpoints:0:SecretRef"] = $"env:{SecretVariable}",
+                ["Webhooks:Endpoints:1:Key"] = "cfg-other", ["Webhooks:Endpoints:1:Url"] = "https://hooks.example.com/other", ["Webhooks:Endpoints:1:SecretRef"] = "env:QA_OTHER_SECRET",
+            });
+            var client = factory.CreateClient();
+            var (_, _, admin, tenant) = await Caller.AllAsync(client, database);
+            var webhooks = $"/api/v1/tenants/{tenant}/webhooks";
+            // A new key with a digit first is refused (decision G4, Q14: notifications keys start with a letter)...
+            using (var created = await admin.PostAsync(webhooks, new { key = "7new", kind = "webhook", url = "https://hooks.example.com/api", secretRef = $"env:{SecretVariable}" }))
+            {
+                Assert.Equal(System.Net.HttpStatusCode.BadRequest, created.StatusCode);
+                Assert.Contains("starts with a digit", await created.Content.ReadAsStringAsync(Ct));
+            }
+            // ...but one the API made before M46b stays: listed and editable while legacy sends.
+            await using (var db = database.Context())
+            {
+                db.WebhookEndpoints.Add(new WebhookEndpoint
+                {
+                    TenantId = tenant, Key = "7api", Url = "https://hooks.example.com/api", SecretRef = $"env:{SecretVariable}", Events = ["alert.firing"],
+                    DefinitionHash = "x", LoadedAt = DateTimeOffset.UtcNow,
+                });
+                await db.SaveChangesAsync(Ct);
+            }
+
+            var listed = await Caller.JsonAsync(await admin.GetAsync(webhooks));
+            var items = listed.GetProperty("items").EnumerateArray().ToDictionary(e => e.GetProperty("key").GetString()!, e => e.GetProperty("id").GetGuid());
+            Assert.Equal(["7api", "9cfg", "cfg-other"], items.Keys.Order());
+            // The API's is editable; the file's are the file's (409, as before the alias).
+            using (var changed = await admin.PutAsync($"{webhooks}/{items["7api"]}", new { secretRef = $"env:{SecretVariable}", minimumSeverity = "critical" }))
+            {
+                Assert.True(changed.IsSuccessStatusCode, $"{(int)changed.StatusCode}: {await changed.Content.ReadAsStringAsync(Ct)}");
+            }
+            var after = (await Caller.JsonAsync(await admin.GetAsync(webhooks))).GetProperty("items").EnumerateArray().Single(e => e.GetProperty("key").GetString() == "7api");
+            Assert.Equal("critical", after.GetProperty("minimumSeverity").GetString()!.ToLowerInvariant());
+            foreach (var key in new[] { "9cfg", "cfg-other" })
+            {
+                using var refused = await admin.PutAsync($"{webhooks}/{items[key]}", new { enabled = false });
+                Assert.Equal(System.Net.HttpStatusCode.Conflict, refused.StatusCode);
+            }
+        }
+
+        /// <summary>With the pipeline down (its schema never migrated), the legacy API still lists, creates and changes endpoints (legacy sends).</summary>
+        [Fact(Skip = "Review LOW on #10 (a9838c4): with the notifications schema absent, legacy POST/PUT /webhooks answer 500; dev-c is fixing it.")]
+        public async Task With_the_pipeline_down_the_legacy_api_lists_creates_and_changes_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var factory = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string>
+            {
+                ["Notifications:Database:Migrate"] = "false", ["Notifications:Pipeline"] = "legacy",
+            });
+            var client = factory.CreateClient();
+            var (_, _, admin, tenant) = await Caller.AllAsync(client, database);
+            var webhooks = $"/api/v1/tenants/{tenant}/webhooks";
+            using var created = await admin.PostAsync(webhooks, new { key = "down-ops", kind = "webhook", url = "https://hooks.example.com/down", secretRef = $"env:{SecretVariable}" });
+            var createdBody = await created.Content.ReadAsStringAsync(Ct);
+            using var listed = await admin.GetAsync(webhooks);
+            var listedBody = await listed.Content.ReadAsStringAsync(Ct);
+            Guid? id = created.IsSuccessStatusCode ? System.Text.Json.JsonDocument.Parse(createdBody).RootElement.GetProperty("id").GetGuid() : null;
+            using var changed = id is { } known ? await admin.PutAsync($"{webhooks}/{known}", new { enabled = false }) : null;
+            File.AppendAllText(Path.Combine(Path.GetTempPath(), "qa-m46b.txt"),
+                $"{DateTime.UtcNow:O} pipeline down: POST {(int)created.StatusCode}, GET {(int)listed.StatusCode}, PUT {(changed is null ? "-" : ((int)changed.StatusCode).ToString())}{Environment.NewLine}");
+            Assert.True(created.IsSuccessStatusCode, $"POST {(int)created.StatusCode}: {createdBody}");
+            Assert.True(listed.IsSuccessStatusCode && listedBody.Contains("\"key\":\"down-ops\""), $"GET {(int)listed.StatusCode}: {listedBody}");
+            Assert.True(changed!.IsSuccessStatusCode, $"PUT {(int)changed.StatusCode}: {await changed.Content.ReadAsStringAsync(Ct)}");
         }
 
         // ─── The migration tool over HTTP, on the real legacy rows ────────
