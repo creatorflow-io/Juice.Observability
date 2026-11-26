@@ -85,15 +85,27 @@ namespace Juice.Observability.Api.Endpoints
             _ => kind.ToString(),
         };
 
-        /// <summary>The legacy rows' owners by id while they're written (legacy, shadow): the answers name the legacy owner.</summary>
-        private static async Task<IReadOnlyDictionary<Guid, string>?> LegacyOwnersAsync(PlatformDbContext db, Guid tenantId, WebhookAlias alias, CancellationToken ct)
+        /// <summary>
+        /// The endpoints as the API answers them. While legacy rows are written (legacy, shadow) they are authoritative: every one is answered from
+        /// <c>webhook_endpoints</c>, as legacy sends them, including one the alias couldn't map (a digit-led key, a secret outside its limits) or
+        /// wrote nowhere (the pipeline down), and nothing of the pipeline is read, so its failure can't take the API down. In new, the alias's.
+        /// </summary>
+        private static async Task<IReadOnlyList<AliasEndpoint>> EndpointsAsync(PlatformDbContext db, Guid tenantId, WebhookAlias alias, CancellationToken ct)
             => alias.WritesLegacy
-                ? await db.WebhookEndpoints.AsNoTracking().Where(e => e.TenantId == tenantId).ToDictionaryAsync(e => e.Id, e => e.ManagedBy, ct)
-                : null;
+                ? [.. (await db.WebhookEndpoints.AsNoTracking().Where(e => e.TenantId == tenantId).OrderBy(e => e.Key).ToListAsync(ct)).Select(AsAnswer)]
+                : await alias.ListAsync(null, ct);
+
+        /// <summary>One endpoint as <see cref="EndpointsAsync"/> answers it, or null.</summary>
+        private static async Task<AliasEndpoint?> EndpointAsync(PlatformDbContext db, Guid tenantId, Guid endpointId, WebhookAlias alias, CancellationToken ct)
+            => alias.WritesLegacy
+                ? await db.WebhookEndpoints.AsNoTracking().SingleOrDefaultAsync(e => e.TenantId == tenantId && e.Id == endpointId, ct) is { } e ? AsAnswer(e) : null
+                : await alias.FindAsync(endpointId, null, ct);
+
+        private static AliasEndpoint AsAnswer(WebhookEndpoint e) => new(e.Id, LegacyEndpoint.From(e), e.ManagedBy, e.LoadedAt);
 
         private static async Task<IResult> ListEndpointsAsync(Guid tenantId, HttpContext http, PlatformDbContext db, WebhookAlias alias, TimeProvider clock, CancellationToken ct)
         {
-            var endpoints = await alias.ListAsync(await LegacyOwnersAsync(db, tenantId, alias, ct), ct);
+            var endpoints = await EndpointsAsync(db, tenantId, alias, ct);
             var since = clock.GetUtcNow() - FailureWindow;
             if (!alias.WritesLegacy)
             {
@@ -174,7 +186,7 @@ namespace Juice.Observability.Api.Endpoints
             if (await mutation.RequireAsync(null, ct, Roles.Admin) is { } denied) return denied;
             var (definition, problem) = Read(request, null, null, options.Value);
             if (problem is not null) return problem;
-            var existing = await alias.ListAsync(null, ct);
+            var existing = await EndpointsAsync(db, tenantId, alias, ct);
             if (existing.Any(e => e.Definition.Key == definition!.Key) || await db.WebhookEndpoints.AnyAsync(e => e.TenantId == tenantId && e.Key == definition!.Key, ct))
             {
                 return Mutation.Problem(StatusCodes.Status409Conflict, "Endpoint exists", $"An endpoint with the key '{definition!.Key}' exists.");
@@ -214,7 +226,7 @@ namespace Juice.Observability.Api.Endpoints
         {
             var mutation = new Mutation(http, db, tenantId, "webhook.update", "webhook");
             if (await mutation.RequireAsync(endpointId.ToString(), ct, Roles.Admin) is { } denied) return denied;
-            var found = await alias.FindAsync(endpointId, await LegacyOwnersAsync(db, tenantId, alias, ct), ct);
+            var found = await EndpointAsync(db, tenantId, endpointId, alias, ct);
             if (found is null)
             {
                 return Mutation.Problem(StatusCodes.Status404NotFound, "Webhook endpoint not found", "No such endpoint.");
@@ -243,10 +255,22 @@ namespace Juice.Observability.Api.Endpoints
             mutation.Audit(AuditOutcome.Succeeded, definition!.Key, Metadata(definition));
             mutation.RecordChange($"webhook {definition.Key}: webhook.update", now);
             await db.SaveChangesAsync(ct);
+            // Both or neither, for an endpoint the alias holds. One it never could (a digit-led key, a secret outside its limits: legacy's own,
+            // as before the alias) changes in legacy only; the migration's report names what keeps it out.
+            var held = !alias.WritesLegacy || await alias.HoldsAsync(endpointId, ct);
+            if (!held)
+            {
+                await transaction.CreateSavepointAsync("alias", ct);
+            }
             if (await alias.PutAsync(Definition(definition), endpointId, ct) is { Count: > 0 } refused)
             {
-                await transaction.RollbackAsync(ct);
-                return Refused(refused);
+                if (held)
+                {
+                    await transaction.RollbackAsync(ct);
+                    return Refused(refused);
+                }
+                // Whatever of it the alias wrote before refusing goes; legacy's change stands.
+                await transaction.RollbackToSavepointAsync("alias", ct);
             }
             await transaction.CommitAsync(ct);
             return Results.Ok(ToDto(new AliasEndpoint(endpointId, Definition(definition), found.ManagedBy, now), http));

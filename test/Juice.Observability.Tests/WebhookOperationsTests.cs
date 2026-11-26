@@ -167,5 +167,79 @@ namespace Juice.Observability.Tests
             Assert.Contains(audit, a => a.Operation == "webhook.delivery.retry" && a.Outcome == AuditOutcome.Denied);
             Assert.Contains(audit, a => a.Operation == "webhook.test" && a.Outcome == AuditOutcome.Succeeded && a.Metadata["delivered"] == "true");
         }
+
+        /// <summary>
+        /// While legacy sends (legacy, shadow), its rows are the endpoints (review of #10): one the alias could never map is listed and answered
+        /// as legacy would, though notifications holds nothing of it: a digit-led key (changed, tested and retried through the API), and one the
+        /// deployment's file declares with a secret outside the alias's limits (listed, and the deployment's: a change is 409, as legacy answers).
+        /// </summary>
+        [Theory]
+        [InlineData("legacy")]
+        [InlineData("shadow")]
+        public async Task Endpoints_the_alias_cant_map_stay_in_the_api_while_legacy_sends(string pipeline)
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var receiver = await Receiver.StartAsync();
+            var folder = Directory.CreateTempSubdirectory("juice-webhook-secrets-").FullName;
+            var file = Path.Combine(folder, "hook");
+            await File.WriteAllTextAsync(file, "file-secret", Ct);
+            await using var factory = new ApiFactory(database, settings: new Dictionary<string, string>
+            {
+                ["Notifications:Pipeline"] = pipeline, ["Webhooks:Enabled"] = "true", ["Webhooks:AllowHttpToAllowlisted"] = "true", ["Webhooks:Interval"] = "00:00:00.200",
+            });
+            using var client = factory.CreateClient();
+            var (_, _, admin, tenant) = await Caller.AllAsync(client, database);
+            await using var db = database.Context();
+            var digit = await EndpointAsync(db, receiver);
+            var fromFile = await EndpointAsync(db, receiver, allowlisted: false);
+            await db.WebhookEndpoints.Where(e => e.Id == digit.Id).ExecuteUpdateAsync(s => s.SetProperty(e => e.Key, "1pager"), Ct);
+            await db.WebhookEndpoints.Where(e => e.Id == fromFile.Id).ExecuteUpdateAsync(s => s.SetProperty(e => e.Key, "from-file").SetProperty(e => e.SecretRef, "file:" + file)
+                .SetProperty(e => e.ManagedBy, ManagedBy.Configuration), Ct);
+            var failed = await DeliveryAsync(db, digit, DeliveryStatus.Failed, attempts: 8);
+            var webhooks = $"/api/v1/tenants/{tenant}/webhooks";
+
+            var listed = await Caller.JsonAsync(await admin.GetAsync(webhooks));
+            Assert.Equal(["1pager", "from-file"], listed.GetProperty("items").EnumerateArray().Select(e => e.GetProperty("key").GetString()).Order());
+
+            Assert.Equal(HttpStatusCode.Conflict, (await admin.PutAsync($"{webhooks}/{fromFile.Id}", new { secretRef = $"env:{Secret}", enabled = false })).StatusCode);
+            Assert.True((await db.WebhookEndpoints.AsNoTracking().SingleAsync(e => e.Id == fromFile.Id, Ct)).Enabled);
+            await Caller.JsonAsync(await admin.PutAsync($"{webhooks}/{digit.Id}", new { secretRef = $"env:{Secret}", minimumSeverity = "warning" }));
+            Assert.Equal(AlertSeverity.Warning, (await db.WebhookEndpoints.AsNoTracking().SingleAsync(e => e.Id == digit.Id, Ct)).MinimumSeverity);
+
+            Assert.True((await Caller.JsonAsync(await admin.PostAsync($"{webhooks}/{digit.Id}/test", new { }))).GetProperty("delivered").GetBoolean());
+            await Caller.JsonAsync(await admin.PostAsync($"{webhooks}/{digit.Id}/deliveries/{failed.Id}/retry", new { }));
+            for (var i = 0; i < 50 && (await db.WebhookDeliveries.AsNoTracking().SingleAsync(d => d.Id == failed.Id, Ct)).Status != DeliveryStatus.Delivered; i++)
+            {
+                await Task.Delay(200, Ct);
+            }
+            Assert.Equal(DeliveryStatus.Delivered, (await db.WebhookDeliveries.AsNoTracking().SingleAsync(d => d.Id == failed.Id, Ct)).Status);
+            // Notifications holds nothing of either: legacy's own, as before the alias.
+            await using var scope = factory.Services.CreateAsyncScope();
+            var notifications = scope.ServiceProvider.GetRequiredService<Juice.Notifications.Data.NotificationsDbContext>();
+            Assert.False(await notifications.Integrations.AnyAsync(i => i.Id == digit.Id || i.Id == fromFile.Id, Ct));
+            Directory.Delete(folder, recursive: true);
+        }
+
+        /// <summary>With the pipeline down (its schema never migrated), legacy's endpoints are still listed and found: nothing of it is read.</summary>
+        [Fact]
+        public async Task With_the_pipeline_down_the_endpoints_are_still_listed()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var receiver = await Receiver.StartAsync();
+            await using var factory = new ApiFactory(database, settings: new Dictionary<string, string>
+            {
+                ["Notifications:Database:Migrate"] = "false", ["Notifications:Pipeline"] = "legacy",
+            });
+            using var client = factory.CreateClient();
+            var (_, _, admin, tenant) = await Caller.AllAsync(client, database);
+            await using var db = database.Context();
+            var endpoint = await EndpointAsync(db, receiver);
+
+            var listed = await Caller.JsonAsync(await admin.GetAsync($"/api/v1/tenants/{tenant}/webhooks"));
+
+            Assert.Equal(endpoint.Key, Assert.Single(listed.GetProperty("items").EnumerateArray()).GetProperty("key").GetString());
+        }
     }
 }
