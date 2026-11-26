@@ -8,7 +8,6 @@ using Juice.Notifications.Embedded;
 using Juice.Notifications.Providers;
 using Juice.Observability.Data;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NotificationsEscalationPolicy = Juice.Notifications.Data.EscalationPolicy;
@@ -232,8 +231,7 @@ namespace Juice.Observability.Notifications.Migration
                 items.Add(new(item.Subject, item.Key, action, []));
                 if (action != MigrationAction.Unchanged)
                 {
-                    writes.Add(new(item, (p, ct) => p.PutAsync(new PutAllowlistEntry(tenant, row.Destination, row.Ports),
-                        () => p.Claim(db.Allowlist.Local, a => a.TenantId == tenant && a.Destination == row.Destination, a => a.ManagedBy = AliasVocabulary.WebhooksAlias), ct)));
+                    writes.Add(new(item, (p, ct) => p.PutAsync(new PutAllowlistEntry(tenant, row.Destination, row.Ports) { ManagedBy = AliasVocabulary.WebhooksAlias }, ct)));
                 }
             }
 
@@ -327,8 +325,8 @@ namespace Juice.Observability.Notifications.Migration
                 items.Add(new(item.Subject, item.Key, action, []));
                 if (action != MigrationAction.Unchanged)
                 {
-                    writes.Add(new(item, (p, ct) => p.PutAsync(new PutEscalationPolicy(tenant, definition.Key, JsonElement.Parse(definition.Steps), definition.StopOnAcknowledge),
-                        () => p.Claim(db.EscalationPolicies.Local, x => x.TenantId == tenant && x.Key == definition.Key, x => x.ManagedBy = AliasVocabulary.WebhooksAlias), ct)));
+                    writes.Add(new(item, (p, ct) => p.PutAsync(new PutEscalationPolicy(tenant, definition.Key, JsonElement.Parse(definition.Steps), definition.StopOnAcknowledge)
+                        { ManagedBy = AliasVocabulary.WebhooksAlias }, ct)));
                 }
             }
             return new PlanResult(items, writes);
@@ -414,8 +412,8 @@ namespace Juice.Observability.Notifications.Migration
         private async Task<MappingProblem?> PutEndpointAsync(Guid tenant, EndpointSetup setup, IReadOnlyList<string> surplus, CancellationToken ct)
         {
             var i = setup.Integration;
-            var problem = await PutAsync(new PutIntegration(tenant, i.Key, i.Channel, i.Kind, JsonElement.Parse(i.Settings), i.SecretRef, i.Priority, i.Enabled),
-                () => Claim(db.Integrations.Local, x => x.TenantId == tenant && x.Key == i.Key, x => x.ManagedBy = AliasVocabulary.WebhooksAlias), ct);
+            var problem = await PutAsync(new PutIntegration(tenant, i.Key, i.Channel, i.Kind, JsonElement.Parse(i.Settings), i.SecretRef, i.Priority, i.Enabled)
+                { ManagedBy = AliasVocabulary.WebhooksAlias }, ct);
             foreach (var t in setup.Targets)
             {
                 if (problem is not null)
@@ -423,8 +421,7 @@ namespace Juice.Observability.Notifications.Migration
                     return problem;
                 }
                 await db.SaveChangesAsync(ct);
-                problem = await PutAsync(new PutTarget(tenant, t.IntegrationKey, t.Key, t.Address, t.AddressRef, t.Enabled),
-                    () => Claim(db.IntegrationTargets.Local, x => x.TenantId == tenant && x.Key == t.Key, x => x.ManagedBy = AliasVocabulary.WebhooksAlias), ct);
+                problem = await PutAsync(new PutTarget(tenant, t.IntegrationKey, t.Key, t.Address, t.AddressRef, t.Enabled) { ManagedBy = AliasVocabulary.WebhooksAlias }, ct);
             }
             if (problem is not null)
             {
@@ -432,8 +429,7 @@ namespace Juice.Observability.Notifications.Migration
             }
             await db.SaveChangesAsync(ct);
             var r = setup.Route;
-            problem = await PutAsync(new PutRoute(tenant, r.Key, JsonElement.Parse(r.Match), r.Targets, r.Enabled),
-                () => Claim(db.Routes.Local, x => x.TenantId == tenant && x.Key == r.Key, x => x.ManagedBy = AliasVocabulary.WebhooksAlias), ct);
+            problem = await PutAsync(new PutRoute(tenant, r.Key, JsonElement.Parse(r.Match), r.Targets, r.Enabled) { ManagedBy = AliasVocabulary.WebhooksAlias }, ct);
             foreach (var key in surplus)
             {
                 if (problem is not null)
@@ -442,37 +438,20 @@ namespace Juice.Observability.Notifications.Migration
                 }
                 // After the route stops naming them.
                 await db.SaveChangesAsync(ct);
-                var deleted = await mediator.Send(new DeleteTarget(tenant, i.Key, key), ct);
+                var deleted = await mediator.Send(new DeleteTarget(tenant, i.Key, key) { ManagedBy = AliasVocabulary.WebhooksAlias }, ct);
                 problem = deleted.Kind == OutcomeKind.Ok ? null : Refused(deleted.Code, deleted.Message, deleted.Errors);
             }
             return problem;
         }
 
-        private async Task<MappingProblem?> PutAsync<T>(IRequest<Outcome<T>> command, Action claim, CancellationToken ct)
+        private async Task<MappingProblem?> PutAsync<T>(IRequest<Outcome<T>> command, CancellationToken ct)
         {
             var outcome = await mediator.Send(command, ct);
-            if (outcome.Kind is not (OutcomeKind.Ok or OutcomeKind.Created))
-            {
-                return Refused(outcome.Code, outcome.Message, outcome.Errors);
-            }
-            claim();
-            return null;
+            return outcome.Kind is OutcomeKind.Ok or OutcomeKind.Created ? null : Refused(outcome.Code, outcome.Message, outcome.Errors);
         }
 
         private static MappingProblem Refused(string? code, string? message, IReadOnlyList<FieldError>? errors)
             => new(code ?? "refused", "Notifications refused the write: " + message
                 + (errors is { Count: > 0 } ? " " + string.Join("; ", errors.Select(e => $"{e.Pointer}: {e.Message}")) : ""));
-
-        /// <summary>
-        /// Marks the row a command just wrote as the alias's (<see cref="AliasVocabulary.WebhooksAlias"/>): the commands' public form writes
-        /// <c>api</c> for a new row, and keeps the owner a row has. Saved with the command's own change, in its transaction.
-        /// </summary>
-        private void Claim<TEntity>(LocalView<TEntity> rows, Func<TEntity, bool> which, Action<TEntity> claim) where TEntity : class
-        {
-            foreach (var row in rows.Where(which))
-            {
-                claim(row);
-            }
-        }
     }
 }

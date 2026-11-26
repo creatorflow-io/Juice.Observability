@@ -100,11 +100,31 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
-        public async Task An_escalated_body_has_the_escalated_type_and_its_step()
+        public async Task An_escalated_body_has_the_escalated_type_its_step_and_the_deliverys_id()
         {
-            // Needs the render model's delivery and escalation (M46-0): until that alpha is pinned, escalation renders as absent.
-            Assert.Skip("needs M46-0: the render model's delivery.id and escalation.* (delivered with the notifications alpha that carries them)");
-            await Task.CompletedTask;
+            var (rule, alert, transition) = Alert();
+            var id = Guid.CreateVersion7();
+            // Legacy's escalated payload: the firing transition, type alert.escalated, the policy and the step.
+            var legacy = NotificationPlan.Payload(id, NotificationPlan.Escalated, "t", rule, alert, transition, ("paging", 2));
+            var firing = NotificationPlan.Payload(Guid.CreateVersion7(), NotificationPlan.Firing, "t", rule, alert, transition, null);
+            var model = new RenderModel(AliasVocabulary.FiringType, 1, "Alert firing", NotificationPriority.High, Data(firing),
+                new Dictionary<string, string>(), new Dictionary<string, string>(), Delivery: new RenderDelivery(id), Escalation: new RenderEscalation(2, "paging"));
+
+            Assert.Equal(legacy, await TemplateRenderer.RenderAsync(DefaultTemplates.Webhook, model, TestContext.Current.CancellationToken));
+            var chat = JsonSerializer.Deserialize<ChatContent>(ChannelContent.Chat(await TemplateRenderer.RenderAsync(DefaultTemplates.Slack, model, TestContext.Current.CancellationToken), "x", null, null))!;
+            Assert.Equal(JsonDocument.Parse(ChannelFormatter.SlackBody(NotificationView.Parse(legacy), null)).RootElement.GetProperty("blocks")[0].GetProperty("text").GetProperty("text").GetString(), chat.Title);
+        }
+
+        [Fact]
+        public async Task The_webhook_body_carries_the_deliverys_id()
+        {
+            var (rule, alert, transition) = Alert();
+            var id = Guid.CreateVersion7();
+            var legacy = NotificationPlan.Payload(id, NotificationPlan.Firing, "t", rule, alert, transition, null);
+            var model = new RenderModel(AliasVocabulary.FiringType, 1, "Alert firing", NotificationPriority.High, Data(legacy),
+                new Dictionary<string, string>(), new Dictionary<string, string>(), Delivery: new RenderDelivery(id));
+
+            Assert.Equal(legacy, await TemplateRenderer.RenderAsync(DefaultTemplates.Webhook, model, TestContext.Current.CancellationToken));
         }
 
         private static async Task<ChatContent> ChatAsync(string template, string payload)
