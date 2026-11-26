@@ -7,6 +7,7 @@ using Juice.Observability.Api.Endpoints;
 using Juice.Observability.Data;
 using Juice.Observability.Discovery;
 using Juice.Observability.Health;
+using Juice.Observability.Notifications;
 using Juice.Observability.Rules;
 using Juice.Observability.Slos;
 using Juice.Observability.Webhooks;
@@ -44,14 +45,20 @@ namespace Juice.Observability.Api
         /// </summary>
         public static IServiceCollection AddJuiceObservability(this IServiceCollection services, IConfiguration configuration)
         {
-            services.AddDbContext<PlatformDbContext>(options =>
+            services.AddDbContext<PlatformDbContext>((sp, options) =>
+            {
                 PlatformDbContext.Configure(options, configuration.GetConnectionString("Platform")
-                    ?? throw new InvalidOperationException("ConnectionStrings:Platform is required")));
+                    ?? throw new InvalidOperationException("ConnectionStrings:Platform is required"));
+                // A notification request written in a command's transaction is taken at once when it commits.
+                options.AddInterceptors(sp.GetRequiredService<PlatformCommitActions>());
+            });
             // Before the discovery worker: hosted services start in registration order, and discovery needs the tenant.
             services.AddHostedService<TenantProvisioner>();
             // After it, since the provisioner applies migrations: the outbox's delivery starts reading its tables at once.
             services.AddPlatformMessaging();
             services.Configure<LocalChannelOptions>(configuration.GetSection(LocalChannelSection));
+            // After the platform's messaging and the provisioner: its schema migrates after the platform's (I60).
+            services.AddPlatformNotifications(configuration);
             services.AddPlatformDiscovery(configuration);
             services.AddPlatformHealth(configuration);
             services.AddPlatformRules(configuration);

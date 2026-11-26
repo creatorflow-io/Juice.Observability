@@ -32,6 +32,11 @@ pattern, juice-docs decision record). Locally it defaults to the local stacks' t
 The API applies database migrations on start (`Database:Migrate`). It creates the tenant from
 `JUICE_PLATFORM_TENANT_ID`, and refuses to start against a database that belongs to another tenant.
 
+The Juice.Notifications pipeline is embedded in the API (phase 5): its tables are the platform database's `notifications` schema, migrated
+right after the platform's when `Database:Migrate` is on (`Notifications:Database:Migrate` overrides it). `Notifications:Pipeline` says
+which pipeline sends: `legacy`, the default and for now the only one, keeps the platform's own webhooks and runs none of the pipeline's
+stages.
+
 ## Configuration
 
 | What | Where | Notes |

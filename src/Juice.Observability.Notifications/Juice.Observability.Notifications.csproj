@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The notification pipeline of Juice.Notifications, embedded in the platform's host (phase 5, M45): its registration on the platform's
+       PostgreSQL and tenant, the platform's transaction as the pipeline's, and (with the adapter) alert transitions, acknowledgements and
+       action requests as notification requests. -->
+  <PropertyGroup>
+    <Description>Juice Observability on the Juice Notifications pipeline: the embedded registration and the platform's transaction for it.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Juice.Notifications.Abstractions" />
+    <PackageReference Include="Juice.Notifications.Embedded" />
+    <PackageReference Include="Juice.Notifications.Providers.Chat" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The platform tenant (PlatformOptions). -->
+    <ProjectReference Include="..\Juice.Observability.Discovery\Juice.Observability.Discovery.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Juice.Observability.Tests" />
+  </ItemGroup>
+
+</Project>

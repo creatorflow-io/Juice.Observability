@@ -1,0 +1,88 @@
+using Juice.Notifications;
+using Juice.Notifications.Embedded;
+using Juice.Notifications.Providers.Chat;
+using Juice.Observability.Discovery;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace Juice.Observability.Notifications
+{
+    /// <summary>Which pipeline sends the platform's notifications (<c>Notifications:Pipeline</c>, phase-5-plan I67).</summary>
+    public enum NotificationsPipeline
+    {
+        /// <summary>The platform's own webhooks, as before. The embedded pipeline is registered and migrated, and runs nothing.</summary>
+        Legacy,
+        /// <summary>Legacy sends; the embedded pipeline plans the same notifications in dry run (M45, with the M44-2 alpha).</summary>
+        Shadow,
+        /// <summary>The embedded pipeline only (M45).</summary>
+        New,
+    }
+
+    /// <summary>
+    /// Configuration section <c>Notifications</c>: <see cref="Pipeline"/>, and the pipeline's own settings (<c>Stages</c>, <c>Delivery</c>,
+    /// <c>Retention</c>, …), which the embedded pipeline reads from the same section.
+    /// </summary>
+    public sealed class PlatformNotificationsOptions
+    {
+        public const string Section = "Notifications";
+
+        public NotificationsPipeline Pipeline { get; set; } = NotificationsPipeline.Legacy;
+    }
+
+    public static class NotificationsRegistration
+    {
+        /// <summary>The platform's application in the pipeline: its types are <c>observability.*</c>.</summary>
+        public const string ApplicationKey = "observability";
+
+        public const string ApplicationName = "Juice Observability";
+
+        /// <summary>
+        /// The notification pipeline in the platform's host (phase-5-plan I57), on the platform's PostgreSQL (its <c>notifications</c> schema) and
+        /// tenant (the platform tenant's Id, never one from input), writing in the platform's transaction (<see cref="PlatformNotificationTransaction"/>).
+        /// Register after the platform's messaging and the tenant provisioner: the pipeline's schema migrates after the platform's (I60), when the
+        /// platform's does (<c>Database:Migrate</c>). <c>legacy</c>, the default and the only mode until M45, runs none of its stages.
+        /// </summary>
+        public static IServiceCollection AddPlatformNotifications(this IServiceCollection services, IConfiguration configuration)
+        {
+            var section = configuration.GetSection(PlatformNotificationsOptions.Section);
+            var mode = section.GetValue(nameof(PlatformNotificationsOptions.Pipeline), NotificationsPipeline.Legacy);
+            if (mode != NotificationsPipeline.Legacy)
+            {
+                throw new InvalidOperationException($"Notifications:Pipeline '{mode}' isn't available yet: only 'legacy' is, until M45 adds 'shadow' and 'new'.");
+            }
+            services.Configure<PlatformNotificationsOptions>(section);
+            services.AddSingleton<PlatformCommitActions>();
+            services.AddScoped<PlatformNotificationTransaction>();
+            services.AddScoped<INotificationTransaction>(sp => sp.GetRequiredService<PlatformNotificationTransaction>());
+            services.AddJuiceNotificationsEmbedded(PipelineSettings(section, configuration, mode), embedded =>
+            {
+                embedded.ConnectionString = configuration.GetConnectionString("Platform") ?? throw new InvalidOperationException("ConnectionStrings:Platform is required");
+                // The platform tenant's Id, refused as the tenant provisioner refuses it.
+                embedded.TenantId = PlatformOptions.TenantId(configuration[$"{PlatformOptions.Section}:{nameof(PlatformOptions.TenantKey)}"]);
+                embedded.ApplicationKey = ApplicationKey;
+                embedded.ApplicationName = ApplicationName;
+            });
+            services.AddChatProviders();
+            Coexistence.Isolate(services);
+            return services;
+        }
+
+        /// <summary>
+        /// The pipeline's settings: the host's <c>Notifications</c> section, with the switch's decisions on top. <c>legacy</c> runs no stage
+        /// (<c>Stages:Run=false</c>). The schema is migrated when the platform's is (<c>Database:Migrate</c>), unless the section says otherwise.
+        /// </summary>
+        internal static IConfiguration PipelineSettings(IConfigurationSection section, IConfiguration configuration, NotificationsPipeline mode)
+        {
+            var overrides = new Dictionary<string, string?>();
+            if (section["Database:Migrate"] is null)
+            {
+                overrides["Database:Migrate"] = configuration["Database:Migrate"] ?? "false";
+            }
+            if (mode == NotificationsPipeline.Legacy)
+            {
+                overrides["Stages:Run"] = "false";
+            }
+            return new ConfigurationBuilder().AddConfiguration(section).AddInMemoryCollection(overrides).Build();
+        }
+    }
+}
