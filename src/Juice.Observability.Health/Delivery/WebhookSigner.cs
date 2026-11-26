@@ -1,7 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 
-namespace Juice.Observability.Webhooks
+namespace Juice.Observability.Health.Delivery
 {
     /// <summary>
     /// Webhook signatures in the Standard Webhooks form (requirements §8). The sender signs
@@ -57,14 +57,17 @@ namespace Juice.Observability.Webhooks
         /// A reference set through the API, stricter than one in the deployment's own file: otherwise an admin could name any environment variable or
         /// file on the host and have it used as a signing key or a URL. Only variables with the configured prefix, or files directly in the configured folder.
         /// </summary>
-        public static bool IsAllowedFromApi(string reference, WebhookOptions options)
+        /// <param name="reference">The reference: <c>env:NAME</c> or <c>file:/path</c>.</param>
+        /// <param name="envPrefix">The prefix a variable must have (<c>Webhooks:ApiSecretEnvPrefix</c>).</param>
+        /// <param name="directory">The folder a file must be directly in (<c>Webhooks:ApiSecretDirectory</c>); unset refuses files.</param>
+        public static bool IsAllowedFromApi(string reference, string? envPrefix, string? directory)
         {
             if (!IsValid(reference)) return false;
             if (reference.StartsWith("env:", StringComparison.Ordinal))
             {
-                return options.ApiSecretEnvPrefix is { Length: > 0 } prefix && reference[4..].StartsWith(prefix, StringComparison.Ordinal) && reference.Length > 4 + prefix.Length;
+                return envPrefix is { Length: > 0 } prefix && reference[4..].StartsWith(prefix, StringComparison.Ordinal) && reference.Length > 4 + prefix.Length;
             }
-            if (options.ApiSecretDirectory is not { Length: > 0 } directory) return false;
+            if (directory is not { Length: > 0 }) return false;
             var path = reference[5..];
             return Path.IsPathRooted(path) && !path.Contains("..", StringComparison.Ordinal)
                 && string.Equals(Path.GetDirectoryName(Path.GetFullPath(path)), Path.GetFullPath(directory).TrimEnd(Path.DirectorySeparatorChar), StringComparison.Ordinal);

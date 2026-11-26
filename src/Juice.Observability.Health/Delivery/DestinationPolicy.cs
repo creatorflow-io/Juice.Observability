@@ -1,7 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 
-namespace Juice.Observability.Webhooks
+namespace Juice.Observability.Health.Delivery
 {
     public enum DestinationClass
     {

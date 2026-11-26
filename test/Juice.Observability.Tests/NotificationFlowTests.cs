@@ -3,6 +3,7 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using Juice.Observability.Data;
+using Juice.Observability.Health.Delivery;
 using Juice.Observability.Discovery;
 using Juice.Observability.Webhooks;
 using Microsoft.EntityFrameworkCore;

@@ -1,5 +1,6 @@
 using System.Net;
 using Juice.Observability.Data;
+using Juice.Observability.Health.Delivery;
 using Juice.Observability.Webhooks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;

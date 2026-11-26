@@ -1,4 +1,5 @@
 using Juice.Observability.Data;
+using Juice.Observability.Health.Delivery;
 using Juice.Observability.Webhooks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -93,7 +94,7 @@ namespace Juice.Observability.Api.Endpoints
                 Recipients = request.Recipients ?? [], GroupWindowSeconds = request.GroupWindowSeconds ?? 0, MinimumSeverity = severity, Enabled = request.Enabled ?? true,
             };
             var errors = definition.Validate(options.AllowHttpToAllowlisted).ToList();
-            if (kind != ChannelKind.Email && !SecretReference.IsAllowedFromApi(definition.SecretRef, options))
+            if (kind != ChannelKind.Email && !SecretReference.IsAllowedFromApi(definition.SecretRef, options.ApiSecretEnvPrefix, options.ApiSecretDirectory))
             {
                 errors.Add($"secretRef must be env:{options.ApiSecretEnvPrefix}NAME{(options.ApiSecretDirectory is { Length: > 0 } dir ? $" or a file directly in {dir}" : "")}.");
             }
