@@ -219,30 +219,62 @@ namespace Juice.Observability.Tests
             }
         }
 
-        /// <summary>With the pipeline down (its schema never migrated), the legacy API still lists, creates and changes endpoints (legacy sends).</summary>
+        /// <summary>
+        /// With the pipeline down (its schema never migrated), the legacy API still creates, lists and changes endpoints and the allowlist (legacy
+        /// sends); a restart with the schema then catches the alias up: the endpoint as last changed, and the allowlist entry.
+        /// </summary>
         [Fact]
-        public async Task With_the_pipeline_down_the_legacy_api_lists_creates_and_changes_Async()
+        public async Task With_the_pipeline_down_the_legacy_api_lists_creates_and_changes_and_a_restart_catches_the_alias_up_Async()
         {
             LocalStack.RequireAvailable();
             await using var database = await LocalStack.CreateDatabaseAsync();
-            await using var factory = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string>
+            Guid id;
+            Guid tenant;
+            await using (var factory = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string>
             {
                 ["Notifications:Database:Migrate"] = "false", ["Notifications:Pipeline"] = "legacy",
-            });
-            var client = factory.CreateClient();
-            var (_, _, admin, tenant) = await Caller.AllAsync(client, database);
-            var webhooks = $"/api/v1/tenants/{tenant}/webhooks";
-            using var created = await admin.PostAsync(webhooks, new { key = "down-ops", kind = "webhook", url = "https://hooks.example.com/down", secretRef = $"env:{SecretVariable}" });
-            var createdBody = await created.Content.ReadAsStringAsync(Ct);
-            using var listed = await admin.GetAsync(webhooks);
-            var listedBody = await listed.Content.ReadAsStringAsync(Ct);
-            Guid? id = created.IsSuccessStatusCode ? System.Text.Json.JsonDocument.Parse(createdBody).RootElement.GetProperty("id").GetGuid() : null;
-            using var changed = id is { } known ? await admin.PutAsync($"{webhooks}/{known}", new { secretRef = $"env:{SecretVariable}", enabled = false }) : null;
-            File.AppendAllText(Path.Combine(Path.GetTempPath(), "qa-m46b.txt"),
-                $"{DateTime.UtcNow:O} pipeline down: POST {(int)created.StatusCode}, GET {(int)listed.StatusCode}, PUT {(changed is null ? "-" : ((int)changed.StatusCode).ToString())}{Environment.NewLine}");
-            Assert.True(created.IsSuccessStatusCode, $"POST {(int)created.StatusCode}: {createdBody}");
-            Assert.True(listed.IsSuccessStatusCode && listedBody.Contains("\"key\":\"down-ops\""), $"GET {(int)listed.StatusCode}: {listedBody}");
-            Assert.True(changed!.IsSuccessStatusCode, $"PUT {(int)changed.StatusCode}: {await changed.Content.ReadAsStringAsync(Ct)}");
+            }))
+            {
+                var client = factory.CreateClient();
+                var (_, _, admin, t) = await Caller.AllAsync(client, database);
+                tenant = t;
+                var webhooks = $"/api/v1/tenants/{tenant}/webhooks";
+                using var created = await admin.PostAsync(webhooks, new { key = "down-ops", kind = "webhook", url = "https://hooks.example.com/down", secretRef = $"env:{SecretVariable}" });
+                var createdBody = await created.Content.ReadAsStringAsync(Ct);
+                Assert.True(created.IsSuccessStatusCode, $"POST {(int)created.StatusCode}: {createdBody}");
+                id = System.Text.Json.JsonDocument.Parse(createdBody).RootElement.GetProperty("id").GetGuid();
+                using var listed = await admin.GetAsync(webhooks);
+                var listedBody = await listed.Content.ReadAsStringAsync(Ct);
+                Assert.True(listed.IsSuccessStatusCode && listedBody.Contains("\"key\":\"down-ops\""), $"GET {(int)listed.StatusCode}: {listedBody}");
+                using var changed = await admin.PutAsync($"{webhooks}/{id}", new { secretRef = $"env:{SecretVariable}", enabled = false, minimumSeverity = "warning" });
+                Assert.True(changed.IsSuccessStatusCode, $"PUT {(int)changed.StatusCode}: {await changed.Content.ReadAsStringAsync(Ct)}");
+                using var allowed = await admin.SendAsync(HttpMethod.Put, $"{webhooks}/allowlist", new { destination = "10.50.0.0/16", ports = new[] { 8443 } });
+                Assert.True(allowed.IsSuccessStatusCode, $"allowlist PUT {(int)allowed.StatusCode}: {await allowed.Content.ReadAsStringAsync(Ct)}");
+                await using var db = database.Context();
+                var row = await db.WebhookEndpoints.AsNoTracking().SingleAsync(e => e.Id == id, Ct);
+                Assert.Equal((false, AlertSeverity.Warning), (row.Enabled, row.MinimumSeverity));
+            }
+
+            // Restarted with the schema: the alias catches up from legacy's rows.
+            await using (var factory = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string> { ["Notifications:Pipeline"] = "legacy" }))
+            {
+                _ = factory.CreateClient();
+                await using var scope = factory.Services.CreateAsyncScope();
+                var notifications = scope.ServiceProvider.GetRequiredService<Juice.Notifications.Data.NotificationsDbContext>();
+                var pipelineTenant = Guid.Parse(LocalStack.TenantKey);
+                Juice.Observability.Notifications.Migration.EndpointSetup? setup = null;
+                for (var i = 0; i < 50 && setup is null; i++)
+                {
+                    setup = await Juice.Observability.Notifications.Migration.MigrationPlanner.ReadSetupAsync(notifications, pipelineTenant, "down-ops", Ct);
+                    if (setup is null) await Task.Delay(200, Ct);
+                }
+                Assert.NotNull(setup);
+                await using var db = database.Context();
+                var legacy = await db.WebhookEndpoints.AsNoTracking().SingleAsync(e => e.Id == id, Ct);
+                Assert.Equal(Juice.Observability.Notifications.Migration.LegacyEndpoint.From(legacy), Juice.Observability.Notifications.Migration.EndpointMapping.Unmap(setup).Value);
+                Assert.True(await notifications.Allowlist.AsNoTracking().AnyAsync(a => a.TenantId == pipelineTenant && a.Destination == "10.50.0.0/16", Ct),
+                    "the allowlist entry made while the pipeline was down");
+            }
         }
 
         // ─── The migration tool over HTTP, on the real legacy rows ────────
