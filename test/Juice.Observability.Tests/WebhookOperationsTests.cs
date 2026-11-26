@@ -265,5 +265,48 @@ namespace Juice.Observability.Tests
             Assert.Equal(made, integration.Id);
             Assert.True(await notifications.Allowlist.AnyAsync(a => a.Destination == "10.9.0.0/16", Ct));
         }
+
+        /// <summary>The pipeline's host scope with its database failing mid-write: a real error (division by zero) that aborts the transaction.</summary>
+        private sealed class FailingHostScope(Juice.Notifications.Data.NotificationsDbContext notifications) : Juice.Notifications.Embedded.INotificationsHostScope
+        {
+            public async Task<T> RunAsync<T>(Func<Juice.Notifications.Embedded.NotificationsHostWork, Task<T>> work, CancellationToken cancellationToken)
+            {
+                await notifications.Database.ExecuteSqlRawAsync("SELECT 1/0", cancellationToken);
+                throw new InvalidOperationException("unreachable");
+            }
+        }
+
+        /// <summary>
+        /// The alias's write failing for a reason that isn't a refusal (review of #10): in legacy, the change to an endpoint the alias doesn't hold,
+        /// and a new one, are legacy's only. The answers are 2xx, legacy's rows are committed, and nothing of either is in notifications.
+        /// </summary>
+        [Fact]
+        public async Task An_alias_write_that_fails_keeps_legacys_change()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var receiver = await Receiver.StartAsync();
+            await using var factory = new ApiFactory(database, settings: new Dictionary<string, string>
+                {
+                    ["Notifications:Pipeline"] = "legacy", ["Webhooks:AllowHttpToAllowlisted"] = "true",
+                }, services: s => s.AddScoped<Juice.Notifications.Embedded.INotificationsHostScope, FailingHostScope>());
+            using var client = factory.CreateClient();
+            var (_, _, admin, tenant) = await Caller.AllAsync(client, database);
+            await using var db = database.Context();
+            var unheld = await EndpointAsync(db, receiver);
+            var webhooks = $"/api/v1/tenants/{tenant}/webhooks";
+
+            await Caller.JsonAsync(await admin.PutAsync($"{webhooks}/{unheld.Id}", new { secretRef = $"env:{Secret}", minimumSeverity = "critical" }));
+            var made = (await Caller.JsonAsync(await admin.PostAsync(webhooks, new { key = "made-while-failing", url = "https://hooks.example.com/f", secretRef = $"env:{Secret}" })))
+                .GetProperty("id").GetGuid();
+
+            await using var check = database.Context();
+            Assert.Equal(AlertSeverity.Critical, (await check.WebhookEndpoints.AsNoTracking().SingleAsync(e => e.Id == unheld.Id, Ct)).MinimumSeverity);
+            Assert.True(await check.WebhookEndpoints.AsNoTracking().AnyAsync(e => e.Id == made && e.Key == "made-while-failing", Ct));
+            Assert.Equal(2, await check.AuditRecords.AsNoTracking().CountAsync(a => (a.Operation == "webhook.update" || a.Operation == "webhook.create") && a.Outcome == AuditOutcome.Succeeded, Ct));
+            await using var scope = factory.Services.CreateAsyncScope();
+            var notifications = scope.ServiceProvider.GetRequiredService<Juice.Notifications.Data.NotificationsDbContext>();
+            Assert.False(await notifications.Integrations.AnyAsync(i => i.Id == unheld.Id || i.Id == made, Ct));
+        }
     }
 }
