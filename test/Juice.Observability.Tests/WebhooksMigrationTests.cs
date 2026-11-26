@@ -375,6 +375,32 @@ namespace Juice.Observability.Tests
             Assert.Equal((false, false), await AliasRowsAsync(fourth));
         }
 
+
+        /// <summary>
+        /// In legacy, an endpoint the file drops is handed back to the API, disabled, as legacy always did; its alias copy stays the file's
+        /// (alias-config can't be handed back) with its route stopped, and an admin's change to it is legacy's only, not refused.
+        /// </summary>
+        [Fact]
+        public async Task In_legacy_an_endpoint_the_file_drops_is_the_admins_again()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using (var first = new ApiTests.ApiFactory(database, settings: FileSettings("legacy")))
+            {
+                _ = first.CreateClient();
+            }
+            await using var second = new ApiTests.ApiFactory(database, settings: FileSettings("legacy", secret: null));
+            var client = second.CreateClient();
+            var (_, _, admin, tenant) = await Caller.AllAsync(client, database);
+            await using var db = database.Context();
+            var endpoint = await db.WebhookEndpoints.AsNoTracking().SingleAsync(e => e.Key == "from-file", Ct);
+            Assert.Equal((ManagedBy.Api, false), (endpoint.ManagedBy, endpoint.Enabled));
+
+            await Caller.JsonAsync(await admin.PutAsync($"/api/v1/tenants/{tenant}/webhooks/{endpoint.Id}", new { secretRef = "env:JUICE_WEBHOOK_FILE", enabled = true }));
+
+            Assert.True((await db.WebhookEndpoints.AsNoTracking().SingleAsync(e => e.Id == endpoint.Id, Ct)).Enabled);
+            Assert.Equal((false, true), await AliasRowsAsync(second));
+        }
         /// <summary>
         /// The migration tool reconciles the alias's own rows with legacy's while legacy sends: an allowlist entry removed in legacy only (the
         /// pipeline down when it was) is removed by the next migration, and reported as such.
