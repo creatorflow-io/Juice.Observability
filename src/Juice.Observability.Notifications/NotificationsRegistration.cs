@@ -67,7 +67,6 @@ namespace Juice.Observability.Notifications
             // The shadow run's comparison (M47): its report is read in any mode; the comparer runs in shadow only, after the pipeline's start.
             services.Configure<Shadow.ShadowOptions>(configuration.GetSection(Shadow.ShadowOptions.Section));
             services.AddScoped<Shadow.ShadowReport>();
-            services.AddScoped<Shadow.IShadowReport>(sp => sp.GetRequiredService<Shadow.ShadowReport>());
             if (mode == NotificationsPipeline.Shadow)
             {
                 services.AddHostedService<Shadow.ShadowComparer>();

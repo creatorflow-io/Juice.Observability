@@ -115,10 +115,13 @@ namespace Juice.Observability.Tests
                 r => r.GetProperty("rule").GetString() == ShadowComparer.Unexplained && r.GetProperty("kind").GetString() == ShadowDifferenceKinds.MissingInNew);
 
             await using var status = factory.Services.CreateAsyncScope();
-            var shadow = await status.ServiceProvider.GetRequiredService<IShadowReport>().StatusAsync(tenant, TimeSpan.FromHours(1), Ct);
+            var shadowReport = status.ServiceProvider.GetRequiredService<ShadowReport>();
+            var shadow = await shadowReport.StatusAsync(tenant, TimeSpan.FromHours(1), Ct);
             Assert.Equal(1, shadow.Compared);
             Assert.True(shadow.Unexplained >= 1);
             Assert.NotNull(shadow.LastComparedAt);
+            // The dead-man's shadow cause (M49): the unexplained difference is a reason to look.
+            Assert.Contains("no rule explains", await shadowReport.FailingAsync(Ct));
         }
 
         /// <summary>
@@ -185,6 +188,47 @@ namespace Juice.Observability.Tests
             Assert.Equal((NotificationPlan.Escalated, 1, 1), (step.Event, step.Legacy, step.New));
             var differences = await check.ShadowDifferences.AsNoTracking().Where(d => d.TransitionId == transition && d.EscalationStep == 1).ToListAsync(Ct);
             Assert.DoesNotContain(differences, d => d.Kind is ShadowDifferenceKinds.MissingInNew or ShadowDifferenceKinds.MissingInLegacy or ShadowDifferenceKinds.Unsettled);
+        }
+
+        /// <summary>
+        /// The dead-man's shadow cause (M49's <c>FailingAsync</c>): nothing to say on a quiet run; a reason for a recent difference no rule explains,
+        /// and for a transition past every wait that the comparer never compared.
+        /// </summary>
+        [Fact]
+        public async Task The_dead_mans_shadow_cause_names_unexplained_differences_and_a_comparer_behind()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var settings = Options.Create(new ShadowOptions());
+            await using var db = database.Context();
+            var report = new ShadowReport(db, settings, TimeProvider.System);
+            Assert.Null(await report.FailingAsync(Ct));
+
+            var tenant = await Flow.TenantAsync(db);
+            var now = DateTimeOffset.UtcNow;
+            var (alert, transition) = await ProducerAdapterTests.FireAsync(database);
+            // The comparer ran from a day ago; this transition was planned 4 hours ago and never compared.
+            db.ShadowComparisons.Add(new ShadowComparison { TenantId = tenant, TransitionId = Guid.CreateVersion7(), AlertId = alert, Event = NotificationPlan.Firing, ComparedAt = now.AddDays(-1) });
+            await db.SaveChangesAsync(Ct);
+            await db.AlertTransitions.Where(t => t.Id == transition).ExecuteUpdateAsync(s => s.SetProperty(t => t.NotificationsPlannedAt, now.AddHours(-4)), Ct);
+            Assert.Contains("behind", await report.FailingAsync(Ct));
+
+            db.ShadowComparisons.Add(new ShadowComparison { TenantId = tenant, TransitionId = transition, AlertId = alert, Event = NotificationPlan.Firing, ComparedAt = now, Differences = 1 });
+            db.ShadowDifferences.Add(new ShadowDifference
+            {
+                TenantId = tenant, TransitionId = transition, AlertId = alert, Event = NotificationPlan.Firing, EndpointKey = "ops", Kind = ShadowDifferenceKinds.Body,
+                Rule = ShadowRules.DigestBoundary, Detail = "explained", DetectedAt = now,
+            });
+            await db.SaveChangesAsync(Ct);
+            Assert.Null(await report.FailingAsync(Ct));   // compared, and explained
+
+            db.ShadowDifferences.Add(new ShadowDifference
+            {
+                TenantId = tenant, TransitionId = transition, AlertId = alert, Event = NotificationPlan.Firing, EndpointKey = "sre", Kind = ShadowDifferenceKinds.MissingInNew,
+                Detail = "unexplained", DetectedAt = now,
+            });
+            await db.SaveChangesAsync(Ct);
+            Assert.StartsWith("1 shadow difference(s) no rule explains", await report.FailingAsync(Ct));
         }
 
         private static async Task<bool> ComparedAsync(ScratchDatabase database, Guid transition, int step)

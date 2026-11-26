@@ -25,6 +25,8 @@ namespace Juice.Observability.Notifications.Shadow
         public TimeSpan TimingTolerance { get; set; } = TimeSpan.FromSeconds(60);
         public TimeSpan Interval { get; set; } = TimeSpan.FromSeconds(30);
         public int Batch { get; set; } = 100;
+        /// <summary>How far back the dead-man looks for a difference no rule explains (M49's shadow cause).</summary>
+        public TimeSpan AlarmWindow { get; set; } = TimeSpan.FromHours(1);
     }
 
     /// <summary>

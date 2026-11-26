@@ -1,5 +1,6 @@
 using Juice.Observability.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace Juice.Observability.Notifications.Shadow
 {
@@ -16,19 +17,14 @@ namespace Juice.Observability.Notifications.Shadow
     public sealed record ShadowDifferenceView(Guid Id, Guid TransitionId, int EscalationStep, Guid AlertId, string Event, string EndpointKey, string Kind,
         string? Rule, string Detail, DateTimeOffset DetectedAt);
 
-    /// <summary>
-    /// The shadow comparison's state for another part of the platform (the dead-man's shadow cause, M49): unexplained differences over a
-    /// window, and when the comparer last compared anything (a comparer that stopped is a cause too).
-    /// </summary>
-    public interface IShadowReport
-    {
-        Task<ShadowStatus> StatusAsync(Guid tenantId, TimeSpan window, CancellationToken cancellationToken);
-    }
-
+    /// <summary>The comparison's state over a window: units compared, differences no rule explains, and when it last compared anything.</summary>
     public sealed record ShadowStatus(int Compared, int Unexplained, DateTimeOffset? LastComparedAt);
 
-    /// <summary>The report (p5-d7's daily report reads it) and <see cref="IShadowReport"/>, from the comparer's tables.</summary>
-    public sealed class ShadowReport(PlatformDbContext db, TimeProvider clock) : IShadowReport
+    /// <summary>
+    /// The report (p5-d7's daily report reads it), and the dead-man's shadow cause (M49's <c>IShadowReport.FailingAsync</c>: null, or why), from the
+    /// comparer's tables.
+    /// </summary>
+    public sealed class ShadowReport(PlatformDbContext db, IOptions<ShadowOptions> options, TimeProvider clock)
     {
         private sealed record DayRow(DateOnly Day, int Compared, int Differences, int Unexplained);
 
@@ -55,6 +51,33 @@ namespace Juice.Observability.Notifications.Shadow
                 [.. byRule.Select(r => new ShadowRuleCount(r.Rule ?? ShadowComparer.Unexplained, r.Kind, r.Count)).OrderBy(r => r.Rule, StringComparer.Ordinal).ThenBy(r => r.Kind, StringComparer.Ordinal)],
                 [.. days.Select(d => new ShadowDay(d.Day, d.Compared, d.Differences, d.Unexplained))],
                 [.. unexplained.Select(d => new ShadowDifferenceView(d.Id, d.TransitionId, d.EscalationStep, d.AlertId, d.Event, d.EndpointKey, d.Kind, d.Rule, d.Detail, d.DetectedAt))]);
+        }
+
+        /// <summary>
+        /// Why the shadow run needs a look, or null: a difference no rule explains within <see cref="ShadowOptions.AlarmWindow"/>, or a transition
+        /// that should have been compared by now (its grace and the longest wait past, and more) and wasn't: the comparer stopped or fell behind.
+        /// The dead-man's shadow cause (M49) asks it on each pass.
+        /// </summary>
+        public async ValueTask<string?> FailingAsync(CancellationToken cancellationToken)
+        {
+            var settings = options.Value;
+            var now = clock.GetUtcNow();
+            var since = now - settings.AlarmWindow;
+            var unexplained = await db.ShadowDifferences.AsNoTracking().CountAsync(d => d.DetectedAt >= since && d.Rule == null, cancellationToken);
+            if (unexplained > 0)
+            {
+                return $"{unexplained} shadow difference(s) no rule explains in the last {settings.AlarmWindow.TotalMinutes:0} min";
+            }
+            // Planned while the comparer ran (it has compared something), and past every wait.
+            var started = await db.ShadowComparisons.AsNoTracking().MinAsync(c => (DateTimeOffset?)c.ComparedAt, cancellationToken);
+            var overdue = now - settings.Grace - settings.MaxWait - settings.AlarmWindow;
+            if (started is { } first && await db.AlertTransitions.AsNoTracking().AnyAsync(t => t.NotificationsPlannedAt >= first && t.NotificationsPlannedAt < overdue
+                    && (t.ToState == AlertState.Firing || t.ToState == AlertState.Resolved)
+                    && !db.ShadowComparisons.Any(c => c.TenantId == t.TenantId && c.TransitionId == t.Id && c.EscalationStep == 0), cancellationToken))
+            {
+                return "the shadow comparer is behind: a transition planned before " + overdue.ToString("O") + " isn't compared";
+            }
+            return null;
         }
 
         public async Task<ShadowStatus> StatusAsync(Guid tenantId, TimeSpan window, CancellationToken cancellationToken)
