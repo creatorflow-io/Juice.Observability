@@ -63,8 +63,8 @@ namespace Juice.Observability.Notifications
                 services.AddHostedService<NotificationsReleasePass>();
                 services.AddHostedService<SilenceHoldPass>();
             }
-            // After a failed start, none of the pipeline's other services starts (they would poll tables that aren't there).
-            PipelineStart.GateTheRest(services, before, guarded);
+            // After a failed start, none of the pipeline's other services starts (they would poll tables that aren't there); in legacy, none runs.
+            PipelineStart.GateTheRest(services, before, guarded, runs: mode != NotificationsPipeline.Legacy);
             Coexistence.Isolate(services);
             return services;
         }
