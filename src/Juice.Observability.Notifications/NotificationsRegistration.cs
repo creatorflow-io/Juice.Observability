@@ -65,16 +65,21 @@ namespace Juice.Observability.Notifications
             }
             // After a failed start, none of the pipeline's other services starts (they would poll tables that aren't there); in legacy, none runs.
             PipelineStart.GateTheRest(services, before, guarded, runs: mode != NotificationsPipeline.Legacy);
+            // The platform's transaction leaves the pipeline's commands to the pipeline's own (by its list, not by name).
+            services.AddSingleton<IEmbeddedCommands, PipelineCommands>();
             Coexistence.Isolate(services);
             return services;
         }
 
         /// <summary>
-        /// Whether the pipeline's dry run works (<c>DeliveryOptions.DryRunSupported</c>: the option arrives with M44-0, refused at start until M44-2
-        /// makes it work). Read by reflection, so an alpha without the flag counts as without a dry run.
+        /// Whether the pipeline's dry run works: its published capability (<c>Juice.Notifications.NotificationsCapabilities.DryRun</c>, M44-2, a
+        /// property so it is read at run time rather than inlined). Read by reflection, so an alpha without it counts as without a dry run.
         /// </summary>
-        internal static bool DryRunAvailable { get; } = typeof(Juice.Notifications.Providers.DeliveryOptions) is var options
-            && (options.GetProperty("DryRunSupported")?.GetValue(null) ?? options.GetField("DryRunSupported")?.GetValue(null)) is true;
+        internal static bool DryRunAvailable { get; } = DryRunIn(typeof(INotificationClient).Assembly.GetType("Juice.Notifications.NotificationsCapabilities"));
+
+        /// <summary>The <c>DryRun</c> capability of <paramref name="capabilities"/>: false when the type, or its static bool property, is absent.</summary>
+        internal static bool DryRunIn(Type? capabilities)
+            => capabilities?.GetProperty("DryRun", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)?.GetValue(null) is true;
 
         /// <summary>
         /// Whether the platform migrates the pipeline's schema at start: when it migrates its own (<c>Database:Migrate</c>), unless the section

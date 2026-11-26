@@ -61,6 +61,22 @@ namespace Juice.Observability.Tests
             Assert.Contains("dry run", refused.Message);
         }
 
+        private static class CapabilitiesWithDryRun { public static bool DryRun { get; } = true; }
+
+        private static class CapabilitiesWithoutDryRun { public static bool DryRun { get; } = false; }
+
+        private static class CapabilitiesWithAConst { public const bool DryRun = true; }
+
+        [Fact]
+        public void The_dry_run_is_the_pipelines_published_capability_and_absent_is_none()
+        {
+            Assert.True(NotificationsRegistration.DryRunIn(typeof(CapabilitiesWithDryRun)));
+            Assert.False(NotificationsRegistration.DryRunIn(typeof(CapabilitiesWithoutDryRun)));
+            // Only the property counts (a const would be inlined into the caller's build), and no type at all is no dry run.
+            Assert.False(NotificationsRegistration.DryRunIn(typeof(CapabilitiesWithAConst)));
+            Assert.False(NotificationsRegistration.DryRunIn(null));
+        }
+
         [Fact]
         public void Shadow_runs_the_stages_in_dry_run_and_new_as_the_section_says()
         {
