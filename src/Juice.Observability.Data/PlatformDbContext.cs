@@ -308,6 +308,7 @@ namespace Juice.Observability.Data
                 e.Property(x => x.Event).HasMaxLength(40);
                 e.Property(x => x.LastError).HasMaxLength(1000);
                 e.Property(x => x.Request).HasColumnType("jsonb");
+                e.Property(x => x.Pipeline).HasMaxLength(10);
                 e.Property(x => x.Outcome).HasMaxLength(20);
                 e.HasIndex(x => new { x.TenantId, x.TransitionId }).IsUnique();
                 e.HasIndex(x => new { x.TenantId, x.SilenceId }).HasFilter("decided_at IS NULL").HasDatabaseName("ix_notification_holds_undecided");
@@ -329,6 +330,7 @@ namespace Juice.Observability.Data
                 e.Property(x => x.LastError).HasMaxLength(1000);
                 e.Property(x => x.Kind).HasMaxLength(20);
                 e.Property(x => x.CorrelationKey).HasMaxLength(200);
+                e.Property(x => x.Pipeline).HasMaxLength(10);
                 e.Property(x => x.By).HasMaxLength(256);
                 e.Property(x => x.Request).HasColumnType("jsonb");
                 e.HasIndex(x => x.Id).HasFilter("replayed_at IS NULL").HasDatabaseName("ix_notification_parked_calls_pending");

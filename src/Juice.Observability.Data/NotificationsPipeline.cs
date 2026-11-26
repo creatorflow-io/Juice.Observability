@@ -73,6 +73,11 @@ namespace Juice.Observability.Data
         public required string Request { get; init; }
         public DateTimeOffset CreatedAt { get; init; }
         public DateTimeOffset? DecidedAt { get; set; }
+        /// <summary>
+        /// For a hold kept because the pipeline didn't start, the pipeline mode then (architecture §6.4): kept in <c>shadow</c>, legacy sent it, so
+        /// it is sent dry. Null for a silence's hold (legacy held it too), whichever silence holds it later.
+        /// </summary>
+        public string? Pipeline { get; init; }
         /// <summary><see cref="NotificationHoldOutcomes.Sent"/>, <see cref="NotificationHoldOutcomes.Dropped"/> or <see cref="NotificationHoldOutcomes.Failed"/>, once decided.</summary>
         public string? Outcome { get; set; }
         /// <summary>Tries that failed (an error, not the pipeline's refusal); at <see cref="NotificationHoldOutcomes.MaxAttempts"/> it is decided failed.</summary>
@@ -117,6 +122,11 @@ namespace Juice.Observability.Data
         public string? By { get; init; }
         /// <summary>The request to send (a <c>NotificationToSend</c>, as JSON).</summary>
         public string? Request { get; init; }
+        /// <summary>
+        /// The pipeline mode when it was parked (<c>legacy</c>, <c>shadow</c>, <c>new</c>; architecture §6.4): a send parked in shadow, which legacy
+        /// sent, is replayed dry. Null for a call parked before the mode was kept, replayed as it was.
+        /// </summary>
+        public string? Pipeline { get; init; }
         public DateTimeOffset CreatedAt { get; init; }
         public DateTimeOffset? ReplayedAt { get; set; }
         /// <summary>Replays that failed; at <see cref="NotificationHoldOutcomes.MaxAttempts"/> it is given up (replayed, with its error).</summary>

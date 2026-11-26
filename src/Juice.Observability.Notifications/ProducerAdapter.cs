@@ -25,7 +25,7 @@ namespace Juice.Observability.Notifications
     /// is intact. A database error is not caught.
     /// </summary>
     public sealed class ProducerAdapter(INotificationClient client, PlatformDbContext db, IOptions<PlatformOptions> platform, IOptions<WebhookOptions> webhooks,
-        TimeProvider clock, ILogger<ProducerAdapter> logger, PipelineStart? start = null)
+        TimeProvider clock, ILogger<ProducerAdapter> logger, IOptions<PlatformNotificationsOptions> pipeline, PipelineStart? start = null)
     {
         /// <summary>
         /// The silence of a hold kept because the pipeline didn't start (<see cref="PipelineStart.Failure"/>): none. Once a restart brings the
@@ -39,6 +39,8 @@ namespace Juice.Observability.Notifications
         private static readonly Meter Meter = new("Juice.Observability");
         private static readonly Counter<long> Refused = Meter.CreateCounter<long>("juice.observability.notifications.refused", "{request}",
             "Requests the notification pipeline refused, by call and code");
+        private static readonly Counter<long> DryDuplicates = Meter.CreateCounter<long>("juice.observability.notifications.dry_duplicates", "{request}",
+            "Sends in new mode that the pipeline took as a duplicate of a dry original (shadow-era), so nothing was sent: an invariant breach, to stay 0");
 
         /// <summary>The longest label value the pipeline takes.</summary>
         internal const int MaxLabel = 500;
@@ -91,6 +93,7 @@ namespace Juice.Observability.Notifications
                     TenantId = tenantId, AlertId = alert.Id, TransitionId = transition.Id, SilenceId = silence?.Id ?? PipelineUnavailable, CreatedAt = now,
                     Event = transition.ToState == AlertState.Firing ? NotificationPlan.Firing : NotificationPlan.Resolved,
                     Request = JsonSerializer.Serialize(request, JsonSerializerOptions.Web),
+                    Pipeline = silence is null ? Mode : null,
                 });
                 return;
             }
@@ -107,7 +110,9 @@ namespace Juice.Observability.Notifications
                 logger.LogWarning("The notification pipeline didn't start ({Failure}): the acknowledgement of alert {Alert} is kept until it does", start!.Failure, alertId);
                 return;
             }
-            await TolerateAsync("acknowledge", () => client.AcknowledgeAsync(AlertCorrelation(alertId), Bounded(by, 200), cancellationToken));
+            // Still refused for a concurrent change: kept the same way, so the release pass replays it in order and the escalation stops.
+            await TolerateAsync("acknowledge", () => client.AcknowledgeAsync(AlertCorrelation(alertId), Bounded(by, 200), cancellationToken),
+                onConflict: () => Park(tenantId, NotificationParkedCalls.Acknowledge, AlertCorrelation(alertId), Bounded(by, 200), null));
         }
 
         /// <summary>A call kept while the pipeline is down (<see cref="NotificationParkedCall"/>), in the change's transaction.</summary>
@@ -115,7 +120,7 @@ namespace Juice.Observability.Notifications
             => db.NotificationParkedCalls.Add(new NotificationParkedCall
             {
                 TenantId = tenantId,
-                Kind = kind, CorrelationKey = correlationKey, By = by, CreatedAt = clock.GetUtcNow(),
+                Kind = kind, CorrelationKey = correlationKey, By = by, CreatedAt = clock.GetUtcNow(), Pipeline = Mode,
                 Request = request is null ? null : JsonSerializer.Serialize(request, JsonSerializerOptions.Web),
             });
 
@@ -131,7 +136,14 @@ namespace Juice.Observability.Notifications
             {
                 await TolerateAsync("resolve", () => client.ResolveAsync(resolve, null, null, cancellationToken), conflictThrows: true);
             }
-            await SendAsync(JsonSerializer.Deserialize<NotificationToSend>(call.Request!, JsonSerializerOptions.Web)!, cancellationToken, conflictThrows: true);
+            var request = JsonSerializer.Deserialize<NotificationToSend>(call.Request!, JsonSerializerOptions.Web)!;
+            // Kept while in shadow (architecture §6.4): legacy sent it then, so its own recipients are dry; its escalation's later steps are real.
+            // Not dropped: without the request nobody would page for an alert still open across the switch.
+            if (call.Pipeline == ShadowMode)
+            {
+                request = request with { DryRun = true };
+            }
+            await SendAsync(request, cancellationToken, conflictThrows: true);
         }
 
         /// <summary>The hold's reason for a silence: <c>silence:{id}</c>.</summary>
@@ -208,11 +220,18 @@ namespace Juice.Observability.Notifications
                 logger.LogWarning("The notification pipeline didn't start ({Failure}): {Type} of action request {Request} is kept until it does", start!.Failure, type, request.Id);
                 return;
             }
+            // Still refused for a concurrent change: kept as when the pipeline is down (the resolve with its notice), and replayed in order.
+            var parked = false;
             if (ends)
             {
-                await TolerateAsync("resolve", () => client.ResolveAsync(ActionCorrelation(request.Id), @event, null, cancellationToken));
+                await TolerateAsync("resolve", () => client.ResolveAsync(ActionCorrelation(request.Id), @event, null, cancellationToken),
+                    onConflict: () => { parked = true; Park(request.TenantId, NotificationParkedCalls.Send, ActionCorrelation(request.Id), null, notice); });
+                if (parked)
+                {
+                    return;
+                }
             }
-            await SendAsync(notice, cancellationToken);
+            await SendAsync(notice, cancellationToken, onConflict: () => Park(request.TenantId, NotificationParkedCalls.Send, null, null, notice));
         }
 
         /// <summary>Whether this event ends the request: decided against, lapsed, or done (verified, or issued with nothing to verify).</summary>
@@ -225,7 +244,11 @@ namespace Juice.Observability.Notifications
 
         /// <summary>Sends a request kept by a hold, now that no silence covers it; false when the pipeline refused it.</summary>
         internal Task<bool> SendHeldAsync(NotificationHold hold, CancellationToken cancellationToken)
-            => SendAsync(JsonSerializer.Deserialize<NotificationToSend>(hold.Request, JsonSerializerOptions.Web)!, cancellationToken, conflictThrows: true);
+        {
+            var request = JsonSerializer.Deserialize<NotificationToSend>(hold.Request, JsonSerializerOptions.Web)!;
+            // Kept in shadow because the pipeline was down: legacy sent it then (architecture §6.4), so its own recipients are dry.
+            return SendAsync(hold.Pipeline == ShadowMode ? request with { DryRun = true } : request, cancellationToken, conflictThrows: true);
+        }
 
         internal NotificationToSend Firing(Rule rule, Alert alert, AlertTransition transition, AlertContext context, string? policy)
         {
@@ -295,8 +318,29 @@ namespace Juice.Observability.Notifications
 
         private static string? Bounded(string? value, int max) => value is { Length: > 0 } ? value.Length > max ? value[..max] : value : null;
 
-        private Task<bool> SendAsync(NotificationToSend request, CancellationToken cancellationToken, bool conflictThrows = false)
-            => TolerateAsync("send", async () => await client.SendAsync(request, cancellationToken), conflictThrows, request.IdempotencyKey);
+        private Task<bool> SendAsync(NotificationToSend request, CancellationToken cancellationToken, bool conflictThrows = false, Action? onConflict = null)
+            => TolerateAsync("send", async () => Checked(request, await client.SendAsync(request, cancellationToken)), conflictThrows, request.IdempotencyKey, onConflict);
+
+        private const string ShadowMode = "shadow";
+
+        /// <summary>The pipeline mode, as a kept call or hold records it.</summary>
+        private string Mode => pipeline.Value.Pipeline.ToString().ToLowerInvariant();
+
+        /// <summary>
+        /// The adapter's guarantee (architecture, intake keeps its duplicate rule): in <c>new</c> it never sends again what shadow planned dry. A
+        /// request that isn't dry itself, taken as a duplicate of a dry original, was sent to nobody: logged and counted
+        /// (<c>juice.observability.notifications.dry_duplicates</c>, which stays 0; M50 checks it).
+        /// </summary>
+        private NotificationAccepted Checked(NotificationToSend request, NotificationAccepted accepted)
+        {
+            if (accepted is { Duplicate: true, DryRun: true } && !request.DryRun && pipeline.Value.Pipeline == NotificationsPipeline.New)
+            {
+                DryDuplicates.Add(1, new KeyValuePair<string, object?>("type", request.Type));
+                logger.LogWarning("Notifications: {Key} ({Type}) is a duplicate of a request planned dry, so nothing was sent: the adapter sent again what shadow planned",
+                    request.IdempotencyKey, request.Type);
+            }
+            return accepted;
+        }
 
         /// <summary>
         /// A refusal is the pipeline's answer, not a failure of the platform's change: a correlation it doesn't have (its firing was never sent) or
@@ -308,9 +352,9 @@ namespace Juice.Observability.Notifications
         /// <see cref="ConflictRetries"/> times: the pipeline's lost update doesn't abort the host's transaction (m44 §6.2), so calling again is safe.
         /// Still refused, it is thrown on from the paths whose rollback is a retry (the outbox's planning, the release pass), and otherwise, on a
         /// person's or an agent's call (a silence, an acknowledgement, an action request), it is no failure of their change: false, and the
-        /// reconcile worker or the next call heals it, as for any refusal.
+        /// hold pass reconciles a silence's hold, and an acknowledgement or an action request's notice is kept (<c>onConflict</c>, as when the pipeline is down) for the release pass to replay in order.
         /// </remarks>
-        private async Task<bool> TolerateAsync<T>(string call, Func<Task<T>> work, bool conflictThrows = false, string? key = null)
+        private async Task<bool> TolerateAsync<T>(string call, Func<Task<T>> work, bool conflictThrows = false, string? key = null, Action? onConflict = null)
         {
             for (var attempt = 0; ; attempt++)
             {
@@ -332,7 +376,15 @@ namespace Juice.Observability.Notifications
                 catch (NotificationRefusedException refused) when (refused.Code is ErrorCodes.ConcurrentChange)
                 {
                     Refused.Add(1, new KeyValuePair<string, object?>("call", call), new KeyValuePair<string, object?>("code", refused.Code));
-                    logger.LogWarning("Notifications {Call} {Key}: {Code} after {Retries} retries; left to heal", call, key, refused.Code, ConflictRetries);
+                    if (onConflict is not null)
+                    {
+                        onConflict();
+                        logger.LogWarning("Notifications {Call} {Key}: {Code} after {Retries} retries; kept, and replayed by the release pass", call, key, refused.Code, ConflictRetries);
+                    }
+                    else
+                    {
+                        logger.LogWarning("Notifications {Call} {Key}: {Code} after {Retries} retries; left to heal", call, key, refused.Code, ConflictRetries);
+                    }
                     return false;
                 }
                 catch (NotificationRefusedException refused) when (refused.Code is ErrorCodes.NotFound or ErrorCodes.CorrelationClosed && call != "send")

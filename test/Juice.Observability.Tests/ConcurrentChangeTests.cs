@@ -138,7 +138,7 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
-        public async Task An_acknowledgement_while_the_correlation_changes_is_saved_Async()
+        public async Task An_acknowledgement_while_the_correlation_changes_is_saved_kept_and_replayed_Async()
         {
             LocalStack.RequireAvailable();
             await using var database = await LocalStack.CreateDatabaseAsync();
@@ -153,8 +153,24 @@ namespace Juice.Observability.Tests
 
             Assert.True(acknowledged.IsSuccessStatusCode, $"{(int)acknowledged.StatusCode} {await acknowledged.Content.ReadAsStringAsync(Ct)}");
             Assert.Equal(1 + ProducerAdapter.ConflictRetries, race.Refused);
-            await using var db = database.Context();
-            Assert.NotNull((await db.Alerts.SingleAsync(a => a.Id == alert, Ct)).AcknowledgedAt);
+            await using (var db = database.Context())
+            {
+                Assert.NotNull((await db.Alerts.SingleAsync(a => a.Id == alert, Ct)).AcknowledgedAt);
+                // Not lost (review #8 round 2): kept in the acknowledgement's own transaction, with the mode it was made in.
+                var kept = Assert.Single(await db.NotificationParkedCalls.AsNoTracking().ToListAsync(Ct));
+                Assert.Equal((NotificationParkedCalls.Acknowledge, $"alert:{alert}", "new", (DateTimeOffset?)null), (kept.Kind, kept.CorrelationKey, kept.Pipeline, kept.ReplayedAt));
+            }
+            Assert.Equal("Open", await CorrelationStateAsync(database, $"alert:{alert}"));
+
+            // The race over, the release pass replays it: the correlation is acknowledged, so its escalation stops.
+            race.Left = 0;
+            await new NotificationsReleasePass(factory.Services.GetRequiredService<IServiceScopeFactory>(), Options.Create(new Webhooks.WebhookOptions()),
+                TimeProvider.System, NullLogger<NotificationsReleasePass>.Instance).ReleaseOnceAsync(Ct);
+            Assert.Equal("Acknowledged", await CorrelationStateAsync(database, $"alert:{alert}"));
+            await using (var db = database.Context())
+            {
+                Assert.NotNull(Assert.Single(await db.NotificationParkedCalls.AsNoTracking().ToListAsync(Ct)).ReplayedAt);
+            }
         }
 
         [Fact]
