@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using Juice.Observability.Data;
+using Juice.Observability.Health.Delivery;
 using Juice.Observability.Discovery;
 using Juice.Observability.Rules;
 using Juice.Observability.Webhooks;

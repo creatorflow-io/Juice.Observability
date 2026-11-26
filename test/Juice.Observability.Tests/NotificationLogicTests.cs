@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Juice.Observability.Api.Endpoints;
+using Juice.Observability.Health.Delivery;
 using Juice.Observability.Data;
 using Juice.Observability.Webhooks;
 
@@ -182,12 +183,12 @@ namespace Juice.Observability.Tests
         {
             var directory = OperatingSystem.IsWindows() ? "D:\\run\\juice" : "/run/juice";
             var path = OperatingSystem.IsWindows() ? reference.Replace("file:/run/juice", "file:D:\\run\\juice").Replace("/", "\\").Replace("file:\\etc", "file:D:\\etc") : reference;
-            Assert.Equal(allowed, SecretReference.IsAllowedFromApi(path, new WebhookOptions { ApiSecretDirectory = directory }));
+            Assert.Equal(allowed, SecretReference.IsAllowedFromApi(path, new WebhookOptions().ApiSecretEnvPrefix, directory));
         }
 
         [Fact]
         public void Without_a_folder_the_api_cant_name_files_at_all()
-            => Assert.False(SecretReference.IsAllowedFromApi("file:/run/juice/ops", new WebhookOptions()));
+            => Assert.False(SecretReference.IsAllowedFromApi("file:/run/juice/ops", new WebhookOptions().ApiSecretEnvPrefix, new WebhookOptions().ApiSecretDirectory));
 
         [Theory]
         [InlineData(ChannelKind.Slack, "https://hooks.slack.com/services/T/B/x", true)]

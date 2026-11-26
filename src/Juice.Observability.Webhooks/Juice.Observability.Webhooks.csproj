@@ -8,6 +8,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Juice.Observability.Rules\Juice.Observability.Rules.csproj" />
+    <!-- The destination policy, the signer and the SSRF-checked client (I72: in Health, which the dead-man alarm sends through too). -->
+    <ProjectReference Include="..\Juice.Observability.Health\Juice.Observability.Health.csproj" />
   </ItemGroup>
 
   <!-- Hears of alert transitions from the outbox's local route. -->

@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using Juice.Observability.Agent;
+using Juice.Observability.Health.Delivery;
 using Juice.Observability.Agent.Contracts;
 using Juice.Observability.Data;
 using Microsoft.AspNetCore.Hosting;
@@ -864,7 +865,7 @@ namespace Juice.Observability.Tests
             for (var i = 0; i < 10 && receiver.Requests.Count < expected.Length; i++) await dispatcher.DispatchOnceAsync(Ct);
             var received = receiver.Requests.ToList();
             Assert.Equal(expected.Length, received.Count);
-            Assert.All(received, r => Assert.True(Juice.Observability.Webhooks.WebhookSigner.Verify("approvals-test-secret", r.Id, r.Timestamp, r.Signature, r.Body,
+            Assert.All(received, r => Assert.True(Juice.Observability.Health.Delivery.WebhookSigner.Verify("approvals-test-secret", r.Id, r.Timestamp, r.Signature, r.Body,
                 DateTimeOffset.UtcNow, TimeSpan.FromMinutes(5)), "unsigned notice"));
             var bodies = received.Select(r => JsonDocument.Parse(r.Body).RootElement).ToList();
             Assert.Equal(expected.Order(), bodies.Select(b => b.GetProperty("type").GetString()!).Order());

@@ -12,6 +12,7 @@ using System.Text.RegularExpressions;
 using Juice.MediatR;
 using Juice.Messaging;
 using Juice.Observability.Data;
+using Juice.Observability.Health.Delivery;
 using Juice.Observability.Discovery;
 using Juice.Observability.Rules;
 using MailKit;
@@ -780,45 +781,15 @@ namespace Juice.Observability.Webhooks
             }
         }
 
-        /// <summary>
-        /// The client: no redirects, no proxy, connect and request timeouts, and a connect callback that resolves the host,
-        /// checks every address against <see cref="DestinationPolicy"/> and the current allowlist, and connects only to
-        /// a checked address. It runs for every new connection, so DNS is revalidated each time.
-        /// </summary>
+        /// <summary>The SSRF-checked client (<see cref="SafeHttpClient"/>), against the tenant's allowlist as it is at each new connection.</summary>
         private static HttpClient CreateClient(IServiceScopeFactory scopes, WebhookOptions options, Guid tenantId)
-        {
-            var handler = new SocketsHttpHandler
+            => SafeHttpClient.Create(options.ConnectTimeout, options.AllowHttpToAllowlisted, async cancellationToken =>
             {
-                AllowAutoRedirect = false,
-                UseProxy = false,
-                UseCookies = false,
-                ConnectTimeout = options.ConnectTimeout,
-                PooledConnectionLifetime = TimeSpan.FromMinutes(1),
-                ConnectCallback = async (context, cancellationToken) =>
-                {
-                    var host = context.DnsEndPoint.Host;
-                    var port = context.DnsEndPoint.Port;
-                    IReadOnlyList<IPAddress> addresses = IPAddress.TryParse(host.Trim('[', ']'), out var literal)
-                        ? [literal]
-                        : await Dns.GetHostAddressesAsync(host, cancellationToken);
-                    IReadOnlyList<AllowedDestination> allowlist;
-                    await using (var scope = scopes.CreateAsyncScope())
-                    {
-                        var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-                        allowlist = (await db.WebhookAllowlist.AsNoTracking().Where(a => a.TenantId == tenantId).ToListAsync(cancellationToken))
-                            .Select(a => new AllowedDestination(a.Destination, a.Ports)).ToList();
-                    }
-                    var scheme = context.InitialRequestMessage.RequestUri?.Scheme ?? "";
-                    if (DestinationPolicy.Check(scheme, host, port, addresses, allowlist, options.AllowHttpToAllowlisted) is { } reason)
-                    {
-                        throw new DestinationBlockedException(reason);
-                    }
-                    var socket = await DestinationPolicy.ConnectAsync(addresses, port, cancellationToken);
-                    return new NetworkStream(socket, ownsSocket: true);
-                },
-            };
-            return new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
-        }
+                await using var scope = scopes.CreateAsyncScope();
+                var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+                return (await db.WebhookAllowlist.AsNoTracking().Where(a => a.TenantId == tenantId).ToListAsync(cancellationToken))
+                    .Select(a => new AllowedDestination(a.Destination, a.Ports)).ToList();
+            });
     }
 
     /// <summary>What a test send did: <see cref="Id"/> is the <c>webhook-id</c> it carried.</summary>
