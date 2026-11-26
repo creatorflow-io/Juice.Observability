@@ -119,8 +119,9 @@ namespace Juice.Observability.Notifications
                 var sent = false;
                 var error = await EachAsync(transaction, async () =>
                 {
-                    // Kept while the pipeline was down: its resolve wasn't asked then (a silence's hold was resolved at plan; again is no change).
-                    if (hold.Event == NotificationPlan.Resolved && hold.SilenceId == ProducerAdapter.PipelineUnavailable)
+                    // Its resolve first: not asked at plan when the pipeline was down, whatever the reason it was kept (a silence wins when both
+                    // apply, and the hold may have moved under a later silence); asked again, it is no change.
+                    if (hold.Event == NotificationPlan.Resolved)
                     {
                         await adapter.ResolveAlertAsync(hold.AlertId, null, cancellationToken);
                     }

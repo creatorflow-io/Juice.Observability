@@ -23,6 +23,18 @@ namespace Juice.Observability.Data.Migrations
                 type: "character varying(10)",
                 maxLength: 10,
                 nullable: true);
+
+            migrationBuilder.AddColumn<string>(
+                name: "reason",
+                table: "notification_holds",
+                type: "character varying(30)",
+                maxLength: 30,
+                nullable: false,
+                defaultValue: "");
+
+            // Holds kept before: the reason their silence says (none, Guid.Empty, is the pipeline not started); their mode wasn't kept.
+            migrationBuilder.Sql(
+                "UPDATE notification_holds SET reason = CASE WHEN silence_id = '00000000-0000-0000-0000-000000000000' THEN 'pipeline_unavailable' ELSE 'silence' END");
         }
 
         /// <inheritdoc />
@@ -34,6 +46,10 @@ namespace Juice.Observability.Data.Migrations
 
             migrationBuilder.DropColumn(
                 name: "pipeline",
+                table: "notification_holds");
+
+            migrationBuilder.DropColumn(
+                name: "reason",
                 table: "notification_holds");
         }
     }

@@ -1856,6 +1856,12 @@ namespace Juice.Observability.Data.Migrations
                         .HasColumnType("character varying(10)")
                         .HasColumnName("pipeline");
 
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("reason");
+
                     b.Property<string>("Request")
                         .IsRequired()
                         .HasColumnType("jsonb")

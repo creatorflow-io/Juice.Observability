@@ -93,7 +93,7 @@ namespace Juice.Observability.Notifications
                     TenantId = tenantId, AlertId = alert.Id, TransitionId = transition.Id, SilenceId = silence?.Id ?? PipelineUnavailable, CreatedAt = now,
                     Event = transition.ToState == AlertState.Firing ? NotificationPlan.Firing : NotificationPlan.Resolved,
                     Request = JsonSerializer.Serialize(request, JsonSerializerOptions.Web),
-                    Pipeline = silence is null ? Mode : null,
+                    Reason = silence is null ? NotificationHoldReasons.PipelineUnavailable : NotificationHoldReasons.Silence, Pipeline = Mode,
                 });
                 return;
             }
@@ -246,8 +246,10 @@ namespace Juice.Observability.Notifications
         internal Task<bool> SendHeldAsync(NotificationHold hold, CancellationToken cancellationToken)
         {
             var request = JsonSerializer.Deserialize<NotificationToSend>(hold.Request, JsonSerializerOptions.Web)!;
-            // Kept in shadow because the pipeline was down: legacy sent it then (architecture §6.4), so its own recipients are dry.
-            return SendAsync(hold.Pipeline == ShadowMode ? request with { DryRun = true } : request, cancellationToken, conflictThrows: true);
+            // Kept in shadow because the pipeline was down: legacy sent it then (architecture §6.4 A), so its own recipients are dry. A silence's
+            // hold is real in any mode: legacy held it too.
+            var dry = hold.Reason == NotificationHoldReasons.PipelineUnavailable && hold.Pipeline == ShadowMode;
+            return SendAsync(dry ? request with { DryRun = true } : request, cancellationToken, conflictThrows: true);
         }
 
         internal NotificationToSend Firing(Rule rule, Alert alert, AlertTransition transition, AlertContext context, string? policy)

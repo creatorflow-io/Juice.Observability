@@ -74,15 +74,25 @@ namespace Juice.Observability.Data
         public DateTimeOffset CreatedAt { get; init; }
         public DateTimeOffset? DecidedAt { get; set; }
         /// <summary>
-        /// For a hold kept because the pipeline didn't start, the pipeline mode then (architecture §6.4): kept in <c>shadow</c>, legacy sent it, so
-        /// it is sent dry. Null for a silence's hold (legacy held it too), whichever silence holds it later.
+        /// Why it was kept (<see cref="NotificationHoldReasons"/>; architecture §6.4 A): a silence (legacy held it too: real in any mode), or the
+        /// pipeline not started (legacy sent it if that was in shadow). A silence wins when both apply. Kept as it was, whichever silence holds it later.
         /// </summary>
+        public required string Reason { get; init; }
+        /// <summary>The pipeline mode when it was kept (<c>legacy</c>, <c>shadow</c>, <c>new</c>); null for a hold kept before the mode was.</summary>
         public string? Pipeline { get; init; }
         /// <summary><see cref="NotificationHoldOutcomes.Sent"/>, <see cref="NotificationHoldOutcomes.Dropped"/> or <see cref="NotificationHoldOutcomes.Failed"/>, once decided.</summary>
         public string? Outcome { get; set; }
         /// <summary>Tries that failed (an error, not the pipeline's refusal); at <see cref="NotificationHoldOutcomes.MaxAttempts"/> it is decided failed.</summary>
         public int Attempts { get; set; }
         public string? LastError { get; set; }
+    }
+
+    public static class NotificationHoldReasons
+    {
+        /// <summary>A silence covered the alert: sent for real once released, in any mode.</summary>
+        public const string Silence = "silence";
+        /// <summary>The pipeline didn't start: kept in <c>shadow</c>, legacy sent it, so it is sent dry; otherwise for real.</summary>
+        public const string PipelineUnavailable = "pipeline_unavailable";
     }
 
     public static class NotificationHoldOutcomes

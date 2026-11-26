@@ -308,6 +308,7 @@ namespace Juice.Observability.Data
                 e.Property(x => x.Event).HasMaxLength(40);
                 e.Property(x => x.LastError).HasMaxLength(1000);
                 e.Property(x => x.Request).HasColumnType("jsonb");
+                e.Property(x => x.Reason).HasMaxLength(30);
                 e.Property(x => x.Pipeline).HasMaxLength(10);
                 e.Property(x => x.Outcome).HasMaxLength(20);
                 e.HasIndex(x => new { x.TenantId, x.TransitionId }).IsUnique();

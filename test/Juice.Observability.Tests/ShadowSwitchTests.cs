@@ -161,6 +161,9 @@ namespace Juice.Observability.Tests
             return await db.NotificationHolds.AsNoTracking().SingleAsync(h => h.TransitionId == transition, Ct);
         }
 
+        private static async Task<(string Reason, string? Pipeline)> KeptAsync(ScratchDatabase database, Guid transition)
+            => await HoldAsync(database, transition) is var hold ? (hold.Reason, hold.Pipeline) : default;
+
         /// <summary>Counts <c>juice.observability.notifications.dry_duplicates</c> while it lives.</summary>
         private sealed class DryDuplicates : IDisposable
         {
@@ -209,7 +212,7 @@ namespace Juice.Observability.Tests
             {
                 File.Delete(file!);
             }
-            Assert.Equal("shadow", (await HoldAsync(database, firing)).Pipeline);
+            Assert.Equal((NotificationHoldReasons.PipelineUnavailable, "shadow"), await KeptAsync(database, firing));
 
             // Switched to new, the pipeline up: the kept firing goes to the pipeline dry, and its escalation (a minute after it fired, so due) is real.
             var (now, _) = await HostAsync(database, "new");
@@ -292,7 +295,7 @@ namespace Juice.Observability.Tests
             {
                 File.Delete(file!);
             }
-            Assert.Equal("new", (await HoldAsync(database, firing)).Pipeline);
+            Assert.Equal((NotificationHoldReasons.PipelineUnavailable, "new"), await KeptAsync(database, firing));
 
             var (now, _) = await HostAsync(database, "new");
             await using (now)
@@ -320,7 +323,7 @@ namespace Juice.Observability.Tests
                 await PlanAsync(shadow, database, firing);
             }
             // Held by the silence, as legacy holds it: nothing was planned, dry or real.
-            Assert.Null((await HoldAsync(database, firing)).Pipeline);
+            Assert.Equal((NotificationHoldReasons.Silence, "shadow"), await KeptAsync(database, firing));
             Assert.Empty(await RequestsAsync(database));
 
             var (now, _) = await HostAsync(database, "new");
@@ -369,6 +372,102 @@ namespace Juice.Observability.Tests
             }
             Assert.Equal(1, dry.Count);
             Assert.Empty(receivers.Own.Requests);
+        }
+
+        /// <summary>
+        /// Both apply (architecture §6.4 A): kept while the pipeline was down in shadow, under a silence. The silence wins: legacy held it too,
+        /// so once the silence ends after the switch it is sent for real.
+        /// </summary>
+        [Fact]
+        public async Task A_firing_kept_under_a_silence_while_down_in_shadow_is_the_silences_and_sent_for_real_after_the_switch_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var receivers = await Receivers.StartAsync();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var (up, _) = await HostAsync(database, "new");
+            await using (up)
+            {
+                await ConfigureAsync(up, database, receivers);
+            }
+            var silence = await SilenceAsync(database);
+            var (_, firing) = await FireAsync(database, TimeSpan.Zero);
+            var (down, file) = await HostAsync(database, "shadow", down: true);
+            try
+            {
+                await using (down)
+                {
+                    await PlanAsync(down, database, firing);
+                }
+            }
+            finally
+            {
+                File.Delete(file!);
+            }
+            Assert.Equal((NotificationHoldReasons.Silence, "shadow"), await KeptAsync(database, firing));
+
+            var (now, _) = await HostAsync(database, "new");
+            await using (now)
+            {
+                await using (var db = database.Context())
+                {
+                    await db.Silences.Where(s => s.Id == silence).ExecuteUpdateAsync(s => s.SetProperty(x => x.CancelledAt, DateTimeOffset.UtcNow), Ct);
+                }
+                await Release(now).ReleaseOnceAsync(Ct);
+                await WaitAsync(async () => receivers.Own.Requests.Count >= 1, "the released firing to reach its recipient", database);
+                await Task.Delay(TimeSpan.FromSeconds(1), Ct);
+            }
+            Assert.Single(receivers.Own.Requests);
+            Assert.False((await DeliveriesAsync(database)).ContainsKey("WouldSend"));
+        }
+
+        /// <summary>
+        /// A send parked (an action request's notice, say, kept on a concurrent change or while the pipeline was down) replays dry when it was kept
+        /// in shadow, legacy having sent it, and for real when kept in new.
+        /// </summary>
+        [Theory]
+        [InlineData("shadow")]
+        [InlineData("new")]
+        public async Task A_parked_send_replays_dry_when_kept_in_shadow_and_real_when_kept_in_new_Async(string keptIn)
+        {
+            LocalStack.RequireAvailable();
+            await using var receivers = await Receivers.StartAsync();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var (now, _) = await HostAsync(database, "new");
+            await using (now)
+            {
+                await ConfigureAsync(now, database, receivers);
+                // What the adapter would have sent (a firing's request, as a parked send carries any).
+                var (alertId, transitionId) = await FireAsync(database, TimeSpan.Zero);
+                Juice.Notifications.NotificationToSend notice;
+                await using (var scope = now.Services.CreateAsyncScope())
+                {
+                    var platform = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+                    var alert = await platform.Alerts.SingleAsync(a => a.Id == alertId, Ct);
+                    var rule = await platform.Rules.SingleAsync(r => r.Id == alert.RuleId, Ct);
+                    var transition = await platform.AlertTransitions.SingleAsync(t => t.Id == transitionId, Ct);
+                    notice = scope.ServiceProvider.GetRequiredService<ProducerAdapter>().Firing(rule, alert, transition,
+                        new Webhooks.AlertContext(rule.Key, alert.SubjectKey, alert.Severity), null);
+                }
+                await using (var db = database.Context())
+                {
+                    db.NotificationParkedCalls.Add(new NotificationParkedCall
+                    {
+                        TenantId = await TenantAsync(database), Kind = NotificationParkedCalls.Send, CreatedAt = DateTimeOffset.UtcNow, Pipeline = keptIn,
+                        Request = JsonSerializer.Serialize(notice, JsonSerializerOptions.Web),
+                    });
+                    await db.SaveChangesAsync(Ct);
+                }
+
+                await Release(now).ReleaseOnceAsync(Ct);
+                var status = keptIn == "shadow" ? "WouldSend" : "Delivered";
+                await WaitAsync(async () => (await DeliveriesAsync(database)).ContainsKey(status), $"the notice's delivery to be {status}", database);
+                await Task.Delay(TimeSpan.FromSeconds(1), Ct);
+            }
+            await using (var db = database.Context())
+            {
+                Assert.NotNull(Assert.Single(await db.NotificationParkedCalls.AsNoTracking().ToListAsync(Ct)).ReplayedAt);
+            }
+            Assert.Equal(keptIn == "shadow" ? 0 : 1, receivers.Own.Requests.Count);
         }
     }
 }

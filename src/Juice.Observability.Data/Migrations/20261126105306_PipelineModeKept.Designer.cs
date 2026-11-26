@@ -13,7 +13,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Juice.Observability.Data.Migrations
 {
     [DbContext(typeof(PlatformDbContext))]
-    [Migration("20261126103528_PipelineModeKept")]
+    [Migration("20261126105306_PipelineModeKept")]
     partial class PipelineModeKept
     {
         /// <inheritdoc />
@@ -1858,6 +1858,12 @@ namespace Juice.Observability.Data.Migrations
                         .HasMaxLength(10)
                         .HasColumnType("character varying(10)")
                         .HasColumnName("pipeline");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("reason");
 
                     b.Property<string>("Request")
                         .IsRequired()
