@@ -63,21 +63,26 @@ namespace Juice.Observability.Notifications
                 embedded.ApplicationName = ApplicationName;
             });
             services.AddChatProviders();
+            // The schema migrated by the platform, and the pipeline's start failing readiness, not the host.
+            PipelineStart.Guard(services, MigratesSchema(section, configuration));
             Coexistence.Isolate(services);
             return services;
         }
 
         /// <summary>
+        /// Whether the platform migrates the pipeline's schema at start: when it migrates its own (<c>Database:Migrate</c>), unless the section
+        /// says otherwise (<c>Notifications:Database:Migrate</c>).
+        /// </summary>
+        internal static bool MigratesSchema(IConfigurationSection section, IConfiguration configuration)
+            => (section.GetValue<bool?>("Database:Migrate") ?? configuration.GetValue<bool?>("Database:Migrate")) == true;
+
+        /// <summary>
         /// The pipeline's settings: the host's <c>Notifications</c> section, with the switch's decisions on top. <c>legacy</c> runs no stage
-        /// (<c>Stages:Run=false</c>). The schema is migrated when the platform's is (<c>Database:Migrate</c>), unless the section says otherwise.
+        /// (<c>Stages:Run=false</c>). The pipeline never migrates at start itself (its migrator throws on a failure): <see cref="PipelineStart"/> does.
         /// </summary>
         internal static IConfiguration PipelineSettings(IConfigurationSection section, IConfiguration configuration, NotificationsPipeline mode)
         {
-            var overrides = new Dictionary<string, string?>();
-            if (section["Database:Migrate"] is null)
-            {
-                overrides["Database:Migrate"] = configuration["Database:Migrate"] ?? "false";
-            }
+            var overrides = new Dictionary<string, string?> { ["Database:Migrate"] = "false" };
             if (mode == NotificationsPipeline.Legacy)
             {
                 overrides["Stages:Run"] = "false";

@@ -35,17 +35,20 @@ namespace Juice.Observability.Tests
         }
 
         [Theory]
-        [InlineData(null, null, "false")]
-        [InlineData("true", null, "true")]
-        [InlineData("true", "false", "false")]
-        public void The_schema_migrates_when_the_platforms_does_unless_the_section_says_otherwise(string? platform, string? section, string expected)
+        [InlineData(null, null, false)]
+        [InlineData("true", null, true)]
+        [InlineData("true", "false", false)]
+        [InlineData(null, "true", true)]
+        public void The_schema_migrates_when_the_platforms_does_unless_the_section_says_otherwise(string? platform, string? section, bool expected)
         {
             var values = new List<(string, string)>();
             if (platform is not null) values.Add(("Database:Migrate", platform));
             if (section is not null) values.Add(("Notifications:Database:Migrate", section));
             var configuration = Settings([.. values]);
+            Assert.Equal(expected, NotificationsRegistration.MigratesSchema(configuration.GetSection("Notifications"), configuration));
+            // The platform migrates it, never the pipeline's own migrator (it would stop the host on a failure).
             var pipeline = NotificationsRegistration.PipelineSettings(configuration.GetSection("Notifications"), configuration, NotificationsPipeline.Legacy);
-            Assert.Equal(expected, pipeline["Database:Migrate"]);
+            Assert.Equal("false", pipeline["Database:Migrate"]);
         }
 
         [Theory]
@@ -118,6 +121,32 @@ namespace Juice.Observability.Tests
             Assert.Equal(["second"], ran);
             await one.CommitAsync(Ct);
             Assert.Equal(["second", "first"], ran);
+        }
+
+        [Fact]
+        public async Task A_transaction_disposed_without_a_rollback_leaves_no_action_for_the_next_one_on_its_connection_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var commits = new PlatformCommitActions(NullLogger<PlatformCommitActions>.Instance);
+            var ran = new List<string>();
+
+            // A failed command: the transaction is disposed, never rolled back by name, and its connection goes back to the pool.
+            await using (var db = Context(database, commits))
+            {
+                var transaction = await db.Database.BeginTransactionAsync(Ct);
+                Assert.True(new PlatformNotificationTransaction(db, commits).OnCommitted(() => ran.Add("stale")));
+                await transaction.DisposeAsync();
+            }
+            // The next transaction on the pooled connection (Npgsql reuses its transaction object) commits.
+            await using (var db = Context(database, commits))
+            {
+                await using var transaction = await db.Database.BeginTransactionAsync(Ct);
+                new PlatformNotificationTransaction(db, commits).OnCommitted(() => ran.Add("own"));
+                await transaction.CommitAsync(Ct);
+            }
+
+            Assert.Equal(["own"], ran);
         }
 
         [Fact]
