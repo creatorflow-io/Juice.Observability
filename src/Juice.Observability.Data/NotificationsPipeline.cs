@@ -94,4 +94,30 @@ namespace Juice.Observability.Data
         public Guid SilenceId { get; set; }
         public DateTimeOffset HeldAt { get; init; }
     }
+
+    /// <summary>
+    /// A call the platform couldn't make while the pipeline was down (its start failed): an acknowledgement, or an action request's notice. Kept
+    /// in the change's transaction, and replayed in order once a restart brings the pipeline up, before the transitions kept the same way.
+    /// </summary>
+    public sealed class NotificationParkedCall
+    {
+        public Guid Id { get; init; } = Guid.CreateVersion7();
+        public Guid TenantId { get; init; }
+        /// <summary><see cref="NotificationParkedCalls.Acknowledge"/> or <see cref="NotificationParkedCalls.Send"/>.</summary>
+        public required string Kind { get; init; }
+        /// <summary>The correlation to acknowledge, or to resolve before the request is sent (an action request's ending notice).</summary>
+        public string? CorrelationKey { get; init; }
+        /// <summary>Who acknowledged.</summary>
+        public string? By { get; init; }
+        /// <summary>The request to send (a <c>NotificationToSend</c>, as JSON).</summary>
+        public string? Request { get; init; }
+        public DateTimeOffset CreatedAt { get; init; }
+        public DateTimeOffset? ReplayedAt { get; set; }
+    }
+
+    public static class NotificationParkedCalls
+    {
+        public const string Acknowledge = "acknowledge";
+        public const string Send = "send";
+    }
 }

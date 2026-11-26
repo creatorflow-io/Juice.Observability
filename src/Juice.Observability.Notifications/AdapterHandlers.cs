@@ -24,7 +24,7 @@ namespace Juice.Observability.Notifications
         {
             if (pipeline.Value.ProducesRequests)
             {
-                await adapter.AcknowledgeAsync(notification.AlertId, notification.By, cancellationToken);
+                await adapter.AcknowledgeAsync(notification.PlatformTenantId, notification.AlertId, notification.By, cancellationToken);
             }
         }
     }

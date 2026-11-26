@@ -98,14 +98,40 @@ namespace Juice.Observability.Notifications
         }
 
         /// <summary>Someone acknowledged the alert: its correlation is acknowledged (escalations that stop on it stop).</summary>
-        public async Task AcknowledgeAsync(Guid alertId, string by, CancellationToken cancellationToken)
+        public async Task AcknowledgeAsync(Guid tenantId, Guid alertId, string by, CancellationToken cancellationToken)
         {
             if (Unavailable)
             {
-                logger.LogWarning("The notification pipeline didn't start ({Failure}): the acknowledgement of alert {Alert} isn't told to it", start!.Failure, alertId);
+                // Kept, and replayed once the pipeline is up, before the transitions kept the same way: an escalation then stops as it should.
+                Park(tenantId, NotificationParkedCalls.Acknowledge, AlertCorrelation(alertId), Bounded(by, 200), null);
+                logger.LogWarning("The notification pipeline didn't start ({Failure}): the acknowledgement of alert {Alert} is kept until it does", start!.Failure, alertId);
                 return;
             }
             await TolerateAsync("acknowledge", () => client.AcknowledgeAsync(AlertCorrelation(alertId), Bounded(by, 200), cancellationToken));
+        }
+
+        /// <summary>A call kept while the pipeline is down (<see cref="NotificationParkedCall"/>), in the change's transaction.</summary>
+        private void Park(Guid tenantId, string kind, string? correlationKey, string? by, NotificationToSend? request)
+            => db.NotificationParkedCalls.Add(new NotificationParkedCall
+            {
+                TenantId = tenantId,
+                Kind = kind, CorrelationKey = correlationKey, By = by, CreatedAt = clock.GetUtcNow(),
+                Request = request is null ? null : JsonSerializer.Serialize(request, JsonSerializerOptions.Web),
+            });
+
+        /// <summary>Replays a kept call once the pipeline is up: an acknowledgement, or a resolve and the request.</summary>
+        internal async Task ReplayAsync(NotificationParkedCall call, CancellationToken cancellationToken)
+        {
+            if (call.Kind == NotificationParkedCalls.Acknowledge)
+            {
+                await TolerateAsync("acknowledge", () => client.AcknowledgeAsync(call.CorrelationKey!, call.By, cancellationToken));
+                return;
+            }
+            if (call.CorrelationKey is { } resolve)
+            {
+                await TolerateAsync("resolve", () => client.ResolveAsync(resolve, null, null, cancellationToken));
+            }
+            await SendAsync(JsonSerializer.Deserialize<NotificationToSend>(call.Request!, JsonSerializerOptions.Web)!, cancellationToken);
         }
 
         /// <summary>The hold's reason for a silence: <c>silence:{id}</c>.</summary>
@@ -132,18 +158,8 @@ namespace Juice.Observability.Notifications
         /// </summary>
         public async Task ActionRequestAsync(ActionRequest request, string hostname, string type, DateTimeOffset now, CancellationToken cancellationToken)
         {
-            if (Unavailable)
-            {
-                Refused.Add(1, new KeyValuePair<string, object?>("call", "send"), new KeyValuePair<string, object?>("code", "pipeline_unavailable"));
-                logger.LogError("The notification pipeline didn't start ({Failure}): {Type} of action request {Request} isn't sent", start!.Failure, type, request.Id);
-                return;
-            }
             var @event = type.StartsWith(RequestPrefix, StringComparison.Ordinal) ? type[RequestPrefix.Length..] : type;
             var ends = Ends(request, type);
-            if (ends)
-            {
-                await TolerateAsync("resolve", () => client.ResolveAsync(ActionCorrelation(request.Id), @event, null, cancellationToken));
-            }
             var labels = new Dictionary<string, string>
             {
                 ["event"] = type, ["action"] = Bounded(request.Action, MaxLabel)!, ["risk"] = Bounded(request.Risk, MaxLabel)!, ["policy"] = Bounded(request.Policy, MaxLabel)!,
@@ -151,13 +167,25 @@ namespace Juice.Observability.Notifications
             };
             if (hostname.Length > 0) labels["hostname"] = Bounded(hostname, MaxLabel)!;
             if (request.AlertId is { } alert) labels["alert"] = alert.ToString();
-            await SendAsync(new NotificationToSend(ObservabilityTypes.ForPlatformEvent(type), $"action:{request.Id}:{@event}")
+            var notice = new NotificationToSend(ObservabilityTypes.ForPlatformEvent(type), $"action:{request.Id}:{@event}")
             {
                 CorrelationKey = ends ? null : ActionCorrelation(request.Id),
                 Labels = labels,
                 Data = WithoutId(ActionRequestNotices.Payload(Guid.Empty, type, platform.Value.TenantKey, request, hostname, now)),
                 Links = Link("approvals"),
-            }, cancellationToken);
+            };
+            if (Unavailable)
+            {
+                // Kept with the resolve it needs first, and replayed in order once the pipeline is up.
+                Park(request.TenantId, NotificationParkedCalls.Send, ends ? ActionCorrelation(request.Id) : null, null, notice);
+                logger.LogWarning("The notification pipeline didn't start ({Failure}): {Type} of action request {Request} is kept until it does", start!.Failure, type, request.Id);
+                return;
+            }
+            if (ends)
+            {
+                await TolerateAsync("resolve", () => client.ResolveAsync(ActionCorrelation(request.Id), @event, null, cancellationToken));
+            }
+            await SendAsync(notice, cancellationToken);
         }
 
         /// <summary>Whether this event ends the request: decided against, lapsed, or done (verified, or issued with nothing to verify).</summary>

@@ -87,6 +87,85 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
+        public async Task An_acknowledgement_and_a_notice_made_while_down_are_replayed_once_the_pipeline_is_up_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var healthy = new Dictionary<string, string> { ["Notifications:Pipeline"] = "new" };
+            Guid alert;
+            // Up: the firing is sent, and its correlation (and escalation) is open.
+            await using (var factory = new ApiTests.ApiFactory(database, settings: healthy))
+            {
+                _ = factory.Server;
+                Guid firing;
+                (alert, firing) = await ProducerAdapterTests.FireAsync(database);
+                await ProducerAdapterTests.PlanAsync(factory, database, firing);
+                Assert.Equal("Open", await ProducerAdapterTests.CorrelationStateAsync(database, $"alert:{alert}"));
+            }
+
+            // Down (its provisioning file can't load): someone acknowledges, and an action request ends.
+            var file = Path.Combine(Path.GetTempPath(), $"juice-obs-provisioning-{Guid.NewGuid():N}.json");
+            await File.WriteAllTextAsync(file, $$"""
+                { "tenants": { "{{LocalStack.TenantKey}}": { "integrations": { "mail": { "channel": "email", "kind": "smtp", "settings": { "server": "none" } } } } } }
+                """, Ct);
+            var request = new ActionRequest
+            {
+                TenantId = await ProducerAdapterTests.TenantAsync(database), AgentId = Guid.NewGuid(), Action = "restart-service", Parameters = "{}", Risk = "medium",
+                Policy = "admin", Reason = "stuck", RequestedBy = "erin", RequestedAt = DateTimeOffset.UtcNow, ExpiresAt = DateTimeOffset.UtcNow.AddHours(1),
+                State = ActionRequestState.Rejected,
+            };
+            try
+            {
+                await using var down = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string>(healthy) { ["Notifications:Provisioning:Path"] = file });
+                _ = down.Server;
+                Assert.StartsWith("ConfigurationProvisioner", Start(down).Failure);
+                await using (var scope = down.Services.CreateAsyncScope())
+                {
+                    using var context = PlatformMessageContext.Begin("test");
+                    var outcome = await scope.ServiceProvider.GetRequiredService<Juice.MediatR.IMediator>().Send(
+                        new Api.Endpoints.AcknowledgeAlert(request.TenantId, alert, null, "erin", null, "", "ack", "h"), Ct);
+                    Assert.Equal(200, outcome.Status);
+                }
+                await using (var scope = down.Services.CreateAsyncScope())
+                {
+                    var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+                    await using var transaction = await db.Database.BeginTransactionAsync(Ct);
+                    await Agents.ActionRequestNotices.AddAsync(db, scope.ServiceProvider, new Agents.ActionApprovalOptions(), LocalStack.TenantKey, request, "web-1",
+                        ActionRequestEvents.Rejected, DateTimeOffset.UtcNow, Ct);
+                    await db.SaveChangesAsync(Ct);
+                    await transaction.CommitAsync(Ct);
+                }
+                // The pipeline heard nothing; both are kept, in order.
+                Assert.Equal("Open", await ProducerAdapterTests.CorrelationStateAsync(database, $"alert:{alert}"));
+                await using var check = database.Context();
+                Assert.Equal([NotificationParkedCalls.Acknowledge, NotificationParkedCalls.Send],
+                    await check.NotificationParkedCalls.OrderBy(c => c.Id).Select(c => c.Kind).ToListAsync(Ct));
+            }
+            finally
+            {
+                File.Delete(file);
+            }
+
+            // Up again: the release pass replays them, and the escalation that stops on an acknowledgement stops.
+            await using (var factory = new ApiTests.ApiFactory(database, settings: healthy))
+            {
+                _ = factory.Server;
+                Assert.Null(Start(factory).Failure);
+                var pass = new NotificationsReleasePass(factory.Services.GetRequiredService<IServiceScopeFactory>(),
+                    Microsoft.Extensions.Options.Options.Create(new Webhooks.WebhookOptions()), TimeProvider.System,
+                    Microsoft.Extensions.Logging.Abstractions.NullLogger<NotificationsReleasePass>.Instance);
+                // The host's own pass (new) may have replayed them already; either way, once.
+                await pass.ReleaseOnceAsync(Ct);
+                Assert.Equal("Acknowledged", await ProducerAdapterTests.CorrelationStateAsync(database, $"alert:{alert}"));
+                Assert.Contains(await ProducerAdapterTests.RequestsAsync(database), r => r.Key == $"action:{request.Id}:rejected" && r.Correlation is null);
+                await using var db = database.Context();
+                Assert.All(await db.NotificationParkedCalls.ToListAsync(Ct), c => Assert.NotNull(c.ReplayedAt));
+                // Replayed once: a later pass has nothing to do.
+                Assert.Equal(0, await pass.ReleaseOnceAsync(Ct));
+            }
+        }
+
+        [Fact]
         public async Task A_schema_never_migrated_fails_readiness_not_the_start_Async()
         {
             LocalStack.RequireAvailable();
