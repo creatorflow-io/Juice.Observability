@@ -195,6 +195,35 @@ an audit record for each. What the API creates lives in the platform database in
   `requestedBy`, `requestedAt`, `expiresAt`, `state`, `decidedBy`, `decidedAt` and `comment`. Slack, Teams and email get it written for
   people, with a link to the Console's Approvals page when `Webhooks:ConsoleUrl` is set.
 
+### The notification pipeline's dead-man alarm
+
+With `Notifications:Pipeline` `new` or `shadow`, the API watches the embedded pipeline and posts to one endpoint of its own when the
+pipeline stops getting notifications out. The alarm never goes through the pipeline it watches.
+- **Configure** `Notifications:DeadMan`:
+  - `Url` and `SecretRef` (`env:NAME` or `file:/path`); without a `Url` there is no alarm;
+  - `Allowlist` (`Destination`, `Ports`) and `AllowHttpToAllowlisted` for a private receiver, as for webhooks;
+  - thresholds: `DueThreshold` (5 min; at least 2 min, twice the longest step and twice the stages' poll, or the API refuses to start),
+    `FailingThreshold` (10) with `FailingFor` (10 min), `MinFailedAttempts` (5), `UndeliveredThreshold` (30 min), `KeptThreshold`
+    (10 min), `ReadTimeout` (5 s), `ResendAfter` (15 min).
+- **Causes:**
+  - `stalled`: work due and not taken past `DueThreshold`, on two reads in a row;
+  - `failing`: a stage's rows failing their steps, on two reads `FailingFor` apart;
+  - `no-success`: failed attempts and none that got out in the last 15 minutes, on two reads `FailingFor` apart;
+  - `stuck-in-retry`: a delivery in flight past `UndeliveredThreshold`;
+  - `shadow`: the shadow comparison failing;
+  - `unreadable`: the pipeline's health can't be read, on two reads in a row;
+  - `not-started`: the pipeline didn't start (its migration or provisioning failed), for as long as that stands. Its health alone can read
+    quiet then: what the platform sends is kept for it, so nothing is due or failing;
+  - `kept`: a call or notification the platform kept for the pipeline while it was down, not handed over past `KeptThreshold`.
+- **Body:** `type` (`observability.deadman.firing` or `.resolved`), `cause`, `detail`, `since`, `occurredAt`, `tenant`, `reconcile`, and
+  `pipeline` (the stages and the sends, for diagnosis). Signed as webhooks are: verify it the same way.
+- **Receiving.**
+  - A cause is posted at most once per `ResendAfter`, while it stands and also when it clears and comes back (a resolve doesn't restart
+    the wait), and resolved when it clears.
+  - **Reconcile:** whichever replica takes the alarm's lease (at start, or on a failover) first tells every cause as it stands, `firing` or
+    `resolved`, with `reconcile: true`. A `resolved` for a cause that isn't open is a no-op, so a receiver can always act on it.
+  - Each post has a fresh `webhook-id`: dedupe on it, as for webhooks.
+
 ## Moving to a tenant Id
 
 A deployment installed before the tenant pattern names its tenant (`local-dev`, say). The pattern makes the tenant its Id from juice-tenants,
