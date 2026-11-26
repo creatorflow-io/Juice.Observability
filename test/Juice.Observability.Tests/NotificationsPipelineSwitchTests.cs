@@ -24,6 +24,21 @@ namespace Juice.Observability.Tests
             Assert.Equal("false", pipeline["Stages:Run"]);
         }
 
+        [Theory]
+        [InlineData("true", null, "true")]
+        [InlineData("false", null, "false")]
+        [InlineData("true", "false", "false")]
+        [InlineData(null, null, null)]
+        public void Http_to_allowlisted_receivers_carries_over_from_the_webhooks_unless_the_pipeline_says(string? webhooks, string? pipeline, string? expected)
+        {
+            var values = new List<(string, string)>();
+            if (webhooks is not null) values.Add(("Webhooks:AllowHttpToAllowlisted", webhooks));
+            if (pipeline is not null) values.Add(("Notifications:Delivery:AllowHttpToAllowlisted", pipeline));
+            var configuration = Settings([.. values]);
+            var settings = NotificationsRegistration.PipelineSettings(configuration.GetSection("Notifications"), configuration, NotificationsPipeline.New);
+            Assert.Equal(expected, settings["Delivery:AllowHttpToAllowlisted"]);
+        }
+
         [Fact]
         public void Legacy_runs_no_stage_even_when_the_section_says_so()
         {
@@ -51,14 +66,107 @@ namespace Juice.Observability.Tests
             Assert.Equal("false", pipeline["Database:Migrate"]);
         }
 
-        [Theory]
-        [InlineData("shadow")]
-        [InlineData("new")]
-        public void Shadow_and_new_are_refused_until_M45(string mode)
+        [Fact]
+        public void Shadow_is_refused_at_start_without_the_pipelines_dry_run()
         {
-            var configuration = Settings(("Notifications:Pipeline", mode), ("ConnectionStrings:Platform", "Host=x"), ("Platform:TenantKey", LocalStack.TenantKey));
+            // The pinned alpha has no working dry run (until M44-2): shadow would send for real beside legacy (review focus 5).
+            Assert.False(NotificationsRegistration.DryRunAvailable);
+            var configuration = Settings(("Notifications:Pipeline", "shadow"), ("ConnectionStrings:Platform", "Host=x"), ("Platform:TenantKey", LocalStack.TenantKey));
             var refused = Assert.Throws<InvalidOperationException>(() => new ServiceCollection().AddPlatformNotifications(configuration));
-            Assert.Contains("legacy", refused.Message);
+            Assert.Contains("dry run", refused.Message);
+        }
+
+        private static class CapabilitiesWithDryRun { public static bool DryRun { get; } = true; }
+
+        private static class CapabilitiesWithoutDryRun { public static bool DryRun { get; } = false; }
+
+        private static class CapabilitiesWithAConst { public const bool DryRun = true; }
+
+        [Fact]
+        public void The_dry_run_is_the_pipelines_published_capability_and_absent_is_none()
+        {
+            Assert.True(NotificationsRegistration.DryRunIn(typeof(CapabilitiesWithDryRun)));
+            Assert.False(NotificationsRegistration.DryRunIn(typeof(CapabilitiesWithoutDryRun)));
+            // Only the property counts (a const would be inlined into the caller's build), and no type at all is no dry run.
+            Assert.False(NotificationsRegistration.DryRunIn(typeof(CapabilitiesWithAConst)));
+            Assert.False(NotificationsRegistration.DryRunIn(null));
+        }
+
+        [Fact]
+        public void Shadow_runs_the_stages_in_dry_run_and_new_as_the_section_says()
+        {
+            var configuration = Settings(("Notifications:Stages:Run", "true"));
+            var section = configuration.GetSection("Notifications");
+            var shadow = NotificationsRegistration.PipelineSettings(section, configuration, NotificationsPipeline.Shadow);
+            Assert.Equal(("true", "true"), (shadow["Delivery:DryRun"], shadow["Stages:Run"]));
+            var @new = NotificationsRegistration.PipelineSettings(section, configuration, NotificationsPipeline.New);
+            Assert.Equal(((string?)null, "true"), (@new["Delivery:DryRun"], @new["Stages:Run"]));
+        }
+
+        [Fact]
+        public void What_each_mode_sends()
+        {
+            Assert.Equal((true, false), (new PlatformNotificationsOptions { Pipeline = NotificationsPipeline.Legacy }.LegacySends,
+                new PlatformNotificationsOptions { Pipeline = NotificationsPipeline.Legacy }.ProducesRequests));
+            Assert.Equal((true, true), (new PlatformNotificationsOptions { Pipeline = NotificationsPipeline.Shadow }.LegacySends,
+                new PlatformNotificationsOptions { Pipeline = NotificationsPipeline.Shadow }.ProducesRequests));
+            Assert.Equal((false, true), (new PlatformNotificationsOptions { Pipeline = NotificationsPipeline.New }.LegacySends,
+                new PlatformNotificationsOptions { Pipeline = NotificationsPipeline.New }.ProducesRequests));
+        }
+
+        private static List<string> Workers(ScratchDatabase database, string pipeline, out ApiTests.ApiFactory factory)
+        {
+            factory = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string>
+            {
+                ["Notifications:Pipeline"] = pipeline, ["Webhooks:Enabled"] = "true",
+            });
+            return factory.Services.GetServices<Microsoft.Extensions.Hosting.IHostedService>().Select(PipelineStart.NameOf).ToList();
+        }
+
+        [Fact]
+        public async Task New_has_no_legacy_dispatch_or_release_and_escalate_pass_and_runs_the_pipeline_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var workers = Workers(database, "new", out var factory);
+            await using (factory)
+            {
+                Assert.DoesNotContain(nameof(Webhooks.WebhookDispatcher), workers);
+                Assert.DoesNotContain(nameof(Webhooks.NotificationWorker), workers);
+                Assert.Contains(nameof(NotificationsReleasePass), workers);
+                Assert.Contains(workers, w => w.StartsWith("StageWorker", StringComparison.Ordinal));
+            }
+        }
+
+        [Fact]
+        public async Task Legacy_keeps_the_webhooks_and_has_no_release_pass_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var workers = Workers(database, "legacy", out var factory);
+            await using (factory)
+            {
+                Assert.Contains(nameof(Webhooks.WebhookDispatcher), workers);
+                Assert.Contains(nameof(Webhooks.NotificationWorker), workers);
+                Assert.DoesNotContain(nameof(NotificationsReleasePass), workers);
+                Assert.DoesNotContain(workers, w => w.StartsWith("StageWorker", StringComparison.Ordinal));
+            }
+        }
+
+        [Fact]
+        public async Task Legacy_plans_its_deliveries_and_writes_no_request_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var factory = new ApiTests.ApiFactory(database);
+            _ = factory.Server;
+            var (_, transition) = await ProducerAdapterTests.FireAsync(database);
+
+            await ProducerAdapterTests.PlanAsync(factory, database, transition);
+
+            Assert.Empty(await ProducerAdapterTests.RequestsAsync(database));
+            await using var db = database.Context();
+            Assert.NotNull((await db.AlertTransitions.SingleAsync(t => t.Id == transition)).NotificationsPlannedAt);
         }
     }
 

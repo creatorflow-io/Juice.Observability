@@ -50,8 +50,15 @@ namespace Juice.Observability.Tests
 
         public static string Secret(string key) => Env.Value[key];
 
+        /// <summary>
+        /// A database of the stack's PostgreSQL. Each pool is capped (<see cref="MaxPoolSize"/>): a host keeps one for the platform and one for its
+        /// embedded notification pipeline, and the suite runs hosts in parallel on a server shared with other runs; past the cap a test waits for a
+        /// connection rather than taking the server's last ones.
+        /// </summary>
         public static string PostgresConnection(string database)
-            => $"Host=127.0.0.1;Port=5433;Database={database};Username=juice;Password={Secret("POSTGRES_PASSWORD")}";
+            => $"Host=127.0.0.1;Port=5433;Database={database};Username=juice;Password={Secret("POSTGRES_PASSWORD")};Maximum Pool Size={MaxPoolSize}";
+
+        public const int MaxPoolSize = 50;
 
         public static string ClickHouseReader
             => $"Host=127.0.0.1;Port=8123;Username=platform_reader;Password={Secret("CLICKHOUSE_PLATFORM_PASSWORD")};Database=otel";

@@ -122,8 +122,31 @@ namespace Juice.Observability.Api.Endpoints
                 ["kind"] = kind.ToString(), ["startsAt"] = starts.ToString("O"), ["endsAt"] = ends.ToString("O"), ["allAlerts"] = silence.AllAlerts ? "true" : "false",
             });
             var result = mutation.Remember(StatusCodes.Status201Created, ToDto(silence, now), now);
-            await db.SaveChangesAsync(ct);
+            await SaveWithHoldsAsync(db, http, tenantId, ct);
             return result;
+        }
+
+        /// <summary>
+        /// Saves the silence's change and, when the notification pipeline sends (shadow, new), the holds it makes or ends in it, in one transaction:
+        /// an escalation step falling due right after the silence starts waits, as legacy holds it (p5-d3).
+        /// </summary>
+        private static async Task SaveWithHoldsAsync(PlatformDbContext db, HttpContext http, Guid tenantId, CancellationToken ct)
+        {
+            if (http.RequestServices.GetService<Juice.Observability.Notifications.SilenceHolds>() is not { Enabled: true } holds)
+            {
+                await db.SaveChangesAsync(ct);
+                return;
+            }
+            await using var transaction = db.Database.CurrentTransaction is null ? await db.Database.BeginTransactionAsync(ct) : null;
+            await db.SaveChangesAsync(ct);
+            using (PlatformMessageContext.Begin("api", CorrelationId.Get(http)))
+            {
+                await holds.ReconcileAsync(tenantId, ct);
+            }
+            if (transaction is not null)
+            {
+                await transaction.CommitAsync(ct);
+            }
         }
 
         private static string? Empty(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
@@ -143,7 +166,7 @@ namespace Juice.Observability.Api.Endpoints
                 silence.CancelledAt = clock.GetUtcNow();
                 silence.CancelledBy = mutation.Actor;
                 mutation.Audit(AuditOutcome.Succeeded, silenceId.ToString());
-                await db.SaveChangesAsync(ct);
+                await SaveWithHoldsAsync(db, http, tenantId, ct);
             }
             return Results.NoContent();
         }
