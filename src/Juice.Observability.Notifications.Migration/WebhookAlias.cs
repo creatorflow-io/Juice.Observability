@@ -7,6 +7,7 @@ using Juice.Notifications.Providers;
 using Juice.Observability.Webhooks;
 using History = Juice.Notifications.History;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using NotificationsPipeline = Juice.Observability.Data.NotificationsPipeline;
 using PlatformNotificationsOptions = Juice.Observability.Data.PlatformNotificationsOptions;
@@ -210,6 +211,81 @@ namespace Juice.Observability.Notifications.Migration
                 .ToListAsync(ct);
             return counts.GroupBy(c => c.IntegrationId).ToDictionary(g => g.Key,
                 g => (g.Where(c => !c.Waiting).Sum(c => c.Count), g.Where(c => c.Waiting).Sum(c => c.Count)));
+        }
+
+        /// <summary>
+        /// A test notification sent now through the endpoint's integration (Q-C, in <c>new</c>): legacy's test payload in the channel's content, to
+        /// each of its targets, through the channel's own provider with its destination policy and signing, and nothing stored or retried. Null
+        /// when the endpoint has no integration. Delivered only if every target took it; otherwise the first failure's status and error.
+        /// </summary>
+        public async Task<Juice.Observability.Webhooks.WebhookTestResult?> TestAsync(IServiceProvider services, Guid platformTenantId, Guid endpointId,
+            string requestedBy, CancellationToken ct)
+        {
+            var integration = await notifications.Integrations.AsNoTracking().SingleOrDefaultAsync(i => i.TenantId == Tenant && i.Id == endpointId, ct);
+            if (integration is null)
+            {
+                return null;
+            }
+            var id = Guid.CreateVersion7();
+            var started = System.Diagnostics.Stopwatch.GetTimestamp();
+            Juice.Observability.Webhooks.WebhookTestResult Result(bool delivered, int? status, string? error)
+                => new(id, delivered, status, error, (int)System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+            var provider = services.GetServices<INotificationProvider>().FirstOrDefault(p => p.Channel == integration.Channel && p.Kind == integration.Kind);
+            if (provider is null)
+            {
+                return Result(false, null, $"no provider sends {integration.Channel}/{integration.Kind}");
+            }
+            var consoleUrl = services.GetService<IOptions<Juice.Observability.Webhooks.WebhookOptions>>()?.Value.ConsoleUrl;
+            var payload = LegacyDelivery.TestPayload(id, platformTenantId, integration.Key, requestedBy, DateTimeOffset.UtcNow);
+            var content = integration.Channel switch
+            {
+                Channels.Webhook => System.Text.Json.JsonSerializer.Serialize(new Juice.Notifications.Rendering.WebhookContent("application/json", payload)),
+                Channels.Email => Email(payload, consoleUrl),
+                _ => Chat(integration.Kind, payload, consoleUrl),
+            };
+            var secrets = services.GetService<ISecretResolver>();
+            async Task<string> ResolveAsync(string reference) => secrets is not null ? await secrets.ResolveAsync(reference, ct) : SecretReferences.Resolve(reference);
+            var targets = await notifications.IntegrationTargets.AsNoTracking().Where(t => t.TenantId == Tenant && t.IntegrationId == integration.Id).OrderBy(t => t.Key).ToListAsync(ct);
+            if (targets.Count == 0)
+            {
+                return Result(false, null, "the endpoint has no destination");
+            }
+            try
+            {
+                var secret = integration.SecretRef is { } reference ? await ResolveAsync(reference) : null;
+                foreach (var target in targets)
+                {
+                    var destination = target.AddressRef is { } addressRef ? await ResolveAsync(addressRef) : target.Address!;
+                    var sent = await provider.SendAsync(new RenderedDelivery(id, Tenant, integration.Channel, content, destination, 1, NotificationPriority.Normal, false),
+                        new IntegrationContext(integration.Id, integration.Key, integration.Kind, integration.Settings, secret), ct);
+                    if (sent.Outcome is not (AttemptOutcome.Delivered or AttemptOutcome.Accepted))
+                    {
+                        return Result(false, sent.StatusCode, sent.Error ?? sent.Category?.ToString() ?? sent.Outcome.ToString());
+                    }
+                    if (target == targets[^1])
+                    {
+                        return Result(true, sent.StatusCode, null);
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or SecretUnavailableException)
+            {
+                // A secret that isn't set: nothing was sent.
+                return Result(false, null, ex.Message);
+            }
+            return Result(false, null, "the endpoint has no destination");
+        }
+
+        private static string Chat(string kind, string payload, string? consoleUrl)
+        {
+            var (title, text) = LegacyDelivery.Chat(kind == "teams" ? Data.ChannelKind.Teams : Data.ChannelKind.Slack, payload, consoleUrl);
+            return System.Text.Json.JsonSerializer.Serialize(new Juice.Notifications.Rendering.ChatContent(title, text, null, null));
+        }
+
+        private static string Email(string payload, string? consoleUrl)
+        {
+            var (subject, text) = LegacyDelivery.Email(payload, consoleUrl);
+            return System.Text.Json.JsonSerializer.Serialize(new Juice.Notifications.Rendering.EmailContent(subject, text, $"<pre>{System.Net.WebUtility.HtmlEncode(text)}</pre>"));
         }
 
         /// <summary>A failed delivery of the endpoint sent once more (notifications' retry, its own transaction), or why not.</summary>
