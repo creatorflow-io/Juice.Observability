@@ -220,7 +220,7 @@ namespace Juice.Observability.Tests
         }
 
         /// <summary>With the pipeline down (its schema never migrated), the legacy API still lists, creates and changes endpoints (legacy sends).</summary>
-        [Fact(Skip = "Review LOW on #10 (a9838c4): with the notifications schema absent, legacy POST/PUT /webhooks answer 500; dev-c is fixing it.")]
+        [Fact]
         public async Task With_the_pipeline_down_the_legacy_api_lists_creates_and_changes_Async()
         {
             LocalStack.RequireAvailable();
@@ -237,7 +237,7 @@ namespace Juice.Observability.Tests
             using var listed = await admin.GetAsync(webhooks);
             var listedBody = await listed.Content.ReadAsStringAsync(Ct);
             Guid? id = created.IsSuccessStatusCode ? System.Text.Json.JsonDocument.Parse(createdBody).RootElement.GetProperty("id").GetGuid() : null;
-            using var changed = id is { } known ? await admin.PutAsync($"{webhooks}/{known}", new { enabled = false }) : null;
+            using var changed = id is { } known ? await admin.PutAsync($"{webhooks}/{known}", new { secretRef = $"env:{SecretVariable}", enabled = false }) : null;
             File.AppendAllText(Path.Combine(Path.GetTempPath(), "qa-m46b.txt"),
                 $"{DateTime.UtcNow:O} pipeline down: POST {(int)created.StatusCode}, GET {(int)listed.StatusCode}, PUT {(changed is null ? "-" : ((int)changed.StatusCode).ToString())}{Environment.NewLine}");
             Assert.True(created.IsSuccessStatusCode, $"POST {(int)created.StatusCode}: {createdBody}");
