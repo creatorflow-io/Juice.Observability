@@ -24,6 +24,9 @@ namespace Juice.Observability.Tests
         {
             public Guid TenantId => tenantId;
 
+            /// <summary>The notifications tenant: the platform tenant's key, which can differ from its row's Id.</summary>
+            public Guid Notifications => Guid.Parse(LocalStack.TenantKey);
+
             public ScratchDatabase Database => database;
 
             public IServiceProvider Services => host.Services;
@@ -78,7 +81,7 @@ namespace Juice.Observability.Tests
             builder.Services.AddJuiceNotificationsEmbedded(builder.Configuration.GetSection("Notifications"), o =>
             {
                 o.ConnectionString = database.ConnectionString;
-                o.TenantId = tenantId;
+                o.TenantId = Guid.Parse(LocalStack.TenantKey); // the notifications tenant is the platform tenant's key, its Id
                 o.ApplicationKey = "observability";
                 o.ApplicationName = "Juice Observability";
             });
@@ -87,31 +90,9 @@ namespace Juice.Observability.Tests
             builder.Services.AddScoped<MigrationPlanner>();
             var host = builder.Build();
             await host.StartAsync(TestContext.Current.CancellationToken);
-            await WidenManagedByAsync(database);
             return new Stack(database, host, tenantId);
         }
 
-        /// <summary>
-        /// Until the pinned notifications alpha holds <c>webhooks-alias</c> (14 characters) in <c>managed_by</c>, which it has as varchar(10) on
-        /// these tables: widened here on the scratch database only, and a no-op once the alpha's schema does it.
-        /// </summary>
-        private static async Task WidenManagedByAsync(ScratchDatabase database)
-        {
-            await using var connection = new Npgsql.NpgsqlConnection(database.ConnectionString);
-            await connection.OpenAsync(TestContext.Current.CancellationToken);
-            foreach (var table in new[] { "integrations", "integration_targets", "routes", "destination_allowlist" })
-            {
-                await using var command = new Npgsql.NpgsqlCommand($"""
-                    DO $$ BEGIN
-                      IF (SELECT character_maximum_length FROM information_schema.columns
-                          WHERE table_schema = 'notifications' AND table_name = '{table}' AND column_name = 'managed_by') < 20 THEN
-                        ALTER TABLE notifications.{table} ALTER COLUMN managed_by TYPE varchar(20);
-                      END IF;
-                    END $$;
-                    """, connection);
-                await command.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
-            }
-        }
 
         private static WebhookEndpoint Endpoint(Guid tenantId, string key, ChannelKind kind = ChannelKind.Webhook, string[]? recipients = null,
             AlertSeverity minimum = AlertSeverity.Info, string[]? rules = null, string? secret = null) => new()
@@ -155,7 +136,7 @@ namespace Juice.Observability.Tests
             All(report, MigrationAction.Create);
             Assert.False(report.Applied);
             // A report writes nothing.
-            Assert.Equal(0, await stack.InScopeAsync(sp => sp.GetRequiredService<NotificationsDbContext>().Integrations.CountAsync(i => i.TenantId == stack.TenantId)));
+            Assert.Equal(0, await stack.InScopeAsync(sp => sp.GetRequiredService<NotificationsDbContext>().Integrations.CountAsync(i => i.TenantId == stack.Notifications)));
 
             var applied = await stack.ApplyAsync();
             Assert.True(applied.Applied);
@@ -180,14 +161,14 @@ namespace Juice.Observability.Tests
                 var db = sp.GetRequiredService<NotificationsDbContext>();
                 foreach (var endpoint in legacy.Endpoints)
                 {
-                    var setup = await MigrationPlanner.ReadSetupAsync(db, stack.TenantId, endpoint.Key, TestContext.Current.CancellationToken);
+                    var setup = await MigrationPlanner.ReadSetupAsync(db, stack.Notifications, endpoint.Key, TestContext.Current.CancellationToken);
                     Assert.NotNull(setup);
                     Assert.Equal(LegacyEndpoint.From(endpoint), EndpointMapping.Unmap(setup).Value);
                 }
-                Assert.All(await db.Integrations.Where(i => i.TenantId == stack.TenantId && i.Channel != "inbox").ToListAsync(), i => Assert.Equal(AliasVocabulary.WebhooksAlias, i.ManagedBy));
-                Assert.All(await db.IntegrationTargets.Where(t => t.TenantId == stack.TenantId).ToListAsync(), t => Assert.Equal(AliasVocabulary.WebhooksAlias, t.ManagedBy));
-                Assert.All(await db.Routes.Where(r => r.TenantId == stack.TenantId).ToListAsync(), r => Assert.Equal(AliasVocabulary.WebhooksAlias, r.ManagedBy));
-                var entry = await db.Allowlist.SingleAsync(a => a.TenantId == stack.TenantId);
+                Assert.All(await db.Integrations.Where(i => i.TenantId == stack.Notifications && i.Channel != "inbox").ToListAsync(), i => Assert.Equal(AliasVocabulary.WebhooksAlias, i.ManagedBy));
+                Assert.All(await db.IntegrationTargets.Where(t => t.TenantId == stack.Notifications).ToListAsync(), t => Assert.Equal(AliasVocabulary.WebhooksAlias, t.ManagedBy));
+                Assert.All(await db.Routes.Where(r => r.TenantId == stack.Notifications).ToListAsync(), r => Assert.Equal(AliasVocabulary.WebhooksAlias, r.ManagedBy));
+                var entry = await db.Allowlist.SingleAsync(a => a.TenantId == stack.Notifications);
                 Assert.Equal(("10.20.0.0/16", "8443", AliasVocabulary.WebhooksAlias), (entry.Destination, string.Join(',', entry.Ports), entry.ManagedBy));
                 return 0;
             });
@@ -214,8 +195,8 @@ namespace Juice.Observability.Tests
             await stack.InScopeAsync(async sp =>
             {
                 var db = sp.GetRequiredService<NotificationsDbContext>();
-                Assert.False(await db.IntegrationTargets.AnyAsync(t => t.TenantId == stack.TenantId && t.Key == "oncall-mail-2"));
-                Assert.False((await db.Routes.SingleAsync(r => r.TenantId == stack.TenantId && r.Key == "ops")).Enabled);
+                Assert.False(await db.IntegrationTargets.AnyAsync(t => t.TenantId == stack.Notifications && t.Key == "oncall-mail-2"));
+                Assert.False((await db.Routes.SingleAsync(r => r.TenantId == stack.Notifications && r.Key == "ops")).Enabled);
                 return 0;
             });
             All(await stack.ReportAsync(), MigrationAction.Unchanged);
@@ -230,7 +211,7 @@ namespace Juice.Observability.Tests
             var made = await stack.InScopeAsync(async sp =>
             {
                 using var context = NotificationsMessageContext.Begin("test");
-                return await sp.GetRequiredService<Juice.MediatR.IMediator>().Send(new PutIntegration(stack.TenantId, "ops", "webhook", "webhook",
+                return await sp.GetRequiredService<Juice.MediatR.IMediator>().Send(new PutIntegration(stack.Notifications, "ops", "webhook", "webhook",
                     JsonDocument.Parse("{}").RootElement, "env:JUICE_WEBHOOK_MINE", 0, true), TestContext.Current.CancellationToken);
             });
             Assert.NotNull(made.Value);
@@ -245,9 +226,9 @@ namespace Juice.Observability.Tests
             await stack.InScopeAsync(async sp =>
             {
                 var db = sp.GetRequiredService<NotificationsDbContext>();
-                var integration = await db.Integrations.SingleAsync(i => i.TenantId == stack.TenantId && i.Key == "ops");
+                var integration = await db.Integrations.SingleAsync(i => i.TenantId == stack.Notifications && i.Key == "ops");
                 Assert.Equal(("api", "env:JUICE_WEBHOOK_MINE"), (integration.ManagedBy, integration.SecretRef));
-                Assert.False(await db.Routes.AnyAsync(r => r.TenantId == stack.TenantId && r.Key == "ops"));
+                Assert.False(await db.Routes.AnyAsync(r => r.TenantId == stack.Notifications && r.Key == "ops"));
                 return 0;
             });
         }
@@ -263,8 +244,8 @@ namespace Juice.Observability.Tests
             await stack.InScopeAsync(async sp =>
             {
                 var db = sp.GetRequiredService<NotificationsDbContext>();
-                Assert.False(await db.Integrations.AnyAsync(i => i.TenantId == stack.TenantId && i.ManagedBy == AliasVocabulary.WebhooksAlias));
-                Assert.False(await db.Allowlist.AnyAsync(a => a.TenantId == stack.TenantId));
+                Assert.False(await db.Integrations.AnyAsync(i => i.TenantId == stack.Notifications && i.ManagedBy == AliasVocabulary.WebhooksAlias));
+                Assert.False(await db.Allowlist.AnyAsync(a => a.TenantId == stack.Notifications));
                 return 0;
             });
             All(await stack.ReportAsync(), MigrationAction.Create);
@@ -289,7 +270,7 @@ namespace Juice.Observability.Tests
             var item = Assert.Single(report.Items, i => i.Key == "grouped");
             Assert.Equal((MigrationAction.PendingFeature, ProblemCodes.PendingFeature), (item.Action, Assert.Single(item.Problems).Code));
             Assert.Equal(MigrationAction.Create, Assert.Single(report.Items, i => i.Key == "ops").Action);
-            Assert.False(await stack.InScopeAsync(sp => sp.GetRequiredService<NotificationsDbContext>().Integrations.AnyAsync(i => i.TenantId == stack.TenantId && i.Key == "grouped")));
+            Assert.False(await stack.InScopeAsync(sp => sp.GetRequiredService<NotificationsDbContext>().Integrations.AnyAsync(i => i.TenantId == stack.Notifications && i.Key == "grouped")));
             Assert.Equal(MigrationAction.PendingFeature, Assert.Single((await stack.ReportAsync()).Items, i => i.Key == "grouped").Action);
         }
 
@@ -342,7 +323,7 @@ namespace Juice.Observability.Tests
             var legacy = await stack.LegacyAsync();
             await stack.InScopeAsync(async sp =>
             {
-                var row = await sp.GetRequiredService<NotificationsDbContext>().EscalationPolicies.SingleAsync(p => p.TenantId == stack.TenantId && p.Key == "paging");
+                var row = await sp.GetRequiredService<NotificationsDbContext>().EscalationPolicies.SingleAsync(p => p.TenantId == stack.Notifications && p.Key == "paging");
                 Assert.Equal(AliasVocabulary.WebhooksAlias, row.ManagedBy);
                 Assert.Equal(LegacyPolicy.From(legacy.Policies[0]), PolicyMapping.Unmap(new PolicyDefinition(row.Key, row.Steps, row.StopOnAcknowledge)).Value);
                 return 0;
@@ -365,7 +346,7 @@ namespace Juice.Observability.Tests
 
             Assert.False(report.Applied);
             Assert.Equal(MigrationAction.Conflict, Assert.Single(report.Items, i => i.Key == "paging").Action);
-            Assert.False(await stack.InScopeAsync(sp => sp.GetRequiredService<NotificationsDbContext>().Integrations.AnyAsync(i => i.TenantId == stack.TenantId && i.Key == "ops")));
+            Assert.False(await stack.InScopeAsync(sp => sp.GetRequiredService<NotificationsDbContext>().Integrations.AnyAsync(i => i.TenantId == stack.Notifications && i.Key == "ops")));
         }
 
         [Fact]
@@ -373,7 +354,7 @@ namespace Juice.Observability.Tests
         {
             await using var stack = await StartAsync();
             await Assert.ThrowsAsync<ArgumentException>(() => stack.InScopeAsync(sp =>
-                sp.GetRequiredService<MigrationPlanner>().ReportAsync(new LegacySetup(Guid.NewGuid(), [], [], []), TestContext.Current.CancellationToken)));
+                sp.GetRequiredService<MigrationPlanner>().ReportAsync(new LegacySetup(Guid.NewGuid(), "another-tenant", [], [], []), TestContext.Current.CancellationToken)));
         }
     }
 }

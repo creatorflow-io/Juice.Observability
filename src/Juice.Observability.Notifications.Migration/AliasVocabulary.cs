@@ -10,10 +10,10 @@ namespace Juice.Observability.Notifications.Migration
     public static class AliasVocabulary
     {
         /// <summary>
-        /// The owner of every row the migration and the alias write (phase-5-plan I69). The same value as notifications'
-        /// <c>ManagedBy.WebhooksAlias</c> (M44-0); it replaces this constant once that alpha is pinned.
+        /// The owner of every row the migration and the alias write (phase-5-plan I69): notifications'
+        /// <c>ManagedBy.WebhooksAlias</c> (M44-0).
         /// </summary>
-        public const string WebhooksAlias = "webhooks-alias";
+        public const string WebhooksAlias = Juice.Notifications.ManagedBy.WebhooksAlias;
 
         /// <summary>The type an <c>alert.firing</c> transition is sent as.</summary>
         public const string FiringType = "observability.alert.firing";

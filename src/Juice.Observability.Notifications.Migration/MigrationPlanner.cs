@@ -25,12 +25,17 @@ namespace Juice.Observability.Notifications.Migration
         public string? SmtpFrom { get; set; }
     }
 
-    /// <summary>The legacy setup of one tenant, read once: what the migration maps.</summary>
-    public sealed record LegacySetup(Guid TenantId, IReadOnlyList<WebhookEndpoint> Endpoints, IReadOnlyList<Data.EscalationPolicy> Policies,
+    /// <summary>
+    /// The legacy setup of one platform tenant, read once: what the migration maps. <see cref="TenantId"/> is the platform's row (legacy rows
+    /// refer to it); <see cref="TenantKey"/> is its key, which is the notifications tenant's Id (the tenant pattern: a deployment renamed from an
+    /// old name keeps its row's Id, so the two can differ).
+    /// </summary>
+    public sealed record LegacySetup(Guid TenantId, string TenantKey, IReadOnlyList<WebhookEndpoint> Endpoints, IReadOnlyList<Data.EscalationPolicy> Policies,
         IReadOnlyList<WebhookAllowlistEntry> Allowlist)
     {
         public static async Task<LegacySetup> ReadAsync(PlatformDbContext db, Guid tenantId, CancellationToken ct)
             => new(tenantId,
+                await db.Tenants.AsNoTracking().Where(t => t.Id == tenantId).Select(t => t.Key).SingleOrDefaultAsync(ct) ?? "",
                 await db.WebhookEndpoints.AsNoTracking().Where(e => e.TenantId == tenantId).OrderBy(e => e.Key).ToListAsync(ct),
                 await db.EscalationPolicies.AsNoTracking().Where(p => p.TenantId == tenantId).OrderBy(p => p.Key).ToListAsync(ct),
                 await db.WebhookAllowlist.AsNoTracking().Where(a => a.TenantId == tenantId).OrderBy(a => a.Destination).ToListAsync(ct));
@@ -82,13 +87,16 @@ namespace Juice.Observability.Notifications.Migration
 
         private EndpointMappingOptions MappingOptions => new(delivery.Value, options.Value.SmtpServer, options.Value.SmtpFrom);
 
+        /// <summary>The notifications tenant: the platform tenant's Id, which embedded notifications has (its one tenant).</summary>
+        private Guid Tenant => embedded.TenantId;
+
         /// <summary>Whether the pinned notifications alpha writes a route's digestSeconds (M46-1, decision G2). True, and passed to PutRoute, once it is pinned.</summary>
         internal static bool RouteDigestSupported => false;
 
         public async Task<MigrationReport> ReportAsync(LegacySetup legacy, CancellationToken ct)
         {
             Check(legacy);
-            var plan = Plan(legacy, await ReadAsync(legacy.TenantId, ct));
+            var plan = Plan(legacy, await ReadAsync(Tenant, ct));
             return new MigrationReport(legacy.TenantId, false, plan.Items);
         }
 
@@ -103,9 +111,9 @@ namespace Juice.Observability.Notifications.Migration
             try
             {
                 await using var transaction = await db.Database.BeginTransactionAsync(ct);
-                await db.Database.ExecuteSqlAsync($"SELECT pg_advisory_xact_lock(hashtext({"juice-observability:webhooks-alias:" + legacy.TenantId}))", ct);
+                await db.Database.ExecuteSqlAsync($"SELECT pg_advisory_xact_lock(hashtext({"juice-observability:webhooks-alias:" + Tenant}))", ct);
                 // Planned again under the lock: what the report saw may have changed.
-                var plan = Plan(legacy, await ReadAsync(legacy.TenantId, ct));
+                var plan = Plan(legacy, await ReadAsync(Tenant, ct));
                 var writes = 0;
                 foreach (var write in plan.Writes)
                 {
@@ -146,9 +154,9 @@ namespace Juice.Observability.Notifications.Migration
 
         private void Check(LegacySetup legacy)
         {
-            if (legacy.TenantId != embedded.TenantId)
+            if (!string.Equals(legacy.TenantKey, embedded.TenantId.ToString("D"), StringComparison.Ordinal))
             {
-                throw new ArgumentException($"The migration runs for the platform tenant {embedded.TenantId} only, not {legacy.TenantId}.", nameof(legacy));
+                throw new ArgumentException($"The migration runs for the platform tenant {embedded.TenantId} only, not {legacy.TenantId} ({legacy.TenantKey}).", nameof(legacy));
             }
         }
 
@@ -184,7 +192,7 @@ namespace Juice.Observability.Notifications.Migration
         {
             var items = new List<MigrationItem>();
             var writes = new List<Write>();
-            var tenant = legacy.TenantId;
+            var tenant = Tenant;
 
             // Allowlist first: a webhook target may be on a private address only the allowlist lets it reach.
             var destinations = legacy.Allowlist.Select(a => (Legacy: a, Mapped: AllowlistMapping.Map(LegacyAllowlistEntry.From(a)))).ToList();
