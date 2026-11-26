@@ -115,7 +115,7 @@ namespace Juice.Observability.Api.Endpoints
         /// <item>an unexpected error is the same: the alias's part rolled back, legacy's kept, logged.</item>
         /// </list>
         /// </summary>
-        private static async Task<IReadOnlyList<MappingProblem>> AliasWriteAsync(Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction, WebhookAlias alias,
+        internal static async Task<IReadOnlyList<MappingProblem>> AliasWriteAsync(Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction, WebhookAlias alias,
             IServiceProvider services, string what, Func<Task<bool>>? bothOrNeither, Func<Task<IReadOnlyList<MappingProblem>>> write, CancellationToken ct)
         {
             if (!alias.WritesLegacy)
