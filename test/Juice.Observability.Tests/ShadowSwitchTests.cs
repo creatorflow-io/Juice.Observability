@@ -22,7 +22,8 @@ namespace Juice.Observability.Tests
     public sealed class ShadowSwitchTests
     {
         private static CancellationToken Ct => TestContext.Current.CancellationToken;
-        private const string SecretVariable = "JUICE_WEBHOOK_SHADOW_SWITCH";
+        // Within the notifications API's own limits (M46-3): the integration is the API's, not the alias's.
+        private const string SecretVariable = "NOTIFICATIONS_SECRET_SHADOW_SWITCH";
 
         /// <summary>Two receivers: the firing's own recipients (route <c>alerts</c>) and its escalation's step (route <c>pager</c>).</summary>
         private sealed class Receivers : IAsyncDisposable
@@ -43,7 +44,6 @@ namespace Juice.Observability.Tests
             var settings = new Dictionary<string, string>
             {
                 ["Notifications:Pipeline"] = mode,
-                ["Notifications:Delivery:ApiSecretEnvPrefix"] = "JUICE_WEBHOOK_",
                 ["Notifications:Delivery:AllowHttpToAllowlisted"] = "true",
                 ["Notifications:Stages:Planner:Poll"] = "00:00:00.200",
                 ["Notifications:Stages:DeliveryPlanner:Poll"] = "00:00:00.200",
