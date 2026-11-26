@@ -89,7 +89,7 @@ namespace Juice.Observability.Tests
             {
                 ["Notifications:Pipeline"] = pipeline, ["Webhooks:Enabled"] = "true",
             });
-            return factory.Services.GetServices<Microsoft.Extensions.Hosting.IHostedService>().Select(s => s.GetType().Name).ToList();
+            return factory.Services.GetServices<Microsoft.Extensions.Hosting.IHostedService>().Select(PipelineStart.NameOf).ToList();
         }
 
         [Fact]

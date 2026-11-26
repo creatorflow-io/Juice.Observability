@@ -55,7 +55,7 @@ namespace Juice.Observability.Tests
             await using var factory = Factory(database);
             _ = factory.Server;
 
-            var workers = factory.Services.GetServices<IHostedService>().Select(s => s.GetType().Name).ToList();
+            var workers = factory.Services.GetServices<IHostedService>().Select(PipelineStart.NameOf).ToList();
             Assert.DoesNotContain(workers, w => w.StartsWith("StageWorker", StringComparison.Ordinal) || w is "RetentionWorker" or "ProducerEventRelay" or "FailureEvents");
             Assert.Equal(1, await CountAsync(database, $"SELECT count(*) FROM notifications.applications WHERE key = '{NotificationsRegistration.ApplicationKey}'"));
             Assert.Equal(1, await CountAsync(database, $"SELECT count(*) FROM notifications.application_tenants WHERE tenant_id = '{LocalStack.TenantKey}'"));

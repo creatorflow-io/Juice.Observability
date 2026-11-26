@@ -85,6 +85,11 @@ namespace Juice.Observability.Notifications
                     hold.SilenceId = other.Id;
                     continue;
                 }
+                // Kept while the pipeline was down: its resolve wasn't asked then (a silence's hold was resolved at plan; again is no change).
+                if (hold.Event == NotificationPlan.Resolved && hold.SilenceId == ProducerAdapter.PipelineUnavailable)
+                {
+                    await adapter.ResolveAlertAsync(hold.AlertId, null, cancellationToken);
+                }
                 var firing = firings.FirstOrDefault(f => f.AlertId == hold.AlertId);
                 var told = firing is null || firing.Outcome == NotificationHoldOutcomes.Sent;
                 var send = HeldNotification.Decide(hold.Event, alert.State, told, alert.AcknowledgedAt is not null) == HeldOutcome.Send

@@ -36,6 +36,7 @@ namespace Juice.Observability.Notifications
             services.AddSingleton<PlatformCommitActions>();
             services.AddScoped<PlatformNotificationTransaction>();
             services.AddScoped<INotificationTransaction>(sp => sp.GetRequiredService<PlatformNotificationTransaction>());
+            var before = services.Where(s => s.ServiceType == typeof(Microsoft.Extensions.Hosting.IHostedService)).ToList();
             services.AddJuiceNotificationsEmbedded(PipelineSettings(section, configuration, mode), embedded =>
             {
                 embedded.ConnectionString = configuration.GetConnectionString("Platform") ?? throw new InvalidOperationException("ConnectionStrings:Platform is required");
@@ -49,7 +50,7 @@ namespace Juice.Observability.Notifications
             // Its changes to the setup, as the platform's audit records, in the change's transaction (I62).
             services.AddScoped<INotificationsAuditSink, PlatformAuditSink>();
             // The schema migrated by the platform, and the pipeline's start failing readiness, not the host.
-            PipelineStart.Guard(services, MigratesSchema(section, configuration));
+            var guarded = PipelineStart.Guard(services, MigratesSchema(section, configuration));
             // The producer adapter (I64): the platform's domain events and action request notices, in their own transactions.
             services.AddScoped<ProducerAdapter>();
             services.AddScoped<IActionRequestNotifications, ActionRequestNotifications>();
@@ -60,6 +61,8 @@ namespace Juice.Observability.Notifications
                 // After the migrations and the provisioning (hosted services start in order).
                 services.AddHostedService<NotificationsReleasePass>();
             }
+            // After a failed start, none of the pipeline's other services starts (they would poll tables that aren't there).
+            PipelineStart.GateTheRest(services, before, guarded);
             Coexistence.Isolate(services);
             return services;
         }
