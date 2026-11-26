@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using Juice.Observability.Api.Endpoints;
 using Juice.Observability.Data;
+using Juice.Observability.Health.Delivery;
 using Juice.Observability.Webhooks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -141,7 +142,7 @@ namespace Juice.Observability.Tests
         /// A deployment upgraded to M46b keeps its endpoints in legacy's table only (made through the API before the alias existed) until someone
         /// runs the migration. In legacy, which still sends from those rows, /webhooks should still list them.
         /// </summary>
-        [Fact(Skip = "QA defect D5: /webhooks reads only the alias's rows, so endpoints made before M46b vanish from it until the migration is applied.")]
+        [Fact]
         public async Task After_the_upgrade_webhooks_still_lists_the_endpoints_made_before_it_Async()
         {
             LocalStack.RequireAvailable();
