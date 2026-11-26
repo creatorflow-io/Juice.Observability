@@ -121,7 +121,7 @@ namespace Juice.Observability.Tests
             Assert.True(shadow.Unexplained >= 1);
             Assert.NotNull(shadow.LastComparedAt);
             // The dead-man's shadow cause (M49): the unexplained difference is a reason to look.
-            Assert.Contains("no rule explains", await shadowReport.FailingAsync(Ct));
+            Assert.Contains("no rule explains", await status.ServiceProvider.GetRequiredService<Juice.Observability.Health.DeadMan.IShadowReport>().FailingAsync(Ct));
         }
 
         /// <summary>

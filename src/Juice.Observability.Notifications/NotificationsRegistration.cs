@@ -70,6 +70,9 @@ namespace Juice.Observability.Notifications
             if (mode == NotificationsPipeline.Shadow)
             {
                 services.AddHostedService<Shadow.ShadowComparer>();
+                // The dead-man's shadow cause (M49) asks it each pass; outside shadow it isn't registered, and the cause stays quiet.
+                Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddScoped<Juice.Observability.Health.DeadMan.IShadowReport>(services,
+                    sp => sp.GetRequiredService<Shadow.ShadowReport>());
             }
             // After a failed start, none of the pipeline's other services starts (they would poll tables that aren't there); in legacy, none runs.
             PipelineStart.GateTheRest(services, before, guarded, runs: mode != NotificationsPipeline.Legacy);

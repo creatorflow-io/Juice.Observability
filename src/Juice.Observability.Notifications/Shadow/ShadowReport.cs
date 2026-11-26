@@ -21,10 +21,10 @@ namespace Juice.Observability.Notifications.Shadow
     public sealed record ShadowStatus(int Compared, int Unexplained, DateTimeOffset? LastComparedAt);
 
     /// <summary>
-    /// The report (p5-d7's daily report reads it), and the dead-man's shadow cause (M49's <c>IShadowReport.FailingAsync</c>: null, or why), from the
+    /// The report (p5-d7's daily report reads it), and the dead-man's shadow cause (<see cref="Juice.Observability.Health.DeadMan.IShadowReport"/>: null, or why), from the
     /// comparer's tables.
     /// </summary>
-    public sealed class ShadowReport(PlatformDbContext db, IOptions<ShadowOptions> options, TimeProvider clock)
+    public sealed class ShadowReport(PlatformDbContext db, IOptions<ShadowOptions> options, TimeProvider clock) : Juice.Observability.Health.DeadMan.IShadowReport
     {
         private sealed record DayRow(DateOnly Day, int Compared, int Differences, int Unexplained);
 
