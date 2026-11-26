@@ -15,6 +15,22 @@ namespace Juice.Observability.Notifications.Migration
         /// </summary>
         public const string WebhooksAlias = Juice.Notifications.ManagedBy.WebhooksAlias;
 
+        /// <summary>
+        /// The owner of the rows the alias writes from the deployment's own <c>Webhooks:Endpoints</c> and <c>Webhooks:Allowlist</c> (M46c; waves
+        /// §6.4 B): notifications' <c>ManagedBy.AliasConfig</c>. Only the alias's provisioner writes it; the alias's API and the migration tool
+        /// leave it alone, as legacy's API left a configuration-declared endpoint alone.
+        /// </summary>
+        public const string AliasConfig = Juice.Notifications.ManagedBy.AliasConfig;
+
+        /// <summary>Whether a notifications row is the alias's, from its API or its configuration.</summary>
+        public static bool IsAlias(string? owner) => owner is WebhooksAlias or AliasConfig;
+
+        /// <summary>
+        /// Whether a writer as <paramref name="owner"/> may write over a row <paramref name="existing"/> keeps: its own, or the alias's
+        /// configuration taking over the alias's (an endpoint made through the API, then declared in the file).
+        /// </summary>
+        public static bool Writes(string owner, string existing) => existing == owner || existing == WebhooksAlias && owner == AliasConfig;
+
         /// <summary>The type an <c>alert.firing</c> transition is sent as.</summary>
         public const string FiringType = "observability.alert.firing";
 

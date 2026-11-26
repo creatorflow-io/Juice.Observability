@@ -258,6 +258,63 @@ namespace Juice.Observability.Tests
             }
         }
 
+
+        /// <summary>
+        /// What the deployment's file declares is the deployment's in notifications too (M46c, waves §6.4 B): the alias's provisioner writes it as
+        /// <c>alias-config</c>, taking over the alias's own row of the same key; an admin's change through /webhooks gets 409 in every pipeline,
+        /// as legacy answered; and the migration tool, which writes the alias's own, reports it as a conflict instead of writing over it.
+        /// </summary>
+        [Theory]
+        [InlineData("legacy")]
+        [InlineData("new")]
+        public async Task Endpoints_and_allowlist_from_the_file_are_the_deployments_in_notifications(string pipeline)
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var made = Guid.Empty;
+            // First the endpoint is the admin's (through the API), then the file declares its key: the file takes it over.
+            await using (var before = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string>(Settings) { ["Notifications:Pipeline"] = pipeline }))
+            {
+                var client = before.CreateClient();
+                var (_, _, admin, tenant) = await Caller.AllAsync(client, database);
+                made = (await Caller.JsonAsync(await admin.PostAsync($"/api/v1/tenants/{tenant}/webhooks",
+                    new { key = "from-file", url = "https://receiver.example/hooks/api", secretRef = "env:JUICE_WEBHOOK_FILE" }))).GetProperty("id").GetGuid();
+            }
+            var settings = new Dictionary<string, string>(Settings)
+            {
+                ["Notifications:Pipeline"] = pipeline,
+                ["Webhooks:Endpoints:0:Key"] = "from-file",
+                ["Webhooks:Endpoints:0:Kind"] = "Webhook",
+                ["Webhooks:Endpoints:0:Url"] = "https://receiver.example/hooks/file",
+                ["Webhooks:Endpoints:0:SecretRef"] = "env:JUICE_WEBHOOK_FILE",
+                ["Webhooks:Allowlist:0:Destination"] = "10.40.0.0/16",
+            };
+            await using var factory = new ApiTests.ApiFactory(database, settings: settings);
+            var http = factory.CreateClient();
+            var (_, _, owner, tenantId) = await Caller.AllAsync(http, database);
+            await using (var scope = factory.Services.CreateAsyncScope())
+            {
+                var notifications = scope.ServiceProvider.GetRequiredService<NotificationsDbContext>();
+                var integration = await notifications.Integrations.AsNoTracking().SingleAsync(i => i.Key == "from-file", Ct);
+                Assert.Equal((AliasVocabulary.AliasConfig, made), (integration.ManagedBy, integration.Id));
+                Assert.Equal(AliasVocabulary.AliasConfig, (await notifications.Routes.AsNoTracking().SingleAsync(r => r.Key == "from-file", Ct)).ManagedBy);
+                Assert.Equal(AliasVocabulary.AliasConfig, (await notifications.Allowlist.AsNoTracking().SingleAsync(a => a.Destination == "10.40.0.0/16", Ct)).ManagedBy);
+                var setup = await MigrationPlanner.ReadSetupAsync(notifications, Guid.Parse(LocalStack.TenantKey), "from-file", Ct);
+                Assert.Equal("https://receiver.example/hooks/file", EndpointMapping.Unmap(setup!).Value!.Url);
+            }
+            var webhooks = $"/api/v1/tenants/{tenantId}/webhooks";
+            Assert.Equal(HttpStatusCode.Conflict, (await owner.PutAsync($"{webhooks}/{made}", new { secretRef = "env:JUICE_WEBHOOK_FILE", enabled = false })).StatusCode);
+            Assert.Equal(HttpStatusCode.Conflict, (await owner.SendAsync(HttpMethod.Put, $"{webhooks}/allowlist", new { destination = "10.40.0.0/16", ports = new[] { 443 } })).StatusCode);
+            var listed = await Caller.JsonAsync(await owner.GetAsync(webhooks));
+            Assert.Equal(ManagedBy.Configuration, Assert.Single(listed.GetProperty("items").EnumerateArray()).GetProperty("managedBy").GetString());
+            if (pipeline == "legacy")
+            {
+                // The migration tool doesn't write over what the alias's configuration holds: it says so.
+                var report = await MigrateAsync(owner, tenantId, apply: true);
+                var item = Assert.Single(report.Items, i => i.Key == "from-file");
+                Assert.Equal("conflict", item.Action);
+            }
+        }
         /// <summary>
         /// The alias (I69): the routes keep their shapes, every answer says they are deprecated and names the successor, and an endpoint made
         /// through them is read back from notifications with the id the create answered.

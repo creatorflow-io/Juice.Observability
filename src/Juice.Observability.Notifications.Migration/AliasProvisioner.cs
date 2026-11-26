@@ -44,7 +44,10 @@ namespace Juice.Observability.Notifications.Migration
                 var tenant = await db.Tenants.AsNoTracking().Where(t => t.Key == key).Select(t => t.Id).SingleAsync(cancellationToken);
                 // What legacy holds once the file is loaded; in new, the file itself (legacy's tables stay as they were).
                 var setup = writesLegacy ? await LegacySetup.ReadAsync(db, tenant, cancellationToken) : FromFile(tenant, key);
-                var report = await scope.ServiceProvider.GetRequiredService<MigrationPlanner>().ApplyAsync(setup, cancellationToken);
+                // As the provisioner: what the deployment's file declares is written as the alias's configuration (M46c, alias-config).
+                var planner = scope.ServiceProvider.GetRequiredService<MigrationPlanner>();
+                planner.AsProvisioner = true;
+                var report = await planner.ApplyAsync(setup, cancellationToken);
                 foreach (var item in report.Items.Where(i => i.Action == MigrationAction.Conflict))
                 {
                     logger.LogWarning("Webhook {Subject} {Key} isn't in notifications: {Problems}", item.Subject, item.Key,

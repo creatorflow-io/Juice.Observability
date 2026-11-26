@@ -459,7 +459,7 @@ namespace Juice.Observability.Api.Endpoints
         {
             if (!alias.WritesLegacy)
             {
-                return Results.Ok(new Page<AllowlistEntryDto>([.. (await alias.ListAllowlistAsync(ct)).Select(a => new AllowlistEntryDto(a.Entry.Destination, a.Entry.Ports, ManagedBy.Api, a.UpdatedAt))], null));
+                return Results.Ok(new Page<AllowlistEntryDto>([.. (await alias.ListAllowlistAsync(ct)).Select(a => new AllowlistEntryDto(a.Entry.Destination, a.Entry.Ports, a.ManagedBy, a.UpdatedAt))], null));
             }
             var rows = await db.WebhookAllowlist.AsNoTracking().Where(a => a.TenantId == tenantId).OrderBy(a => a.Destination).ToListAsync(ct);
             return Results.Ok(new Page<AllowlistEntryDto>(rows.Select(a => new AllowlistEntryDto(a.Destination, a.Ports, a.ManagedBy, a.LoadedAt)).ToList(), null));
