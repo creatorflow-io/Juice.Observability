@@ -131,7 +131,8 @@ namespace Juice.Observability.Tests
             await using var factory = new ApiFactory(database, settings: new Dictionary<string, string>
             {
                 ["Webhooks:Enabled"] = "true", ["Webhooks:AllowHttpToAllowlisted"] = "true", ["Webhooks:Interval"] = "00:00:00.200",
-                // The legacy webhooks' own retry and test send: the pipeline's take over with the alias (M46b).
+                // Legacy's own rows, seeded: the retry and test send of the legacy webhooks themselves. The same through whichever pipeline sends is
+                // An_endpoint_made_through_the_api_is_retried_and_tested_through_whichever_pipeline_sends below.
                 ["Notifications:Pipeline"] = "legacy",
             });
             using var client = factory.CreateClient();
@@ -307,6 +308,74 @@ namespace Juice.Observability.Tests
             await using var scope = factory.Services.CreateAsyncScope();
             var notifications = scope.ServiceProvider.GetRequiredService<Juice.Notifications.Data.NotificationsDbContext>();
             Assert.False(await notifications.Integrations.AnyAsync(i => i.Id == unheld.Id || i.Id == made, Ct));
+        }
+
+        /// <summary>
+        /// Through whichever pipeline sends (I74: <c>JUICE_TEST_NOTIFICATIONS_PIPELINE</c>; the alias maps the endpoint, M46b): an endpoint made
+        /// through the API fails a delivery at the receiver (a 503, one attempt allowed), an admin retries it and it arrives under the same id,
+        /// and a test send arrives signed with the endpoint's secret. Operators and viewers may do neither; each is audited.
+        /// </summary>
+        [Fact]
+        public async Task An_endpoint_made_through_the_api_is_retried_and_tested_through_whichever_pipeline_sends()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var receiver = await Receiver.StartAsync(503);
+            await using var factory = new ApiFactory(database, settings: new Dictionary<string, string>
+            {
+                ["Webhooks:Enabled"] = "true", ["Webhooks:AllowHttpToAllowlisted"] = "true", ["Webhooks:Interval"] = "00:00:00.200", ["Webhooks:MaxAttempts"] = "1",
+                ["Notifications:Delivery:AllowHttpToAllowlisted"] = "true", ["Notifications:Delivery:MaxAttempts"] = "1",
+                ["Notifications:Delivery:SmtpServers:observability:Host"] = "smtp.example.com",
+            });
+            using var client = factory.CreateClient();
+            var (viewer, @operator, admin, tenant) = await Caller.AllAsync(client, database);
+            var webhooks = $"/api/v1/tenants/{tenant}/webhooks";
+            await Caller.JsonAsync(await admin.SendAsync(HttpMethod.Put, $"{webhooks}/allowlist", new { destination = $"{receiver.Address}/32", ports = new[] { receiver.Port } }));
+            var created = await Caller.JsonAsync(await admin.PostAsync(webhooks, new { key = "ops", url = receiver.Url, secretRef = $"env:{Secret}", events = new[] { "alert.firing" } }));
+            var webhook = $"{webhooks}/{created.GetProperty("id").GetGuid()}";
+
+            var (_, transition) = await ProducerAdapterTests.FireAsync(database);
+            await ProducerAdapterTests.PlanAsync(factory, database, transition);
+            var failed = await DeliveryAsync(admin, webhook, "Failed");
+            Assert.Single(receiver.Requests);
+
+            Assert.Equal(HttpStatusCode.Forbidden, (await @operator.PostAsync($"{webhook}/deliveries/{failed}/retry", new { })).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await viewer.PostAsync($"{webhook}/test", new { })).StatusCode);
+            Assert.Equal(HttpStatusCode.NotFound, (await admin.PostAsync($"{webhook}/deliveries/{Guid.NewGuid()}/retry", new { })).StatusCode);
+            await Caller.JsonAsync(await admin.PostAsync($"{webhook}/deliveries/{failed}/retry", new { }));
+            Assert.Equal(failed, await DeliveryAsync(admin, webhook, "Delivered"));
+            var requests = receiver.Requests.ToList();
+            Assert.Equal(2, requests.Count);
+            Assert.Equal(requests[0].Id, requests[1].Id);   // the same notification, retried
+            Assert.Equal(HttpStatusCode.Conflict, (await admin.PostAsync($"{webhook}/deliveries/{failed}/retry", new { })).StatusCode);
+
+            var test = await Caller.JsonAsync(await admin.PostAsync($"{webhook}/test", new { }));
+            Assert.True(test.GetProperty("delivered").GetBoolean(), test.ToString());
+            var sent = receiver.Requests.Last();
+            Assert.Equal(3, receiver.Requests.Count);
+            Assert.True(WebhookSigner.Verify("ops-test-secret", sent.Id, sent.Timestamp, sent.Signature, sent.Body, DateTimeOffset.UtcNow, TimeSpan.FromMinutes(5)));
+            Assert.Contains("\"type\":\"webhook.test\"", sent.Body);
+
+            await using var db = database.Context();
+            var audit = await db.AuditRecords.AsNoTracking().Where(a => a.Operation == "webhook.delivery.retry" || a.Operation == "webhook.test").ToListAsync(Ct);
+            Assert.Contains(audit, a => a.Operation == "webhook.delivery.retry" && a.Outcome == AuditOutcome.Succeeded && a.Actor == "alice");
+            Assert.Contains(audit, a => a.Operation == "webhook.delivery.retry" && a.Outcome == AuditOutcome.Denied);
+            Assert.Contains(audit, a => a.Operation == "webhook.test" && a.Outcome == AuditOutcome.Succeeded && a.Metadata["delivered"] == "true");
+        }
+
+        /// <summary>The endpoint's one delivery, once it has the status, as the API lists it: legacy's, or the pipeline's through the alias.</summary>
+        private static async Task<Guid> DeliveryAsync(Caller admin, string webhook, string status)
+        {
+            for (var i = 0; i < 150; i++)
+            {
+                var page = await Caller.JsonAsync(await admin.GetAsync($"{webhook}/deliveries"));
+                if (page.GetProperty("items").EnumerateArray().FirstOrDefault(d => d.GetProperty("status").GetString() == status) is { ValueKind: System.Text.Json.JsonValueKind.Object } found)
+                {
+                    return found.GetProperty("id").GetGuid();
+                }
+                await Task.Delay(200, Ct);
+            }
+            throw new TimeoutException($"no {status} delivery");
         }
     }
 }

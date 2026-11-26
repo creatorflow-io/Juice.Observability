@@ -25,6 +25,7 @@
   <ItemGroup>
     <InternalsVisibleTo Include="Juice.Observability.Tests" />
     <InternalsVisibleTo Include="Juice.Observability.Notifications" />
+    <InternalsVisibleTo Include="Juice.Observability.Notifications.Migration" />
   </ItemGroup>
 
 </Project>

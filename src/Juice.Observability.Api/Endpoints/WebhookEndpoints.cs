@@ -321,22 +321,33 @@ namespace Juice.Observability.Api.Endpoints
         {
             var mutation = new Mutation(http, db, tenantId, "webhook.test", "webhook");
             if (await mutation.RequireAsync(endpointId.ToString(), ct, Roles.Admin) is { } denied) return denied;
+            WebhookTestResult result;
+            string key;
             if (!alias.WritesLegacy)
             {
-                // Q-C: the test send in new goes through the channel's provider with legacy's test payload; not wired yet.
-                return Mutation.Problem(StatusCodes.Status409Conflict, "Not available yet", "A test send through the notifications pipeline isn't available yet.");
+                // Q-C: in new, through the channel's provider with legacy's test payload, to the endpoint's integration of the same id.
+                if (await alias.FindAsync(endpointId, null, ct) is not { } found)
+                {
+                    return Mutation.Problem(StatusCodes.Status404NotFound, "Webhook endpoint not found", "No such endpoint.");
+                }
+                result = (await alias.TestAsync(services, tenantId, endpointId, mutation.Actor, ct))!;
+                key = found.Definition.Key;
             }
-            var endpoint = await db.WebhookEndpoints.AsNoTracking().SingleOrDefaultAsync(e => e.TenantId == tenantId && e.Id == endpointId, ct);
-            if (endpoint is null) return Mutation.Problem(StatusCodes.Status404NotFound, "Webhook endpoint not found", "No such endpoint.");
-            if (services.GetService<WebhookDispatcher>() is not { } dispatcher)
+            else
             {
-                return Mutation.Problem(StatusCodes.Status409Conflict, "Notifications are off", "This deployment doesn't send notifications (Webhooks:Enabled is false).");
+                var endpoint = await db.WebhookEndpoints.AsNoTracking().SingleOrDefaultAsync(e => e.TenantId == tenantId && e.Id == endpointId, ct);
+                if (endpoint is null) return Mutation.Problem(StatusCodes.Status404NotFound, "Webhook endpoint not found", "No such endpoint.");
+                if (services.GetService<WebhookDispatcher>() is not { } dispatcher)
+                {
+                    return Mutation.Problem(StatusCodes.Status409Conflict, "Notifications are off", "This deployment doesn't send notifications (Webhooks:Enabled is false).");
+                }
+                result = await dispatcher.TestAsync(endpoint, mutation.Actor, ct);
+                key = endpoint.Key;
             }
-            var result = await dispatcher.TestAsync(endpoint, mutation.Actor, ct);
             var metadata = new Dictionary<string, string> { ["delivered"] = result.Delivered ? "true" : "false", ["durationMs"] = result.DurationMs.ToString(System.Globalization.CultureInfo.InvariantCulture) };
             if (result.StatusCode is { } code) metadata["status"] = code.ToString(System.Globalization.CultureInfo.InvariantCulture);
             if (result.Error is { } error) metadata["error"] = error;
-            mutation.Audit(result.Delivered ? AuditOutcome.Succeeded : AuditOutcome.Failed, endpoint.Key, metadata);
+            mutation.Audit(result.Delivered ? AuditOutcome.Succeeded : AuditOutcome.Failed, key, metadata);
             await db.SaveChangesAsync(ct);
             return Results.Ok(result);
         }
