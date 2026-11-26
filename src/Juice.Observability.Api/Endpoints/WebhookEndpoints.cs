@@ -3,6 +3,7 @@ using Juice.Observability.Health.Delivery;
 using Juice.Observability.Notifications.Migration;
 using Juice.Observability.Webhooks;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
 namespace Juice.Observability.Api.Endpoints
@@ -102,6 +103,50 @@ namespace Juice.Observability.Api.Endpoints
                 : await alias.FindAsync(endpointId, null, ct);
 
         private static AliasEndpoint AsAnswer(WebhookEndpoint e) => new(e.Id, LegacyEndpoint.From(e), e.ManagedBy, e.LoadedAt);
+
+        /// <summary>
+        /// The alias's half of a legacy write, in the caller's open transaction: what it refused, for the caller to roll back, or none. In new it is
+        /// the whole write. While legacy rows are written (legacy, shadow) legacy's change never fails on the pipeline's account (review of #10):
+        /// <list type="bullet">
+        /// <item>when the pipeline didn't start (its schema missing), the alias isn't asked; the next start's alias provisioner and the migration
+        /// bring the notifications rows in step with legacy's;</item>
+        /// <item>a refusal undoes legacy's change too only when <paramref name="bothOrNeither"/> says so (it is answered null to mean the
+        /// alias never held the row, legacy's own); otherwise what the alias wrote is rolled back to a savepoint and legacy's stands;</item>
+        /// <item>an unexpected error is the same: the alias's part rolled back, legacy's kept, logged.</item>
+        /// </list>
+        /// </summary>
+        private static async Task<IReadOnlyList<MappingProblem>> AliasWriteAsync(Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction, WebhookAlias alias,
+            IServiceProvider services, string what, Func<Task<bool>>? bothOrNeither, Func<Task<IReadOnlyList<MappingProblem>>> write, CancellationToken ct)
+        {
+            if (!alias.WritesLegacy)
+            {
+                return await write();
+            }
+            var logger = services.GetRequiredService<Microsoft.Extensions.Logging.ILoggerFactory>().CreateLogger("Juice.Observability.Webhooks.Alias");
+            if (services.GetService<Juice.Observability.Notifications.PipelineStart>()?.Failure is { } failure)
+            {
+                Microsoft.Extensions.Logging.LoggerExtensions.LogWarning(logger, "{What} kept in legacy only: the notification pipeline didn't start ({Failure})", what, failure);
+                return [];
+            }
+            await transaction.CreateSavepointAsync("alias", ct);
+            try
+            {
+                var problems = await write();
+                if (problems.Count == 0 || bothOrNeither is null || await bothOrNeither())
+                {
+                    return problems;
+                }
+                // The alias never held it (a digit-led key, a secret outside its limits): legacy's own, as before the alias.
+                await transaction.RollbackToSavepointAsync("alias", ct);
+                return [];
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                await transaction.RollbackToSavepointAsync("alias", ct);
+                Microsoft.Extensions.Logging.LoggerExtensions.LogError(logger, ex, "{What} kept in legacy only: the alias's write failed", what);
+                return [];
+            }
+        }
 
         private static async Task<IResult> ListEndpointsAsync(Guid tenantId, HttpContext http, PlatformDbContext db, WebhookAlias alias, TimeProvider clock, CancellationToken ct)
         {
@@ -212,7 +257,8 @@ namespace Juice.Observability.Api.Endpoints
             mutation.Audit(AuditOutcome.Succeeded, definition!.Key, Metadata(definition));
             mutation.RecordChange($"webhook {definition.Key}: webhook.create", now);
             await db.SaveChangesAsync(ct);
-            if (await alias.PutAsync(Definition(definition), id, ct) is { Count: > 0 } refused)
+            if (await AliasWriteAsync(transaction, alias, http.RequestServices, $"webhook {definition.Key}", null,
+                    () => alias.PutAsync(Definition(definition), id, ct), ct) is { Count: > 0 } refused)
             {
                 await transaction.RollbackAsync(ct);
                 return Refused(refused);
@@ -257,20 +303,11 @@ namespace Juice.Observability.Api.Endpoints
             await db.SaveChangesAsync(ct);
             // Both or neither, for an endpoint the alias holds. One it never could (a digit-led key, a secret outside its limits: legacy's own,
             // as before the alias) changes in legacy only; the migration's report names what keeps it out.
-            var held = !alias.WritesLegacy || await alias.HoldsAsync(endpointId, ct);
-            if (!held)
+            if (await AliasWriteAsync(transaction, alias, http.RequestServices, $"webhook {definition.Key}", () => alias.HoldsAsync(endpointId, ct),
+                    () => alias.PutAsync(Definition(definition), endpointId, ct), ct) is { Count: > 0 } refused)
             {
-                await transaction.CreateSavepointAsync("alias", ct);
-            }
-            if (await alias.PutAsync(Definition(definition), endpointId, ct) is { Count: > 0 } refused)
-            {
-                if (held)
-                {
-                    await transaction.RollbackAsync(ct);
-                    return Refused(refused);
-                }
-                // Whatever of it the alias wrote before refusing goes; legacy's change stands.
-                await transaction.RollbackToSavepointAsync("alias", ct);
+                await transaction.RollbackAsync(ct);
+                return Refused(refused);
             }
             await transaction.CommitAsync(ct);
             return Results.Ok(ToDto(new AliasEndpoint(endpointId, Definition(definition), found.ManagedBy, now), http));
@@ -452,7 +489,8 @@ namespace Juice.Observability.Api.Endpoints
             mutation.Audit(AuditOutcome.Succeeded, destination, new() { ["ports"] = string.Join(",", ports) });
             mutation.RecordChange($"webhook_allowlist {destination}: put", now);
             await db.SaveChangesAsync(ct);
-            if (await alias.PutAllowlistAsync(new LegacyAllowlistEntry(destination, ports), ct) is { Count: > 0 } refused)
+            if (await AliasWriteAsync(transaction, alias, http.RequestServices, $"allowlist entry {destination}", null,
+                    () => alias.PutAllowlistAsync(new LegacyAllowlistEntry(destination, ports), ct), ct) is { Count: > 0 } refused)
             {
                 await transaction.RollbackAsync(ct);
                 return Refused(refused);
@@ -486,7 +524,9 @@ namespace Juice.Observability.Api.Endpoints
             mutation.Audit(AuditOutcome.Succeeded, destination);
             mutation.RecordChange($"webhook_allowlist {destination}: remove", clock.GetUtcNow());
             await db.SaveChangesAsync(ct);
-            if (await alias.RemoveAllowlistAsync(AllowlistMapping.Map(new LegacyAllowlistEntry(destination!, entry.Ports)).Value?.Destination ?? destination!, ct) is { Count: > 0 } refused)
+            if (await AliasWriteAsync(transaction, alias, http.RequestServices, $"allowlist entry {destination}", null,
+                    () => alias.RemoveAllowlistAsync(AllowlistMapping.Map(new LegacyAllowlistEntry(destination!, entry.Ports)).Value?.Destination ?? destination!, ct), ct)
+                is { Count: > 0 } refused)
             {
                 await transaction.RollbackAsync(ct);
                 return Refused(refused);

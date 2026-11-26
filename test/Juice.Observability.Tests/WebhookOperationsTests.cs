@@ -221,25 +221,49 @@ namespace Juice.Observability.Tests
             Directory.Delete(folder, recursive: true);
         }
 
-        /// <summary>With the pipeline down (its schema never migrated), legacy's endpoints are still listed and found: nothing of it is read.</summary>
+        /// <summary>
+        /// With the pipeline down (its schema never migrated), legacy's webhooks API still works as legacy's (review of #10): endpoints are listed,
+        /// made and changed, and the allowlist too, in legacy only; nothing of the pipeline is read or written. The next start with the pipeline
+        /// up brings the notifications rows in step with legacy's (the alias provisioner), each endpoint's integration keeping its id.
+        /// </summary>
         [Fact]
-        public async Task With_the_pipeline_down_the_endpoints_are_still_listed()
+        public async Task With_the_pipeline_down_the_webhooks_api_works_in_legacy_and_a_later_start_catches_up()
         {
             LocalStack.RequireAvailable();
             await using var database = await LocalStack.CreateDatabaseAsync();
             await using var receiver = await Receiver.StartAsync();
-            await using var factory = new ApiFactory(database, settings: new Dictionary<string, string>
+            Guid made;
+            await using (var down = new ApiFactory(database, settings: new Dictionary<string, string>
             {
                 ["Notifications:Database:Migrate"] = "false", ["Notifications:Pipeline"] = "legacy",
-            });
-            using var client = factory.CreateClient();
-            var (_, _, admin, tenant) = await Caller.AllAsync(client, database);
-            await using var db = database.Context();
-            var endpoint = await EndpointAsync(db, receiver);
+            }))
+            {
+                using var client = down.CreateClient();
+                var (_, _, admin, tenant) = await Caller.AllAsync(client, database);
+                await using var db = database.Context();
+                var seeded = await EndpointAsync(db, receiver);
+                var webhooks = $"/api/v1/tenants/{tenant}/webhooks";
 
-            var listed = await Caller.JsonAsync(await admin.GetAsync($"/api/v1/tenants/{tenant}/webhooks"));
+                var listed = await Caller.JsonAsync(await admin.GetAsync(webhooks));
+                Assert.Equal(seeded.Key, Assert.Single(listed.GetProperty("items").EnumerateArray()).GetProperty("key").GetString());
+                made = (await Caller.JsonAsync(await admin.PostAsync(webhooks, new { key = "made-while-down", url = "https://hooks.example.com/down", secretRef = $"env:{Secret}" })))
+                    .GetProperty("id").GetGuid();
+                await Caller.JsonAsync(await admin.PutAsync($"{webhooks}/{made}", new { secretRef = $"env:{Secret}", minimumSeverity = "critical" }));
+                await Caller.JsonAsync(await admin.SendAsync(HttpMethod.Put, $"{webhooks}/allowlist", new { destination = "10.9.0.0/16", ports = new[] { 8443 } }));
 
-            Assert.Equal(endpoint.Key, Assert.Single(listed.GetProperty("items").EnumerateArray()).GetProperty("key").GetString());
+                var row = await db.WebhookEndpoints.AsNoTracking().SingleAsync(e => e.Id == made, Ct);
+                Assert.Equal(("made-while-down", AlertSeverity.Critical), (row.Key, row.MinimumSeverity));
+                Assert.True(await db.WebhookAllowlist.AnyAsync(a => a.Destination == "10.9.0.0/16", Ct));
+            }
+
+            // Up again: the alias provisioner brings the notifications rows in step with legacy's.
+            await using var up = new ApiFactory(database, settings: new Dictionary<string, string> { ["Notifications:Pipeline"] = "legacy" });
+            _ = up.CreateClient();
+            await using var scope = up.Services.CreateAsyncScope();
+            var notifications = scope.ServiceProvider.GetRequiredService<Juice.Notifications.Data.NotificationsDbContext>();
+            var integration = await notifications.Integrations.AsNoTracking().SingleAsync(i => i.Key == "made-while-down", Ct);
+            Assert.Equal(made, integration.Id);
+            Assert.True(await notifications.Allowlist.AnyAsync(a => a.Destination == "10.9.0.0/16", Ct));
         }
     }
 }
