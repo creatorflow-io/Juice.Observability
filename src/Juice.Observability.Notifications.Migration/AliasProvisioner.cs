@@ -47,6 +47,10 @@ namespace Juice.Observability.Notifications.Migration
                 // As the provisioner: what the deployment's file declares is written as the alias's configuration (M46c, alias-config).
                 var planner = scope.ServiceProvider.GetRequiredService<MigrationPlanner>();
                 planner.AsProvisioner = true;
+                // Legacy's tables are the whole of what the alias mirrors while legacy sends; in new, the file is the whole of alias-config.
+                planner.Reconciles = writesLegacy
+                    ? new HashSet<string> { AliasVocabulary.WebhooksAlias, AliasVocabulary.AliasConfig }
+                    : new HashSet<string> { AliasVocabulary.AliasConfig };
                 var report = await planner.ApplyAsync(setup, cancellationToken);
                 foreach (var item in report.Items.Where(i => i.Action == MigrationAction.Conflict))
                 {

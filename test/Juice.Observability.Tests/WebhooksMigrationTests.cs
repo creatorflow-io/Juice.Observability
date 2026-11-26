@@ -315,6 +315,91 @@ namespace Juice.Observability.Tests
                 Assert.Equal("conflict", item.Action);
             }
         }
+
+        private static Dictionary<string, string> FileSettings(string pipeline, string? secret = "env:JUICE_WEBHOOK_FILE", bool allowlist = true)
+        {
+            var settings = new Dictionary<string, string>(Settings) { ["Notifications:Pipeline"] = pipeline };
+            if (secret is not null)
+            {
+                settings["Webhooks:Endpoints:0:Key"] = "from-file";
+                settings["Webhooks:Endpoints:0:Kind"] = "Webhook";
+                settings["Webhooks:Endpoints:0:Url"] = "https://receiver.example/hooks/file";
+                settings["Webhooks:Endpoints:0:SecretRef"] = secret;
+            }
+            if (allowlist)
+            {
+                settings["Webhooks:Allowlist:0:Destination"] = "10.40.0.0/16";
+            }
+            return settings;
+        }
+
+        private static async Task<(bool? RouteEnabled, bool Allowlisted)> AliasRowsAsync(ApiTests.ApiFactory factory)
+        {
+            await using var scope = factory.Services.CreateAsyncScope();
+            var notifications = scope.ServiceProvider.GetRequiredService<NotificationsDbContext>();
+            var route = await notifications.Routes.AsNoTracking().SingleOrDefaultAsync(r => r.Key == "from-file", Ct);
+            return (route?.Enabled, await notifications.Allowlist.AsNoTracking().AnyAsync(a => a.Destination == "10.40.0.0/16", Ct));
+        }
+
+        /// <summary>
+        /// Drift (M46c, review of #10): the alias's copies follow what they mirror. An endpoint the file changes into one the alias can't write (a
+        /// secret outside its limits) keeps its rows for their history but its route is disabled, so nothing stale sends at cutover; an endpoint
+        /// gone from the file, the same; an allowlist entry gone from the file is removed, so the pipeline reaches no more than legacy does.
+        /// </summary>
+        [Theory]
+        [InlineData("legacy")]
+        [InlineData("new")]
+        public async Task The_alias_follows_the_file_an_unwritable_or_gone_endpoint_stops_and_a_gone_entry_goes(string pipeline)
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using (var first = new ApiTests.ApiFactory(database, settings: FileSettings(pipeline)))
+            {
+                _ = first.CreateClient();
+                Assert.Equal((true, true), await AliasRowsAsync(first));
+            }
+            // The file's endpoint now names a secret outside the alias's limits; its allowlist entry is gone.
+            await using (var second = new ApiTests.ApiFactory(database, settings: FileSettings(pipeline, secret: "env:OTHER_SECRET", allowlist: false)))
+            {
+                _ = second.CreateClient();
+                Assert.Equal((false, false), await AliasRowsAsync(second));
+            }
+            // Mappable again: it's written, and sends, again. Then gone from the file: stopped.
+            await using (var third = new ApiTests.ApiFactory(database, settings: FileSettings(pipeline, allowlist: false)))
+            {
+                _ = third.CreateClient();
+                Assert.Equal((true, false), await AliasRowsAsync(third));
+            }
+            await using var fourth = new ApiTests.ApiFactory(database, settings: FileSettings(pipeline, secret: null, allowlist: false));
+            _ = fourth.CreateClient();
+            Assert.Equal((false, false), await AliasRowsAsync(fourth));
+        }
+
+        /// <summary>
+        /// The migration tool reconciles the alias's own rows with legacy's while legacy sends: an allowlist entry removed in legacy only (the
+        /// pipeline down when it was) is removed by the next migration, and reported as such.
+        /// </summary>
+        [Fact]
+        public async Task The_migration_removes_an_allowlist_entry_legacy_no_longer_has()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var factory = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string>(Settings) { ["Notifications:Pipeline"] = "legacy" });
+            var client = factory.CreateClient();
+            var (_, _, admin, tenant) = await Caller.AllAsync(client, database);
+            await Caller.JsonAsync(await admin.SendAsync(HttpMethod.Put, $"/api/v1/tenants/{tenant}/webhooks/allowlist", new { destination = "10.41.0.0/16", ports = new[] { 443 } }));
+            await using (var db = database.Context())
+            {
+                // Removed in legacy behind the alias's back.
+                await db.WebhookAllowlist.Where(a => a.Destination == "10.41.0.0/16").ExecuteDeleteAsync(Ct);
+            }
+
+            var report = await MigrateAsync(admin, tenant, apply: true);
+
+            Assert.Equal("remove", Assert.Single(report.Items, i => i.Key == "10.41.0.0/16").Action);
+            await using var scope = factory.Services.CreateAsyncScope();
+            Assert.False(await scope.ServiceProvider.GetRequiredService<NotificationsDbContext>().Allowlist.AsNoTracking().AnyAsync(a => a.Destination == "10.41.0.0/16", Ct));
+        }
         /// <summary>
         /// The alias (I69): the routes keep their shapes, every answer says they are deprecated and names the successor, and an endpoint made
         /// through them is read back from notifications with the id the create answered.
