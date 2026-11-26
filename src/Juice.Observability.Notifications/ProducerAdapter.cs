@@ -108,6 +108,20 @@ namespace Juice.Observability.Notifications
             await TolerateAsync("acknowledge", () => client.AcknowledgeAsync(AlertCorrelation(alertId), Bounded(by, 200), cancellationToken));
         }
 
+        /// <summary>The hold's reason for a silence: <c>silence:{id}</c>.</summary>
+        public static string SilenceReason(Guid silenceId) => $"silence:{silenceId}";
+
+        /// <summary>
+        /// Holds the alert's escalation for a silence (p5-d3): a step that falls due waits for <see cref="ReleaseAlertAsync"/>. False when the
+        /// pipeline has no correlation for it (its firing was never sent: held itself, or not planned yet) or refused, and when it didn't start.
+        /// </summary>
+        internal async Task<bool> HoldAlertAsync(Guid alertId, Guid silenceId, CancellationToken cancellationToken)
+            => !Unavailable && await TolerateAsync("hold", () => client.HoldAsync(AlertCorrelation(alertId), SilenceReason(silenceId), "silence", cancellationToken));
+
+        /// <summary>Releases the alert's hold: steps that fell due under it run now if the alert is still open. False as for a hold.</summary>
+        internal async Task<bool> ReleaseAlertAsync(Guid alertId, CancellationToken cancellationToken)
+            => !Unavailable && await TolerateAsync("release", () => client.ReleaseAsync(AlertCorrelation(alertId), "silence", cancellationToken));
+
         /// <summary>Resolves the alert's correlation (its escalation stops, what is still due is cancelled); none, or closed already, is no failure.</summary>
         internal Task ResolveAlertAsync(Guid alertId, string? reason, CancellationToken cancellationToken)
             => TolerateAsync("resolve", () => client.ResolveAsync(AlertCorrelation(alertId), Bounded(reason, 200), null, cancellationToken));

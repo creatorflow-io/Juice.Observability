@@ -54,12 +54,14 @@ namespace Juice.Observability.Notifications
             // The producer adapter (I64): the platform's domain events and action request notices, in their own transactions.
             services.AddScoped<ProducerAdapter>();
             services.AddScoped<IActionRequestNotifications, ActionRequestNotifications>();
+            services.AddScoped<SilenceHolds>();
             services.AddTransient<Juice.MediatR.INotificationHandler<AlertNotificationsPlanned>, OnNotificationsPlanned>();
             services.AddTransient<Juice.MediatR.INotificationHandler<AlertAcknowledged>, OnAlertAcknowledged>();
             if (mode != NotificationsPipeline.Legacy)
             {
                 // After the migrations and the provisioning (hosted services start in order).
                 services.AddHostedService<NotificationsReleasePass>();
+                services.AddHostedService<SilenceHoldPass>();
             }
             // After a failed start, none of the pipeline's other services starts (they would poll tables that aren't there).
             PipelineStart.GateTheRest(services, before, guarded);
