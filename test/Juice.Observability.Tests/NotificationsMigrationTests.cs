@@ -349,7 +349,6 @@ namespace Juice.Observability.Tests
         [Fact]
         public async Task A_policy_is_applied_with_relative_steps_naming_routes()
         {
-            Assert.SkipUnless(StepsNameRoutes(), "needs M46-0: an escalation step naming a route by its key");
             await using var stack = await StartAsync();
             await SeedAsync(stack, db =>
             {
