@@ -377,5 +377,41 @@ namespace Juice.Observability.Tests
             }
             throw new TimeoutException($"no {status} delivery");
         }
+
+        /// <summary>
+        /// Legacy's allowlist removal always stands while legacy sends (review of #10): when notifications keeps the same destination under
+        /// another owner (its API's), the alias's delete is refused, that destination stays notifications', and legacy's entry is gone (204).
+        /// </summary>
+        [Theory]
+        [InlineData("legacy")]
+        [InlineData("shadow")]
+        public async Task Legacys_allowlist_removal_stands_when_notifications_keeps_the_destination(string pipeline)
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var factory = new ApiFactory(database, settings: new Dictionary<string, string> { ["Notifications:Pipeline"] = pipeline });
+            using var client = factory.CreateClient();
+            var (_, _, admin, tenant) = await Caller.AllAsync(client, database);
+            var notificationsTenant = factory.Services.GetRequiredService<Juice.Notifications.Embedded.NotificationsEmbeddedOptions>().TenantId;
+            await using var db = database.Context();
+            db.WebhookAllowlist.Add(new WebhookAllowlistEntry { TenantId = tenant, Destination = "10.50.0.0/16", Ports = [8443], LoadedAt = DateTimeOffset.UtcNow, ManagedBy = ManagedBy.Api });
+            await db.SaveChangesAsync(Ct);
+            await using (var scope = factory.Services.CreateAsyncScope())
+            {
+                using var context = Juice.Notifications.Data.NotificationsMessageContext.Begin("test");
+                var outcome = await scope.ServiceProvider.GetRequiredService<Juice.MediatR.IMediator>()
+                    .Send(new Juice.Notifications.Configuration.PutAllowlistEntry(notificationsTenant, "10.50.0.0/16", [8443]), Ct);
+                Assert.True(outcome!.Kind is Juice.Notifications.OutcomeKind.Ok or Juice.Notifications.OutcomeKind.Created, outcome.Code);
+            }
+
+            using var removed = await admin.SendAsync(HttpMethod.Delete, $"/api/v1/tenants/{tenant}/webhooks/allowlist?destination=10.50.0.0%2F16");
+
+            Assert.Equal(HttpStatusCode.NoContent, removed.StatusCode);
+            Assert.False(await db.WebhookAllowlist.AsNoTracking().AnyAsync(a => a.Destination == "10.50.0.0/16", Ct));
+            await using var check = factory.Services.CreateAsyncScope();
+            var kept = await check.ServiceProvider.GetRequiredService<Juice.Notifications.Data.NotificationsDbContext>().Allowlist.AsNoTracking()
+                .SingleAsync(a => a.Destination == "10.50.0.0/16", Ct);
+            Assert.Equal(Juice.Notifications.ManagedBy.Api, kept.ManagedBy);
+        }
     }
 }
