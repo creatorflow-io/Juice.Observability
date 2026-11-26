@@ -88,6 +88,36 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
+        public void Every_platform_domain_event_runs_its_handlers_one_after_another()
+        {
+            // Juice's mediator runs a notification's handlers in parallel unless it is a sequence; they share the command's context.
+            var events = new[] { typeof(PlatformDbContext), typeof(Juice.Observability.Webhooks.NotificationPlan), typeof(ProducerAdapter) }
+                .Select(t => t.Assembly).Distinct().SelectMany(a => a.GetTypes())
+                .Where(t => typeof(INotification).IsAssignableFrom(t) && t is { IsClass: true, IsAbstract: false }).ToList();
+            Assert.NotEmpty(events);
+            Assert.All(events, e => Assert.True(typeof(ISequenceNotification).IsAssignableFrom(e), $"{e.Name} isn't an ISequenceNotification"));
+        }
+
+        [Fact]
+        public async Task Only_the_pipelines_forwarder_handles_audit_events_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var factory = Factory(database);
+            _ = factory.Server;
+
+            // Audit events are dispatched on save and can't be sequences: a second handler would run beside the forwarder on the same
+            // connection. The host's audit sink is called by the forwarder, never as a handler of its own.
+            await using var scope = factory.Services.CreateAsyncScope();
+            foreach (var entity in new[] { typeof(Juice.Notifications.Data.Integration), typeof(Rule) })
+            {
+                var handlers = scope.ServiceProvider.GetServices(typeof(INotificationHandler<>).MakeGenericType(
+                    typeof(Juice.Domain.Events.AuditEvent<>).MakeGenericType(entity))).Select(h => h!.GetType().Name).ToList();
+                Assert.Equal(["AuditForwarder`1"], handlers);
+            }
+        }
+
+        [Fact]
         public async Task A_pipeline_command_opens_its_own_transaction_and_no_platform_one_Async()
         {
             LocalStack.RequireAvailable();
