@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using System.Text.Json;
 using Juice.EF.Extensions;
 using Juice.MediatR;
@@ -78,8 +79,9 @@ namespace Juice.Observability.Notifications.Migration
     public sealed class MigrationPlanner(NotificationsDbContext db, IMediator mediator, IOptions<DeliveryOptions> delivery, NotificationsEmbeddedOptions embedded,
         IOptions<NotificationsMigrationOptions> options, ILogger<MigrationPlanner> logger)
     {
-        /// <summary>The actor and the message source the migration's writes carry.</summary>
+        /// <summary>The message source of the migration's writes, and the actor its audit entries name when no user runs it (the host command).</summary>
         public const string Source = "webhooks-migration";
+
 
         /// <summary>For the tests of a failure part-way: throws after this many writes.</summary>
         internal int? FailAfterWrites { get; set; }
@@ -89,8 +91,10 @@ namespace Juice.Observability.Notifications.Migration
         /// <summary>The notifications tenant: the platform tenant's Id, which embedded notifications has (its one tenant).</summary>
         private Guid Tenant => embedded.TenantId;
 
+        private NotificationsDbContext Db => db;
+
         /// <summary>Whether the pinned notifications alpha writes a route's digestSeconds (M46-1, decision G2). True, and passed to PutRoute, once it is pinned.</summary>
-        internal static bool RouteDigestSupported => false;
+        internal static bool RouteDigestSupported => true;
 
         /// <summary>
         /// Whether the pinned notifications takes a route by its key in an escalation step (M46-0), as every migrated policy's steps name their
@@ -107,9 +111,14 @@ namespace Juice.Observability.Notifications.Migration
             return new MigrationReport(legacy.TenantId, false, plan.Items);
         }
 
-        public async Task<MigrationReport> ApplyAsync(LegacySetup legacy, CancellationToken ct)
+        /// <summary>
+        /// Applies the plan. The pipeline's audit entries name <paramref name="actor"/>, the platform's name for the user who runs it, or
+        /// <see cref="Source"/> when no user does (the host command).
+        /// </summary>
+        public async Task<MigrationReport> ApplyAsync(LegacySetup legacy, CancellationToken ct, string? actor = null)
         {
             Check(legacy);
+            db.SetUser(new ClaimsPrincipal(new ClaimsIdentity([new System.Security.Claims.Claim(ClaimTypes.NameIdentifier, string.IsNullOrEmpty(actor) ? Source : actor)], Source)));
             using var context = NotificationsMessageContext.Begin(Source);
             // The steps of Juice's TransactionBehavior around several commands, as notifications' provisioning does: the context is managed, so
             // each command's behavior leaves the transaction to this; each step is saved as it goes (a route's checks read the targets saved
@@ -277,7 +286,9 @@ namespace Juice.Observability.Notifications.Migration
                 {
                     continue;
                 }
-                writes.Add(new(item, (p, ct) => p.PutEndpointAsync(tenant, setup, surplus, ct)));
+                // A new integration keeps the legacy endpoint's id (decision on Q-B): its id never changes, whichever pipeline answers.
+                var keep = action == MigrationAction.Create ? endpoint.Id : (Guid?)null;
+                writes.Add(new(item, (p, ct) => p.PutEndpointAsync(tenant, setup, surplus, keep, ct)));
             }
 
             // Policies: their steps name the routes of endpoints that migrate.
@@ -379,7 +390,7 @@ namespace Juice.Observability.Notifications.Migration
             }
             var same = integration is not null && route is not null && others.Count == 0
                 && Equals(Definition(integration), setup.Integration with { Settings = "" }) && EndpointMapping.Same(integration.Settings, setup.Integration.Settings)
-                && route.Targets.SequenceEqual(setup.Route.Targets) && route.Enabled == setup.Route.Enabled && EndpointMapping.Same(route.Match, setup.Route.Match)
+                && route.Targets.SequenceEqual(setup.Route.Targets) && route.Enabled == setup.Route.Enabled && route.DigestSeconds == setup.Route.DigestSeconds && EndpointMapping.Same(route.Match, setup.Route.Match)
                 && setup.Targets.All(t => current.Targets[t.Key] is var x && (x.Address, x.AddressRef, x.Enabled) == (t.Address, t.AddressRef, t.Enabled));
             return (same ? MigrationAction.Unchanged : MigrationAction.Update, [], others);
         }
@@ -409,49 +420,24 @@ namespace Juice.Observability.Notifications.Migration
 
         // ─── The writes ───────────────────────────────────────────────────────
 
-        private async Task<MappingProblem?> PutEndpointAsync(Guid tenant, EndpointSetup setup, IReadOnlyList<string> surplus, CancellationToken ct)
-        {
-            var i = setup.Integration;
-            var problem = await PutAsync(new PutIntegration(tenant, i.Key, i.Channel, i.Kind, JsonElement.Parse(i.Settings), i.SecretRef, i.Priority, i.Enabled)
-                { ManagedBy = AliasVocabulary.WebhooksAlias }, ct);
-            foreach (var t in setup.Targets)
-            {
-                if (problem is not null)
-                {
-                    return problem;
-                }
-                await db.SaveChangesAsync(ct);
-                problem = await PutAsync(new PutTarget(tenant, t.IntegrationKey, t.Key, t.Address, t.AddressRef, t.Enabled) { ManagedBy = AliasVocabulary.WebhooksAlias }, ct);
-            }
-            if (problem is not null)
-            {
-                return problem;
-            }
-            await db.SaveChangesAsync(ct);
-            var r = setup.Route;
-            problem = await PutAsync(new PutRoute(tenant, r.Key, JsonElement.Parse(r.Match), r.Targets, r.Enabled) { ManagedBy = AliasVocabulary.WebhooksAlias }, ct);
-            foreach (var key in surplus)
-            {
-                if (problem is not null)
-                {
-                    return problem;
-                }
-                // After the route stops naming them.
-                await db.SaveChangesAsync(ct);
-                var deleted = await mediator.Send(new DeleteTarget(tenant, i.Key, key) { ManagedBy = AliasVocabulary.WebhooksAlias }, ct);
-                problem = deleted.Kind == OutcomeKind.Ok ? null : Refused(deleted.Code, deleted.Message, deleted.Errors);
-            }
-            return problem;
-        }
+        private Task<MappingProblem?> PutEndpointAsync(Guid tenant, EndpointSetup setup, IReadOnlyList<string> surplus, Guid? id, CancellationToken ct)
+            => EndpointWrites.PutAsync(new Sender(this), tenant, setup, surplus, id, ct);
 
         private async Task<MappingProblem?> PutAsync<T>(IRequest<Outcome<T>> command, CancellationToken ct)
-        {
-            var outcome = await mediator.Send(command, ct);
-            return outcome.Kind is OutcomeKind.Ok or OutcomeKind.Created ? null : Refused(outcome.Code, outcome.Message, outcome.Errors);
-        }
+            => EndpointWrites.Problem(await mediator.Send(command, ct));
 
-        private static MappingProblem Refused(string? code, string? message, IReadOnlyList<FieldError>? errors)
-            => new(code ?? "refused", "Notifications refused the write: " + message
-                + (errors is { Count: > 0 } ? " " + string.Join("; ", errors.Select(e => $"{e.Pointer}: {e.Message}")) : ""));
+        /// <summary>The migration's commands, each saved in its transaction before the next.</summary>
+        private sealed class Sender(MigrationPlanner planner) : ISetupSender
+        {
+            public async Task<MappingProblem?> SendAsync<T>(IRequest<Outcome<T>> command, CancellationToken ct)
+            {
+                var problem = await planner.PutAsync(command, ct);
+                if (problem is null)
+                {
+                    await planner.Db.SaveChangesAsync(ct);
+                }
+                return problem;
+            }
+        }
     }
 }

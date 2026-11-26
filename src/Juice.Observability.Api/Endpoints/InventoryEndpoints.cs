@@ -94,6 +94,7 @@ namespace Juice.Observability.Api.Endpoints
             tenant.MapChangeEndpoints();
             tenant.MapRuleAdminEndpoints();
             tenant.MapWebhookEndpoints();
+            tenant.MapNotificationsMigration();
             tenant.MapSilenceEndpoints();
             tenant.MapIncidentEndpoints();
             tenant.MapSuggestionEndpoints();

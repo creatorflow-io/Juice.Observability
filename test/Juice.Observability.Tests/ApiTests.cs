@@ -352,10 +352,14 @@ namespace Juice.Observability.Tests
             => await response.Content.ReadFromJsonAsync<JsonElement>(Ct);
 
         internal sealed class ApiFactory(ScratchDatabase database, string audience = "juice-platform",
-            IReadOnlyDictionary<string, string>? settings = null) : WebApplicationFactory<Program>
+            IReadOnlyDictionary<string, string>? settings = null, Action<Microsoft.Extensions.DependencyInjection.IServiceCollection>? services = null) : WebApplicationFactory<Program>
         {
             protected override void ConfigureWebHost(IWebHostBuilder builder)
             {
+                if (services is not null)
+                {
+                    builder.ConfigureServices(services);
+                }
                 builder.UseSetting("ConnectionStrings:Platform", database.ConnectionString);
                 builder.UseSetting("Platform:TenantKey", LocalStack.TenantKey);
                 builder.UseSetting("ClickHouse:ConnectionString", LocalStack.ClickHouseReader);

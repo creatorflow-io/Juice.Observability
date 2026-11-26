@@ -9,7 +9,7 @@ namespace Juice.Observability.Tests
     /// <summary>A legacy endpoint as an integration, its targets and a route, and back (phase-5-plan I66; proof point 5's mapping half).</summary>
     public class EndpointMappingTests
     {
-        internal static readonly DeliveryOptions Delivery = new() { ApiSecretEnvPrefix = "JUICE_WEBHOOK_", ApiSecretDirectory = "/run/secrets/juice" };
+        internal static readonly DeliveryOptions Delivery = new() { AliasSecretEnvPrefix = "JUICE_WEBHOOK_", AliasSecretDirectory = "/run/secrets/juice" };
 
         internal static readonly EndpointMappingOptions Options = new(Delivery, "observability", "alerts@example.com");
 

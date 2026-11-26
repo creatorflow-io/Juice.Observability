@@ -8,6 +8,7 @@ using Juice.Observability.Data;
 using Juice.Observability.Discovery;
 using Juice.Observability.Health;
 using Juice.Observability.Notifications;
+using Juice.Observability.Notifications.Migration;
 using Juice.Observability.Rules;
 using Juice.Observability.Slos;
 using Juice.Observability.Webhooks;
@@ -64,6 +65,7 @@ namespace Juice.Observability.Api
             services.AddPlatformRules(configuration);
             services.AddPlatformSlos(configuration);
             services.AddPlatformWebhooks(configuration);
+            services.AddPlatformNotificationsMigration(configuration);
             services.AddPlatformAgents(configuration);
             services.Configure<IntegrationOptions>(configuration.GetSection(IntegrationOptions.Section));
             services.AddPlatformAuthentication(configuration);

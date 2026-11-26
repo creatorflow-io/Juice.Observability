@@ -86,8 +86,8 @@ namespace Juice.Observability.Tests
             {
                 ["Notifications:Database:Migrate"] = "true",
                 ["Notifications:Stages:Run"] = "false",
-                ["Notifications:Delivery:ApiSecretEnvPrefix"] = "JUICE_WEBHOOK_",
-                ["Notifications:Delivery:ApiSecretDirectory"] = "/run/secrets/juice",
+                ["Notifications:Delivery:AliasSecretEnvPrefix"] = "JUICE_WEBHOOK_",
+                ["Notifications:Delivery:AliasSecretDirectory"] = "/run/secrets/juice",
                 ["Notifications:Delivery:SmtpServers:observability:Host"] = "smtp.example.com",
             });
             builder.Services.AddJuiceNotificationsEmbedded(builder.Configuration.GetSection("Notifications"), o =>
@@ -190,6 +190,8 @@ namespace Juice.Observability.Tests
                     var setup = await MigrationPlanner.ReadSetupAsync(db, stack.Notifications, endpoint.Key, TestContext.Current.CancellationToken);
                     Assert.NotNull(setup);
                     Assert.Equal(LegacyEndpoint.From(endpoint), EndpointMapping.Unmap(setup).Value);
+                    // The integration keeps the endpoint's id (decision on Q-B).
+                    Assert.Equal(endpoint.Id, (await db.Integrations.AsNoTracking().SingleAsync(i => i.TenantId == stack.Notifications && i.Key == endpoint.Key)).Id);
                 }
                 Assert.All(await db.Integrations.Where(i => i.TenantId == stack.Notifications && i.Channel != "inbox").ToListAsync(), i => Assert.Equal(AliasVocabulary.WebhooksAlias, i.ManagedBy));
                 Assert.All(await db.IntegrationTargets.Where(t => t.TenantId == stack.Notifications).ToListAsync(), t => Assert.Equal(AliasVocabulary.WebhooksAlias, t.ManagedBy));
@@ -238,7 +240,7 @@ namespace Juice.Observability.Tests
             {
                 using var context = NotificationsMessageContext.Begin("test");
                 return await sp.GetRequiredService<Juice.MediatR.IMediator>().Send(new PutIntegration(stack.Notifications, "ops", "webhook", "webhook",
-                    JsonDocument.Parse("{}").RootElement, "env:JUICE_WEBHOOK_MINE", 0, true), TestContext.Current.CancellationToken);
+                    JsonDocument.Parse("{}").RootElement, "env:NOTIFICATIONS_SECRET_MINE", 0, true), TestContext.Current.CancellationToken);
             });
             Assert.NotNull(made.Value);
 
@@ -253,7 +255,7 @@ namespace Juice.Observability.Tests
             {
                 var db = sp.GetRequiredService<NotificationsDbContext>();
                 var integration = await db.Integrations.SingleAsync(i => i.TenantId == stack.Notifications && i.Key == "ops");
-                Assert.Equal(("api", "env:JUICE_WEBHOOK_MINE"), (integration.ManagedBy, integration.SecretRef));
+                Assert.Equal(("api", "env:NOTIFICATIONS_SECRET_MINE"), (integration.ManagedBy, integration.SecretRef));
                 Assert.False(await db.Routes.AnyAsync(r => r.TenantId == stack.Notifications && r.Key == "ops"));
                 return 0;
             });
@@ -275,6 +277,8 @@ namespace Juice.Observability.Tests
             // Four endpoints, four integrations: each inserted once, as the committed apply wrote it.
             Assert.Equal(4, stack.Audit.Changes.Count(c => c.Table == "integrations" && c.Change == "Inserted" && c.TenantId == stack.Notifications.ToString()));
             Assert.Equal(1, stack.Audit.Changes.Count(c => c.Table == "destination_allowlist" && c.Change == "Inserted"));
+            // Run without a user (the host command), the entries name the migration (review of #6).
+            Assert.All(stack.Audit.Changes, c => Assert.Equal(MigrationPlanner.Source, c.User));
         }
         [Fact]
         public async Task A_failure_part_way_leaves_nothing_applied()
@@ -296,7 +300,7 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
-        public async Task A_group_window_waits_for_route_digests_and_the_rest_applies()
+        public async Task A_group_window_becomes_the_routes_digest_and_maps_back()
         {
             await using var stack = await StartAsync();
             await SeedAsync(stack, db =>
@@ -308,17 +312,16 @@ namespace Juice.Observability.Tests
                 db.EscalationPolicies.Add(new Data.EscalationPolicy { TenantId = stack.TenantId, Key = "paging", Name = "Paging", Steps = [new() { AfterMinutes = 5, EndpointKeys = ["grouped"] }] });
             });
 
-            var report = await stack.ApplyAsync();
-
-            Assert.True(report.Applied);
-            Assert.False(report.HasConflicts);
-            var item = Assert.Single(report.Items, i => i.Key == "grouped");
-            Assert.Equal((MigrationAction.PendingFeature, ProblemCodes.PendingFeature), (item.Action, Assert.Single(item.Problems).Code));
-            Assert.Equal(MigrationAction.Create, Assert.Single(report.Items, i => i.Key == "ops").Action);
-            var policy = Assert.Single(report.Items, i => i.Key == "paging");
-            Assert.Equal((MigrationAction.PendingFeature, ProblemCodes.PendingFeature), (policy.Action, Assert.Single(policy.Problems).Code));
-            Assert.False(await stack.InScopeAsync(sp => sp.GetRequiredService<NotificationsDbContext>().Integrations.AnyAsync(i => i.TenantId == stack.Notifications && i.Key == "grouped")));
-            Assert.Equal(MigrationAction.PendingFeature, Assert.Single((await stack.ReportAsync()).Items, i => i.Key == "grouped").Action);
+            All(await stack.ApplyAsync(), MigrationAction.Create);
+            All(await stack.ReportAsync(), MigrationAction.Unchanged);
+            await stack.InScopeAsync(async sp =>
+            {
+                var db = sp.GetRequiredService<NotificationsDbContext>();
+                Assert.Equal(60, (await db.Routes.SingleAsync(r => r.TenantId == stack.Notifications && r.Key == "grouped")).DigestSeconds);
+                var setup = await MigrationPlanner.ReadSetupAsync(db, stack.Notifications, "grouped", TestContext.Current.CancellationToken);
+                Assert.Equal(60, EndpointMapping.Unmap(setup!).Value!.GroupWindowSeconds);
+                return 0;
+            });
         }
 
         [Fact]
@@ -342,9 +345,6 @@ namespace Juice.Observability.Tests
             Assert.Contains(Assert.Single(report.Items, i => i.Key == "backwards").Problems, p => p.Code == ProblemCodes.NonIncreasingSteps);
             Assert.Equal(MigrationAction.Create, Assert.Single(report.Items, i => i.Key == "ops").Action);
         }
-
-        /// <summary>Whether the notifications alpha takes a route recipient by key in a step (M46-0), as the planner asks it.</summary>
-        private static bool StepsNameRoutes() => MigrationPlanner.StepsNameRoutes;
 
         [Fact]
         public async Task A_policy_is_applied_with_relative_steps_naming_routes()
@@ -370,30 +370,6 @@ namespace Juice.Observability.Tests
                 Assert.Equal(LegacyPolicy.From(legacy.Policies[0]), PolicyMapping.Unmap(new PolicyDefinition(row.Key, row.Steps, row.StopOnAcknowledge)).Value);
                 return 0;
             });
-        }
-
-        [Fact]
-        public async Task Before_steps_name_routes_a_policy_waits_and_the_endpoints_migrate()
-        {
-            // Before M46-0 a step can't name a route by key, and notifications would refuse the policy and roll back the endpoints written
-            // before it (QA, D2): the report says the policy waits, and the apply does what it said.
-            Assert.SkipWhen(StepsNameRoutes(), "M46-0 is in: the policy is taken (A_policy_is_applied_with_relative_steps_naming_routes)");
-            await using var stack = await StartAsync();
-            await SeedAsync(stack, db =>
-            {
-                db.WebhookEndpoints.Add(Endpoint(stack.TenantId, "ops"));
-                db.EscalationPolicies.Add(new Data.EscalationPolicy { TenantId = stack.TenantId, Key = "paging", Name = "Paging", Steps = [new() { AfterMinutes = 5, EndpointKeys = ["ops"] }] });
-            });
-
-            var predicted = await stack.ReportAsync();
-            var report = await stack.ApplyAsync();
-
-            Assert.True(report.Applied);
-            Assert.Equal(predicted.Items.Select(i => (i.Key, i.Action)), report.Items.Select(i => (i.Key, i.Action)));
-            var policy = Assert.Single(report.Items, i => i.Key == "paging");
-            Assert.Equal((MigrationAction.PendingFeature, ProblemCodes.PendingFeature), (policy.Action, Assert.Single(policy.Problems).Code));
-            Assert.Equal(MigrationAction.Create, Assert.Single(report.Items, i => i.Key == "ops").Action);
-            Assert.True(await stack.InScopeAsync(sp => sp.GetRequiredService<NotificationsDbContext>().Integrations.AnyAsync(i => i.TenantId == stack.Notifications && i.Key == "ops")));
         }
 
         [Fact]

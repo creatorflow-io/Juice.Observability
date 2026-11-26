@@ -7,12 +7,12 @@ namespace Juice.Observability.Tests
     /// <summary>Secret references keep their text and are never resolved (phase-5-plan I70).</summary>
     public class SecretMappingTests
     {
-        private static readonly DeliveryOptions Delivery = new() { ApiSecretEnvPrefix = "JUICE_WEBHOOK_", ApiSecretDirectory = "/run/secrets/juice" };
+        private static readonly DeliveryOptions Delivery = new() { AliasSecretEnvPrefix = "JUICE_WEBHOOK_", AliasSecretDirectory = "/run/secrets/juice" };
 
         [Theory]
         [InlineData("env:JUICE_WEBHOOK_OPS")]
         [InlineData("file:/run/secrets/juice/ops")]
-        public void A_reference_the_api_may_name_keeps_its_text(string reference)
+        public void A_reference_the_alias_may_name_keeps_its_text(string reference)
             => Assert.Equal(reference, SecretMapping.Map(reference, Delivery).Value);
 
         [Theory]
@@ -31,9 +31,26 @@ namespace Juice.Observability.Tests
             Assert.Equal(code, Assert.Single(mapped.Problems).Code);
         }
 
+        /// <summary>
+        /// Reach is the alias's (M46-3, reviewer-2 on #11): the migration writes as webhooks-alias, so a JUICE_WEBHOOK_ secret maps once the alias
+        /// limits name it, and the API's limits neither let it in nor keep it out.
+        /// </summary>
+        [Fact]
+        public void A_legacy_secret_maps_by_the_alias_limits_not_the_apis()
+        {
+            var endpoint = EndpointMappingTests.Endpoint(secret: "env:JUICE_WEBHOOK_OPS");
+            var aliasOnly = new DeliveryOptions { AliasSecretEnvPrefix = "JUICE_WEBHOOK_" };
+            var apiOnly = new DeliveryOptions { ApiSecretEnvPrefix = "JUICE_WEBHOOK_" };
+
+            Assert.Equal("env:JUICE_WEBHOOK_OPS", EndpointMapping.Map(endpoint, new EndpointMappingOptions(aliasOnly)).Value!.Integration.SecretRef);
+            var refused = EndpointMapping.Map(endpoint, new EndpointMappingOptions(apiOnly));
+            Assert.Null(refused.Value);
+            Assert.Contains(refused.Problems, p => p.Code == ProblemCodes.SecretOutOfReach && p.Message.Contains("AliasSecretEnvPrefix", StringComparison.Ordinal));
+        }
+
         [Fact]
         public void A_file_is_out_of_reach_when_notifications_names_no_folder()
-            => Assert.Equal(ProblemCodes.SecretOutOfReach, Assert.Single(SecretMapping.Map("file:/run/secrets/juice/ops", new DeliveryOptions { ApiSecretEnvPrefix = "JUICE_WEBHOOK_" }).Problems).Code);
+            => Assert.Equal(ProblemCodes.SecretOutOfReach, Assert.Single(SecretMapping.Map("file:/run/secrets/juice/ops", new DeliveryOptions { AliasSecretEnvPrefix = "JUICE_WEBHOOK_" }).Problems).Code);
 
         [Fact]
         public void No_secret_is_read_while_mapping()
@@ -46,7 +63,7 @@ namespace Juice.Observability.Tests
             File.WriteAllText(file, "the-file-secret");
             try
             {
-                var delivery = new DeliveryOptions { ApiSecretEnvPrefix = "JUICE_WEBHOOK_", ApiSecretDirectory = directory };
+                var delivery = new DeliveryOptions { AliasSecretEnvPrefix = "JUICE_WEBHOOK_", AliasSecretDirectory = directory };
                 var options = new EndpointMappingOptions(delivery);
                 foreach (var reference in new[] { "env:" + name, "file:" + file })
                 {
