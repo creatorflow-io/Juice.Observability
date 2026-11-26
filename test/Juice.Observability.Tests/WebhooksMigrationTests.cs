@@ -100,6 +100,8 @@ namespace Juice.Observability.Tests
         public async Task Endpoints_made_through_the_legacy_api_migrate_map_back_and_a_second_run_changes_nothing()
         {
             LocalStack.RequireAvailable();
+            // A migration is of legacy's rows; in new the alias writes none (Q-A), so there is nothing to migrate.
+            Assert.SkipWhen(string.Equals(LocalStack.NotificationsPipeline, "new", StringComparison.OrdinalIgnoreCase), "new keeps no legacy rows to migrate");
             await using var database = await LocalStack.CreateDatabaseAsync();
             await using var factory = new ApiTests.ApiFactory(database, settings: Settings);
             var client = factory.CreateClient();
@@ -238,12 +240,20 @@ namespace Juice.Observability.Tests
                 await using var factory = new ApiTests.ApiFactory(database, settings: settings);
                 _ = factory.CreateClient();
                 await using var platform = database.Context();
-                var endpoint = await platform.WebhookEndpoints.AsNoTracking().SingleAsync(e => e.Key == "from-file", Ct);
-                Assert.Equal(ManagedBy.Configuration, endpoint.ManagedBy);
                 await using var scope = factory.Services.CreateAsyncScope();
                 var notifications = scope.ServiceProvider.GetRequiredService<NotificationsDbContext>();
                 var setup = await MigrationPlanner.ReadSetupAsync(notifications, Guid.Parse(LocalStack.TenantKey), "from-file", Ct);
-                Assert.Equal(LegacyEndpoint.From(endpoint), EndpointMapping.Unmap(setup!).Value);
+                var mapped = EndpointMapping.Unmap(setup!).Value!;
+                Assert.Equal(("https://receiver.example/hooks/file", "env:JUICE_WEBHOOK_FILE", AlertSeverity.Warning), (mapped.Url, mapped.SecretRef, mapped.MinimumSeverity));
+                // Legacy's row too, but in new (Q-A), with the integration's id.
+                var endpoint = await platform.WebhookEndpoints.AsNoTracking().SingleOrDefaultAsync(e => e.Key == "from-file", Ct);
+                if (string.Equals(LocalStack.NotificationsPipeline, "new", StringComparison.OrdinalIgnoreCase))
+                {
+                    Assert.Null(endpoint);
+                    continue;
+                }
+                Assert.Equal(ManagedBy.Configuration, endpoint!.ManagedBy);
+                Assert.Equal(LegacyEndpoint.From(endpoint), mapped);
                 Assert.Equal(endpoint.Id, (await notifications.Integrations.AsNoTracking().SingleAsync(i => i.Key == "from-file", Ct)).Id);
             }
         }

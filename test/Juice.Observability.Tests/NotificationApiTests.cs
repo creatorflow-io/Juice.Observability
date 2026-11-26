@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Juice.Observability.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using ApiFactory = Juice.Observability.Tests.ApiTests.ApiFactory;
 
 namespace Juice.Observability.Tests
@@ -208,20 +209,13 @@ namespace Juice.Observability.Tests
             LocalStack.RequireAvailable();
             await using var database = await LocalStack.CreateDatabaseAsync();
             var (tenant, _, alert) = await FiringAsync(database);
-            await using (var db = database.Context())
-            {
-                db.WebhookEndpoints.Add(new WebhookEndpoint
-                {
-                    TenantId = tenant, Key = "ops", Kind = ChannelKind.Webhook, Url = "https://hooks.example/ops", SecretRef = "env:JUICE_WEBHOOK_OPS",
-                    Events = ["alert.resolved"], DefinitionHash = "h", LoadedAt = DateTimeOffset.UtcNow, ManagedBy = ManagedBy.Api,
-                });
-                await db.SaveChangesAsync(Ct);
-            }
-            // The host as deployed: its own outbox delivery and in-process dispatch run, nothing from the test hands anything over.
-            // Through the legacy endpoints: the pipeline reaches them once the alias maps them (M46b).
-            await using var factory = new ApiFactory(database, settings: new Dictionary<string, string> { ["Notifications:Pipeline"] = "legacy" });
+            // The host as deployed: its own outbox delivery and in-process dispatch run, nothing from the test hands anything over. Whichever
+            // pipeline sends (I74): the endpoint is made through the API, so the alias maps it (M46b), and its deliveries are read back the same way.
+            await using var factory = new ApiFactory(database, settings: new Dictionary<string, string> { ["Notifications:Delivery:SmtpServers:observability:Host"] = "smtp.example.com" });
             using var client = factory.CreateClient();
             var (_, _, admin, _) = await Caller.AllAsync(client, database);
+            var endpoint = (await Caller.JsonAsync(await admin.PostAsync($"/api/v1/tenants/{tenant}/webhooks",
+                new { key = "ops", url = "https://hooks.example/ops", secretRef = "env:JUICE_WEBHOOK_OPS", events = new[] { "alert.resolved" } }))).GetProperty("id").GetGuid();
 
             await Caller.JsonAsync(await admin.PutAsync($"/api/v1/tenants/{tenant}/rules/orders-errors",
                 new { name = "Orders errors", template = "ErrorRate", service = "shop/orders", threshold = 0.05, enabled = false, severity = "Critical" }));
@@ -234,15 +228,15 @@ namespace Juice.Observability.Tests
                 Assert.Single(await db.OutboxEvents().ToListAsync(Ct));
                 Assert.Single(await db.AuditRecords.AsNoTracking().Where(a => a.Operation == "rule.update").ToListAsync(Ct));
             }
-            WebhookDelivery? delivery = null;
+            JsonElement? delivery = null;
             for (var i = 0; i < 100 && delivery is null; i++)
             {
                 await Task.Delay(100, Ct);
-                await using var db = database.Context();
-                delivery = await db.WebhookDeliveries.AsNoTracking().SingleOrDefaultAsync(d => d.TransitionId == resolved, Ct);
+                var page = await Caller.JsonAsync(await admin.GetAsync($"/api/v1/tenants/{tenant}/webhooks/{endpoint}/deliveries"));
+                delivery = page.GetProperty("items").EnumerateArray().Select(d => (JsonElement?)d).FirstOrDefault(d => d!.Value.GetProperty("alertId").GetGuid() == alert.Id);
             }
             Assert.True(delivery is not null, "the resolve never reached the channel");
-            Assert.Equal("alert.resolved", delivery.Event);
+            Assert.Equal("alert.resolved", delivery.Value.GetProperty("event").GetString());
             await using (var db = database.Context())
             {
                 Assert.NotNull((await db.AlertTransitions.AsNoTracking().SingleAsync(t => t.Id == resolved, Ct)).NotificationsPlannedAt);
@@ -282,6 +276,24 @@ namespace Juice.Observability.Tests
             Assert.Equal(AlertState.Firing, (await db.Alerts.AsNoTracking().SingleAsync(a => a.Id == alert.Id, Ct)).State);
         }
 
+
+        /// <summary>
+        /// An endpoint's stored URL and whether it is enabled, wherever the pipeline keeps it (I74): legacy's row (legacy, shadow), or in new only
+        /// the notifications rows the alias wrote, as it reads them back.
+        /// </summary>
+        private static async Task<(string Url, bool Enabled)> StoredAsync(ApiFactory factory, ScratchDatabase database, Guid id)
+        {
+            await using (var db = database.Context())
+            {
+                if (await db.WebhookEndpoints.AsNoTracking().SingleOrDefaultAsync(e => e.Id == id, Ct) is { } legacy)
+                {
+                    return (legacy.Url, legacy.Enabled);
+                }
+            }
+            await using var scope = factory.Services.CreateAsyncScope();
+            var found = await scope.ServiceProvider.GetRequiredService<Juice.Observability.Notifications.Migration.WebhookAlias>().FindAsync(id, null, Ct);
+            return (found!.Definition.Url, found.Definition.Enabled);
+        }
         [Fact]
         public async Task A_channel_never_shows_its_address_and_can_only_name_secrets_set_aside_Async()
         {
@@ -320,8 +332,7 @@ namespace Juice.Observability.Tests
             // Left out, the URL stays: reads never return it, so an edit can't resend it.
             await Caller.JsonAsync(await admin.PutAsync($"{webhooks}/{id}", new { secretRef = "env:JUICE_WEBHOOK_OPS", enabled = false }));
             await using var db = database.Context();
-            var stored = await db.WebhookEndpoints.AsNoTracking().SingleAsync(Ct);
-            Assert.Equal(($"https://hooks.example.com/juice/{Token}", false), (stored.Url, stored.Enabled));
+            Assert.Equal(($"https://hooks.example.com/juice/{Token}", false), await StoredAsync(factory, database, id));
             Assert.Equal(HttpStatusCode.BadRequest, (await admin.PutAsync($"{webhooks}/{id}", new { kind = "slack", secretRef = "env:JUICE_WEBHOOK_OPS" })).StatusCode);
 
             var audited = string.Join(" ", (await db.AuditRecords.AsNoTracking().Where(a => a.TargetType == "webhook").ToListAsync(Ct)).SelectMany(a => a.Metadata.Values));

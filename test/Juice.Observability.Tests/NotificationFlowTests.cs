@@ -276,7 +276,8 @@ namespace Juice.Observability.Tests
             var dispatcher = Dispatcher(database);
             await dispatcher.DispatchOnceAsync(Ct);
 
-            await using var factory = new ApiTests.ApiFactory(database);
+            // Legacy's own dispatcher, driven here, and its history read back: this tests legacy itself, whatever pipeline the run is for.
+            await using var factory = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string> { ["Notifications:Pipeline"] = "legacy" });
             using var client = factory.CreateClient();
             var (viewer, _, _, tenant) = await Caller.AllAsync(client, database);
             var path = $"/api/v1/tenants/{tenant}/alerts/{alert}/notifications";
