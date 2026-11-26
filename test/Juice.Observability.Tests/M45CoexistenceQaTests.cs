@@ -166,9 +166,11 @@ namespace Juice.Observability.Tests
             await using (var db = database.Context())
             {
                 // Release/1.0's schema: the platform's migrations up to its last; JuiceOutbox1013 changes nothing but the snapshot.
+                // M45's own migrations (NotificationsAdapter) follow it.
                 var migrations = db.Database.GetMigrations().ToList();
-                Assert.Equal(Release10Last, migrations[^2]);
-                Assert.EndsWith("_JuiceOutbox1013", migrations[^1]);
+                var outbox = migrations.FindIndex(m => m.EndsWith("_JuiceOutbox1013", StringComparison.Ordinal));
+                Assert.True(outbox > 0);
+                Assert.Equal(Release10Last, migrations[outbox - 1]);
                 await db.GetService<IMigrator>().MigrateAsync(Release10Last, Ct);
                 db.Tenants.Add(new PlatformTenant { Key = LocalStack.TenantKey, DisplayName = "QA upgrade" });
                 await db.SaveChangesAsync(Ct);
