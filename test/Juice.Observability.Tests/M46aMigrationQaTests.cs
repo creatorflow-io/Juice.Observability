@@ -297,6 +297,7 @@ namespace Juice.Observability.Tests
                 }
             }
             Assert.SkipWhen(payloads.Count == 0, "the local platform has sent nothing");
+            await TemplateWarmUp.EnsureAsync();
             var mismatches = new List<string>();
             var older = 0;
             foreach (var payload in payloads)

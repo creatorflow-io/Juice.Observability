@@ -130,6 +130,8 @@ namespace Juice.Observability.Tests
             await using var factory = new ApiFactory(database, settings: new Dictionary<string, string>
             {
                 ["Webhooks:Enabled"] = "true", ["Webhooks:AllowHttpToAllowlisted"] = "true", ["Webhooks:Interval"] = "00:00:00.200",
+                // The legacy webhooks' own retry and test send: the pipeline's take over with the alias (M46b).
+                ["Notifications:Pipeline"] = "legacy",
             });
             using var client = factory.CreateClient();
             var (viewer, @operator, admin, tenant) = await Caller.AllAsync(client, database);

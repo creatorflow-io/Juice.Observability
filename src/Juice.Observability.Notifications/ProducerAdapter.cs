@@ -94,7 +94,7 @@ namespace Juice.Observability.Notifications
                 });
                 return;
             }
-            await SendAsync(request, cancellationToken);
+            await SendAsync(request, cancellationToken, conflictThrows: true);
         }
 
         /// <summary>Someone acknowledged the alert: its correlation is acknowledged (escalations that stop on it stop).</summary>
@@ -124,14 +124,14 @@ namespace Juice.Observability.Notifications
         {
             if (call.Kind == NotificationParkedCalls.Acknowledge)
             {
-                await TolerateAsync("acknowledge", () => client.AcknowledgeAsync(call.CorrelationKey!, call.By, cancellationToken));
+                await TolerateAsync("acknowledge", () => client.AcknowledgeAsync(call.CorrelationKey!, call.By, cancellationToken), conflictThrows: true);
                 return;
             }
             if (call.CorrelationKey is { } resolve)
             {
-                await TolerateAsync("resolve", () => client.ResolveAsync(resolve, null, null, cancellationToken));
+                await TolerateAsync("resolve", () => client.ResolveAsync(resolve, null, null, cancellationToken), conflictThrows: true);
             }
-            await SendAsync(JsonSerializer.Deserialize<NotificationToSend>(call.Request!, JsonSerializerOptions.Web)!, cancellationToken);
+            await SendAsync(JsonSerializer.Deserialize<NotificationToSend>(call.Request!, JsonSerializerOptions.Web)!, cancellationToken, conflictThrows: true);
         }
 
         /// <summary>The hold's reason for a silence: <c>silence:{id}</c>.</summary>
@@ -177,7 +177,7 @@ namespace Juice.Observability.Notifications
 
         /// <summary>Resolves the alert's correlation (its escalation stops, what is still due is cancelled); none, or closed already, is no failure.</summary>
         internal Task ResolveAlertAsync(Guid alertId, string? reason, CancellationToken cancellationToken)
-            => TolerateAsync("resolve", () => client.ResolveAsync(AlertCorrelation(alertId), Bounded(reason, 200), null, cancellationToken));
+            => TolerateAsync("resolve", () => client.ResolveAsync(AlertCorrelation(alertId), Bounded(reason, 200), null, cancellationToken), conflictThrows: true);
 
         /// <summary>
         /// What happened to an action request: <c>observability.action.request.{event}</c>, keyed <c>action:{id}:{event}</c>. While the request is
@@ -225,7 +225,7 @@ namespace Juice.Observability.Notifications
 
         /// <summary>Sends a request kept by a hold, now that no silence covers it; false when the pipeline refused it.</summary>
         internal Task<bool> SendHeldAsync(NotificationHold hold, CancellationToken cancellationToken)
-            => SendAsync(JsonSerializer.Deserialize<NotificationToSend>(hold.Request, JsonSerializerOptions.Web)!, cancellationToken);
+            => SendAsync(JsonSerializer.Deserialize<NotificationToSend>(hold.Request, JsonSerializerOptions.Web)!, cancellationToken, conflictThrows: true);
 
         internal NotificationToSend Firing(Rule rule, Alert alert, AlertTransition transition, AlertContext context, string? policy)
         {
@@ -234,6 +234,8 @@ namespace Juice.Observability.Notifications
             return new NotificationToSend(ObservabilityTypes.AlertFiring, TransitionKey(transition.Id))
             {
                 CorrelationKey = AlertCorrelation(alert.Id),
+                // When it fired: the escalation's first step is timed from it, so a firing sent late (held under a silence) still gets it on time.
+                OccurredAt = transition.At,
                 Labels = labels,
                 Data = WithoutId(NotificationPlan.Payload(Guid.Empty, NotificationPlan.Firing, platform.Value.TenantKey, rule, alert, transition, null)),
                 Links = Link($"alerts/{alert.Id}"),
@@ -293,33 +295,64 @@ namespace Juice.Observability.Notifications
 
         private static string? Bounded(string? value, int max) => value is { Length: > 0 } ? value.Length > max ? value[..max] : value : null;
 
-        private Task<bool> SendAsync(NotificationToSend request, CancellationToken cancellationToken)
-            => TolerateAsync("send", async () => await client.SendAsync(request, cancellationToken), request.IdempotencyKey);
+        private Task<bool> SendAsync(NotificationToSend request, CancellationToken cancellationToken, bool conflictThrows = false)
+            => TolerateAsync("send", async () => await client.SendAsync(request, cancellationToken), conflictThrows, request.IdempotencyKey);
 
         /// <summary>
         /// A refusal is the pipeline's answer, not a failure of the platform's change: a correlation it doesn't have (its firing was never sent) or
-        /// one already closed is expected; anything else is logged as an error and counted. True when the pipeline took the call.
+        /// one already closed is expected; a concurrent change is transient (see the remarks); anything else is logged as an
+        /// error and counted. True when the pipeline took the call.
         /// </summary>
-        private async Task<bool> TolerateAsync<T>(string call, Func<Task<T>> work, string? key = null)
+        /// <remarks>
+        /// A concurrent change (the correlation changed under the call: acknowledged or resolved elsewhere) is tried again here first, up to
+        /// <see cref="ConflictRetries"/> times: the pipeline's lost update doesn't abort the host's transaction (m44 §6.2), so calling again is safe.
+        /// Still refused, it is thrown on from the paths whose rollback is a retry (the outbox's planning, the release pass), and otherwise, on a
+        /// person's or an agent's call (a silence, an acknowledgement, an action request), it is no failure of their change: false, and the
+        /// reconcile worker or the next call heals it, as for any refusal.
+        /// </remarks>
+        private async Task<bool> TolerateAsync<T>(string call, Func<Task<T>> work, bool conflictThrows = false, string? key = null)
         {
-            try
+            for (var attempt = 0; ; attempt++)
             {
-                await work();
-                return true;
-            }
-            catch (NotificationRefusedException refused) when (refused.Code is ErrorCodes.NotFound or ErrorCodes.CorrelationClosed && call != "send")
-            {
-                logger.LogDebug("Notifications {Call}: {Code} ({Message})", call, refused.Code, refused.Message);
-                return false;
-            }
-            catch (NotificationRefusedException refused)
-            {
-                Refused.Add(1, new KeyValuePair<string, object?>("call", call), new KeyValuePair<string, object?>("code", refused.Code));
-                logger.LogError("The notification pipeline refused {Call} {Key}: {Code} {Message} {Errors}", call, key, refused.Code, refused.Message,
-                    string.Join("; ", refused.Errors?.Select(e => $"{e.Pointer} {e.Message}") ?? []));
-                return false;
+                try
+                {
+                    await work();
+                    return true;
+                }
+                catch (NotificationRefusedException refused) when (refused.Code is ErrorCodes.ConcurrentChange && attempt < ConflictRetries)
+                {
+                    logger.LogInformation("Notifications {Call} {Key}: {Code}, tried again ({Attempt})", call, key, refused.Code, attempt + 1);
+                }
+                catch (NotificationRefusedException refused) when (refused.Code is ErrorCodes.ConcurrentChange && conflictThrows)
+                {
+                    // Thrown on: the platform's change rolls back and is tried again against the new state (the outbox's retry, the release pass's next attempt).
+                    logger.LogInformation("Notifications {Call} {Key}: {Code} after {Retries} retries, thrown on", call, key, refused.Code, ConflictRetries);
+                    throw;
+                }
+                catch (NotificationRefusedException refused) when (refused.Code is ErrorCodes.ConcurrentChange)
+                {
+                    Refused.Add(1, new KeyValuePair<string, object?>("call", call), new KeyValuePair<string, object?>("code", refused.Code));
+                    logger.LogWarning("Notifications {Call} {Key}: {Code} after {Retries} retries; left to heal", call, key, refused.Code, ConflictRetries);
+                    return false;
+                }
+                catch (NotificationRefusedException refused) when (refused.Code is ErrorCodes.NotFound or ErrorCodes.CorrelationClosed && call != "send")
+                {
+                    logger.LogDebug("Notifications {Call}: {Code} ({Message})", call, refused.Code, refused.Message);
+                    return false;
+                }
+                catch (NotificationRefusedException refused)
+                {
+                    Refused.Add(1, new KeyValuePair<string, object?>("call", call), new KeyValuePair<string, object?>("code", refused.Code));
+                    logger.LogError("The notification pipeline refused {Call} {Key}: {Code} {Message} {Errors}", call, key, refused.Code, refused.Message,
+                        string.Join("; ", refused.Errors?.Select(e => $"{e.Pointer} {e.Message}") ?? []));
+                    return false;
+                }
             }
         }
+
+        /// <summary>How many times a call refused with a concurrent change is tried again at once, before it is thrown on or left to heal.</summary>
+        internal const int ConflictRetries = 2;
+
     }
 }
 

@@ -163,7 +163,7 @@ namespace Juice.Observability.Notifications
             {
                 await transaction.RollbackToSavepointAsync("item", cancellationToken);
                 logger.LogWarning(ex, "A kept notification failed; the others go on: {Message}", ex.Message);
-                return $"{ex.GetType().Name}: {ex.Message}";
+                return ex is Juice.Notifications.NotificationRefusedException refused ? $"{refused.Code}: {refused.Message}" : $"{ex.GetType().Name}: {ex.Message}";
             }
         }
 

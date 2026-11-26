@@ -1,4 +1,5 @@
 using Juice.MediatR;
+using Juice.Notifications;
 using Juice.Observability.Api.Endpoints;
 using Juice.Observability.Data;
 using Juice.Observability.Notifications;
@@ -192,6 +193,59 @@ namespace Juice.Observability.Tests
                 Assert.NotNull(given.ReplayedAt);
             }
             Assert.Equal(0, await Pass(factory).ReleaseOnceAsync(Ct));
+        }
+
+        /// <summary>A pipeline whose every send meets a correlation changed under it (acknowledged or resolved elsewhere): transient.</summary>
+        private sealed class ConcurrentlyChanged : INotificationClient
+        {
+            private static NotificationRefusedException Refusal() => new(ErrorCodes.ConcurrentChange, "The correlation changed; try again.");
+            public Task<NotificationAccepted> SendAsync(NotificationToSend notification, CancellationToken cancellationToken = default) => throw Refusal();
+            public Task<CorrelationState> AcknowledgeAsync(string correlationKey, string? by = null, CancellationToken cancellationToken = default) => throw Refusal();
+            public Task<CorrelationState> ResolveAsync(string correlationKey, string? outcome = null, string? by = null, CancellationToken cancellationToken = default) => throw Refusal();
+            public Task<CorrelationState> CancelAsync(string correlationKey, string? by = null, CancellationToken cancellationToken = default) => throw Refusal();
+            public Task<CorrelationHold> HoldAsync(string correlationKey, string reason, string? by = null, CancellationToken cancellationToken = default) => throw Refusal();
+            public Task<CorrelationHold> ReleaseAsync(string correlationKey, string? by = null, CancellationToken cancellationToken = default) => throw Refusal();
+        }
+
+        [Fact]
+        public async Task A_concurrent_change_rolls_the_plan_back_to_be_tried_again_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var factory = Factory(database, s => s.AddScoped<INotificationClient, ConcurrentlyChanged>());
+            _ = factory.Server;
+            var (_, firing) = await FireAsync(database);
+
+            var refused = await Assert.ThrowsAsync<NotificationRefusedException>(() => PlanAsync(factory, database, firing));
+
+            // Not planned, so the outbox's retry plans it again against the new state.
+            Assert.Equal(ErrorCodes.ConcurrentChange, refused.Code);
+            await using var db = database.Context();
+            Assert.Null((await db.AlertTransitions.SingleAsync(t => t.Id == firing, Ct)).NotificationsPlannedAt);
+        }
+
+        [Fact]
+        public async Task A_concurrent_change_at_release_is_an_attempt_not_a_drop_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            Guid silence;
+            await using (var healthy = Factory(database))
+            {
+                _ = healthy.Server;
+                silence = await SilenceAsync(database);
+                var (_, firing) = await FireAsync(database);
+                await PlanAsync(healthy, database, firing);
+            }
+            await EndAsync(database, silence);
+            await using var factory = Factory(database, s => s.AddScoped<INotificationClient, ConcurrentlyChanged>());
+            _ = factory.Server;
+
+            await Pass(factory).ReleaseOnceAsync(Ct);
+
+            var hold = Assert.Single(await HoldsAsync(database));
+            Assert.Equal((1, (DateTimeOffset?)null, (string?)null), (hold.Attempts, hold.DecidedAt, hold.Outcome));
+            Assert.Contains(ErrorCodes.ConcurrentChange, hold.LastError);
         }
 
         [Fact]

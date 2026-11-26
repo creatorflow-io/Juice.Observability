@@ -279,7 +279,8 @@ namespace Juice.Observability.Tests
             => new() { TenantId = tenant, Actor = "test", Operation = "composition.test", TargetType = "test", TargetId = marker.ToString() };
 
         private static WebApplicationFactory<Program> Factory(ScratchDatabase database)
-            => new ApiTests.ApiFactory(database).WithWebHostBuilder(builder => builder.ConfigureServices(services =>
+            // Legacy: what these check is how the pipeline keeps out of the platform when it runs nothing (the switch's other modes run its stages).
+            => new ApiTests.ApiFactory(database, settings: new Dictionary<string, string> { ["Notifications:Pipeline"] = "legacy" }).WithWebHostBuilder(builder => builder.ConfigureServices(services =>
             {
                 services.AddTransient<IRequestHandler<Record, bool>, RecordHandler>();
                 services.AddTransient<IRequestHandler<SendInCommand, bool>, SendInCommandHandler>();

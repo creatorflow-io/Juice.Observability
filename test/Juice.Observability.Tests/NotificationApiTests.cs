@@ -218,7 +218,8 @@ namespace Juice.Observability.Tests
                 await db.SaveChangesAsync(Ct);
             }
             // The host as deployed: its own outbox delivery and in-process dispatch run, nothing from the test hands anything over.
-            await using var factory = new ApiFactory(database);
+            // Through the legacy endpoints: the pipeline reaches them once the alias maps them (M46b).
+            await using var factory = new ApiFactory(database, settings: new Dictionary<string, string> { ["Notifications:Pipeline"] = "legacy" });
             using var client = factory.CreateClient();
             var (_, _, admin, _) = await Caller.AllAsync(client, database);
 

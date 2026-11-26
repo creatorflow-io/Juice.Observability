@@ -67,13 +67,76 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
-        public void Shadow_is_refused_at_start_without_the_pipelines_dry_run()
+        public void Shadow_starts_with_the_pipelines_dry_run()
         {
-            // The pinned alpha has no working dry run (until M44-2): shadow would send for real beside legacy (review focus 5).
-            Assert.False(NotificationsRegistration.DryRunAvailable);
+            // The pinned alpha has a working dry run (M44-2): shadow may run beside legacy, every pipeline send a WouldSend.
+            Assert.True(NotificationsRegistration.DryRunAvailable);
             var configuration = Settings(("Notifications:Pipeline", "shadow"), ("ConnectionStrings:Platform", "Host=x"), ("Platform:TenantKey", LocalStack.TenantKey));
-            var refused = Assert.Throws<InvalidOperationException>(() => new ServiceCollection().AddPlatformNotifications(configuration));
-            Assert.Contains("dry run", refused.Message);
+            var services = new ServiceCollection();
+            services.AddLogging();
+            Api.PlatformExtensions.AddPlatformMessaging(services);
+            // Registered, with the pipeline's dry run forced on (the settings test checks Delivery:DryRun).
+            services.AddPlatformNotifications(configuration);
+            Assert.Contains(services, s => s.ServiceType == typeof(Microsoft.Extensions.Hosting.IHostedService) && s.ImplementationFactory is not null);
+        }
+
+        /// <summary>
+        /// Shadow on the local stack (M45's definition of done): legacy sends as before, the pipeline plans the same notification and records it
+        /// as <c>WouldSend</c>, and its target hears nothing from it (review focus 5: shadow never really sends).
+        /// </summary>
+        [Fact]
+        public async Task Shadow_plans_beside_legacy_and_records_what_it_would_send_without_sending_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var target = await WebhookTests.Receiver.StartAsync();
+            var provisioning = Path.Combine(Path.GetTempPath(), $"shadow-{Guid.NewGuid():N}.json");
+            Environment.SetEnvironmentVariable("JUICE_SHADOW_TEST", "shadow-secret");
+            await File.WriteAllTextAsync(provisioning, $$"""
+                { "tenants": { "{{LocalStack.TenantKey}}": {
+                    "integrations": { "hooks": { "channel": "webhook", "kind": "webhook", "secretRef": "env:JUICE_SHADOW_TEST",
+                                                 "targets": { "ops": { "address": "{{target.Url}}" } } } },
+                    "routes": { "alerts": { "match": { "type": "observability.*" }, "targets": ["ops"] } },
+                    "allowlist": [ { "destination": "{{target.Address}}", "ports": [{{target.Port}}] } ]
+                } } }
+                """, TestContext.Current.CancellationToken);
+            try
+            {
+                await using var factory = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string>
+                {
+                    ["Notifications:Pipeline"] = "shadow", ["Notifications:Provisioning:Path"] = provisioning, ["Notifications:Delivery:AllowHttpToAllowlisted"] = "true",
+                    ["Notifications:Stages:Planner:Poll"] = "00:00:00.2", ["Notifications:Stages:DeliveryPlanner:Poll"] = "00:00:00.2",
+                    ["Notifications:Stages:Dispatcher:Poll"] = "00:00:00.2", ["Webhooks:Enabled"] = "true",
+                });
+                var workers = factory.Services.GetServices<Microsoft.Extensions.Hosting.IHostedService>().Select(PipelineStart.NameOf).ToList();
+                // Both pipelines run: legacy's dispatch and release, and the pipeline's stages.
+                Assert.Contains(nameof(Webhooks.WebhookDispatcher), workers);
+                Assert.Contains(workers, w => w.StartsWith("StageWorker", StringComparison.Ordinal));
+                Assert.Null(((PipelineStart)factory.Services.GetService(typeof(PipelineStart))!).Failure);
+
+                var (_, firing) = await ProducerAdapterTests.FireAsync(database);
+                await ProducerAdapterTests.PlanAsync(factory, database, firing);
+
+                string? status = null;
+                for (var i = 0; i < 100 && status != "WouldSend"; i++)
+                {
+                    await using var connection = new Npgsql.NpgsqlConnection(database.ConnectionString);
+                    await connection.OpenAsync(TestContext.Current.CancellationToken);
+                    await using var read = new Npgsql.NpgsqlCommand("SELECT status FROM notifications.deliveries LIMIT 1", connection);
+                    status = (string?)await read.ExecuteScalarAsync(TestContext.Current.CancellationToken);
+                    if (status != "WouldSend") await Task.Delay(200, TestContext.Current.CancellationToken);
+                }
+                Assert.Equal("WouldSend", status);
+                // Legacy planned its own, as it does without the pipeline; the pipeline's target heard nothing.
+                await using var db = database.Context();
+                Assert.NotNull((await db.AlertTransitions.SingleAsync(t => t.Id == firing)).NotificationsPlannedAt);
+                await Task.Delay(1000, TestContext.Current.CancellationToken);
+                Assert.Empty(target.Requests);
+            }
+            finally
+            {
+                File.Delete(provisioning);
+            }
         }
 
         private static class CapabilitiesWithDryRun { public static bool DryRun { get; } = true; }
@@ -158,7 +221,7 @@ namespace Juice.Observability.Tests
         {
             LocalStack.RequireAvailable();
             await using var database = await LocalStack.CreateDatabaseAsync();
-            await using var factory = new ApiTests.ApiFactory(database);
+            await using var factory = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string> { ["Notifications:Pipeline"] = "legacy" });
             _ = factory.Server;
             var (_, transition) = await ProducerAdapterTests.FireAsync(database);
 
