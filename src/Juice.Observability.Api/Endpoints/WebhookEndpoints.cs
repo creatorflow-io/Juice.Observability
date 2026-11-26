@@ -1,5 +1,6 @@
 using Juice.Observability.Data;
 using Juice.Observability.Health.Delivery;
+using Juice.Observability.Notifications.Migration;
 using Juice.Observability.Webhooks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -39,32 +40,68 @@ namespace Juice.Observability.Api.Endpoints
 
         public static RouteGroupBuilder MapWebhookEndpoints(this RouteGroupBuilder tenant)
         {
-            tenant.MapGet("/webhooks", ListEndpointsAsync);
-            tenant.MapPost("/webhooks", CreateAsync);
-            tenant.MapPut("/webhooks/{endpointId:guid}", UpdateAsync);
-            tenant.MapGet("/webhooks/{endpointId:guid}/deliveries", ListDeliveriesAsync);
-            tenant.MapPost("/webhooks/{endpointId:guid}/test", TestAsync);
-            tenant.MapPost("/webhooks/{endpointId:guid}/deliveries/{deliveryId:guid}/retry", RetryAsync);
-            tenant.MapGet("/webhooks/allowlist", ListAllowlistAsync);
-            tenant.MapPut("/webhooks/allowlist", PutAllowlistAsync);
-            tenant.MapDelete("/webhooks/allowlist", RemoveAllowlistAsync);
+            // The webhooks alias (I69): every answer says these routes are deprecated, and where their successor is.
+            foreach (var route in new[]
+            {
+                tenant.MapGet("/webhooks", ListEndpointsAsync),
+                tenant.MapPost("/webhooks", CreateAsync),
+                tenant.MapPut("/webhooks/{endpointId:guid}", UpdateAsync),
+                tenant.MapGet("/webhooks/{endpointId:guid}/deliveries", ListDeliveriesAsync),
+                tenant.MapPost("/webhooks/{endpointId:guid}/test", TestAsync),
+                tenant.MapPost("/webhooks/{endpointId:guid}/deliveries/{deliveryId:guid}/retry", RetryAsync),
+                tenant.MapGet("/webhooks/allowlist", ListAllowlistAsync),
+                tenant.MapPut("/webhooks/allowlist", PutAllowlistAsync),
+                tenant.MapDelete("/webhooks/allowlist", RemoveAllowlistAsync),
+            })
+            {
+                route.AddEndpointFilter(DeprecatedAsync);
+            }
             return tenant;
         }
 
-        private static string Destination(WebhookEndpoint e) => e.Kind switch
+        /// <summary>The successor of these routes: the notifications admin the host mounts (Q7, the prefix form).</summary>
+        public const string Successor = "/notifications";
+
+        /// <summary><c>Deprecation: true</c> and <c>Link: &lt;/notifications&gt;; rel="successor-version"</c> on every answer, refusals included (I69).</summary>
+        private static async ValueTask<object?> DeprecatedAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
         {
-            ChannelKind.Webhook => new Uri(e.Url).GetLeftPart(UriPartial.Authority),
+            var headers = context.HttpContext.Response.Headers;
+            headers["Deprecation"] = "true";
+            headers.Link = $"<{Successor}>; rel=\"successor-version\"";
+            return await next(context);
+        }
+
+        private static WebhookEndpointDto ToDto(AliasEndpoint a, HttpContext http, int failures = 0, int waiting = 0)
+        {
+            var d = a.Definition;
+            return new(a.Id, d.Key, d.Kind.ToString(), Destination(d.Kind, d.Url), d.Events, d.RuleKeys, d.Environments, http.User.IsInRole(Roles.Admin) ? d.Recipients : null,
+                http.User.IsInRole(Roles.Admin) ? d.SecretRef : null, d.GroupWindowSeconds, d.MinimumSeverity.ToString(), d.Enabled, a.ManagedBy, a.LoadedAt, failures, waiting);
+        }
+
+        private static string Destination(ChannelKind kind, string url) => kind switch
+        {
+            ChannelKind.Webhook => new Uri(url).GetLeftPart(UriPartial.Authority),
             ChannelKind.Email => "SMTP",
-            _ => e.Kind.ToString(),
+            _ => kind.ToString(),
         };
 
-        private static WebhookEndpointDto ToDto(WebhookEndpoint e, HttpContext http, int failures = 0, int waiting = 0) => new(e.Id, e.Key, e.Kind.ToString(), Destination(e), e.Events, e.RuleKeys, e.Environments,
-            http.User.IsInRole(Roles.Admin) ? e.Recipients : null, http.User.IsInRole(Roles.Admin) ? e.SecretRef : null, e.GroupWindowSeconds, e.MinimumSeverity.ToString(), e.Enabled, e.ManagedBy, e.LoadedAt, failures, waiting);
+        /// <summary>The legacy rows' owners by id while they're written (legacy, shadow): the answers name the legacy owner.</summary>
+        private static async Task<IReadOnlyDictionary<Guid, string>?> LegacyOwnersAsync(PlatformDbContext db, Guid tenantId, WebhookAlias alias, CancellationToken ct)
+            => alias.WritesLegacy
+                ? await db.WebhookEndpoints.AsNoTracking().Where(e => e.TenantId == tenantId).ToDictionaryAsync(e => e.Id, e => e.ManagedBy, ct)
+                : null;
 
-        private static async Task<IResult> ListEndpointsAsync(Guid tenantId, HttpContext http, PlatformDbContext db, TimeProvider clock, CancellationToken ct)
+        private static async Task<IResult> ListEndpointsAsync(Guid tenantId, HttpContext http, PlatformDbContext db, WebhookAlias alias, TimeProvider clock, CancellationToken ct)
         {
-            var endpoints = await db.WebhookEndpoints.AsNoTracking().Where(e => e.TenantId == tenantId).OrderBy(e => e.Key).ToListAsync(ct);
+            var endpoints = await alias.ListAsync(await LegacyOwnersAsync(db, tenantId, alias, ct), ct);
             var since = clock.GetUtcNow() - FailureWindow;
+            if (!alias.WritesLegacy)
+            {
+                var fromNotifications = await alias.CountsAsync(since, ct);
+                return Results.Ok(new Page<WebhookEndpointDto>([.. endpoints.Select(e => fromNotifications.GetValueOrDefault(e.Id) is var (failures, waiting)
+                    ? ToDto(e, http, failures, waiting) : ToDto(e, http))], null));
+            }
+            // Legacy still sends: its deliveries are the ones that happened (an endpoint's id is its legacy row's).
             var counts = await db.WebhookDeliveries.AsNoTracking()
                 .Where(d => d.TenantId == tenantId && (d.Status == DeliveryStatus.Retrying || d.Status == DeliveryStatus.Pending || d.Status == DeliveryStatus.Failed && d.CreatedAt >= since))
                 .GroupBy(d => new { d.EndpointId, d.Status }).Select(g => new { g.Key.EndpointId, g.Key.Status, Count = g.Count() }).ToListAsync(ct);
@@ -115,72 +152,119 @@ namespace Juice.Observability.Api.Endpoints
             return metadata;
         }
 
-        private static async Task<IResult> CreateAsync(Guid tenantId, WebhookRequest? request, HttpContext http, PlatformDbContext db, TimeProvider clock, IOptions<WebhookOptions> options, CancellationToken ct)
+        /// <summary>A definition as the alias's mapping takes it.</summary>
+        private static LegacyEndpoint Definition(EndpointDefinition d) => new(d.Key, d.Kind, d.Url, d.SecretRef, d.Events, d.RuleKeys, d.Environments, d.Recipients,
+            d.GroupWindowSeconds, d.MinimumSeverity, d.Enabled);
+
+        /// <summary>What the alias refused, as legacy's API answers a refusal: a key taken is a conflict, the rest invalid.</summary>
+        private static IResult Refused(IReadOnlyList<MappingProblem> problems)
+            => problems.Any(p => p.Code is ProblemCodes.KeyTaken or Juice.Notifications.ErrorCodes.ManagedByApi or Juice.Notifications.ErrorCodes.ManagedByConfiguration)
+                ? Mutation.Problem(StatusCodes.Status409Conflict, "Endpoint exists", string.Join(" ", problems.Select(p => p.Message)))
+                : Mutation.Invalid(problems.Select(p => p.Message));
+
+        /// <summary>
+        /// Creates an endpoint through the alias (I69; decisions on Q-A, Q-B): in legacy and shadow, the legacy row and the notifications rows in one
+        /// platform transaction, the integration taking the legacy row's id; in new, notifications only, with a new id. A refusal on either side
+        /// leaves neither.
+        /// </summary>
+        private static async Task<IResult> CreateAsync(Guid tenantId, WebhookRequest? request, HttpContext http, PlatformDbContext db, WebhookAlias alias,
+            TimeProvider clock, IOptions<WebhookOptions> options, CancellationToken ct)
         {
             var mutation = new Mutation(http, db, tenantId, "webhook.create", "webhook");
             if (await mutation.RequireAsync(null, ct, Roles.Admin) is { } denied) return denied;
             var (definition, problem) = Read(request, null, null, options.Value);
             if (problem is not null) return problem;
-            if (await db.WebhookEndpoints.AnyAsync(e => e.TenantId == tenantId && e.Key == definition!.Key, ct))
+            var existing = await alias.ListAsync(null, ct);
+            if (existing.Any(e => e.Definition.Key == definition!.Key) || await db.WebhookEndpoints.AnyAsync(e => e.TenantId == tenantId && e.Key == definition!.Key, ct))
             {
                 return Mutation.Problem(StatusCodes.Status409Conflict, "Endpoint exists", $"An endpoint with the key '{definition!.Key}' exists.");
             }
-            if (await db.WebhookEndpoints.CountAsync(e => e.TenantId == tenantId, ct) >= MaxEndpoints)
+            if (existing.Count >= MaxEndpoints)
             {
                 return Mutation.Problem(StatusCodes.Status409Conflict, "Too many endpoints", $"A tenant has at most {MaxEndpoints} endpoints.");
             }
             var now = clock.GetUtcNow();
-            var endpoint = new WebhookEndpoint
+            await using var transaction = await db.Database.BeginTransactionAsync(ct);
+            var id = Guid.CreateVersion7();
+            if (alias.WritesLegacy)
             {
-                TenantId = tenantId, Key = definition!.Key, Kind = definition.Kind, Url = definition.Url, SecretRef = definition.SecretRef, Events = [.. definition.Events],
-                RuleKeys = [.. definition.RuleKeys], Environments = [.. definition.Environments], Recipients = [.. definition.Recipients], GroupWindowSeconds = definition.GroupWindowSeconds,
-                MinimumSeverity = definition.MinimumSeverity, Enabled = definition.Enabled, DefinitionHash = definition.Hash(), LoadedAt = now, ManagedBy = ManagedBy.Api,
-            };
-            db.WebhookEndpoints.Add(endpoint);
-            mutation.Audit(AuditOutcome.Succeeded, endpoint.Key, Metadata(definition));
-            mutation.RecordChange($"webhook {endpoint.Key}: webhook.create", now);
+                var endpoint = new WebhookEndpoint
+                {
+                    Id = id, TenantId = tenantId, Key = definition!.Key, Kind = definition.Kind, Url = definition.Url, SecretRef = definition.SecretRef,
+                    Events = [.. definition.Events], RuleKeys = [.. definition.RuleKeys], Environments = [.. definition.Environments], Recipients = [.. definition.Recipients],
+                    GroupWindowSeconds = definition.GroupWindowSeconds, MinimumSeverity = definition.MinimumSeverity, Enabled = definition.Enabled,
+                    DefinitionHash = definition.Hash(), LoadedAt = now, ManagedBy = ManagedBy.Api,
+                };
+                db.WebhookEndpoints.Add(endpoint);
+            }
+            mutation.Audit(AuditOutcome.Succeeded, definition!.Key, Metadata(definition));
+            mutation.RecordChange($"webhook {definition.Key}: webhook.create", now);
             await db.SaveChangesAsync(ct);
-            return Results.Created($"{http.Request.Path}/{endpoint.Id}", ToDto(endpoint, http));
+            if (await alias.PutAsync(Definition(definition), id, ct) is { Count: > 0 } refused)
+            {
+                await transaction.RollbackAsync(ct);
+                return Refused(refused);
+            }
+            await transaction.CommitAsync(ct);
+            return Results.Created($"{http.Request.Path}/{id}", ToDto(new AliasEndpoint(id, Definition(definition), ManagedBy.Api, now), http));
         }
 
-        private static async Task<IResult> UpdateAsync(Guid tenantId, Guid endpointId, WebhookRequest? request, HttpContext http, PlatformDbContext db, TimeProvider clock, IOptions<WebhookOptions> options, CancellationToken ct)
+        private static async Task<IResult> UpdateAsync(Guid tenantId, Guid endpointId, WebhookRequest? request, HttpContext http, PlatformDbContext db, WebhookAlias alias,
+            TimeProvider clock, IOptions<WebhookOptions> options, CancellationToken ct)
         {
             var mutation = new Mutation(http, db, tenantId, "webhook.update", "webhook");
             if (await mutation.RequireAsync(endpointId.ToString(), ct, Roles.Admin) is { } denied) return denied;
-            var endpoint = await db.WebhookEndpoints.SingleOrDefaultAsync(e => e.TenantId == tenantId && e.Id == endpointId, ct);
-            if (endpoint is null)
+            var found = await alias.FindAsync(endpointId, await LegacyOwnersAsync(db, tenantId, alias, ct), ct);
+            if (found is null)
             {
                 return Mutation.Problem(StatusCodes.Status404NotFound, "Webhook endpoint not found", "No such endpoint.");
             }
-            if (endpoint.ManagedBy == ManagedBy.Configuration) return await mutation.ManagedByConfigurationAsync(endpoint.Key, File, ct);
-            var (definition, problem) = Read(request, endpoint.Key, endpoint, options.Value);
+            if (found.ManagedBy == ManagedBy.Configuration) return await mutation.ManagedByConfigurationAsync(found.Definition.Key, File, ct);
+            var current = found.Definition;
+            var asLegacy = new WebhookEndpoint { Key = current.Key, Kind = current.Kind, Url = current.Url, SecretRef = current.SecretRef, DefinitionHash = "" };
+            var (definition, problem) = Read(request, current.Key, asLegacy, options.Value);
             if (problem is not null) return problem;
             var now = clock.GetUtcNow();
-            endpoint.Url = definition!.Url;
-            endpoint.SecretRef = definition.SecretRef;
-            endpoint.Events = [.. definition.Events];
-            endpoint.RuleKeys = [.. definition.RuleKeys];
-            endpoint.Environments = [.. definition.Environments];
-            endpoint.Recipients = [.. definition.Recipients];
-            endpoint.GroupWindowSeconds = definition.GroupWindowSeconds;
-            endpoint.MinimumSeverity = definition.MinimumSeverity;
-            endpoint.Enabled = definition.Enabled;
-            endpoint.DefinitionHash = definition.Hash();
-            endpoint.LoadedAt = now;
-            mutation.Audit(AuditOutcome.Succeeded, endpoint.Key, Metadata(definition));
-            mutation.RecordChange($"webhook {endpoint.Key}: webhook.update", now);
+            await using var transaction = await db.Database.BeginTransactionAsync(ct);
+            if (alias.WritesLegacy && await db.WebhookEndpoints.SingleOrDefaultAsync(e => e.TenantId == tenantId && e.Id == endpointId, ct) is { } endpoint)
+            {
+                endpoint.Url = definition!.Url;
+                endpoint.SecretRef = definition.SecretRef;
+                endpoint.Events = [.. definition.Events];
+                endpoint.RuleKeys = [.. definition.RuleKeys];
+                endpoint.Environments = [.. definition.Environments];
+                endpoint.Recipients = [.. definition.Recipients];
+                endpoint.GroupWindowSeconds = definition.GroupWindowSeconds;
+                endpoint.MinimumSeverity = definition.MinimumSeverity;
+                endpoint.Enabled = definition.Enabled;
+                endpoint.DefinitionHash = definition.Hash();
+                endpoint.LoadedAt = now;
+            }
+            mutation.Audit(AuditOutcome.Succeeded, definition!.Key, Metadata(definition));
+            mutation.RecordChange($"webhook {definition.Key}: webhook.update", now);
             await db.SaveChangesAsync(ct);
-            return Results.Ok(ToDto(endpoint, http));
+            if (await alias.PutAsync(Definition(definition), endpointId, ct) is { Count: > 0 } refused)
+            {
+                await transaction.RollbackAsync(ct);
+                return Refused(refused);
+            }
+            await transaction.CommitAsync(ct);
+            return Results.Ok(ToDto(new AliasEndpoint(endpointId, Definition(definition), found.ManagedBy, now), http));
         }
 
         /// <summary>
         /// Sends a test notification now, through the same checks, signing and formatting as an alert's, and answers with what happened. Works on a
         /// disabled endpoint too, to check a channel before turning it on. Admin only, audited; nothing is queued or retried.
         /// </summary>
-        private static async Task<IResult> TestAsync(Guid tenantId, Guid endpointId, HttpContext http, PlatformDbContext db, IServiceProvider services, CancellationToken ct)
+        private static async Task<IResult> TestAsync(Guid tenantId, Guid endpointId, HttpContext http, PlatformDbContext db, WebhookAlias alias, IServiceProvider services, CancellationToken ct)
         {
             var mutation = new Mutation(http, db, tenantId, "webhook.test", "webhook");
             if (await mutation.RequireAsync(endpointId.ToString(), ct, Roles.Admin) is { } denied) return denied;
+            if (!alias.WritesLegacy)
+            {
+                // Q-C: the test send in new goes through the channel's provider with legacy's test payload; not wired yet.
+                return Mutation.Problem(StatusCodes.Status409Conflict, "Not available yet", "A test send through the notifications pipeline isn't available yet.");
+            }
             var endpoint = await db.WebhookEndpoints.AsNoTracking().SingleOrDefaultAsync(e => e.TenantId == tenantId && e.Id == endpointId, ct);
             if (endpoint is null) return Mutation.Problem(StatusCodes.Status404NotFound, "Webhook endpoint not found", "No such endpoint.");
             if (services.GetService<WebhookDispatcher>() is not { } dispatcher)
@@ -200,10 +284,25 @@ namespace Juice.Observability.Api.Endpoints
         /// Sends a failed delivery once more, now: what the runbook's SQL did, with the role check and an audit. The attempt is numbered after the
         /// earlier ones; if it fails again the delivery is <c>Failed</c> again, with that attempt's error. Admin only; the endpoint must be enabled.
         /// </summary>
-        private static async Task<IResult> RetryAsync(Guid tenantId, Guid endpointId, Guid deliveryId, HttpContext http, PlatformDbContext db, TimeProvider clock, CancellationToken ct)
+        private static async Task<IResult> RetryAsync(Guid tenantId, Guid endpointId, Guid deliveryId, HttpContext http, PlatformDbContext db, WebhookAlias alias,
+            Juice.MediatR.IMediator mediator, TimeProvider clock, CancellationToken ct)
         {
             var mutation = new Mutation(http, db, tenantId, "webhook.delivery.retry", "webhook_delivery");
             if (await mutation.RequireAsync(deliveryId.ToString(), ct, Roles.Admin) is { } denied) return denied;
+            if (!alias.WritesLegacy)
+            {
+                // Q-C: notifications' own retry of a dead delivery.
+                var outcome = await alias.RetryAsync(mediator, endpointId, deliveryId, ct);
+                if (outcome is null) return Mutation.Problem(StatusCodes.Status404NotFound, "Delivery not found", "No such delivery for this endpoint.");
+                if (outcome.Kind is not (Juice.Notifications.OutcomeKind.Ok or Juice.Notifications.OutcomeKind.Created))
+                {
+                    return Mutation.Problem(StatusCodes.Status409Conflict, "Not failed", outcome.Message ?? "This delivery can't be retried.");
+                }
+                mutation.Audit(AuditOutcome.Succeeded, deliveryId.ToString(), new() { ["endpoint"] = endpointId.ToString() });
+                await db.SaveChangesAsync(ct);
+                var retried = (await alias.DeliveriesAsync(endpointId, null, 1, null, ct, only: deliveryId)).Single();
+                return Results.Ok(ToDto(retried));
+            }
             var endpoint = await db.WebhookEndpoints.AsNoTracking().SingleOrDefaultAsync(e => e.TenantId == tenantId && e.Id == endpointId, ct);
             var delivery = endpoint is null ? null : await db.WebhookDeliveries.SingleOrDefaultAsync(d => d.TenantId == tenantId && d.EndpointId == endpointId && d.Id == deliveryId, ct);
             if (delivery is null) return Mutation.Problem(StatusCodes.Status404NotFound, "Delivery not found", "No such delivery for this endpoint.");
@@ -221,11 +320,32 @@ namespace Juice.Observability.Api.Endpoints
 
         /// <summary>Deliveries newest first, each with its attempts, filtered by <c>status</c>.</summary>
         private static async Task<IResult> ListDeliveriesAsync(Guid tenantId, Guid endpointId, string? status, int? limit, string? cursor,
-            PlatformDbContext db, CancellationToken ct)
+            PlatformDbContext db, WebhookAlias alias, CancellationToken ct)
         {
             if (Cursor.Validate(limit, cursor, out var take, out var after) is { } invalid)
             {
                 return invalid;
+            }
+            if (!alias.WritesLegacy)
+            {
+                // Q-C: the deliveries are notifications', in legacy's shape.
+                if (await alias.FindAsync(endpointId, null, ct) is null)
+                {
+                    return Results.Problem(statusCode: StatusCodes.Status404NotFound, title: "Webhook endpoint not found");
+                }
+                DeliveryStatus? wanted = null;
+                if (status is not null)
+                {
+                    if (!Enum.TryParse<DeliveryStatus>(status, ignoreCase: true, out var asked))
+                    {
+                        return Results.Problem(statusCode: StatusCodes.Status400BadRequest, title: "Invalid status",
+                            detail: "status must be one of: pending, retrying, delivered, failed, suppressed, dropped, grouped.");
+                    }
+                    wanted = asked == DeliveryStatus.Retrying ? DeliveryStatus.Pending : asked;
+                }
+                var found = await alias.DeliveriesAsync(endpointId, wanted, take + 1, after?.After, ct);
+                var shown = found.Take(take).ToList();
+                return Results.Ok(new Page<WebhookDeliveryDto>([.. shown.Select(ToDto)], found.Count > take ? new Cursor("wd", shown[^1].Id).Encode() : null));
             }
             if (!await db.WebhookEndpoints.AnyAsync(e => e.TenantId == tenantId && e.Id == endpointId, ct))
             {
@@ -248,6 +368,11 @@ namespace Juice.Observability.Api.Endpoints
             return Results.Ok(new Page<WebhookDeliveryDto>(items, rows.Count > take ? new Cursor("wd", page[^1].Id).Encode() : null));
         }
 
+        /// <summary>A notifications delivery in legacy's shape (Q-C): no group or silence of legacy's own.</summary>
+        private static WebhookDeliveryDto ToDto(AliasDelivery d) => new(d.Id, d.AlertId, d.Event, d.Status.ToString(), d.Attempts, d.CreatedAt, d.FirstAttemptAt,
+            d.DeliveredAt, d.NextAttemptAt, d.LastStatusCode, d.LastError, [.. d.History.Select(a => new WebhookAttemptDto(a.Number, a.At, a.StatusCode, a.Error, a.DurationMs))],
+            null, null, d.EscalationStep, d.ActionRequestId);
+
         internal static async Task<List<WebhookDeliveryDto>> ToDeliveryDtosAsync(PlatformDbContext db, IReadOnlyList<WebhookDelivery> deliveries, CancellationToken ct)
         {
             var ids = deliveries.Select(d => d.Id).ToList();
@@ -258,14 +383,19 @@ namespace Juice.Observability.Api.Endpoints
                 d.SuppressedBy, d.GroupedInto, d.EscalationStep, d.ActionRequestId)).ToList();
         }
 
-        private static async Task<IResult> ListAllowlistAsync(Guid tenantId, PlatformDbContext db, CancellationToken ct)
+        private static async Task<IResult> ListAllowlistAsync(Guid tenantId, PlatformDbContext db, WebhookAlias alias, CancellationToken ct)
         {
+            if (!alias.WritesLegacy)
+            {
+                return Results.Ok(new Page<AllowlistEntryDto>([.. (await alias.ListAllowlistAsync(ct)).Select(a => new AllowlistEntryDto(a.Entry.Destination, a.Entry.Ports, ManagedBy.Api, a.UpdatedAt))], null));
+            }
             var rows = await db.WebhookAllowlist.AsNoTracking().Where(a => a.TenantId == tenantId).OrderBy(a => a.Destination).ToListAsync(ct);
             return Results.Ok(new Page<AllowlistEntryDto>(rows.Select(a => new AllowlistEntryDto(a.Destination, a.Ports, a.ManagedBy, a.LoadedAt)).ToList(), null));
         }
 
         /// <summary>Adds an entry, or changes its ports. This opens a private address to outgoing requests, so it's admin only and always audited.</summary>
-        private static async Task<IResult> PutAllowlistAsync(Guid tenantId, AllowlistRequest? request, HttpContext http, PlatformDbContext db, TimeProvider clock, CancellationToken ct)
+        private static async Task<IResult> PutAllowlistAsync(Guid tenantId, AllowlistRequest? request, HttpContext http, PlatformDbContext db, WebhookAlias alias,
+            TimeProvider clock, CancellationToken ct)
         {
             var mutation = new Mutation(http, db, tenantId, "webhook.allowlist.put", "webhook_allowlist");
             var destination = request?.Destination?.Trim() ?? "";
@@ -280,10 +410,15 @@ namespace Juice.Observability.Api.Endpoints
                 return Mutation.Problem(StatusCodes.Status409Conflict, "Too many entries", $"A tenant has at most {MaxAllowlist} allowlist entries.");
             }
             var now = clock.GetUtcNow();
+            // The legacy entry and notifications' in one transaction (I69): legacy's while it still sends.
+            await using var transaction = await db.Database.BeginTransactionAsync(ct);
             if (entry is null)
             {
                 entry = new WebhookAllowlistEntry { TenantId = tenantId, Destination = destination, Ports = ports, LoadedAt = now, ManagedBy = ManagedBy.Api };
-                db.WebhookAllowlist.Add(entry);
+                if (alias.WritesLegacy)
+                {
+                    db.WebhookAllowlist.Add(entry);
+                }
             }
             else
             {
@@ -293,24 +428,46 @@ namespace Juice.Observability.Api.Endpoints
             mutation.Audit(AuditOutcome.Succeeded, destination, new() { ["ports"] = string.Join(",", ports) });
             mutation.RecordChange($"webhook_allowlist {destination}: put", now);
             await db.SaveChangesAsync(ct);
+            if (await alias.PutAllowlistAsync(new LegacyAllowlistEntry(destination, ports), ct) is { Count: > 0 } refused)
+            {
+                await transaction.RollbackAsync(ct);
+                return Refused(refused);
+            }
+            await transaction.CommitAsync(ct);
             return Results.Ok(new AllowlistEntryDto(entry.Destination, entry.Ports, entry.ManagedBy, entry.LoadedAt));
         }
 
         /// <summary>By query parameter, since a CIDR holds a slash. Connections already open may last their pool lifetime, at most a minute.</summary>
-        private static async Task<IResult> RemoveAllowlistAsync(Guid tenantId, string? destination, HttpContext http, PlatformDbContext db, TimeProvider clock, CancellationToken ct)
+        private static async Task<IResult> RemoveAllowlistAsync(Guid tenantId, string? destination, HttpContext http, PlatformDbContext db, WebhookAlias alias,
+            TimeProvider clock, CancellationToken ct)
         {
             var mutation = new Mutation(http, db, tenantId, "webhook.allowlist.remove", "webhook_allowlist");
             if (await mutation.RequireAsync(destination, ct, Roles.Admin) is { } denied) return denied;
             var entry = await db.WebhookAllowlist.SingleOrDefaultAsync(a => a.TenantId == tenantId && a.Destination == destination, ct);
+            if (entry is null && !alias.WritesLegacy && (await alias.ListAllowlistAsync(ct)).FirstOrDefault(a => a.Entry.Destination == destination) is { Entry: { } held })
+            {
+                // New: the entry is notifications' only.
+                entry = new WebhookAllowlistEntry { TenantId = tenantId, Destination = held.Destination, Ports = [.. held.Ports], ManagedBy = ManagedBy.Api };
+            }
             if (entry is null)
             {
                 return Mutation.Problem(StatusCodes.Status404NotFound, "Not on the allowlist", "No such entry.");
             }
             if (entry.ManagedBy == ManagedBy.Configuration) return await mutation.ManagedByConfigurationAsync(destination, File, ct);
-            db.WebhookAllowlist.Remove(entry);
+            await using var transaction = await db.Database.BeginTransactionAsync(ct);
+            if (alias.WritesLegacy)
+            {
+                db.WebhookAllowlist.Remove(entry);
+            }
             mutation.Audit(AuditOutcome.Succeeded, destination);
             mutation.RecordChange($"webhook_allowlist {destination}: remove", clock.GetUtcNow());
             await db.SaveChangesAsync(ct);
+            if (await alias.RemoveAllowlistAsync(AllowlistMapping.Map(new LegacyAllowlistEntry(destination!, entry.Ports)).Value?.Destination ?? destination!, ct) is { Count: > 0 } refused)
+            {
+                await transaction.RollbackAsync(ct);
+                return Refused(refused);
+            }
+            await transaction.CommitAsync(ct);
             return Results.NoContent();
         }
     }

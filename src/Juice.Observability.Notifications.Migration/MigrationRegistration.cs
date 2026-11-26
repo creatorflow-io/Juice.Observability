@@ -22,6 +22,21 @@ namespace Juice.Observability.Notifications.Migration
                 .PostConfigure(o => o.SmtpFrom ??= configuration[$"{WebhookOptions.Section}:Smtp:From"] is { Length: > 0 } from ? from : null);
             services.AddScoped<MigrationPlanner>();
             services.AddScoped<WebhookAlias>();
+            // The alias writes through the notifications API's rules, so the secrets the legacy API may name are the ones it may: unless the
+            // deployment says otherwise in Notifications:Delivery, its ApiSecretEnvPrefix and ApiSecretDirectory are legacy's.
+            var delivery = configuration.GetSection("Notifications:Delivery");
+            services.PostConfigure<Juice.Notifications.Providers.DeliveryOptions>(o =>
+            {
+                var legacy = configuration.GetSection(WebhookOptions.Section).Get<WebhookOptions>() ?? new WebhookOptions();
+                if (delivery[nameof(o.ApiSecretEnvPrefix)] is null)
+                {
+                    o.ApiSecretEnvPrefix = legacy.ApiSecretEnvPrefix;
+                }
+                if (delivery[nameof(o.ApiSecretDirectory)] is null)
+                {
+                    o.ApiSecretDirectory = legacy.ApiSecretDirectory;
+                }
+            });
             // Webhooks:Endpoints through the alias (I69): legacy's provisioner wrapped, in its place.
             AliasProvisioner.Wrap(services);
             return services;

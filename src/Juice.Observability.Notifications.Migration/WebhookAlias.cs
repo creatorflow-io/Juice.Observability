@@ -5,6 +5,7 @@ using Juice.Notifications.Data;
 using Juice.Notifications.Embedded;
 using Juice.Notifications.Providers;
 using Juice.Observability.Webhooks;
+using History = Juice.Notifications.History;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
@@ -90,6 +91,11 @@ namespace Juice.Observability.Notifications.Migration
             return problem is null ? [] : [problem];
         }
 
+        /// <summary>The allowlist entries the alias holds (new: legacy's table isn't written), with when each last changed.</summary>
+        public async Task<IReadOnlyList<(LegacyAllowlistEntry Entry, DateTimeOffset UpdatedAt)>> ListAllowlistAsync(CancellationToken ct)
+            => [.. (await notifications.Allowlist.AsNoTracking().Where(a => a.TenantId == Tenant && a.ManagedBy == AliasVocabulary.WebhooksAlias)
+                .OrderBy(a => a.Destination).ToListAsync(ct)).Select(a => (AllowlistMapping.Unmap(new AllowlistDefinition(a.Destination, a.Ports)), a.UpdatedAt))];
+
         /// <summary>An allowlist entry's notifications row, in the caller's transaction.</summary>
         public async Task<IReadOnlyList<MappingProblem>> PutAllowlistAsync(LegacyAllowlistEntry entry, CancellationToken ct)
         {
@@ -116,5 +122,106 @@ namespace Juice.Observability.Notifications.Migration
         {
             public async Task<MappingProblem?> SendAsync<T>(IRequest<Outcome<T>> command, CancellationToken ct) => EndpointWrites.Problem(await work.SendAsync(command, ct));
         }
+
+        // ─── Deliveries in new (decision on Q-C) ─────────────────────────────────
+
+        /// <summary>
+        /// A notifications delivery in legacy's words (Q-C): <c>Pending</c> and <c>Retrying</c> (and sending) are <c>Pending</c>; <c>Delivered</c>
+        /// and <c>Accepted</c> are <c>Delivered</c>; <c>Failed</c>, <c>Expired</c>, <c>Cancelled</c> and <c>Bounced</c> are <c>Failed</c>, the
+        /// reason kept; a dry run's <c>WouldSend</c> (shadow only) is <c>Dropped</c>: nothing went out.
+        /// </summary>
+        public static Data.DeliveryStatus LegacyStatus(DeliveryStatus status) => status switch
+        {
+            DeliveryStatus.Pending or DeliveryStatus.Sending or DeliveryStatus.Retrying => Data.DeliveryStatus.Pending,
+            DeliveryStatus.Delivered or DeliveryStatus.Accepted => Data.DeliveryStatus.Delivered,
+            DeliveryStatus.WouldSend => Data.DeliveryStatus.Dropped,
+            _ => Data.DeliveryStatus.Failed,
+        };
+
+        /// <summary>The notifications statuses one legacy status stands for, to filter by it.</summary>
+        public static IReadOnlyList<DeliveryStatus> StatusesOf(Data.DeliveryStatus legacy)
+            => [.. Enum.GetValues<DeliveryStatus>().Where(s => LegacyStatus(s) == legacy)];
+
+        /// <summary>An endpoint's deliveries in new, newest first, with their attempts, the event and the alert from their request.</summary>
+        public async Task<IReadOnlyList<AliasDelivery>> DeliveriesAsync(Guid endpointId, Data.DeliveryStatus? status, int take, Guid? before, CancellationToken ct,
+            Guid? only = null)
+        {
+            var query = notifications.Deliveries.AsNoTracking().Where(d => d.TenantId == Tenant && d.IntegrationId == endpointId && (only == null || d.Id == only));
+            if (status is { } legacy)
+            {
+                var statuses = StatusesOf(legacy).ToArray();
+                query = query.Where(d => statuses.Contains(d.Status));
+            }
+            if (before is { } id)
+            {
+                query = query.Where(d => d.Id < id);
+            }
+            var rows = await query.OrderByDescending(d => d.Id).Take(take).ToListAsync(ct);
+            var ids = rows.Select(d => d.Id).ToList();
+            var attempts = (await notifications.Attempts.AsNoTracking().Where(a => a.TenantId == Tenant && ids.Contains(a.DeliveryId)).OrderBy(a => a.Number).ToListAsync(ct))
+                .ToLookup(a => a.DeliveryId);
+            var carried = (await (from i in notifications.DeliveryItems.AsNoTracking()
+                                  where i.TenantId == Tenant && ids.Contains(i.DeliveryId)
+                                  join q in notifications.Requests.AsNoTracking() on new { i.TenantId, Id = i.RequestId } equals new { q.TenantId, q.Id }
+                                  join r in notifications.Recipients.AsNoTracking() on new { i.TenantId, Id = i.RecipientId } equals new { r.TenantId, r.Id }
+                                  select new { i.DeliveryId, q.Labels, q.Data, r.EscalationStep }).ToListAsync(ct))
+                .GroupBy(x => x.DeliveryId).ToDictionary(g => g.Key, g => g.First());
+            return [.. rows.Select(d =>
+            {
+                var item = carried.GetValueOrDefault(d.Id);
+                var labels = item?.Labels ?? [];
+                var step = item?.EscalationStep ?? 0;
+                var @event = step > 0 ? NotificationPlan.Escalated : labels.GetValueOrDefault("event") ?? "";
+                var last = attempts[d.Id].LastOrDefault();
+                return new AliasDelivery(d.Id, AlertId(item?.Data), @event, LegacyStatus(d.Status), d.Attempts, d.CreatedAt, d.FirstAttemptAt,
+                    d.Status is DeliveryStatus.Delivered or DeliveryStatus.Accepted ? d.CompletedAt : null,
+                    LegacyStatus(d.Status) == Data.DeliveryStatus.Pending ? d.NextAt : null, last?.StatusCode, d.LastError,
+                    [.. attempts[d.Id].Select(a => new AliasAttempt(a.Number, a.At, a.StatusCode, a.Error, a.DurationMs))], step,
+                    labels.GetValueOrDefault("request") is { } request && Guid.TryParse(request, out var requestId) ? requestId : null);
+            })];
+        }
+
+        /// <summary>The alert a request's data names (<c>alert.id</c>, today's payload), or null.</summary>
+        private static Guid? AlertId(string? data)
+        {
+            if (data is null)
+            {
+                return null;
+            }
+            using var document = System.Text.Json.JsonDocument.Parse(data);
+            return document.RootElement.TryGetProperty("alert", out var alert) && alert.ValueKind == System.Text.Json.JsonValueKind.Object
+                && alert.TryGetProperty("id", out var id) && id.TryGetGuid(out var guid) ? guid : null;
+        }
+
+        /// <summary>Per endpoint in new: failed deliveries since <paramref name="since"/>, and those still waiting.</summary>
+        public async Task<IReadOnlyDictionary<Guid, (int Failures, int Waiting)>> CountsAsync(DateTimeOffset since, CancellationToken ct)
+        {
+            var waiting = StatusesOf(Data.DeliveryStatus.Pending).ToArray();
+            var failed = StatusesOf(Data.DeliveryStatus.Failed).ToArray();
+            var counts = await notifications.Deliveries.AsNoTracking()
+                .Where(d => d.TenantId == Tenant && (waiting.Contains(d.Status) || failed.Contains(d.Status) && d.CreatedAt >= since))
+                .GroupBy(d => new { d.IntegrationId, Waiting = waiting.Contains(d.Status) }).Select(g => new { g.Key.IntegrationId, g.Key.Waiting, Count = g.Count() })
+                .ToListAsync(ct);
+            return counts.GroupBy(c => c.IntegrationId).ToDictionary(g => g.Key,
+                g => (g.Where(c => !c.Waiting).Sum(c => c.Count), g.Where(c => c.Waiting).Sum(c => c.Count)));
+        }
+
+        /// <summary>A failed delivery of the endpoint sent once more (notifications' retry, its own transaction), or why not.</summary>
+        public async Task<Outcome<History.RetriedView>?> RetryAsync(IMediator mediator, Guid endpointId, Guid deliveryId, CancellationToken ct)
+        {
+            if (!await notifications.Deliveries.AnyAsync(d => d.TenantId == Tenant && d.IntegrationId == endpointId && d.Id == deliveryId, ct))
+            {
+                return null;
+            }
+            using var context = NotificationsMessageContext.Begin("webhooks-alias");
+            return await mediator.Send(new History.RetryDelivery(Tenant, deliveryId), ct);
+        }
     }
+
+    public sealed record AliasAttempt(int Number, DateTimeOffset At, int? StatusCode, string? Error, int DurationMs);
+
+    /// <summary>A delivery of an endpoint as legacy's API shows one (Q-C): no group or silence of legacy's own, the step from the recipient.</summary>
+    public sealed record AliasDelivery(Guid Id, Guid? AlertId, string Event, Data.DeliveryStatus Status, int Attempts, DateTimeOffset CreatedAt,
+        DateTimeOffset? FirstAttemptAt, DateTimeOffset? DeliveredAt, DateTimeOffset? NextAttemptAt, int? LastStatusCode, string? LastError,
+        IReadOnlyList<AliasAttempt> History, int EscalationStep, Guid? ActionRequestId);
 }

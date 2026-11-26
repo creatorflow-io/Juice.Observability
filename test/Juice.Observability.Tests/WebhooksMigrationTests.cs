@@ -74,11 +74,12 @@ namespace Juice.Observability.Tests
             var report = await MigrateAsync(admin, tenant, apply: false);
             Assert.False(report.Applied);
             Assert.Equal(5, report.Items.Count);
-            All(report, "create");
+            // The alias wrote each one's notifications rows as it was made (M46b): nothing is left to migrate.
+            All(report, "unchanged");
 
             var applied = await MigrateAsync(admin, tenant, apply: true);
             Assert.True(applied.Applied);
-            All(applied, "create");
+            All(applied, "unchanged");
 
             All(await MigrateAsync(admin, tenant, apply: false), "unchanged");
             var again = await MigrateAsync(admin, tenant, apply: true);
@@ -186,6 +187,36 @@ namespace Juice.Observability.Tests
                 Assert.Equal(LegacyEndpoint.From(endpoint), EndpointMapping.Unmap(setup!).Value);
                 Assert.Equal(endpoint.Id, (await notifications.Integrations.AsNoTracking().SingleAsync(i => i.Key == "from-file", Ct)).Id);
             }
+        }
+
+        /// <summary>
+        /// The alias (I69): the routes keep their shapes, every answer says they are deprecated and names the successor, and an endpoint made
+        /// through them is read back from notifications with the id the create answered.
+        /// </summary>
+        [Fact]
+        public async Task The_webhooks_routes_answer_through_the_alias_with_deprecation_headers()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var factory = new ApiTests.ApiFactory(database, settings: Settings);
+            var (viewer, _, admin, tenant) = await Caller.AllAsync(factory.CreateClient(), database);
+
+            using var created = await admin.PostAsync($"/api/v1/tenants/{tenant}/webhooks",
+                new { key = "via-alias", kind = "webhook", url = "https://receiver.example/hooks/alias", secretRef = "env:JUICE_WEBHOOK_ALIAS" });
+            Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+            var id = (await created.Content.ReadFromJsonAsync<WebhookEndpointDto>(Ct))!.Id;
+            using var listed = await viewer.SendAsync(HttpMethod.Get, $"/api/v1/tenants/{tenant}/webhooks");
+            using var refused = await viewer.PostAsync($"/api/v1/tenants/{tenant}/webhooks", new { key = "nope" });
+
+            foreach (var response in new[] { created, listed, refused })
+            {
+                Assert.Equal("true", response.Headers.GetValues("Deprecation").Single());
+                Assert.Equal("</notifications>; rel=\"successor-version\"", response.Headers.GetValues("Link").Single());
+            }
+            var endpoint = Assert.Single((await listed.Content.ReadFromJsonAsync<Page<WebhookEndpointDto>>(Ct))!.Items);
+            Assert.Equal((id, "via-alias", "https://receiver.example"), (endpoint.Id, endpoint.Key, endpoint.Destination));
+            await using var scope = factory.Services.CreateAsyncScope();
+            Assert.Equal(id, (await scope.ServiceProvider.GetRequiredService<NotificationsDbContext>().Integrations.AsNoTracking().SingleAsync(i => i.Key == "via-alias", Ct)).Id);
         }
     }
 }
