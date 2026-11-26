@@ -25,10 +25,12 @@ namespace Juice.Observability.Tests
     {
         private static CancellationToken Ct => TestContext.Current.CancellationToken;
         private const string PipelineSecret = "NOTIFICATIONS_SECRET_SHADOW";
+        /// <summary>Legacy's endpoints' own variable: NotificationFlowTests sets its shared one to chat URLs while other classes run.</summary>
+        private const string LegacySecret = "JUICE_WEBHOOK_SHADOW";
 
         static ShadowComparerTests()
         {
-            Environment.SetEnvironmentVariable(Flow.SecretVariable, "flow-secret");
+            Environment.SetEnvironmentVariable(LegacySecret, "flow-secret");
             Environment.SetEnvironmentVariable(PipelineSecret, "flow-secret");
         }
 
@@ -63,8 +65,8 @@ namespace Juice.Observability.Tests
             using var client = factory.CreateClient();
             var notifications = factory.Services.GetRequiredService<Juice.Notifications.Embedded.NotificationsEmbeddedOptions>().TenantId;
             // Legacy: "ops" and "sre"; the new pipeline has only "ops" (as if "sre" were never migrated).
-            await Flow.EndpointAsync(database, receiver, "ops");
-            await Flow.EndpointAsync(database, receiver, "sre");
+            await Flow.EndpointAsync(database, receiver, "ops", secretVariable: LegacySecret);
+            await Flow.EndpointAsync(database, receiver, "sre", secretVariable: LegacySecret);
             await SendAsync(factory, new PutAllowlistEntry(notifications, $"{receiver.Address}/32", [receiver.Port]));
             await SendAsync(factory, new PutIntegration(notifications, "ops", "webhook", "webhook", JsonDocument.Parse("{}").RootElement, $"env:{PipelineSecret}", 0, true));
             await SendAsync(factory, new PutTarget(notifications, "ops", "ops", receiver.Url, null, true));
@@ -137,7 +139,7 @@ namespace Juice.Observability.Tests
             await using var factory = Factory(database);
             _ = factory.Server;
             var notifications = factory.Services.GetRequiredService<Juice.Notifications.Embedded.NotificationsEmbeddedOptions>().TenantId;
-            await Flow.EndpointAsync(database, receiver, "pager", events: [NotificationPlan.Resolved]);
+            await Flow.EndpointAsync(database, receiver, "pager", events: [NotificationPlan.Resolved], secretVariable: LegacySecret);
             await using (var db = database.Context())
             {
                 db.EscalationPolicies.Add(new Juice.Observability.Data.EscalationPolicy
@@ -246,7 +248,7 @@ namespace Juice.Observability.Tests
             await using var database = await LocalStack.CreateDatabaseAsync();
             await using var factory = Factory(database);
             _ = factory.Server;
-            await Flow.EndpointAsync(database, receiver, "ops");
+            await Flow.EndpointAsync(database, receiver, "ops", secretVariable: LegacySecret);
             var (_, transition) = await ProducerAdapterTests.FireAsync(database);
             await ProducerAdapterTests.PlanAsync(factory, database, transition);
             await Flow.Dispatcher(database, o => o.MaxAttempts = 8).DispatchOnceAsync(Ct);   // a 503: retrying
