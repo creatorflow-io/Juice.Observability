@@ -25,7 +25,7 @@ namespace Juice.Observability.Tests
 
         private const string Console = "https://console.example/";
 
-        private static WebApplicationFactory<Program> Factory(ScratchDatabase database, Action<IServiceCollection>? configure = null)
+        internal static WebApplicationFactory<Program> Factory(ScratchDatabase database, Action<IServiceCollection>? configure = null)
             => new ApiTests.ApiFactory(database, settings: new Dictionary<string, string> { ["Webhooks:ConsoleUrl"] = Console })
                 .WithWebHostBuilder(builder => builder.ConfigureServices(services =>
                 {
@@ -261,9 +261,9 @@ namespace Juice.Observability.Tests
 
         // ─── Helpers ──────────────────────────────────────────────────────────
 
-        private sealed record Request(string Type, string Key, string? Correlation, Dictionary<string, string> Labels, Dictionary<string, string> Links, JsonElement Data);
+        internal sealed record Request(string Type, string Key, string? Correlation, Dictionary<string, string> Labels, Dictionary<string, string> Links, JsonElement Data);
 
-        private static async Task<List<Request>> RequestsAsync(ScratchDatabase database)
+        internal static async Task<List<Request>> RequestsAsync(ScratchDatabase database)
         {
             await using var connection = new NpgsqlConnection(database.ConnectionString);
             await connection.OpenAsync(Ct);
@@ -280,7 +280,7 @@ namespace Juice.Observability.Tests
             return requests;
         }
 
-        private static async Task<string?> CorrelationStateAsync(ScratchDatabase database, string key)
+        internal static async Task<string?> CorrelationStateAsync(ScratchDatabase database, string key)
         {
             await using var connection = new NpgsqlConnection(database.ConnectionString);
             await connection.OpenAsync(Ct);
@@ -289,14 +289,14 @@ namespace Juice.Observability.Tests
             return (string?)await command.ExecuteScalarAsync(Ct);
         }
 
-        private static async Task<Guid> TenantAsync(ScratchDatabase database)
+        internal static async Task<Guid> TenantAsync(ScratchDatabase database)
         {
             await using var db = database.Context();
             return (await db.Tenants.SingleAsync(t => t.Key == LocalStack.TenantKey, Ct)).Id;
         }
 
         /// <summary>A committed firing, not planned yet: what the outbox hands the consumer.</summary>
-        private static async Task<(Guid Alert, Guid Transition)> FireAsync(ScratchDatabase database)
+        internal static async Task<(Guid Alert, Guid Transition)> FireAsync(ScratchDatabase database)
         {
             await using var db = database.Context();
             var tenant = await TenantAsync(database);
@@ -316,7 +316,7 @@ namespace Juice.Observability.Tests
             return (alert.Id, transition.Id);
         }
 
-        private static async Task<Guid> ResolveAsync(ScratchDatabase database, Guid alertId)
+        internal static async Task<Guid> ResolveAsync(ScratchDatabase database, Guid alertId)
         {
             await using var db = database.Context();
             var alert = await db.Alerts.SingleAsync(a => a.Id == alertId, Ct);
@@ -329,20 +329,22 @@ namespace Juice.Observability.Tests
             return transition.Id;
         }
 
-        private static async Task SilenceAsync(ScratchDatabase database)
+        internal static async Task<Guid> SilenceAsync(ScratchDatabase database, string service = "shop/orders")
         {
             await using var db = database.Context();
             var now = DateTimeOffset.UtcNow;
-            db.Silences.Add(new Silence
+            var silence = new Silence
             {
                 TenantId = await TenantAsync(database), Kind = SilenceKind.Silence, Comment = "test", CreatedBy = "erin", CreatedAt = now, StartsAt = now.AddMinutes(-1),
-                EndsAt = now.AddHours(1), Service = "shop/orders",
-            });
+                EndsAt = now.AddHours(1), Service = service,
+            };
+            db.Silences.Add(silence);
             await db.SaveChangesAsync(Ct);
+            return silence.Id;
         }
 
         /// <summary>Plans the transition as the outbox's consumer does.</summary>
-        private static async Task<int> PlanAsync(WebApplicationFactory<Program> factory, ScratchDatabase database, Guid transition)
+        internal static async Task<int> PlanAsync(WebApplicationFactory<Program> factory, ScratchDatabase database, Guid transition)
         {
             await using var scope = factory.Services.CreateAsyncScope();
             using var _ = PlatformMessageContext.Begin("test");

@@ -1,0 +1,101 @@
+using System.Diagnostics.Metrics;
+using Juice.Observability.Data;
+using Juice.Observability.Webhooks;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+
+namespace Juice.Observability.Notifications
+{
+    /// <summary>
+    /// What a silence held, once no silence covers it (phase-5-plan I65): each hold is decided as the legacy release decides a held delivery
+    /// (<see cref="HeldNotification.Decide"/>), and its request is sent in the transaction that records the decision. One replica at a time
+    /// (a lease), and the holds it decides are locked, so two passes never send one twice; the request's key would make a second one the same.
+    /// <para>"Told" is per alert here (Q4): a resolved notice is sent if the alert's firing was sent, or held and then sent.</para>
+    /// </summary>
+    public sealed class NotificationsReleasePass(IServiceScopeFactory scopes, IOptions<WebhookOptions> options, TimeProvider clock,
+        ILogger<NotificationsReleasePass> logger) : BackgroundService
+    {
+        public const string Worker = "notifications-release";
+        private const int Batch = 200;
+        private static readonly Meter Meter = new("Juice.Observability");
+        private static readonly Counter<long> Released = Meter.CreateCounter<long>("juice.observability.notifications.released", "{notification}",
+            "Notifications a silence held, decided once no silence covers them, by outcome (sent, dropped)");
+
+        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        {
+            PlatformCaller.Set(Worker, stoppingToken);
+            WorkerPulse.Register(Worker, options.Value.Interval, stopping: stoppingToken);
+            await using var lease = WorkerLease.For(scopes, Worker, logger);
+            using var timer = new PeriodicTimer(options.Value.Interval);
+            do
+            {
+                try
+                {
+                    if (await lease.TryHoldAsync(stoppingToken))
+                    {
+                        using var pass = WorkerPulse.Begin(Worker, stoppingToken);
+                        while (await ReleaseOnceAsync(stoppingToken) == Batch)
+                        {
+                        }
+                        pass.Succeeded();
+                    }
+                }
+                catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
+                {
+                    logger.LogError(ex, "Notification release pass failed; retrying next interval");
+                }
+            }
+            while (await timer.WaitForNextTickAsync(stoppingToken));
+        }
+
+        /// <summary>Decides up to one batch of holds whose silence is over; returns how many it looked at.</summary>
+        public async Task<int> ReleaseOnceAsync(CancellationToken cancellationToken)
+        {
+            await using var scope = scopes.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var adapter = scope.ServiceProvider.GetRequiredService<ProducerAdapter>();
+            using var context = PlatformMessageContext.Begin(Worker);
+            var now = clock.GetUtcNow();
+            await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+            var active = await NotificationWorker.ActiveAsync(db, now, cancellationToken);
+            var activeIds = active.Select(s => s.Id).ToArray();
+            var holds = await db.NotificationHolds
+                .FromSql($"SELECT * FROM notification_holds WHERE decided_at IS NULL AND NOT (silence_id = ANY({activeIds})) ORDER BY id LIMIT {Batch} FOR UPDATE SKIP LOCKED")
+                .ToListAsync(cancellationToken);
+            if (holds.Count == 0)
+            {
+                return 0;
+            }
+            var alertIds = holds.Select(h => h.AlertId).Distinct().ToList();
+            var alerts = await db.Alerts.AsNoTracking().Where(a => alertIds.Contains(a.Id)).ToDictionaryAsync(a => a.Id, cancellationToken);
+            var ruleIds = alerts.Values.Select(a => a.RuleId).Distinct().ToList();
+            var rules = await db.Rules.AsNoTracking().Where(r => ruleIds.Contains(r.Id)).ToDictionaryAsync(r => r.Id, r => r.Key, cancellationToken);
+            // Tracked: a firing decided in this batch counts for its resolved notice, decided after it (ids are in time order).
+            var firings = await db.NotificationHolds.Where(h => alertIds.Contains(h.AlertId) && h.Event == NotificationPlan.Firing).ToListAsync(cancellationToken);
+            foreach (var hold in holds)
+            {
+                var alert = alerts[hold.AlertId];
+                var alertContext = new AlertContext(rules[alert.RuleId], alert.SubjectKey, alert.Severity);
+                // Another silence covers it too: it stays held, under that one.
+                if (SilenceMatcher.Find(active.Where(s => s.TenantId == hold.TenantId), alertContext, now) is { } other)
+                {
+                    hold.SilenceId = other.Id;
+                    continue;
+                }
+                var firing = firings.FirstOrDefault(f => f.AlertId == hold.AlertId);
+                var told = firing is null || firing.Outcome == NotificationHoldOutcomes.Sent;
+                var send = HeldNotification.Decide(hold.Event, alert.State, told, alert.AcknowledgedAt is not null) == HeldOutcome.Send
+                    && await adapter.SendHeldAsync(hold, cancellationToken);
+                hold.DecidedAt = now;
+                hold.Outcome = send ? NotificationHoldOutcomes.Sent : NotificationHoldOutcomes.Dropped;
+                Released.Add(1, new KeyValuePair<string, object?>("outcome", hold.Outcome));
+            }
+            await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return holds.Count;
+        }
+    }
+}
