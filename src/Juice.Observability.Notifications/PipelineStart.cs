@@ -59,17 +59,25 @@ namespace Juice.Observability.Notifications
         /// <summary>
         /// The pipeline's other hosted services (its stages, its outbox's delivery, its failure events, the platform's release pass): every one
         /// registered since <paramref name="before"/>, except the start's own steps, the health check publisher and the dry run's guard (which must
-        /// still refuse <c>shadow</c>). After a failed start they don't start: they would poll tables that aren't there. Call after
+        /// still refuse <c>shadow</c>). After a failed start they don't start: they would poll tables that aren't there. In <c>legacy</c>
+        /// (<paramref name="runs"/> false) none of them is a hosted service at all: legacy costs the pipeline's schema and nothing else. Call after
         /// <see cref="Guard"/> and after the last of them is registered.
         /// </summary>
-        internal static void GateTheRest(IServiceCollection services, IReadOnlyCollection<ServiceDescriptor> before, IReadOnlyCollection<ServiceDescriptor> guarded)
+        internal static void GateTheRest(IServiceCollection services, IReadOnlyCollection<ServiceDescriptor> before, IReadOnlyCollection<ServiceDescriptor> guarded,
+            bool runs)
         {
-            for (var i = 0; i < services.Count; i++)
+            for (var i = services.Count - 1; i >= 0; i--)
             {
                 var descriptor = services[i];
                 if (descriptor.ServiceType != typeof(IHostedService) || before.Contains(descriptor) || guarded.Contains(descriptor)
                     || descriptor.ImplementationType?.Name is "HealthCheckPublisherHostedService" or "DryRunGuard")
                 {
+                    continue;
+                }
+                // legacy: nothing of the pipeline runs beyond its start (its schema and provisioning), so nothing polls; the services stay registered.
+                if (!runs)
+                {
+                    services.RemoveAt(i);
                     continue;
                 }
                 services[i] = ServiceDescriptor.Singleton<IHostedService>(sp => new UnlessStartFailed(Create(sp, descriptor),

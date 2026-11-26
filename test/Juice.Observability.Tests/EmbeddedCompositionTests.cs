@@ -57,6 +57,14 @@ namespace Juice.Observability.Tests
 
             var workers = factory.Services.GetServices<IHostedService>().Select(PipelineStart.NameOf).ToList();
             Assert.DoesNotContain(workers, w => w.StartsWith("StageWorker", StringComparison.Ordinal) || w is "RetentionWorker" or "ProducerEventRelay" or "FailureEvents");
+            // Nor any poller of the pipeline: legacy costs its schema and nothing else (no connection of its own between requests).
+            Assert.DoesNotContain("CompositeDeliveryHostedService<NotificationsDbContext>", workers);
+            Assert.DoesNotContain("BacklogMonitor", workers);
+            Assert.DoesNotContain(nameof(NotificationsReleasePass), workers);
+            Assert.DoesNotContain(nameof(SilenceHoldPass), workers);
+            // Its start ran: the schema and the provisioning.
+            Assert.Contains("DatabaseMigrator", workers);
+            Assert.Contains("EmbeddedApplicationProvisioner", workers);
             Assert.Equal(1, await CountAsync(database, $"SELECT count(*) FROM notifications.applications WHERE key = '{NotificationsRegistration.ApplicationKey}'"));
             Assert.Equal(1, await CountAsync(database, $"SELECT count(*) FROM notifications.application_tenants WHERE tenant_id = '{LocalStack.TenantKey}'"));
         }

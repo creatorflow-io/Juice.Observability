@@ -200,6 +200,8 @@ services:
 
   postgres:
     image: postgres:17.10-alpine
+    # The platform and its embedded notification pipeline each keep a pool; the integration suite runs hosts in parallel (as notifications' stack).
+    command: ["postgres", "-c", "max_connections=300"]
     environment:
       POSTGRES_DB: juice_observability
       POSTGRES_USER: juice

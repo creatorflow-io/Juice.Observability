@@ -176,8 +176,8 @@ namespace Juice.Observability.Tests
             Assert.Equal(HttpStatusCode.ServiceUnavailable, (await client.GetAsync("/health/ready", Ct)).StatusCode);
             // The provisioning file came first and failed on the missing schema; the application's provisioning, after it, didn't run.
             Assert.StartsWith("ConfigurationProvisioner", Start(factory).Failure);
-            Assert.Equal("EmbeddedApplicationProvisioner", Start(factory).Skipped.First());
-            Assert.Contains("CompositeDeliveryHostedService<NotificationsDbContext>", Start(factory).Skipped);
+            // legacy: nothing else of the pipeline runs, so nothing else is skipped.
+            Assert.Equal(["EmbeddedApplicationProvisioner"], Start(factory).Skipped);
         }
 
         [Fact]
