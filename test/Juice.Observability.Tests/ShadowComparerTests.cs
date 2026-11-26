@@ -106,6 +106,9 @@ namespace Juice.Observability.Tests
             }
             var report = await Caller.JsonAsync(await @operator.GetAsync($"/api/v1/tenants/{tenant}/notifications/shadow-report"));
             Assert.Equal(1, report.GetProperty("compared").GetInt32());
+            var today = Assert.Single(report.GetProperty("days").EnumerateArray());
+            Assert.Equal((DateOnly.FromDateTime(DateTime.UtcNow).ToString("yyyy-MM-dd"), 1), (today.GetProperty("day").GetString(), today.GetProperty("compared").GetInt32()));
+            Assert.Equal(report.GetProperty("unexplained").GetInt32(), today.GetProperty("unexplained").GetInt32());
             Assert.True(report.GetProperty("unexplained").GetInt32() >= 1);
             Assert.Contains(report.GetProperty("latest").EnumerateArray(), d => d.GetProperty("endpointKey").GetString() == "sre");
             Assert.Contains(report.GetProperty("byRule").EnumerateArray(),
@@ -116,6 +119,78 @@ namespace Juice.Observability.Tests
             Assert.Equal(1, shadow.Compared);
             Assert.True(shadow.Unexplained >= 1);
             Assert.NotNull(shadow.LastComparedAt);
+        }
+
+        /// <summary>
+        /// An escalation step is its own unit, matched by its number: legacy's worker and the pipeline's escalation stage both page "pager" for
+        /// step 1 of "paging", and the step is compared as <c>alert.escalated</c>, apart from the firing.
+        /// </summary>
+        [Fact]
+        public async Task An_escalation_step_is_compared_as_its_own_unit()
+        {
+            LocalStack.RequireAvailable();
+            await using var receiver = await Receiver.StartAsync();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var factory = Factory(database);
+            _ = factory.Server;
+            var notifications = factory.Services.GetRequiredService<Juice.Notifications.Embedded.NotificationsEmbeddedOptions>().TenantId;
+            await Flow.EndpointAsync(database, receiver, "pager", events: [NotificationPlan.Resolved]);
+            await using (var db = database.Context())
+            {
+                db.EscalationPolicies.Add(new Juice.Observability.Data.EscalationPolicy
+                {
+                    TenantId = await Flow.TenantAsync(db), Key = "paging", Name = "Paging", UpdatedAt = DateTimeOffset.UtcNow,
+                    Steps = [new Juice.Observability.Data.EscalationStep { AfterMinutes = 5, EndpointKeys = ["pager"] }],
+                });
+                await db.SaveChangesAsync(Ct);
+            }
+            await SendAsync(factory, new PutAllowlistEntry(notifications, $"{receiver.Address}/32", [receiver.Port]));
+            await SendAsync(factory, new PutIntegration(notifications, "pager", "webhook", "webhook", JsonDocument.Parse("{}").RootElement, $"env:{PipelineSecret}", 0, true));
+            await SendAsync(factory, new PutTarget(notifications, "pager", "pager", receiver.Url, null, true));
+            // The route takes no request of its own (legacy's "pager" hears only resolves); the policy's step names it by key.
+            await SendAsync(factory, new PutRoute(notifications, "pager", JsonDocument.Parse("""{"type":"observability.none"}""").RootElement, ["pager"], true));
+            await SendAsync(factory, new PutEscalationPolicy(notifications, "paging",
+                JsonDocument.Parse("""[{"afterMinutes":5,"recipients":[{"kind":"route","key":"pager"}]}]""").RootElement, true));
+
+            // Fired 6 minutes ago: step 1 is due in both pipelines at once (the request carries when it fired, M45-2).
+            var alert = await Flow.FireAsync(database, plan: false);
+            Guid transition;
+            await using (var db = database.Context())
+            {
+                var fired = DateTimeOffset.UtcNow.AddMinutes(-6);
+                var t = await db.AlertTransitions.SingleAsync(x => x.AlertId == alert, Ct);
+                await db.Alerts.Where(a => a.Id == alert).ExecuteUpdateAsync(s => s.SetProperty(a => a.FiredAt, fired), Ct);
+                await db.AlertTransitions.Where(x => x.Id == t.Id).ExecuteUpdateAsync(s => s.SetProperty(x => x.At, fired), Ct);
+                transition = t.Id;
+            }
+            await ProducerAdapterTests.PlanAsync(factory, database, transition);
+            await Flow.AgeAsync(database, alert, 6);
+            var (dispatcher, worker) = (Flow.Dispatcher(database), Flow.Worker(database));
+            for (var i = 0; i < 100 && receiver.Requests.Count < 1; i++)
+            {
+                await worker.RunOnceAsync(Ct);
+                await dispatcher.DispatchOnceAsync(Ct);
+                await Task.Delay(50, Ct);
+            }
+            Assert.Contains("\"step\":1", Assert.Single(receiver.Requests).Body);
+            await WouldSendAsync(factory);
+
+            var comparer = Comparer(factory);
+            while (await comparer.CompareOnceAsync(Ct) > 0 && !await ComparedAsync(database, transition, 1))
+            {
+            }
+
+            await using var check = database.Context();
+            var step = await check.ShadowComparisons.AsNoTracking().SingleAsync(c => c.TransitionId == transition && c.EscalationStep == 1, Ct);
+            Assert.Equal((NotificationPlan.Escalated, 1, 1), (step.Event, step.Legacy, step.New));
+            var differences = await check.ShadowDifferences.AsNoTracking().Where(d => d.TransitionId == transition && d.EscalationStep == 1).ToListAsync(Ct);
+            Assert.DoesNotContain(differences, d => d.Kind is ShadowDifferenceKinds.MissingInNew or ShadowDifferenceKinds.MissingInLegacy or ShadowDifferenceKinds.Unsettled);
+        }
+
+        private static async Task<bool> ComparedAsync(ScratchDatabase database, Guid transition, int step)
+        {
+            await using var db = database.Context();
+            return await db.ShadowComparisons.AnyAsync(c => c.TransitionId == transition && c.EscalationStep == step, Ct);
         }
 
         /// <summary>A unit still sending on one side waits, and isn't compared before both settled (or the wait runs out).</summary>

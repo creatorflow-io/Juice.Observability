@@ -5,7 +5,10 @@ namespace Juice.Observability.Notifications.Shadow
 {
     /// <summary>The shadow run over a window: what was compared, how it differed by kind and rule, and the latest differences no rule explains.</summary>
     public sealed record ShadowReportView(DateTimeOffset From, DateTimeOffset To, int Compared, int Matched, int Differences, int Unexplained,
-        DateTimeOffset? LastComparedAt, IReadOnlyList<ShadowRuleCount> ByRule, IReadOnlyList<ShadowDifferenceView> Latest);
+        DateTimeOffset? LastComparedAt, IReadOnlyList<ShadowRuleCount> ByRule, IReadOnlyList<ShadowDay> Days, IReadOnlyList<ShadowDifferenceView> Latest);
+
+    /// <summary>One UTC day of the window, the soak's daily report (p5-d7): units compared, their differences, and those no rule explains.</summary>
+    public sealed record ShadowDay(DateOnly Day, int Compared, int Differences, int Unexplained);
 
     /// <summary>Differences of one kind under one rule (<see cref="ShadowComparer.Unexplained"/>: no rule).</summary>
     public sealed record ShadowRuleCount(string Rule, string Kind, int Count);
@@ -27,6 +30,8 @@ namespace Juice.Observability.Notifications.Shadow
     /// <summary>The report (p5-d7's daily report reads it) and <see cref="IShadowReport"/>, from the comparer's tables.</summary>
     public sealed class ShadowReport(PlatformDbContext db, TimeProvider clock) : IShadowReport
     {
+        private sealed record DayRow(DateOnly Day, int Compared, int Differences, int Unexplained);
+
         public const int MaxLatest = 100;
 
         public async Task<ShadowReportView> GetAsync(Guid tenantId, DateTimeOffset from, DateTimeOffset to, int latest, CancellationToken ct)
@@ -38,9 +43,17 @@ namespace Juice.Observability.Notifications.Shadow
             var byRule = await differences.GroupBy(d => new { d.Rule, d.Kind }).Select(g => new { g.Key.Rule, g.Key.Kind, Count = g.Count() }).ToListAsync(ct);
             var unexplained = await differences.Where(d => d.Rule == null).OrderByDescending(d => d.DetectedAt).ThenBy(d => d.Id)
                 .Take(Math.Clamp(latest, 0, MaxLatest)).ToListAsync(ct);
+            // By UTC day, in the database (one row a day however many units).
+            var days = await db.Database.SqlQuery<DayRow>($"""
+                SELECT (compared_at AT TIME ZONE 'UTC')::date AS day, count(*)::int AS compared, coalesce(sum(differences), 0)::int AS differences,
+                       coalesce(sum(unexplained), 0)::int AS unexplained
+                FROM shadow_comparisons WHERE tenant_id = {tenantId} AND compared_at >= {from} AND compared_at < {to}
+                GROUP BY 1 ORDER BY 1
+                """).ToListAsync(ct);
             var last = await db.ShadowComparisons.AsNoTracking().Where(c => c.TenantId == tenantId).MaxAsync(c => (DateTimeOffset?)c.ComparedAt, ct);
             return new ShadowReportView(from, to, compared, matched, byRule.Sum(r => r.Count), byRule.Where(r => r.Rule is null).Sum(r => r.Count), last,
                 [.. byRule.Select(r => new ShadowRuleCount(r.Rule ?? ShadowComparer.Unexplained, r.Kind, r.Count)).OrderBy(r => r.Rule, StringComparer.Ordinal).ThenBy(r => r.Kind, StringComparer.Ordinal)],
+                [.. days.Select(d => new ShadowDay(d.Day, d.Compared, d.Differences, d.Unexplained))],
                 [.. unexplained.Select(d => new ShadowDifferenceView(d.Id, d.TransitionId, d.EscalationStep, d.AlertId, d.Event, d.EndpointKey, d.Kind, d.Rule, d.Detail, d.DetectedAt))]);
         }
 
