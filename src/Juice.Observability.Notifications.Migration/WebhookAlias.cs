@@ -99,6 +99,34 @@ namespace Juice.Observability.Notifications.Migration
             return problem is null ? [] : [problem];
         }
 
+        /// <summary>The keys of the endpoints the alias holds: what an escalation step may name in new (waves §6.4 C).</summary>
+        public async Task<IReadOnlySet<string>> EndpointKeysAsync(CancellationToken ct)
+            => (await notifications.Integrations.AsNoTracking()
+                .Where(i => i.TenantId == Tenant && (i.ManagedBy == AliasVocabulary.WebhooksAlias || i.ManagedBy == AliasVocabulary.AliasConfig))
+                .Select(i => i.Key).ToListAsync(ct)).ToHashSet(StringComparer.Ordinal);
+
+        /// <summary>Whether the alias holds a notifications policy of this key.</summary>
+        public Task<bool> HoldsPolicyAsync(string key, CancellationToken ct)
+            => notifications.EscalationPolicies.AsNoTracking().AnyAsync(p => p.TenantId == Tenant && p.Key == key && p.ManagedBy == AliasVocabulary.WebhooksAlias, ct);
+
+        /// <summary>
+        /// A legacy escalation policy's notifications policy (waves §6.4 C), in the caller's transaction: its steps as relative waits naming the
+        /// endpoints' routes by key (<see cref="PolicyMapping"/>). The legacy row stays the home of what selects the policy (severity, rules,
+        /// environments, enabled), which the producer adapter reads in every mode; in new, these steps are the ones that run.
+        /// </summary>
+        public async Task<IReadOnlyList<MappingProblem>> PutPolicyAsync(Data.EscalationPolicy policy, CancellationToken ct)
+        {
+            var mapped = PolicyMapping.Map(LegacyPolicy.From(policy), await EndpointKeysAsync(ct));
+            if (!mapped.Succeeded)
+            {
+                return mapped.Problems;
+            }
+            var definition = mapped.Value!;
+            var problem = await host.RunAsync(work => new HostSender(work).SendAsync(new PutEscalationPolicy(Tenant, definition.Key,
+                System.Text.Json.JsonElement.Parse(definition.Steps), definition.StopOnAcknowledge) { ManagedBy = AliasVocabulary.WebhooksAlias }, ct), ct);
+            return problem is null ? [] : [problem];
+        }
+
         /// <summary>The allowlist entries the alias holds (new: legacy's table isn't written), with when each last changed.</summary>
         public async Task<IReadOnlyList<(LegacyAllowlistEntry Entry, DateTimeOffset UpdatedAt, string ManagedBy)>> ListAllowlistAsync(CancellationToken ct)
             => [.. (await notifications.Allowlist.AsNoTracking().Where(a => a.TenantId == Tenant && (a.ManagedBy == AliasVocabulary.WebhooksAlias || a.ManagedBy == AliasVocabulary.AliasConfig))
