@@ -90,7 +90,7 @@ namespace Juice.Observability.Notifications.Migration
         private Guid Tenant => embedded.TenantId;
 
         /// <summary>Whether the pinned notifications alpha writes a route's digestSeconds (M46-1, decision G2). True, and passed to PutRoute, once it is pinned.</summary>
-        internal static bool RouteDigestSupported => false;
+        internal static bool RouteDigestSupported => true;
 
         /// <summary>
         /// Whether the pinned notifications takes a route by its key in an escalation step (M46-0), as every migrated policy's steps name their
@@ -277,7 +277,9 @@ namespace Juice.Observability.Notifications.Migration
                 {
                     continue;
                 }
-                writes.Add(new(item, (p, ct) => p.PutEndpointAsync(tenant, setup, surplus, ct)));
+                // A new integration keeps the legacy endpoint's id (decision on Q-B): its id never changes, whichever pipeline answers.
+                var keep = action == MigrationAction.Create ? endpoint.Id : (Guid?)null;
+                writes.Add(new(item, (p, ct) => p.PutEndpointAsync(tenant, setup, surplus, keep, ct)));
             }
 
             // Policies: their steps name the routes of endpoints that migrate.
@@ -379,7 +381,7 @@ namespace Juice.Observability.Notifications.Migration
             }
             var same = integration is not null && route is not null && others.Count == 0
                 && Equals(Definition(integration), setup.Integration with { Settings = "" }) && EndpointMapping.Same(integration.Settings, setup.Integration.Settings)
-                && route.Targets.SequenceEqual(setup.Route.Targets) && route.Enabled == setup.Route.Enabled && EndpointMapping.Same(route.Match, setup.Route.Match)
+                && route.Targets.SequenceEqual(setup.Route.Targets) && route.Enabled == setup.Route.Enabled && route.DigestSeconds == setup.Route.DigestSeconds && EndpointMapping.Same(route.Match, setup.Route.Match)
                 && setup.Targets.All(t => current.Targets[t.Key] is var x && (x.Address, x.AddressRef, x.Enabled) == (t.Address, t.AddressRef, t.Enabled));
             return (same ? MigrationAction.Unchanged : MigrationAction.Update, [], others);
         }
@@ -409,11 +411,11 @@ namespace Juice.Observability.Notifications.Migration
 
         // ─── The writes ───────────────────────────────────────────────────────
 
-        private async Task<MappingProblem?> PutEndpointAsync(Guid tenant, EndpointSetup setup, IReadOnlyList<string> surplus, CancellationToken ct)
+        private async Task<MappingProblem?> PutEndpointAsync(Guid tenant, EndpointSetup setup, IReadOnlyList<string> surplus, Guid? id, CancellationToken ct)
         {
             var i = setup.Integration;
             var problem = await PutAsync(new PutIntegration(tenant, i.Key, i.Channel, i.Kind, JsonElement.Parse(i.Settings), i.SecretRef, i.Priority, i.Enabled)
-                { ManagedBy = AliasVocabulary.WebhooksAlias }, ct);
+                { ManagedBy = AliasVocabulary.WebhooksAlias, Id = id }, ct);
             foreach (var t in setup.Targets)
             {
                 if (problem is not null)
@@ -429,7 +431,7 @@ namespace Juice.Observability.Notifications.Migration
             }
             await db.SaveChangesAsync(ct);
             var r = setup.Route;
-            problem = await PutAsync(new PutRoute(tenant, r.Key, JsonElement.Parse(r.Match), r.Targets, r.Enabled) { ManagedBy = AliasVocabulary.WebhooksAlias }, ct);
+            problem = await PutAsync(new PutRoute(tenant, r.Key, JsonElement.Parse(r.Match), r.Targets, r.Enabled, r.DigestSeconds) { ManagedBy = AliasVocabulary.WebhooksAlias }, ct);
             foreach (var key in surplus)
             {
                 if (problem is not null)
