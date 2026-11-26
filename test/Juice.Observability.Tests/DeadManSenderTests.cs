@@ -48,7 +48,8 @@ namespace Juice.Observability.Tests
         private sealed class FakeShadow : IShadowReport
         {
             public string? Failing { get; set; }
-            public ValueTask<string?> FailingAsync(CancellationToken cancellationToken) => ValueTask.FromResult(Failing);
+            public Exception? Error { get; set; }
+            public ValueTask<string?> FailingAsync(CancellationToken cancellationToken) => Error is { } error ? throw error : ValueTask.FromResult(Failing);
         }
 
         private static PipelineHealth Reading(TimeSpan? dispatcherDue = null, int dispatcherFailing = 0, SendHealth? sends = null) => new()
@@ -86,9 +87,10 @@ namespace Juice.Observability.Tests
             var health = new FakeHealth();
             var shadow = new FakeShadow();
             var clock = new Clock(DateTimeOffset.UtcNow);
-            var services = new ServiceCollection().AddSingleton<INotificationsPipelineHealth>(health).BuildServiceProvider();
+            var services = new ServiceCollection().AddSingleton<INotificationsPipelineHealth>(health).AddScoped<IShadowReport>(_ => shadow)
+                .BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
             var sender = new DeadManSender(services.GetRequiredService<IServiceScopeFactory>(), Options.Create(options),
-                Options.Create(new PlatformOptions { TenantKey = LocalStack.TenantKey }), clock, NullLogger<DeadManSender>.Instance, shadow);
+                Options.Create(new PlatformOptions { TenantKey = LocalStack.TenantKey }), clock, NullLogger<DeadManSender>.Instance);
             return new Setup(sender, health, shadow, clock, receiver);
         }
 
@@ -340,6 +342,20 @@ namespace Juice.Observability.Tests
             setup.Shadow.Failing = "12 differences in the last hour";
             await setup.Sender.RunOnceAsync(Ct);
             Assert.Equal(DeadManCauses.Shadow, Assert.Single(setup.Posted()).GetProperty("cause").GetString());
+        }
+
+        [Fact]
+        public async Task A_shadow_report_that_cant_answer_leaves_the_cause_as_it_was_Async()
+        {
+            await using var setup = await SetupAsync();
+            setup.Shadow.Failing = "12 differences in the last hour";
+            await setup.Sender.RunOnceAsync(Ct);
+            setup.Shadow.Error = new InvalidOperationException("comparer down");
+            setup.Shadow.Failing = null;
+            await setup.Sender.RunOnceAsync(Ct);
+            // Neither resolved nor raised again: still the one firing.
+            var posted = Assert.Single(setup.Posted());
+            Assert.Equal("observability.deadman.firing", posted.GetProperty("type").GetString());
         }
 
         [Fact]

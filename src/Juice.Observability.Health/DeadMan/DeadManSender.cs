@@ -47,7 +47,7 @@ namespace Juice.Observability.Health.DeadMan
     /// A cause is sent at most once per <see cref="DeadManOptions.ResendAfter"/>, and resolved when it clears.</para>
     /// </summary>
     public sealed class DeadManSender(IServiceScopeFactory scopes, IOptions<DeadManOptions> options, IOptions<PlatformOptions> platform, TimeProvider clock,
-        ILogger<DeadManSender> logger, IShadowReport? shadow = null) : BackgroundService
+        ILogger<DeadManSender> logger) : BackgroundService
     {
         public const string Worker = "notifications-deadman";
 
@@ -128,7 +128,7 @@ namespace Juice.Observability.Health.DeadMan
                 [DeadManCauses.Failing] = health is null ? Keep(DeadManCauses.Failing) : Failing(health, now),
                 [DeadManCauses.NoSuccess] = health is null ? Keep(DeadManCauses.NoSuccess) : NoSuccess(health, now),
                 [DeadManCauses.StuckInRetry] = health is null ? Keep(DeadManCauses.StuckInRetry) : StuckInRetry(health),
-                [DeadManCauses.Shadow] = shadow is null ? null : await shadow.FailingAsync(cancellationToken),
+                [DeadManCauses.Shadow] = await ShadowAsync(cancellationToken),
             };
             // Not known yet: unread, or a condition seen once that needs a second read to stand.
             var unknown = new HashSet<string>();
@@ -184,6 +184,25 @@ namespace Juice.Observability.Health.DeadMan
         }
 
         private string? Keep(string cause) => _causes[cause].Active ? _causes[cause].Detail : null;
+
+        /// <summary>
+        /// The shadow comparison's answer (<see cref="IShadowReport"/>, registered by M47 in shadow mode only; scoped, so read in a scope of its own
+        /// each pass). None registered: nothing to say. If it can't answer, the cause is left as it was.
+        /// </summary>
+        private async Task<string?> ShadowAsync(CancellationToken cancellationToken)
+        {
+            await using var scope = scopes.CreateAsyncScope();
+            if (scope.ServiceProvider.GetService<IShadowReport>() is not { } report) return null;
+            try
+            {
+                return await report.FailingAsync(cancellationToken);
+            }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                logger.LogWarning(ex, "The shadow report could not be read; the shadow cause is left as it was");
+                return Keep(DeadManCauses.Shadow);
+            }
+        }
 
         private async Task<(PipelineHealth? Health, string? Unreadable)> ReadAsync(CancellationToken cancellationToken)
         {
