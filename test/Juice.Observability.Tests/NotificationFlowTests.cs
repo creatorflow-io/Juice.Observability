@@ -20,7 +20,7 @@ namespace Juice.Observability.Tests
     /// </summary>
     public class NotificationFlowTests
     {
-        private const string SecretVariable = "JUICE_WEBHOOK_TEST";
+        internal const string SecretVariable = "JUICE_WEBHOOK_TEST";
         private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
         public NotificationFlowTests() => Environment.SetEnvironmentVariable(SecretVariable, "flow-secret");
@@ -30,20 +30,20 @@ namespace Juice.Observability.Tests
 
         private static IOptions<PlatformOptions> Platform => Options.Create(new PlatformOptions { TenantKey = LocalStack.TenantKey });
 
-        private static WebhookDispatcher Dispatcher(ScratchDatabase database, Action<WebhookOptions>? configure = null)
+        internal static WebhookDispatcher Dispatcher(ScratchDatabase database, Action<WebhookOptions>? configure = null)
         {
             var options = new WebhookOptions { RetryBase = TimeSpan.FromMilliseconds(20), RetryMax = TimeSpan.FromMilliseconds(100), AllowHttpToAllowlisted = true, MaxAttempts = 3 };
             configure?.Invoke(options);
             return new WebhookDispatcher(Scopes(database), Options.Create(options), TimeProvider.System, NullLogger<WebhookDispatcher>.Instance);
         }
 
-        private static NotificationWorker Worker(ScratchDatabase database)
+        internal static NotificationWorker Worker(ScratchDatabase database)
             => new(Scopes(database), Options.Create(new WebhookOptions()), Platform, TimeProvider.System, NullLogger<NotificationWorker>.Instance);
 
 
-        private static async Task<Guid> TenantAsync(PlatformDbContext db) => (await db.Tenants.SingleAsync(t => t.Key == LocalStack.TenantKey, Ct)).Id;
+        internal static async Task<Guid> TenantAsync(PlatformDbContext db) => (await db.Tenants.SingleAsync(t => t.Key == LocalStack.TenantKey, Ct)).Id;
 
-        private static async Task<WebhookEndpoint> EndpointAsync(ScratchDatabase database, Receiver? receiver, string key = "ops", ChannelKind kind = ChannelKind.Webhook, int group = 0, string[]? events = null, string[]? environments = null, string[]? recipients = null)
+        internal static async Task<WebhookEndpoint> EndpointAsync(ScratchDatabase database, Receiver? receiver, string key = "ops", ChannelKind kind = ChannelKind.Webhook, int group = 0, string[]? events = null, string[]? environments = null, string[]? recipients = null)
         {
             await using var db = database.Context();
             var tenant = await TenantAsync(db);
@@ -64,7 +64,7 @@ namespace Juice.Observability.Tests
         }
 
         /// <summary>Fires an alert and plans its notifications, as the outbox's consumer does once the firing is committed.</summary>
-        private static async Task<Guid> FireAsync(ScratchDatabase database, string subject = "service:shop/orders@production", AlertSeverity severity = AlertSeverity.Critical, string ruleKey = "orders-errors", bool plan = true)
+        internal static async Task<Guid> FireAsync(ScratchDatabase database, string subject = "service:shop/orders@production", AlertSeverity severity = AlertSeverity.Critical, string ruleKey = "orders-errors", bool plan = true)
         {
             await using var db = database.Context();
             var tenant = await TenantAsync(db);
@@ -89,7 +89,7 @@ namespace Juice.Observability.Tests
             return alert.Id;
         }
 
-        private static async Task ResolveAsync(ScratchDatabase database, Guid alertId)
+        internal static async Task ResolveAsync(ScratchDatabase database, Guid alertId)
         {
             await using var db = database.Context();
             var alert = await db.Alerts.SingleAsync(a => a.Id == alertId, Ct);
@@ -599,7 +599,7 @@ namespace Juice.Observability.Tests
         }
 
         /// <summary>Moves the whole alert back, as if it fired this long ago.</summary>
-        private static async Task AgeAsync(ScratchDatabase database, Guid alert, int minutes)
+        internal static async Task AgeAsync(ScratchDatabase database, Guid alert, int minutes)
         {
             await using var db = database.Context();
             var firedAt = DateTimeOffset.UtcNow.AddMinutes(-minutes);
