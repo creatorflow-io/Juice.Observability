@@ -88,6 +88,31 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
+        public async Task A_pipeline_command_opens_its_own_transaction_and_no_platform_one_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var factory = Factory(database);
+            _ = factory.Server;
+            var application = await ScalarAsync<Guid>(database, $"SELECT id FROM notifications.applications WHERE key = '{NotificationsRegistration.ApplicationKey}'");
+            using var begun = new TransactionsBegun(database.Name);
+
+            const string type = "observability.composition.reverse";
+            await using (var scope = factory.Services.CreateAsyncScope())
+            {
+                using var context = PlatformMessageContext.Begin("test");
+                var declared = await scope.ServiceProvider.GetRequiredService<IMediator>().Send(new DeclareType(application, NotificationsRegistration.ApplicationKey,
+                    new TypeDeclaration(type, "Reverse", "tests", null, null, null, null, JsonSerializer.SerializeToElement(new { type = "object" }),
+                        CorrelationRules.Optional, null, null, null)), Ct);
+                Assert.True(declared.Value is { IsNew: true }, declared.Message);
+            }
+
+            Assert.Equal(1, await CountAsync(database, $"SELECT count(*) FROM notifications.notification_types WHERE key = '{type}'"));
+            Assert.Equal(1, begun.Of<Juice.Notifications.Data.NotificationsDbContext>());
+            Assert.Equal(0, begun.Of<PlatformDbContext>());
+        }
+
+        [Fact]
         public async Task A_request_sent_in_a_platform_command_commits_with_it_in_its_transaction_Async()
         {
             LocalStack.RequireAvailable();
@@ -240,6 +265,14 @@ namespace Juice.Observability.Tests
         {
             await using var db = database.Context();
             return (await db.Tenants.SingleAsync(t => t.Key == LocalStack.TenantKey, Ct)).Id;
+        }
+
+        private static async Task<T> ScalarAsync<T>(ScratchDatabase database, string sql)
+        {
+            await using var connection = new NpgsqlConnection(database.ConnectionString);
+            await connection.OpenAsync(Ct);
+            await using var command = new NpgsqlCommand(sql, connection);
+            return (T)(await command.ExecuteScalarAsync(Ct))!;
         }
 
         private static async Task<long> CountAsync(ScratchDatabase database, string sql)
