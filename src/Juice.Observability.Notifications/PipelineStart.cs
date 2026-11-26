@@ -32,6 +32,11 @@ namespace Juice.Observability.Notifications
 
         internal void Fail(string step, Exception error) => _failure ??= $"{step}: {error.Message}";
 
+        private readonly System.Collections.Concurrent.ConcurrentQueue<string> _skipped = new();
+
+        /// <summary>The steps skipped because one before them failed.</summary>
+        public IReadOnlyCollection<string> Skipped => _skipped;
+
         /// <summary>
         /// Puts the platform's migration of the schema (when <paramref name="migrate"/>) where the pipeline's migrator was, and records rather than
         /// throws a failure of it or of the provisioning after it. Call after the pipeline is registered.
@@ -74,6 +79,7 @@ namespace Juice.Observability.Notifications
             {
                 if (state.Failure is not null)
                 {
+                    state._skipped.Enqueue(step);
                     logger.LogWarning("Notification pipeline: {Step} skipped, since its start failed ({Failure})", step, state.Failure);
                     return;
                 }

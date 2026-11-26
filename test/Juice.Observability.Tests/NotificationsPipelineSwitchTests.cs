@@ -150,6 +150,30 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
+        public async Task A_context_joining_a_live_transaction_keeps_its_actions_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var commits = new PlatformCommitActions(NullLogger<PlatformCommitActions>.Instance);
+            var ran = new List<string>();
+
+            await using var owner = Context(database, commits);
+            await using var transaction = await owner.Database.BeginTransactionAsync(Ct);
+            new PlatformNotificationTransaction(owner, commits).OnCommitted(() => ran.Add("registered"));
+            // Another context on the same connection joins the transaction (as the embedded client's does on its own context).
+            var options = new DbContextOptionsBuilder<PlatformDbContext>();
+            options.UseNpgsql(owner.Database.GetDbConnection()).UseSnakeCaseNamingConvention();
+            options.AddInterceptors(commits);
+            await using (var joining = new PlatformDbContext(options.Options))
+            {
+                await joining.Database.UseTransactionAsync(transaction.GetDbTransaction(), Ct);
+            }
+            await transaction.CommitAsync(Ct);
+
+            Assert.Equal(["registered"], ran);
+        }
+
+        [Fact]
         public async Task Without_a_transaction_or_the_interceptor_the_request_waits_for_the_poll_Async()
         {
             LocalStack.RequireAvailable();
