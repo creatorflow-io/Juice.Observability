@@ -1,7 +1,7 @@
 name: Build
 
-# Build and test on every working branch. On a release/* branch, once build and test pass, publish test packages of
-# each side the push changed:
+# Build and test on every working branch, and every PR to main or release/* (a PR publishes nothing). On a release/*
+# branch, once build and test pass, publish test packages of each side the push changed:
 #   Juice.Observability.*    → <VersionPrefix>-alpha.<run> on GitHub Packages (nuget.pkg.github.com/creatorflow-io)
 #                              (VersionPrefix in Directory.Build.props)
 #   @juice-js/observability  → <version>-alpha.<run> on npmjs, dist-tag "alpha" (npm i @juice-js/observability@alpha)
@@ -13,7 +13,18 @@ on:
     branches: [ "main", "release/**", "dev/**" ]
     paths-ignore:
       - '**.md'
+  # Build and test every PR to main or release/*. Nothing is published: the alpha jobs gate on a release/* branch ref, and a PR's is
+  # refs/pull/N/merge.
+  pull_request:
+    branches: [ "main", "release/**" ]
+    paths-ignore:
+      - '**.md'
   workflow_dispatch:
+
+# One run per PR at a time (a new push cancels the PR's run under way); pushes and manual runs are never cancelled.
+concurrency:
+  group: build-${{ github.event_name }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # Which side the push changed, for the alpha jobs. A new branch is compared with where it left main.
