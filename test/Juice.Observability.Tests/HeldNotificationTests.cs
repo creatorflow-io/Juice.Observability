@@ -148,6 +148,53 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
+        public async Task One_bad_kept_call_doesnt_block_the_others_and_is_given_up_after_a_few_tries_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var factory = Factory(database);
+            _ = factory.Server;
+            var (alert, firing) = await FireAsync(database);
+            await PlanAsync(factory, database, firing);
+            var tenant = await TenantAsync(database);
+            Guid bad;
+            await using (var db = database.Context())
+            {
+                // Ahead of the good one: a kept request that can't be read.
+                var broken = new NotificationParkedCall { TenantId = tenant, Kind = NotificationParkedCalls.Send, Request = """{"type": 1}""", CreatedAt = DateTimeOffset.UtcNow };
+                db.NotificationParkedCalls.Add(broken);
+                await db.SaveChangesAsync(Ct);
+                bad = broken.Id;
+                db.NotificationParkedCalls.Add(new NotificationParkedCall
+                {
+                    TenantId = tenant, Kind = NotificationParkedCalls.Acknowledge, CorrelationKey = $"alert:{alert}", By = "erin", CreatedAt = DateTimeOffset.UtcNow,
+                });
+                await db.SaveChangesAsync(Ct);
+            }
+
+            await Pass(factory).ReleaseOnceAsync(Ct);
+
+            Assert.Equal("Acknowledged", await CorrelationStateAsync(database, $"alert:{alert}"));
+            await using (var db = database.Context())
+            {
+                var kept = await db.NotificationParkedCalls.AsNoTracking().SingleAsync(c => c.Id == bad, Ct);
+                Assert.Equal((1, (DateTimeOffset?)null), (kept.Attempts, kept.ReplayedAt));
+                Assert.NotNull(kept.LastError);
+            }
+            for (var i = 1; i < NotificationHoldOutcomes.MaxAttempts; i++)
+            {
+                await Pass(factory).ReleaseOnceAsync(Ct);
+            }
+            await using (var db = database.Context())
+            {
+                var given = await db.NotificationParkedCalls.AsNoTracking().SingleAsync(c => c.Id == bad, Ct);
+                Assert.Equal(NotificationHoldOutcomes.MaxAttempts, given.Attempts);
+                Assert.NotNull(given.ReplayedAt);
+            }
+            Assert.Equal(0, await Pass(factory).ReleaseOnceAsync(Ct));
+        }
+
+        [Fact]
         public async Task Passes_on_two_replicas_send_one_request_Async()
         {
             LocalStack.RequireAvailable();

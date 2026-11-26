@@ -13,7 +13,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Juice.Observability.Data.Migrations
 {
     [DbContext(typeof(PlatformDbContext))]
-    [Migration("20261126050524_NotificationsAdapter")]
+    [Migration("20261126075141_NotificationsAdapter")]
     partial class NotificationsAdapter
     {
         /// <inheritdoc />
@@ -1826,6 +1826,10 @@ namespace Juice.Observability.Data.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("alert_id");
 
+                    b.Property<int>("Attempts")
+                        .HasColumnType("integer")
+                        .HasColumnName("attempts");
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
@@ -1839,6 +1843,11 @@ namespace Juice.Observability.Data.Migrations
                         .HasMaxLength(40)
                         .HasColumnType("character varying(40)")
                         .HasColumnName("event");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("last_error");
 
                     b.Property<string>("Outcome")
                         .HasMaxLength(20)
@@ -1886,6 +1895,10 @@ namespace Juice.Observability.Data.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<int>("Attempts")
+                        .HasColumnType("integer")
+                        .HasColumnName("attempts");
+
                     b.Property<string>("By")
                         .HasMaxLength(256)
                         .HasColumnType("character varying(256)")
@@ -1905,6 +1918,11 @@ namespace Juice.Observability.Data.Migrations
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)")
                         .HasColumnName("kind");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("last_error");
 
                     b.Property<DateTimeOffset?>("ReplayedAt")
                         .HasColumnType("timestamp with time zone")

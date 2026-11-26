@@ -73,14 +73,20 @@ namespace Juice.Observability.Data
         public required string Request { get; init; }
         public DateTimeOffset CreatedAt { get; init; }
         public DateTimeOffset? DecidedAt { get; set; }
-        /// <summary><see cref="NotificationHoldOutcomes.Sent"/> or <see cref="NotificationHoldOutcomes.Dropped"/>, once decided.</summary>
+        /// <summary><see cref="NotificationHoldOutcomes.Sent"/>, <see cref="NotificationHoldOutcomes.Dropped"/> or <see cref="NotificationHoldOutcomes.Failed"/>, once decided.</summary>
         public string? Outcome { get; set; }
+        /// <summary>Tries that failed (an error, not the pipeline's refusal); at <see cref="NotificationHoldOutcomes.MaxAttempts"/> it is decided failed.</summary>
+        public int Attempts { get; set; }
+        public string? LastError { get; set; }
     }
 
     public static class NotificationHoldOutcomes
     {
         public const string Sent = "sent";
         public const string Dropped = "dropped";
+        /// <summary>Its send kept failing (<see cref="MaxAttempts"/> tries): given up, so it no longer blocks the others.</summary>
+        public const string Failed = "failed";
+        public const int MaxAttempts = 5;
     }
 
     /// <summary>
@@ -113,6 +119,9 @@ namespace Juice.Observability.Data
         public string? Request { get; init; }
         public DateTimeOffset CreatedAt { get; init; }
         public DateTimeOffset? ReplayedAt { get; set; }
+        /// <summary>Replays that failed; at <see cref="NotificationHoldOutcomes.MaxAttempts"/> it is given up (replayed, with its error).</summary>
+        public int Attempts { get; set; }
+        public string? LastError { get; set; }
     }
 
     public static class NotificationParkedCalls

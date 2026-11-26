@@ -138,15 +138,42 @@ namespace Juice.Observability.Notifications
         public static string SilenceReason(Guid silenceId) => $"silence:{silenceId}";
 
         /// <summary>
-        /// Holds the alert's escalation for a silence (p5-d3): a step that falls due waits for <see cref="ReleaseAlertAsync"/>. False when the
+        /// Holds the alert's escalation for a silence (p5-d3): a step that falls due waits for <see cref="ReleaseAsync"/>. False when the
         /// pipeline has no correlation for it (its firing was never sent: held itself, or not planned yet) or refused, and when it didn't start.
         /// </summary>
         internal async Task<bool> HoldAlertAsync(Guid alertId, Guid silenceId, CancellationToken cancellationToken)
             => !Unavailable && await TolerateAsync("hold", () => client.HoldAsync(AlertCorrelation(alertId), SilenceReason(silenceId), "silence", cancellationToken));
 
-        /// <summary>Releases the alert's hold: steps that fell due under it run now if the alert is still open. False as for a hold.</summary>
-        internal async Task<bool> ReleaseAlertAsync(Guid alertId, CancellationToken cancellationToken)
-            => !Unavailable && await TolerateAsync("release", () => client.ReleaseAsync(AlertCorrelation(alertId), "silence", cancellationToken));
+        /// <summary>Whether the pipeline failed to start: nothing is asked of it.</summary>
+        internal bool IsUnavailable => Unavailable;
+
+        /// <summary>
+        /// Releases a hold (an alert's, <c>alert:{id}</c>): steps that fell due under it run now if the correlation is still open.
+        /// <see cref="HoldRelease.Gone"/> when the pipeline has no such correlation (nothing left to release); <see cref="HoldRelease.Failed"/> when it
+        /// refused or didn't start, so the hold still stands and the platform's record of it must stay.
+        /// </summary>
+        internal async Task<HoldRelease> ReleaseAsync(string correlationKey, CancellationToken cancellationToken)
+        {
+            if (Unavailable)
+            {
+                return HoldRelease.Failed;
+            }
+            try
+            {
+                await client.ReleaseAsync(correlationKey, "silence", cancellationToken);
+                return HoldRelease.Released;
+            }
+            catch (NotificationRefusedException refused) when (refused.Code is ErrorCodes.NotFound)
+            {
+                return HoldRelease.Gone;
+            }
+            catch (NotificationRefusedException refused)
+            {
+                Refused.Add(1, new KeyValuePair<string, object?>("call", "release"), new KeyValuePair<string, object?>("code", refused.Code));
+                logger.LogError("The notification pipeline refused to release {Key}: {Code} {Message}; it is tried again", correlationKey, refused.Code, refused.Message);
+                return HoldRelease.Failed;
+            }
+        }
 
         /// <summary>Resolves the alert's correlation (its escalation stops, what is still due is cancelled); none, or closed already, is no failure.</summary>
         internal Task ResolveAlertAsync(Guid alertId, string? reason, CancellationToken cancellationToken)
@@ -293,5 +320,21 @@ namespace Juice.Observability.Notifications
                 return false;
             }
         }
+    }
+}
+
+namespace Juice.Observability.Notifications
+{
+    /// <summary>What releasing a hold did.</summary>
+    internal enum HoldRelease
+    {
+        /// <summary>Released (or wasn't held).</summary>
+        Released,
+
+        /// <summary>The pipeline has no such correlation: nothing is held.</summary>
+        Gone,
+
+        /// <summary>Refused, or the pipeline didn't start: the hold stands.</summary>
+        Failed,
     }
 }
