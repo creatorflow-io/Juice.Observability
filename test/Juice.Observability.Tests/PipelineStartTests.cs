@@ -2,6 +2,7 @@ using System.Net;
 using Juice.Observability.Data;
 using Juice.Observability.Notifications;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 
 namespace Juice.Observability.Tests
@@ -44,6 +45,48 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
+        public async Task A_failed_start_in_new_still_commits_alert_transitions_and_keeps_their_notifications_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await SqlAsync(database, "CREATE SCHEMA notifications; CREATE TABLE notifications.applications (unrelated int);");
+            var settings = new Dictionary<string, string> { ["Notifications:Pipeline"] = "new" };
+            Guid alert, transition;
+            await using (var factory = new ApiTests.ApiFactory(database, settings: settings))
+            {
+                _ = factory.Server;
+                var start = Start(factory);
+                Assert.StartsWith("DatabaseMigrator", start.Failure);
+                // Nothing of the pipeline polls the tables that aren't there: its stages, its outbox, the release pass.
+                Assert.Contains("CompositeDeliveryHostedService<NotificationsDbContext>", start.Skipped);
+                Assert.Contains(nameof(NotificationsReleasePass), start.Skipped);
+                Assert.Contains(start.Skipped, s => s.StartsWith("StageWorker", StringComparison.Ordinal));
+
+                (alert, transition) = await ProducerAdapterTests.FireAsync(database);
+                await ProducerAdapterTests.PlanAsync(factory, database, transition);
+                await using var db = database.Context();
+                // The plan committed, and the request waits for the pipeline.
+                Assert.NotNull((await db.AlertTransitions.SingleAsync(t => t.Id == transition, Ct)).NotificationsPlannedAt);
+                var hold = await db.NotificationHolds.SingleAsync(Ct);
+                Assert.Equal((transition, ProducerAdapter.PipelineUnavailable, (DateTimeOffset?)null), (hold.TransitionId, hold.SilenceId, hold.DecidedAt));
+            }
+
+            // The cause fixed and the host restarted: the pipeline starts, and the release pass sends what was kept.
+            await SqlAsync(database, "DROP TABLE notifications.applications;");
+            await using (var factory = new ApiTests.ApiFactory(database, settings: settings))
+            {
+                _ = factory.Server;
+                Assert.Null(Start(factory).Failure);
+                var pass = new NotificationsReleasePass(factory.Services.GetRequiredService<IServiceScopeFactory>(),
+                    Microsoft.Extensions.Options.Options.Create(new Webhooks.WebhookOptions()), TimeProvider.System,
+                    Microsoft.Extensions.Logging.Abstractions.NullLogger<NotificationsReleasePass>.Instance);
+                await pass.ReleaseOnceAsync(Ct);
+                var request = Assert.Single(await ProducerAdapterTests.RequestsAsync(database));
+                Assert.Equal(($"transition:{transition}", $"alert:{alert}"), (request.Key, request.Correlation));
+            }
+        }
+
+        [Fact]
         public async Task A_schema_never_migrated_fails_readiness_not_the_start_Async()
         {
             LocalStack.RequireAvailable();
@@ -54,7 +97,8 @@ namespace Juice.Observability.Tests
             Assert.Equal(HttpStatusCode.ServiceUnavailable, (await client.GetAsync("/health/ready", Ct)).StatusCode);
             // The provisioning file came first and failed on the missing schema; the application's provisioning, after it, didn't run.
             Assert.StartsWith("ConfigurationProvisioner", Start(factory).Failure);
-            Assert.Equal(["EmbeddedApplicationProvisioner"], Start(factory).Skipped);
+            Assert.Equal("EmbeddedApplicationProvisioner", Start(factory).Skipped.First());
+            Assert.Contains("CompositeDeliveryHostedService<NotificationsDbContext>", Start(factory).Skipped);
         }
 
         [Fact]

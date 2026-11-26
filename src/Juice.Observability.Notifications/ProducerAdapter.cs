@@ -25,8 +25,17 @@ namespace Juice.Observability.Notifications
     /// is intact. A database error is not caught.
     /// </summary>
     public sealed class ProducerAdapter(INotificationClient client, PlatformDbContext db, IOptions<PlatformOptions> platform, IOptions<WebhookOptions> webhooks,
-        TimeProvider clock, ILogger<ProducerAdapter> logger)
+        TimeProvider clock, ILogger<ProducerAdapter> logger, PipelineStart? start = null)
     {
+        /// <summary>
+        /// The silence of a hold kept because the pipeline didn't start (<see cref="PipelineStart.Failure"/>): none. Once a restart brings the
+        /// pipeline up, the release pass decides it as any other hold whose silence is over.
+        /// </summary>
+        public static readonly Guid PipelineUnavailable = Guid.Empty;
+
+        /// <summary>Whether the pipeline failed to start: nothing is asked of it, so the platform's change still commits.</summary>
+        private bool Unavailable => start?.Failure is not null;
+
         private static readonly Meter Meter = new("Juice.Observability");
         private static readonly Counter<long> Refused = Meter.CreateCounter<long>("juice.observability.notifications.refused", "{request}",
             "Requests the notification pipeline refused, by call and code");
@@ -63,14 +72,23 @@ namespace Juice.Observability.Notifications
             }
             else
             {
-                await TolerateAsync("resolve", () => client.ResolveAsync(AlertCorrelation(alert.Id), Bounded(transition.Reason, 200), null, cancellationToken));
+                // Parked while the pipeline is down: the release pass resolves it with the notice.
+                if (!Unavailable)
+                {
+                    await ResolveAlertAsync(alert.Id, transition.Reason, cancellationToken);
+                }
                 request = Resolved(rule, alert, transition, context);
             }
-            if (NotificationPlan.CoveringSilence(db, alert, context, now) is { } silence)
+            var silence = NotificationPlan.CoveringSilence(db, alert, context, now);
+            if (silence is not null || Unavailable)
             {
+                if (silence is null)
+                {
+                    logger.LogWarning("The notification pipeline didn't start ({Failure}): transition {Transition} is kept until it does", start!.Failure, transition.Id);
+                }
                 db.NotificationHolds.Add(new NotificationHold
                 {
-                    TenantId = tenantId, AlertId = alert.Id, TransitionId = transition.Id, SilenceId = silence.Id, CreatedAt = now,
+                    TenantId = tenantId, AlertId = alert.Id, TransitionId = transition.Id, SilenceId = silence?.Id ?? PipelineUnavailable, CreatedAt = now,
                     Event = transition.ToState == AlertState.Firing ? NotificationPlan.Firing : NotificationPlan.Resolved,
                     Request = JsonSerializer.Serialize(request, JsonSerializerOptions.Web),
                 });
@@ -80,8 +98,19 @@ namespace Juice.Observability.Notifications
         }
 
         /// <summary>Someone acknowledged the alert: its correlation is acknowledged (escalations that stop on it stop).</summary>
-        public Task AcknowledgeAsync(Guid alertId, string by, CancellationToken cancellationToken)
-            => TolerateAsync("acknowledge", () => client.AcknowledgeAsync(AlertCorrelation(alertId), Bounded(by, 200), cancellationToken));
+        public async Task AcknowledgeAsync(Guid alertId, string by, CancellationToken cancellationToken)
+        {
+            if (Unavailable)
+            {
+                logger.LogWarning("The notification pipeline didn't start ({Failure}): the acknowledgement of alert {Alert} isn't told to it", start!.Failure, alertId);
+                return;
+            }
+            await TolerateAsync("acknowledge", () => client.AcknowledgeAsync(AlertCorrelation(alertId), Bounded(by, 200), cancellationToken));
+        }
+
+        /// <summary>Resolves the alert's correlation (its escalation stops, what is still due is cancelled); none, or closed already, is no failure.</summary>
+        internal Task ResolveAlertAsync(Guid alertId, string? reason, CancellationToken cancellationToken)
+            => TolerateAsync("resolve", () => client.ResolveAsync(AlertCorrelation(alertId), Bounded(reason, 200), null, cancellationToken));
 
         /// <summary>
         /// What happened to an action request: <c>observability.action.request.{event}</c>, keyed <c>action:{id}:{event}</c>. While the request is
@@ -89,6 +118,12 @@ namespace Juice.Observability.Notifications
         /// </summary>
         public async Task ActionRequestAsync(ActionRequest request, string hostname, string type, DateTimeOffset now, CancellationToken cancellationToken)
         {
+            if (Unavailable)
+            {
+                Refused.Add(1, new KeyValuePair<string, object?>("call", "send"), new KeyValuePair<string, object?>("code", "pipeline_unavailable"));
+                logger.LogError("The notification pipeline didn't start ({Failure}): {Type} of action request {Request} isn't sent", start!.Failure, type, request.Id);
+                return;
+            }
             var @event = type.StartsWith(RequestPrefix, StringComparison.Ordinal) ? type[RequestPrefix.Length..] : type;
             var ends = Ends(request, type);
             if (ends)

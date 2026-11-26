@@ -41,27 +41,90 @@ namespace Juice.Observability.Notifications
         /// Puts the platform's migration of the schema (when <paramref name="migrate"/>) where the pipeline's migrator was, and records rather than
         /// throws a failure of it or of the provisioning after it. Call after the pipeline is registered.
         /// </summary>
-        internal static void Guard(IServiceCollection services, bool migrate)
+        internal static IReadOnlyCollection<ServiceDescriptor> Guard(IServiceCollection services, bool migrate)
         {
             services.AddSingleton<PipelineStart>();
-            Replace(services, Migrator, (sp, _) => new SchemaMigrator(sp.GetRequiredService<IServiceScopeFactory>(), migrate,
-                sp.GetRequiredService<ILogger<PipelineStart>>()));
+            var guarded = new List<ServiceDescriptor>();
+            guarded.Add(Replace(services, Migrator, (sp, _) => new SchemaMigrator(sp.GetRequiredService<IServiceScopeFactory>(), migrate,
+                sp.GetRequiredService<ILogger<PipelineStart>>())));
             foreach (var name in Provisioning)
             {
-                Replace(services, name, (sp, type) => ActivatorUtilities.CreateInstance(sp, type) as IHostedService
-                    ?? throw new InvalidOperationException($"{name} isn't a hosted service"));
+                guarded.Add(Replace(services, name, (sp, type) => ActivatorUtilities.CreateInstance(sp, type) as IHostedService
+                    ?? throw new InvalidOperationException($"{name} isn't a hosted service")));
             }
             services.AddHealthChecks().AddCheck<PipelineStartCheck>("notifications", tags: ["ready"]);
+            return guarded;
         }
 
-        private static void Replace(IServiceCollection services, string name, Func<IServiceProvider, Type, IHostedService> create)
+        /// <summary>
+        /// The pipeline's other hosted services (its stages, its outbox's delivery, its failure events, the platform's release pass): every one
+        /// registered since <paramref name="before"/>, except the start's own steps, the health check publisher and the dry run's guard (which must
+        /// still refuse <c>shadow</c>). After a failed start they don't start: they would poll tables that aren't there. Call after
+        /// <see cref="Guard"/> and after the last of them is registered.
+        /// </summary>
+        internal static void GateTheRest(IServiceCollection services, IReadOnlyCollection<ServiceDescriptor> before, IReadOnlyCollection<ServiceDescriptor> guarded)
+        {
+            for (var i = 0; i < services.Count; i++)
+            {
+                var descriptor = services[i];
+                if (descriptor.ServiceType != typeof(IHostedService) || before.Contains(descriptor) || guarded.Contains(descriptor)
+                    || descriptor.ImplementationType?.Name is "HealthCheckPublisherHostedService" or "DryRunGuard")
+                {
+                    continue;
+                }
+                services[i] = ServiceDescriptor.Singleton<IHostedService>(sp => new UnlessStartFailed(Create(sp, descriptor),
+                    sp.GetRequiredService<PipelineStart>(), sp.GetRequiredService<ILogger<PipelineStart>>()));
+            }
+        }
+
+        private static IHostedService Create(IServiceProvider sp, ServiceDescriptor descriptor)
+            => (IHostedService)(descriptor.ImplementationInstance
+                ?? descriptor.ImplementationFactory?.Invoke(sp)
+                ?? ActivatorUtilities.CreateInstance(sp, descriptor.ImplementationType!));
+
+        /// <summary>A hosted service's name, through the start's wrappers (for its tests and logs).</summary>
+        internal static string NameOf(IHostedService service) => service switch
+        {
+            UnlessStartFailed gated => UnlessStartFailed.Name(gated.Inner),
+            GuardedStart guarded => guarded.Step,
+            _ => UnlessStartFailed.Name(service),
+        };
+
+        private sealed class UnlessStartFailed(IHostedService inner, PipelineStart state, ILogger logger) : IHostedService
+        {
+            public IHostedService Inner => inner;
+
+            private bool _started;
+
+            public async Task StartAsync(CancellationToken cancellationToken)
+            {
+                if (state.Failure is not null)
+                {
+                    state._skipped.Enqueue(Name(inner));
+                    logger.LogWarning("Notification pipeline: {Service} not started, since its start failed ({Failure})", Name(inner), state.Failure);
+                    return;
+                }
+                await inner.StartAsync(cancellationToken);
+                _started = true;
+            }
+
+            public Task StopAsync(CancellationToken cancellationToken) => _started ? inner.StopAsync(cancellationToken) : Task.CompletedTask;
+
+            internal static string Name(IHostedService service) => service.GetType() is { IsGenericType: true } generic
+                ? $"{generic.Name[..generic.Name.IndexOf('`')]}<{string.Join(",", generic.GetGenericArguments().Select(a => a.Name))}>"
+                : service.GetType().Name;
+        }
+
+        private static ServiceDescriptor Replace(IServiceCollection services, string name, Func<IServiceProvider, Type, IHostedService> create)
         {
             var descriptor = services.SingleOrDefault(s => s.ServiceType == typeof(IHostedService) && s.ImplementationType?.FullName == name)
                 ?? throw new InvalidOperationException($"The notification pipeline no longer registers {name} at start: review PipelineStart.");
             var type = descriptor.ImplementationType!;
             // In its place: hosted services start in the order they are registered.
-            services[services.IndexOf(descriptor)] = ServiceDescriptor.Singleton<IHostedService>(sp => new GuardedStart(create(sp, type), type.Name,
+            var guarded = ServiceDescriptor.Singleton<IHostedService>(sp => new GuardedStart(create(sp, type), type.Name,
                 sp.GetRequiredService<PipelineStart>(), sp.GetRequiredService<ILogger<PipelineStart>>()));
+            services[services.IndexOf(descriptor)] = guarded;
+            return guarded;
         }
 
         /// <summary>The schema's pending migrations, applied by the platform (I60).</summary>
@@ -75,6 +138,8 @@ namespace Juice.Observability.Notifications
 
         private sealed class GuardedStart(IHostedService inner, string step, PipelineStart state, ILogger logger) : IHostedService
         {
+            public string Step => step;
+
             public async Task StartAsync(CancellationToken cancellationToken)
             {
                 if (state.Failure is not null)
