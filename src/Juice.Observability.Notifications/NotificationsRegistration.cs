@@ -3,6 +3,7 @@ using Juice.Notifications.Embedded;
 using Juice.Notifications.Providers.Chat;
 using Juice.Observability.Data;
 using Juice.Observability.Discovery;
+using Juice.Observability.Health.DeadMan;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -67,9 +68,41 @@ namespace Juice.Observability.Notifications
             PipelineStart.GateTheRest(services, before, guarded, runs: mode != NotificationsPipeline.Legacy);
             // The platform's transaction leaves the pipeline's commands to the pipeline's own (by its list, not by name).
             services.AddSingleton<IEmbeddedCommands, PipelineCommands>();
+            // After the gating: the dead-man must run when the pipeline doesn't (a failed start is when it matters most).
+            if (mode != NotificationsPipeline.Legacy)
+            {
+                AddDeadMan(services, configuration, section);
+            }
             Coexistence.Isolate(services);
             return services;
         }
+
+        /// <summary>
+        /// The dead-man alarm (M49), when <c>Notifications:DeadMan:Url</c> is set: checked at start (refused below its documented minimums, which
+        /// depend on the stages' poll interval), one replica at a time, reported in readiness (<c>notifications-deadman</c>).
+        /// </summary>
+        internal static void AddDeadMan(IServiceCollection services, IConfiguration configuration, IConfigurationSection section)
+        {
+            var deadMan = configuration.GetSection(DeadManOptions.Section);
+            if (string.IsNullOrWhiteSpace(deadMan[nameof(DeadManOptions.Url)]))
+            {
+                return;
+            }
+            var options = deadMan.Get<DeadManOptions>() ?? new DeadManOptions();
+            if (options.Problems(LongestPoll(section)) is { Count: > 0 } problems)
+            {
+                throw new InvalidOperationException("The notification pipeline's dead-man: " + string.Join(" ", problems));
+            }
+            services.Configure<DeadManOptions>(deadMan);
+            services.AddSingleton<DeadManSender>();
+            services.AddHostedService(sp => sp.GetRequiredService<DeadManSender>());
+            services.AddHealthChecks().AddCheck<DeadManHealthCheck>(DeadManSender.Worker, tags: ["ready"]);
+        }
+
+        /// <summary>The longest poll interval of the pipeline's stages (<c>Notifications:Stages:{stage}:Poll</c>; 1 s by default).</summary>
+        internal static TimeSpan LongestPoll(IConfigurationSection section)
+            => section.GetSection("Stages").GetChildren().Select(s => s.GetValue<TimeSpan?>("Poll")).Where(p => p is not null).Select(p => p!.Value)
+                .DefaultIfEmpty(TimeSpan.FromSeconds(1)).Max();
 
         /// <summary>
         /// Whether the pipeline's dry run works: its published capability (<c>Juice.Notifications.NotificationsCapabilities.DryRun</c>, M44-2, a

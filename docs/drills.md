@@ -126,6 +126,31 @@ data after ClickHouse's merges (`juice-scale` volume, 588 M rows): bytes a row o
 - PostgreSQL's share is small: 0.08 GB a day at 1× (the 1× step); its SLO buckets are kept 35 days (`Slos:Retention`).
 - The Overview's disk figure measures a deployment's own day from its last whole UTC partition, and its days until full.
 
+## Dead-man: the notification pipeline's dispatcher stalls (26 November)
+
+Proof point 10 of phase 5 (Juice.Notifications embedded, `Notifications:Pipeline` `new`): `DeadManDrill` in the test project, explicit
+(`dotnet test --filter DeadManDrill -- xUnit.Explicit=on`), on the local stack.
+- **What it does:** a host with the pipeline in `new`, the dead-man posting to a receiver on this machine's private address
+  (`Notifications:DeadMan`, allowlisted, signed), and `DueThreshold` at its documented minimum, 2 minutes. An alert fires; the pipeline's
+  webhook target answers 500 once, so the delivery comes due again for its retry. Before the retry is taken, another session holds the
+  delivery's row (`FOR UPDATE`): the dispatcher claims with `SKIP LOCKED`, so it can't take it, and the row stays due and unleased. That is
+  how a stuck dispatcher looks from the database, which is where the dead-man reads it (the pipeline's health, not its timers). Then the row
+  is released.
+- **Ran:** once, passed:
+
+  | Time (UTC) | |
+  |---|---|
+  | 07:39:56 | alert fired; its request written |
+  | 07:39:57 | dispatcher stalled: the delivery held, due for its retry |
+  | 07:42:01 | dead-man arrived: `stalled`, "dispatcher due 2 min" |
+  | 07:42:01 | dispatcher released |
+  | 07:42:03 | the retry delivered; dead-man `resolved` |
+
+  The alarm came at the threshold plus one pass (2 s), and each event was posted once.
+- **Not drilled here:** the dispatcher stopped by a restart. The dead-man's state is in memory (by design), so a cause still standing
+  after a restart is posted again by the new process, which then resolves it when it clears. A cause that clears while the host is down is
+  never resolved: the new process didn't see it. The receiver's last word on it stays `firing` until it arises again.
+
 ## Not drilled
 
 - Rolling back a release after an upgrade, and an upgrade with more than one API replica.
