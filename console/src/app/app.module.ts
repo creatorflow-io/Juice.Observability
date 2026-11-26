@@ -10,8 +10,11 @@ import { LocalizeModule } from '@juice-js/localize';
 import { AuthModule } from '@juice-js/auth';
 import { AppRoutingModule } from './app-routing.module';
 import { provideJuiceObservability } from '@juice-js/observability';
+import { provideNotificationsAdmin } from '@juice-js/notifications-admin';
 import { authOptions, settings } from './core/settings';
 import { ShowKeyHandler } from './core/show-key.handler';
+import { signedIn } from './core/signed-in';
+import { NOTIFICATIONS_BASE_PATH } from './app-routing.module';
 
 @Component({
   selector: 'app-root',
@@ -40,7 +43,9 @@ export class AppComponent { }
   ],
   providers: [
     provideHttpClient(withInterceptorsFromDi()),
-    provideJuiceObservability({ apiBase: settings.apiBase, basePath: '/' }),
+    provideJuiceObservability({ apiBase: settings.apiBase, basePath: '/', notificationsLink: NOTIFICATIONS_BASE_PATH }),
+    // The notification pages: the host maps their API under /notifications (Juice.Notifications.Admin), on the API's origin.
+    provideNotificationsAdmin({ apiBase: `${settings.apiBase}/notifications`, basePath: NOTIFICATIONS_BASE_PATH, signedIn }),
     provideTranslateService({ missingTranslationHandler: { provide: MissingTranslationHandler, useClass: ShowKeyHandler } }),
   ],
   bootstrap: [AppComponent],

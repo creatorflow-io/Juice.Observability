@@ -2,6 +2,8 @@
 @use '@juice-js/layout' as layout;
 // The Juice Observability pages (a host app uses '@juice-js/observability'): their layout; their colours follow the layout's palette.
 @use '../projects/juice-js/observability/styles/observability';
+// The notification pages (@juice-js/notifications-admin, Alerts › Notifications): their layout; their colours follow the layout's palette too.
+@use '@juice-js/notifications-admin';
 
 // Material 3 through juice-layout: Material, the layout, the palettes the viewer switches between (the palette button beside the dark mode
 // switch, which sets body.dark), and the --juice-* tokens the pages read, so the Juice Consoles look alike.

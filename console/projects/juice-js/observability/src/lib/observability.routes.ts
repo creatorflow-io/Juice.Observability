@@ -46,8 +46,11 @@ export const OBSERVABILITY_ROUTES: Routes = [
  * A group links to its first page and keeps its pages' own links (`replaceChildRouterLink: false`): juice-layout only
  * opens and closes the group on a click (it has no page of its own).
  * Group ids carry an `observability-` prefix, as the host's menu sits beside them.
+ *
+ * `alertNotifications` (phase 5, M48): the menu of the notification pages the host mounted, shown as the Alerts › Notifications group after
+ * Alerts; the webhooks page is then labelled Webhooks, and links to it.
  */
-export function observabilityMenus(basePath = '/', order = 1): Menus {
+export function observabilityMenus(basePath = '/', order = 1, alertNotifications?: Menus): Menus {
   const base = normalizeBasePath(basePath);
   const link = (path: string) => (base === '/' ? `/${path}` : path ? `${base}/${path}` : base);
   const group = (id: string, label: string, icon: string, children: Menus): Menus[number] =>
@@ -59,6 +62,7 @@ export function observabilityMenus(basePath = '/', order = 1): Menus {
     { id: 'logs', label: 'Logs', icon: 'notes', routerLink: link('logs'), shortcut: 'g l' },
     { id: 'metrics', label: 'Metrics', icon: 'show_chart', routerLink: link('metrics'), shortcut: 'g m' },
     { id: 'alerts', label: 'Alerts', icon: 'notifications', routerLink: link('alerts'), shortcut: 'g a' },
+    ...(alertNotifications?.length ? [alertNotificationsGroup(alertNotifications)] : []),
     { id: 'incidents', label: 'Incidents', icon: 'emergency', routerLink: link('incidents'), shortcut: 'g i' },
     group('observability-explore', 'Explore', 'explore', [
       { id: 'topology', label: 'Dependencies', icon: 'account_tree', routerLink: link('topology') },
@@ -74,8 +78,23 @@ export function observabilityMenus(basePath = '/', order = 1): Menus {
     group('observability-configure', 'Configure', 'tune', [
       { id: 'rules', label: 'Rules', icon: 'rule', routerLink: link('rules') },
       { id: 'silences', label: 'Silences', icon: 'notifications_paused', routerLink: link('silences') },
-      { id: 'notifications', label: 'Notifications', icon: 'campaign', routerLink: link('notifications') },
+      { id: 'notifications', label: alertNotifications?.length ? 'Webhooks' : 'Notifications', icon: 'campaign', routerLink: link('notifications') },
     ]),
   ];
   return menus.map((menu, index) => ({ ...menu, order: order + index }));
+}
+
+/** The menu id of the Alerts › Notifications group {@link observabilityMenus} adds when the host mounts the notification pages. */
+export const ALERT_NOTIFICATIONS_MENU_ID = 'observability-alert-notifications';
+
+/**
+ * The Alerts › Notifications group (phase 5, M48): the notification pages the host mounted (`@juice-js/notifications-admin`'s menu), in one
+ * level, as juice-layout shows one. Their own groups are flattened in order; ids get a `notifications-admin-` prefix and lose their go-to
+ * keys, which would clash with the platform's own (g o, g i, g s…).
+ */
+function alertNotificationsGroup(items: Menus): Menus[number] {
+  const flat = items.flatMap(item => (item.children?.length ? item.children : [item]));
+  const children: Menus = flat.map(({ shortcut: _, children: __, ...item }) => ({ ...item, id: `notifications-admin-${item.id}` }));
+  return { id: ALERT_NOTIFICATIONS_MENU_ID, label: 'Alert notifications', icon: 'campaign', routerLink: children[0].routerLink,
+    replaceChildRouterLink: false, children };
 }

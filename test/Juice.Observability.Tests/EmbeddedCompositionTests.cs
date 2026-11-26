@@ -42,7 +42,8 @@ namespace Juice.Observability.Tests
             var schemes = await factory.Services.GetRequiredService<IAuthenticationSchemeProvider>().GetAllSchemesAsync();
             Assert.All(schemes, s => Assert.DoesNotContain("Juice.Notifications", s.HandlerType.Assembly.GetName().Name));
             var loaded = AppDomain.CurrentDomain.GetAssemblies().Select(a => a.GetName().Name ?? "").ToList();
-            Assert.DoesNotContain(loaded, n => n.StartsWith("Juice.Notifications.Api", StringComparison.Ordinal)
+            // Not the service's host (Juice.Notifications.Api); its contracts come with the admin endpoints (Juice.Notifications.Admin, M48).
+            Assert.DoesNotContain(loaded, n => n == "Juice.Notifications.Api"
                 || n.StartsWith("Microsoft.AspNetCore.SignalR", StringComparison.Ordinal) || n.StartsWith("RabbitMQ", StringComparison.Ordinal)
                 || n.StartsWith("Juice.EventBus.RabbitMQ", StringComparison.Ordinal) || n.StartsWith("Juice.Audit", StringComparison.Ordinal));
         }
