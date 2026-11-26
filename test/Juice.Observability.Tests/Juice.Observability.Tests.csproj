@@ -20,6 +20,8 @@
     <ProjectReference Include="..\..\src\Juice.Observability.Host\Juice.Observability.Host.csproj" />
     <ProjectReference Include="..\..\src\Juice.Observability.Agent\Juice.Observability.Agent.csproj" />
     <ProjectReference Include="..\..\src\Juice.Observability.Agent.Launcher\Juice.Observability.Agent.Launcher.csproj" />
+    <!-- Phase 5 M46: the legacy webhook setup's mapping onto notifications, its templates and the migration tool. -->
+    <ProjectReference Include="..\..\src\Juice.Observability.Notifications.Migration\Juice.Observability.Notifications.Migration.csproj" />
   </ItemGroup>
 
   <ItemGroup>
