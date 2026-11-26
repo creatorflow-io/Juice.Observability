@@ -66,7 +66,7 @@ namespace Juice.Observability.Api
             {
                 db.AuditRecords.Add(new AuditRecord
                 {
-                    TenantId = tenant, Actor = "host-command", Operation = "notifications.migrate.apply", TargetType = "notifications_migration",
+                    TenantId = tenant, Actor = MigrationPlanner.Source, Operation = "notifications.migrate.apply", TargetType = "notifications_migration",
                     TargetId = tenant.ToString(), Outcome = report.Applied ? AuditOutcome.Succeeded : AuditOutcome.Failed,
                     Metadata = NotificationsMigrationEndpoints.Counts(report),
                 });

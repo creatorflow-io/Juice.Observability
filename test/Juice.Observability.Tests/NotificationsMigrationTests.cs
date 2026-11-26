@@ -277,6 +277,8 @@ namespace Juice.Observability.Tests
             // Four endpoints, four integrations: each inserted once, as the committed apply wrote it.
             Assert.Equal(4, stack.Audit.Changes.Count(c => c.Table == "integrations" && c.Change == "Inserted" && c.TenantId == stack.Notifications.ToString()));
             Assert.Equal(1, stack.Audit.Changes.Count(c => c.Table == "destination_allowlist" && c.Change == "Inserted"));
+            // Run without a user (the host command), the entries name the migration (review of #6).
+            Assert.All(stack.Audit.Changes, c => Assert.Equal(MigrationPlanner.Source, c.User));
         }
         [Fact]
         public async Task A_failure_part_way_leaves_nothing_applied()

@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using System.Text.Json;
 using Juice.EF.Extensions;
 using Juice.MediatR;
@@ -78,8 +79,9 @@ namespace Juice.Observability.Notifications.Migration
     public sealed class MigrationPlanner(NotificationsDbContext db, IMediator mediator, IOptions<DeliveryOptions> delivery, NotificationsEmbeddedOptions embedded,
         IOptions<NotificationsMigrationOptions> options, ILogger<MigrationPlanner> logger)
     {
-        /// <summary>The actor and the message source the migration's writes carry.</summary>
+        /// <summary>The message source of the migration's writes, and the actor its audit entries name when no user runs it (the host command).</summary>
         public const string Source = "webhooks-migration";
+
 
         /// <summary>For the tests of a failure part-way: throws after this many writes.</summary>
         internal int? FailAfterWrites { get; set; }
@@ -109,9 +111,14 @@ namespace Juice.Observability.Notifications.Migration
             return new MigrationReport(legacy.TenantId, false, plan.Items);
         }
 
-        public async Task<MigrationReport> ApplyAsync(LegacySetup legacy, CancellationToken ct)
+        /// <summary>
+        /// Applies the plan. The pipeline's audit entries name <paramref name="actor"/>, the platform's name for the user who runs it, or
+        /// <see cref="Source"/> when no user does (the host command).
+        /// </summary>
+        public async Task<MigrationReport> ApplyAsync(LegacySetup legacy, CancellationToken ct, string? actor = null)
         {
             Check(legacy);
+            db.SetUser(new ClaimsPrincipal(new ClaimsIdentity([new System.Security.Claims.Claim(ClaimTypes.NameIdentifier, string.IsNullOrEmpty(actor) ? Source : actor)], Source)));
             using var context = NotificationsMessageContext.Begin(Source);
             // The steps of Juice's TransactionBehavior around several commands, as notifications' provisioning does: the context is managed, so
             // each command's behavior leaves the transaction to this; each step is saved as it goes (a route's checks read the targets saved

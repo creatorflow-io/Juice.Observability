@@ -51,7 +51,7 @@ namespace Juice.Observability.Api.Endpoints
                 var planner = scope.ServiceProvider.GetRequiredService<MigrationPlanner>();
                 try
                 {
-                    report = apply ? await planner.ApplyAsync(legacy, ct) : await planner.ReportAsync(legacy, ct);
+                    report = apply ? await planner.ApplyAsync(legacy, ct, http.User.Actor()) : await planner.ReportAsync(legacy, ct);
                 }
                 catch (ArgumentException ex)
                 {

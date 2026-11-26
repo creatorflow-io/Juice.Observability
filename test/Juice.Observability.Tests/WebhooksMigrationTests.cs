@@ -37,6 +37,46 @@ namespace Juice.Observability.Tests
         private static void All(NotificationsMigrationReportDto report, string action)
             => Assert.All(report.Items, i => Assert.True(i.Action == action, $"{i.Subject} {i.Key}: {i.Action} {string.Join("; ", i.Problems.Select(p => p.Message))}"));
 
+
+        /// <summary>
+        /// Applied by an admin over the API, the pipeline's audit entries name that admin, as the platform's own entry for the run does; the host
+        /// command's name the migration (review of #6).
+        /// </summary>
+        [Fact]
+        public async Task An_apply_over_the_api_audits_its_changes_as_the_admin()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var audit = new NotificationsMigrationTests.AuditRecorder();
+            await using var factory = new ApiTests.ApiFactory(database, settings: Settings,
+                services: s => s.AddSingleton<Juice.Notifications.INotificationsAuditSink>(audit));
+            var client = factory.CreateClient();
+            var (_, _, admin, tenant) = await Caller.AllAsync(client, database);
+            var key = $"seeded-{Guid.NewGuid().ToString("N")[..6]}";
+            await using (var db = database.Context())
+            {
+                // Legacy's own row, as a host before the alias made it: nothing in notifications yet.
+                db.WebhookEndpoints.Add(new WebhookEndpoint
+                {
+                    TenantId = tenant, Key = key, Kind = ChannelKind.Webhook, Url = "https://receiver.example/hooks/juice", SecretRef = "env:JUICE_WEBHOOK_HOOK",
+                    Events = [Juice.Observability.Webhooks.NotificationPlan.Firing, Juice.Observability.Webhooks.NotificationPlan.Resolved], RuleKeys = [], Recipients = [], MinimumSeverity = AlertSeverity.Info, DefinitionHash = "h",
+                });
+                await db.SaveChangesAsync(Ct);
+            }
+
+            var report = await MigrateAsync(admin, tenant, apply: true);
+
+            Assert.Contains(report.Items, i => i.Key == key && i.Action == "create");
+            string actor;
+            await using (var db = database.Context())
+            {
+                actor = (await db.AuditRecords.SingleAsync(r => r.Operation == "notifications.migrate.apply", Ct)).Actor;
+            }
+            var changes = audit.Changes.Where(c => c.Table == "integrations").ToList();
+            Assert.NotEmpty(changes);
+            Assert.All(changes, c => Assert.Equal(actor, c.User));
+            Assert.NotEqual(MigrationPlanner.Source, actor);
+        }
         [Fact]
         public async Task Endpoints_made_through_the_legacy_api_migrate_map_back_and_a_second_run_changes_nothing()
         {
