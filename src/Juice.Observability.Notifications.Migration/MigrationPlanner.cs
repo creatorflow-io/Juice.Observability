@@ -143,7 +143,9 @@ namespace Juice.Observability.Notifications.Migration
             }
             catch
             {
+                // The rolled-back writes' audit entries too: they outlive ChangeTracker.Clear, and a later apply in this scope would report them.
                 db.ChangeTracker.Clear();
+                db.ClearEvents();
                 throw;
             }
             finally
@@ -234,6 +236,8 @@ namespace Juice.Observability.Notifications.Migration
                 .SelectMany(m => m.Mapped.Value!.Targets.Select(t => (t.Key, Endpoint: m.Legacy.Key)).Append((m.Legacy.Key, Endpoint: m.Legacy.Key)))
                 .Distinct().GroupBy(x => x.Key).Where(g => g.Count() > 1).SelectMany(g => g.Select(x => x.Endpoint)).ToHashSet(StringComparer.Ordinal);
             var migrating = new HashSet<string>(StringComparer.Ordinal);
+            // Endpoints that migrate once notifications takes their digest (M46-1): a policy naming one waits with it.
+            var waiting = new HashSet<string>(StringComparer.Ordinal);
             foreach (var (endpoint, mapped) in mappedEndpoints)
             {
                 var item = (Subject: MigrationSubject.Endpoint, endpoint.Key);
@@ -253,6 +257,7 @@ namespace Juice.Observability.Notifications.Migration
                 {
                     items.Add(new(item.Subject, item.Key, MigrationAction.PendingFeature, [new(ProblemCodes.PendingFeature,
                         $"The endpoint groups for {setup.Route.DigestSeconds} s: its route's digestSeconds comes with notifications M46-1. It migrates then, unchanged.")]));
+                    waiting.Add(endpoint.Key);
                     continue;
                 }
                 var (action, problems, surplus) = Compare(setup, current);
@@ -274,8 +279,10 @@ namespace Juice.Observability.Notifications.Migration
             {
                 var item = (Subject: MigrationSubject.Policy, policy.Key);
                 var overlapping = legacy.Policies.Where(other => PolicyMapping.Overlap(policy, other)).Select(o => o.Key).ToList();
-                var mapped = PolicyMapping.Map(LegacyPolicy.From(policy), migrating);
+                // A step naming an endpoint that waits for M46-1 is no conflict: the policy waits too, and migrates as it is then.
+                var mapped = PolicyMapping.Map(LegacyPolicy.From(policy), migrating.Union(waiting).ToHashSet(StringComparer.Ordinal));
                 var problems = mapped.Problems.ToList();
+                var waitsFor = policy.Steps.SelectMany(s => s.EndpointKeys).Where(waiting.Contains).Distinct().ToList();
                 if (overlapping.Count > 0)
                 {
                     problems.Add(new(ProblemCodes.OverlappingPolicies,
@@ -284,6 +291,12 @@ namespace Juice.Observability.Notifications.Migration
                 if (problems.Count > 0)
                 {
                     items.Add(new(item.Subject, item.Key, MigrationAction.Conflict, problems));
+                    continue;
+                }
+                if (waitsFor.Count > 0)
+                {
+                    items.Add(new(item.Subject, item.Key, MigrationAction.PendingFeature, [new(ProblemCodes.PendingFeature,
+                        $"A step names {string.Join(", ", waitsFor)}, which migrates with notifications M46-1 (its group window); the policy migrates then, unchanged.")]));
                     continue;
                 }
                 var definition = mapped.Value!;

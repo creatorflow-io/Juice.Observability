@@ -45,6 +45,18 @@ namespace Juice.Observability.Tests
 
             public async Task<MigrationReport> ReportAsync() => await InScopeAsync(async sp => await sp.GetRequiredService<MigrationPlanner>().ReportAsync(await LegacyAsync(), TestContext.Current.CancellationToken));
 
+            public AuditRecorder Audit => host.Services.GetRequiredService<AuditRecorder>();
+
+            /// <summary>An apply that fails after <paramref name="failAfter"/> writes, then another in the same scope.</summary>
+            public async Task<MigrationReport> FailThenApplyInOneScopeAsync(int failAfter) => await InScopeAsync(async sp =>
+            {
+                var planner = sp.GetRequiredService<MigrationPlanner>();
+                planner.FailAfterWrites = failAfter;
+                await Assert.ThrowsAsync<InvalidOperationException>(async () => await planner.ApplyAsync(await LegacyAsync(), TestContext.Current.CancellationToken));
+                planner.FailAfterWrites = null;
+                return await planner.ApplyAsync(await LegacyAsync(), TestContext.Current.CancellationToken);
+            });
+
             public async Task<MigrationReport> ApplyAsync(int? failAfter = null) => await InScopeAsync(async sp =>
             {
                 var planner = sp.GetRequiredService<MigrationPlanner>();
@@ -88,11 +100,25 @@ namespace Juice.Observability.Tests
             builder.Services.AddChatProviders();
             builder.Services.Configure<NotificationsMigrationOptions>(o => (o.SmtpServer, o.SmtpFrom) = ("observability", "alerts@example.com"));
             builder.Services.AddScoped<MigrationPlanner>();
+            builder.Services.AddSingleton<AuditRecorder>();
+            builder.Services.AddSingleton<Juice.Notifications.INotificationsAuditSink>(sp => sp.GetRequiredService<AuditRecorder>());
             var host = builder.Build();
             await host.StartAsync(TestContext.Current.CancellationToken);
             return new Stack(database, host, tenantId);
         }
 
+
+        /// <summary>The setup changes the pipeline reports to the host (I62), as Observability's audit sink hears them.</summary>
+        internal sealed class AuditRecorder : Juice.Notifications.INotificationsAuditSink
+        {
+            public System.Collections.Concurrent.ConcurrentQueue<Juice.Notifications.NotificationsDataChange> Changes { get; } = new();
+
+            public ValueTask RecordAsync(Juice.Notifications.NotificationsDataChange change, CancellationToken cancellationToken)
+            {
+                Changes.Enqueue(change);
+                return ValueTask.CompletedTask;
+            }
+        }
 
         private static WebhookEndpoint Endpoint(Guid tenantId, string key, ChannelKind kind = ChannelKind.Webhook, string[]? recipients = null,
             AlertSeverity minimum = AlertSeverity.Info, string[]? rules = null, string? secret = null) => new()
@@ -233,6 +259,23 @@ namespace Juice.Observability.Tests
             });
         }
 
+
+        /// <summary>
+        /// A failed apply's audit entries go with its rollback (review of #6): an apply after it in the same scope reports each of its own
+        /// changes once, and none of the failed one's.
+        /// </summary>
+        [Fact]
+        public async Task An_apply_after_a_failed_one_in_the_same_scope_reports_its_changes_once()
+        {
+            await using var stack = await StartAsync();
+            await SeedEveryChannelAsync(stack);
+
+            All(await stack.FailThenApplyInOneScopeAsync(failAfter: 3), MigrationAction.Create);
+
+            // Four endpoints, four integrations: each inserted once, as the committed apply wrote it.
+            Assert.Equal(4, stack.Audit.Changes.Count(c => c.Table == "integrations" && c.Change == "Inserted" && c.TenantId == stack.Notifications.ToString()));
+            Assert.Equal(1, stack.Audit.Changes.Count(c => c.Table == "destination_allowlist" && c.Change == "Inserted"));
+        }
         [Fact]
         public async Task A_failure_part_way_leaves_nothing_applied()
         {
@@ -261,6 +304,8 @@ namespace Juice.Observability.Tests
                 var grouped = Endpoint(stack.TenantId, "grouped");
                 grouped.GroupWindowSeconds = 60;
                 db.WebhookEndpoints.AddRange(grouped, Endpoint(stack.TenantId, "ops"));
+                // A policy paging the grouped endpoint waits with it (review of #6), rather than failing on an endpoint that "doesn't migrate".
+                db.EscalationPolicies.Add(new Data.EscalationPolicy { TenantId = stack.TenantId, Key = "paging", Name = "Paging", Steps = [new() { AfterMinutes = 5, EndpointKeys = ["grouped"] }] });
             });
 
             var report = await stack.ApplyAsync();
@@ -270,6 +315,8 @@ namespace Juice.Observability.Tests
             var item = Assert.Single(report.Items, i => i.Key == "grouped");
             Assert.Equal((MigrationAction.PendingFeature, ProblemCodes.PendingFeature), (item.Action, Assert.Single(item.Problems).Code));
             Assert.Equal(MigrationAction.Create, Assert.Single(report.Items, i => i.Key == "ops").Action);
+            var policy = Assert.Single(report.Items, i => i.Key == "paging");
+            Assert.Equal((MigrationAction.PendingFeature, ProblemCodes.PendingFeature), (policy.Action, Assert.Single(policy.Problems).Code));
             Assert.False(await stack.InScopeAsync(sp => sp.GetRequiredService<NotificationsDbContext>().Integrations.AnyAsync(i => i.TenantId == stack.Notifications && i.Key == "grouped")));
             Assert.Equal(MigrationAction.PendingFeature, Assert.Single((await stack.ReportAsync()).Items, i => i.Key == "grouped").Action);
         }
