@@ -1,34 +1,13 @@
 using Juice.Notifications;
 using Juice.Notifications.Embedded;
 using Juice.Notifications.Providers.Chat;
+using Juice.Observability.Data;
 using Juice.Observability.Discovery;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Juice.Observability.Notifications
 {
-    /// <summary>Which pipeline sends the platform's notifications (<c>Notifications:Pipeline</c>, phase-5-plan I67).</summary>
-    public enum NotificationsPipeline
-    {
-        /// <summary>The platform's own webhooks, as before. The embedded pipeline is registered and migrated, and runs nothing.</summary>
-        Legacy,
-        /// <summary>Legacy sends; the embedded pipeline plans the same notifications in dry run (M45, with the M44-2 alpha).</summary>
-        Shadow,
-        /// <summary>The embedded pipeline only (M45).</summary>
-        New,
-    }
-
-    /// <summary>
-    /// Configuration section <c>Notifications</c>: <see cref="Pipeline"/>, and the pipeline's own settings (<c>Stages</c>, <c>Delivery</c>,
-    /// <c>Retention</c>, …), which the embedded pipeline reads from the same section.
-    /// </summary>
-    public sealed class PlatformNotificationsOptions
-    {
-        public const string Section = "Notifications";
-
-        public NotificationsPipeline Pipeline { get; set; } = NotificationsPipeline.Legacy;
-    }
-
     public static class NotificationsRegistration
     {
         /// <summary>The platform's application in the pipeline: its types are <c>observability.*</c>.</summary>
@@ -61,10 +40,16 @@ namespace Juice.Observability.Notifications
                 embedded.TenantId = PlatformOptions.TenantId(configuration[$"{PlatformOptions.Section}:{nameof(PlatformOptions.TenantKey)}"]);
                 embedded.ApplicationKey = ApplicationKey;
                 embedded.ApplicationName = ApplicationName;
+                embedded.Types.AddRange(ObservabilityTypes.All());
             });
             services.AddChatProviders();
             // The schema migrated by the platform, and the pipeline's start failing readiness, not the host.
             PipelineStart.Guard(services, MigratesSchema(section, configuration));
+            // The producer adapter (I64): the platform's domain events and action request notices, in their own transactions.
+            services.AddScoped<ProducerAdapter>();
+            services.AddScoped<IActionRequestNotifications, ActionRequestNotifications>();
+            services.AddTransient<Juice.MediatR.INotificationHandler<AlertNotificationsPlanned>, OnNotificationsPlanned>();
+            services.AddTransient<Juice.MediatR.INotificationHandler<AlertAcknowledged>, OnAlertAcknowledged>();
             Coexistence.Isolate(services);
             return services;
         }

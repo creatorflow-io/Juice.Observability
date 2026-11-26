@@ -742,6 +742,33 @@ namespace Juice.Observability.Data.Migrations
                     b.ToTable("alert_escalations", (string)null);
                 });
 
+            modelBuilder.Entity("Juice.Observability.Data.AlertHold", b =>
+                {
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<Guid>("AlertId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("alert_id");
+
+                    b.Property<DateTimeOffset>("HeldAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("held_at");
+
+                    b.Property<Guid>("SilenceId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("silence_id");
+
+                    b.HasKey("TenantId", "AlertId")
+                        .HasName("pk_alert_holds");
+
+                    b.HasIndex("AlertId")
+                        .HasDatabaseName("ix_alert_holds_alert_id");
+
+                    b.ToTable("alert_holds", (string)null);
+                });
+
             modelBuilder.Entity("Juice.Observability.Data.AlertTransition", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1783,6 +1810,70 @@ namespace Juice.Observability.Data.Migrations
                         .HasDatabaseName("ix_load_runs_tenant_id_environment");
 
                     b.ToTable("load_runs", (string)null);
+                });
+
+            modelBuilder.Entity("Juice.Observability.Data.NotificationHold", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("AlertId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("alert_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTimeOffset?>("DecidedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("decided_at");
+
+                    b.Property<string>("Event")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("event");
+
+                    b.Property<string>("Outcome")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("outcome");
+
+                    b.Property<string>("Request")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("request");
+
+                    b.Property<Guid>("SilenceId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("silence_id");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<Guid>("TransitionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("transition_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_notification_holds");
+
+                    b.HasIndex("AlertId")
+                        .HasDatabaseName("ix_notification_holds_alert_id");
+
+                    b.HasIndex("TenantId", "SilenceId")
+                        .HasDatabaseName("ix_notification_holds_undecided")
+                        .HasFilter("decided_at IS NULL");
+
+                    b.HasIndex("TenantId", "TransitionId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_notification_holds_tenant_id_transition_id");
+
+                    b.ToTable("notification_holds", (string)null);
                 });
 
             modelBuilder.Entity("Juice.Observability.Data.PlatformTenant", b =>
@@ -3066,6 +3157,23 @@ namespace Juice.Observability.Data.Migrations
                         .HasConstraintName("fk_alert_escalations_platform_tenants_tenant_id");
                 });
 
+            modelBuilder.Entity("Juice.Observability.Data.AlertHold", b =>
+                {
+                    b.HasOne("Juice.Observability.Data.Alert", null)
+                        .WithMany()
+                        .HasForeignKey("AlertId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_alert_holds_alerts_alert_id");
+
+                    b.HasOne("Juice.Observability.Data.PlatformTenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_alert_holds_platform_tenants_tenant_id");
+                });
+
             modelBuilder.Entity("Juice.Observability.Data.AlertTransition", b =>
                 {
                     b.HasOne("Juice.Observability.Data.Alert", null)
@@ -3328,6 +3436,23 @@ namespace Juice.Observability.Data.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_load_runs_platform_tenants_tenant_id");
+                });
+
+            modelBuilder.Entity("Juice.Observability.Data.NotificationHold", b =>
+                {
+                    b.HasOne("Juice.Observability.Data.Alert", null)
+                        .WithMany()
+                        .HasForeignKey("AlertId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_notification_holds_alerts_alert_id");
+
+                    b.HasOne("Juice.Observability.Data.PlatformTenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_notification_holds_platform_tenants_tenant_id");
                 });
 
             modelBuilder.Entity("Juice.Observability.Data.ReconciliationCheckpoint", b =>

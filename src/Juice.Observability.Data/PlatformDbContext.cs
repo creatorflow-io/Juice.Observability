@@ -49,6 +49,8 @@ namespace Juice.Observability.Data
         public DbSet<Silence> Silences => Set<Silence>();
         public DbSet<EscalationPolicy> EscalationPolicies => Set<EscalationPolicy>();
         public DbSet<AlertEscalation> AlertEscalations => Set<AlertEscalation>();
+        public DbSet<NotificationHold> NotificationHolds => Set<NotificationHold>();
+        public DbSet<AlertHold> AlertHolds => Set<AlertHold>();
         public DbSet<Incident> Incidents => Set<Incident>();
         public DbSet<IncidentAlert> IncidentAlerts => Set<IncidentAlert>();
         public DbSet<IncidentEvent> IncidentEvents => Set<IncidentEvent>();
@@ -295,6 +297,27 @@ namespace Juice.Observability.Data
                 e.HasIndex(x => new { x.State, x.NextAt });
                 e.HasOne<Alert>().WithMany().HasForeignKey(x => x.AlertId).OnDelete(DeleteBehavior.Cascade);
                 e.HasOne<EscalationPolicy>().WithMany().HasForeignKey(x => x.PolicyId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            // The notification pipeline's adapter (phase 5, M45): what a silence held, and the alerts whose correlation it holds.
+            model.Entity<NotificationHold>(e =>
+            {
+                e.ToTable("notification_holds");
+                Tenant(e);
+                e.Property(x => x.Event).HasMaxLength(40);
+                e.Property(x => x.Request).HasColumnType("jsonb");
+                e.Property(x => x.Outcome).HasMaxLength(20);
+                e.HasIndex(x => new { x.TenantId, x.TransitionId }).IsUnique();
+                e.HasIndex(x => new { x.TenantId, x.SilenceId }).HasFilter("decided_at IS NULL").HasDatabaseName("ix_notification_holds_undecided");
+                e.HasOne<Alert>().WithMany().HasForeignKey(x => x.AlertId).OnDelete(DeleteBehavior.Cascade);
+            });
+
+            model.Entity<AlertHold>(e =>
+            {
+                e.ToTable("alert_holds");
+                e.HasKey(x => new { x.TenantId, x.AlertId });
+                Tenant(e);
+                e.HasOne<Alert>().WithMany().HasForeignKey(x => x.AlertId).OnDelete(DeleteBehavior.Cascade);
             });
         }
 
