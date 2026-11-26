@@ -49,6 +49,35 @@ namespace Juice.Observability.Notifications
             return true;
         }
 
+        // A transaction disposed without a rollback (a failed command's) raises neither RolledBack nor Failed, and Npgsql hands the same
+        // transaction object to the next transaction on the pooled connection: what is still registered under it is dropped when it starts
+        // again, so a stale action never runs on another transaction's commit.
+        public override DbTransaction TransactionStarted(DbConnection connection, TransactionEndEventData eventData, DbTransaction result)
+        {
+            Drop(result);
+            return result;
+        }
+
+        public override ValueTask<DbTransaction> TransactionStartedAsync(DbConnection connection, TransactionEndEventData eventData, DbTransaction result,
+            CancellationToken cancellationToken = default)
+        {
+            Drop(result);
+            return ValueTask.FromResult(result);
+        }
+
+        public override DbTransaction TransactionUsed(DbConnection connection, TransactionEventData eventData, DbTransaction result)
+        {
+            Drop(result);
+            return result;
+        }
+
+        public override ValueTask<DbTransaction> TransactionUsedAsync(DbConnection connection, TransactionEventData eventData, DbTransaction result,
+            CancellationToken cancellationToken = default)
+        {
+            Drop(result);
+            return ValueTask.FromResult(result);
+        }
+
         public override void TransactionCommitted(DbTransaction transaction, TransactionEndEventData eventData) => Run(transaction);
 
         public override Task TransactionCommittedAsync(DbTransaction transaction, TransactionEndEventData eventData, CancellationToken cancellationToken = default)
