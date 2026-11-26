@@ -329,9 +329,84 @@ namespace Juice.Observability.Tests
             Assert.Null((await HoldAsync(database, alert))!.HeldAt);
         }
 
-        [Fact(Skip = "Needs the M45-n alpha (NotificationToSend.OccurredAt): a firing held past a[0] gets step 1 at release.")]
-        public void A_firing_held_past_its_first_step_gets_it_at_release()
+        /// <summary>
+        /// Proof point 3's timing: a firing held under a silence past its policy's first step gets that step at release, as legacy sends it then,
+        /// not a[0] after the release. The request carries when the alert fired (OccurredAt), which the pipeline times the first step from.
+        /// </summary>
+        [Fact]
+        public async Task A_firing_held_past_its_first_step_gets_it_at_release_Async()
         {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var factory = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string>
+            {
+                ["Notifications:Pipeline"] = "new", ["Notifications:Stages:Planner:Poll"] = "00:00:00.2", ["Notifications:Stages:Escalation:Poll"] = "00:00:00.2",
+            });
+            _ = factory.Server;
+            var tenant = await TenantAsync(database);
+            // The policy: the platform's (so the firing names it) and the pipeline's, its first step a minute after the firing.
+            await using (var db = database.Context())
+            {
+                db.EscalationPolicies.Add(new EscalationPolicy
+                {
+                    TenantId = tenant, Key = "pager", Name = "pager", MinimumSeverity = AlertSeverity.Info, Steps = [new EscalationStep { AfterMinutes = 1, EndpointKeys = ["ops"] }],
+                });
+                await db.SaveChangesAsync(Ct);
+            }
+            await using (var scope = factory.Services.CreateAsyncScope())
+            {
+                using var context = PlatformMessageContext.Begin("test");
+                var put = await scope.ServiceProvider.GetRequiredService<Juice.MediatR.IMediator>().Send(new Juice.Notifications.Configuration.PutEscalationPolicy(
+                    Guid.Parse(LocalStack.TenantKey), "pager", System.Text.Json.JsonSerializer.SerializeToElement(new[]
+                    {
+                        new { afterMinutes = 1, recipients = new[] { new { kind = "route", key = "pager" } } },
+                    }), true), Ct);
+                Assert.True(put.Kind is Juice.Notifications.OutcomeKind.Ok or Juice.Notifications.OutcomeKind.Created,
+                    put.Message + " " + string.Join("; ", put.Errors?.Select(e => $"{e.Pointer} {e.Message}") ?? []));
+            }
+            var silence = await SilenceAsync(database);
+            // Fired three minutes ago, under the silence: its firing is held.
+            Guid transition;
+            await using (var db = database.Context())
+            {
+                var fired = DateTimeOffset.UtcNow.AddMinutes(-3);
+                var rule = new Rule { TenantId = tenant, Key = "orders-errors", Name = "Orders errors", Template = RuleTemplate.ErrorRate, Severity = AlertSeverity.Critical,
+                    Definition = "{}", DefinitionHash = "h", LoadedAt = fired, ManagedBy = Data.ManagedBy.Api };
+                var alert = new Alert
+                {
+                    TenantId = tenant, RuleId = rule.Id, DedupKey = "orders-errors|service:shop/orders@production", SubjectKey = "service:shop/orders@production",
+                    SubjectType = HealthSubject.Service, Severity = AlertSeverity.Critical, State = AlertState.Firing, BreachStartedAt = fired, FiredAt = fired, LastEvaluatedAt = fired,
+                };
+                var t = new AlertTransition { TenantId = tenant, AlertId = alert.Id, FromState = AlertState.Pending, ToState = AlertState.Firing, At = fired, Reason = "for_duration_met" };
+                db.AddRange(rule, alert, t);
+                await db.SaveChangesAsync(Ct);
+                transition = t.Id;
+            }
+            await PlanAsync(factory, database, transition);
+            await using (var db = database.Context())
+            {
+                Assert.Single(await db.NotificationHolds.ToListAsync(Ct));
+                await db.Silences.Where(s => s.Id == silence).ExecuteUpdateAsync(s => s.SetProperty(x => x.CancelledAt, DateTimeOffset.UtcNow), Ct);
+            }
+
+            var released = DateTimeOffset.UtcNow;
+            await new NotificationsReleasePass(factory.Services.GetRequiredService<IServiceScopeFactory>(), Options.Create(new Webhooks.WebhookOptions()),
+                TimeProvider.System, NullLogger<NotificationsReleasePass>.Instance).ReleaseOnceAsync(Ct);
+
+            // The pipeline's escalation of it: its first step due at once (two minutes late already), not a minute after the release.
+            (int Step, DateTimeOffset? NextAt)? escalation = null;
+            for (var i = 0; i < 100 && escalation is null; i++)
+            {
+                await using var connection = new NpgsqlConnection(database.ConnectionString);
+                await connection.OpenAsync(Ct);
+                await using var read = new NpgsqlCommand("SELECT next_step, next_at FROM notifications.escalations LIMIT 1", connection);
+                await using var reader = await read.ExecuteReaderAsync(Ct);
+                if (await reader.ReadAsync(Ct)) escalation = (reader.GetInt32(0), reader.IsDBNull(1) ? null : reader.GetFieldValue<DateTimeOffset>(1));
+                else await Task.Delay(100, Ct);
+            }
+            Assert.NotNull(escalation);
+            Assert.True(escalation.Value.Step >= 1 || escalation.Value.NextAt <= released.AddSeconds(10),
+                $"step {escalation.Value.Step}, due {escalation.Value.NextAt:O}, released {released:O}: the first step should be due at the release");
         }
     }
 }

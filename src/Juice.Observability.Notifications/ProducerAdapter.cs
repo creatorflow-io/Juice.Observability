@@ -234,6 +234,8 @@ namespace Juice.Observability.Notifications
             return new NotificationToSend(ObservabilityTypes.AlertFiring, TransitionKey(transition.Id))
             {
                 CorrelationKey = AlertCorrelation(alert.Id),
+                // When it fired: the escalation's first step is timed from it, so a firing sent late (held under a silence) still gets it on time.
+                OccurredAt = transition.At,
                 Labels = labels,
                 Data = WithoutId(NotificationPlan.Payload(Guid.Empty, NotificationPlan.Firing, platform.Value.TenantKey, rule, alert, transition, null)),
                 Links = Link($"alerts/{alert.Id}"),
@@ -298,7 +300,7 @@ namespace Juice.Observability.Notifications
 
         /// <summary>
         /// A refusal is the pipeline's answer, not a failure of the platform's change: a correlation it doesn't have (its firing was never sent) or
-        /// one already closed is expected; anything else is logged as an error and counted. True when the pipeline took the call.
+        /// one already closed is expected; a concurrent change is transient and thrown on; anything else is logged as an error and counted. True when the pipeline took the call.
         /// </summary>
         private async Task<bool> TolerateAsync<T>(string call, Func<Task<T>> work, string? key = null)
         {
@@ -306,6 +308,13 @@ namespace Juice.Observability.Notifications
             {
                 await work();
                 return true;
+            }
+            catch (NotificationRefusedException refused) when (refused.Code is ErrorCodes.ConcurrentChange)
+            {
+                // Transient: the correlation changed under this call (acknowledged or resolved elsewhere). Thrown on, so the platform's change
+                // rolls back and is tried again against the new state (the outbox's retry, or the release pass's next attempt).
+                logger.LogInformation("Notifications {Call} {Key}: {Code}, tried again", call, key, refused.Code);
+                throw;
             }
             catch (NotificationRefusedException refused) when (refused.Code is ErrorCodes.NotFound or ErrorCodes.CorrelationClosed && call != "send")
             {
