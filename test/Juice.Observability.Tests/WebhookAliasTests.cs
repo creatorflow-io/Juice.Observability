@@ -75,7 +75,7 @@ namespace Juice.Observability.Tests
             {
                 ["Notifications:Database:Migrate"] = "true",
                 ["Notifications:Stages:Run"] = "false",
-                ["Notifications:Delivery:ApiSecretEnvPrefix"] = "JUICE_WEBHOOK_",
+                ["Notifications:Delivery:AliasSecretEnvPrefix"] = "JUICE_WEBHOOK_",
                 ["Notifications:Delivery:SmtpServers:observability:Host"] = "smtp.example.com",
             });
             builder.Services.AddDbContext<PlatformDbContext>((sp, o) =>
@@ -150,7 +150,7 @@ namespace Juice.Observability.Tests
             {
                 using var context = NotificationsMessageContext.Begin("test");
                 return await sp.GetRequiredService<Juice.MediatR.IMediator>().Send(new PutIntegration(stack.Notifications, "ops", "webhook", "webhook",
-                    System.Text.Json.JsonDocument.Parse("{}").RootElement, "env:JUICE_WEBHOOK_MINE", 0, true), Ct);
+                    System.Text.Json.JsonDocument.Parse("{}").RootElement, "env:NOTIFICATIONS_SECRET_MINE", 0, true), Ct);
             });
 
             var refused = await stack.InPlatformTransactionAsync(async (db, alias) =>

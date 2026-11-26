@@ -22,19 +22,20 @@ namespace Juice.Observability.Notifications.Migration
                 .PostConfigure(o => o.SmtpFrom ??= configuration[$"{WebhookOptions.Section}:Smtp:From"] is { Length: > 0 } from ? from : null);
             services.AddScoped<MigrationPlanner>();
             services.AddScoped<WebhookAlias>();
-            // The alias writes through the notifications API's rules, so the secrets the legacy API may name are the ones it may: unless the
-            // deployment says otherwise in Notifications:Delivery, its ApiSecretEnvPrefix and ApiSecretDirectory are legacy's.
+            // The alias and the migration write as webhooks-alias, whose secrets notifications checks against its alias limits (M46-3, waves
+            // §5.3), never the API's: they are the legacy API's own (Webhooks:ApiSecretEnvPrefix, ApiSecretDirectory), unless the deployment
+            // sets them in Notifications:Delivery. The notifications API's ApiSecret* limits stay as they are, so its admin can't name these.
             var delivery = configuration.GetSection("Notifications:Delivery");
             services.PostConfigure<Juice.Notifications.Providers.DeliveryOptions>(o =>
             {
                 var legacy = configuration.GetSection(WebhookOptions.Section).Get<WebhookOptions>() ?? new WebhookOptions();
-                if (delivery[nameof(o.ApiSecretEnvPrefix)] is null)
+                if (delivery[nameof(o.AliasSecretEnvPrefix)] is null)
                 {
-                    o.ApiSecretEnvPrefix = legacy.ApiSecretEnvPrefix;
+                    o.AliasSecretEnvPrefix = legacy.ApiSecretEnvPrefix;
                 }
-                if (delivery[nameof(o.ApiSecretDirectory)] is null)
+                if (delivery[nameof(o.AliasSecretDirectory)] is null)
                 {
-                    o.ApiSecretDirectory = legacy.ApiSecretDirectory;
+                    o.AliasSecretDirectory = legacy.ApiSecretDirectory;
                 }
             });
             // Webhooks:Endpoints through the alias (I69): legacy's provisioner wrapped, in its place.

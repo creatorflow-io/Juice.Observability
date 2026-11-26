@@ -22,7 +22,6 @@ namespace Juice.Observability.Tests
         {
             ["Webhooks:Smtp:Host"] = "smtp.example.com",
             ["Webhooks:Smtp:From"] = "alerts@example.com",
-            ["Notifications:Delivery:ApiSecretEnvPrefix"] = "JUICE_WEBHOOK_",
             ["Notifications:Delivery:SmtpServers:observability:Host"] = "smtp.example.com",
             ["Notifications:Migration:SmtpServer"] = "observability",
         };
@@ -37,7 +36,27 @@ namespace Juice.Observability.Tests
         private static void All(NotificationsMigrationReportDto report, string action)
             => Assert.All(report.Items, i => Assert.True(i.Action == action, $"{i.Subject} {i.Key}: {i.Action} {string.Join("; ", i.Problems.Select(p => p.Message))}"));
 
+        /// <summary>
+        /// The host gives the alias legacy's secret limits and leaves the notifications API's as they are (waves §5.3, M46-3): an alias row may
+        /// name env:JUICE_WEBHOOK_…, an API one may not.
+        /// </summary>
+        [Fact]
+        public async Task The_alias_has_legacys_secret_limits_and_the_api_keeps_its_own()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var factory = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string>
+            {
+                ["Webhooks:ApiSecretDirectory"] = "/run/secrets/juice",
+                ["Notifications:Delivery:SmtpServers:observability:Host"] = "smtp.example.com",
+            });
+            _ = factory.CreateClient();
 
+            var delivery = factory.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<Juice.Notifications.Providers.DeliveryOptions>>().Value;
+
+            Assert.Equal(("JUICE_WEBHOOK_", "/run/secrets/juice"), (delivery.AliasSecretEnvPrefix, delivery.AliasSecretDirectory));
+            Assert.Equal(("NOTIFICATIONS_SECRET_", (string?)null), (delivery.ApiSecretEnvPrefix, delivery.ApiSecretDirectory));
+        }
         /// <summary>
         /// Applied by an admin over the API, the pipeline's audit entries name that admin, as the platform's own entry for the run does; the host
         /// command's name the migration (review of #6).

@@ -7,7 +7,7 @@ namespace Juice.Observability.Tests
     /// <summary>Secret references keep their text and are never resolved (phase-5-plan I70).</summary>
     public class SecretMappingTests
     {
-        private static readonly DeliveryOptions Delivery = new() { ApiSecretEnvPrefix = "JUICE_WEBHOOK_", ApiSecretDirectory = "/run/secrets/juice" };
+        private static readonly DeliveryOptions Delivery = new() { AliasSecretEnvPrefix = "JUICE_WEBHOOK_", AliasSecretDirectory = "/run/secrets/juice" };
 
         [Theory]
         [InlineData("env:JUICE_WEBHOOK_OPS")]
@@ -33,7 +33,7 @@ namespace Juice.Observability.Tests
 
         [Fact]
         public void A_file_is_out_of_reach_when_notifications_names_no_folder()
-            => Assert.Equal(ProblemCodes.SecretOutOfReach, Assert.Single(SecretMapping.Map("file:/run/secrets/juice/ops", new DeliveryOptions { ApiSecretEnvPrefix = "JUICE_WEBHOOK_" }).Problems).Code);
+            => Assert.Equal(ProblemCodes.SecretOutOfReach, Assert.Single(SecretMapping.Map("file:/run/secrets/juice/ops", new DeliveryOptions { AliasSecretEnvPrefix = "JUICE_WEBHOOK_" }).Problems).Code);
 
         [Fact]
         public void No_secret_is_read_while_mapping()
@@ -46,7 +46,7 @@ namespace Juice.Observability.Tests
             File.WriteAllText(file, "the-file-secret");
             try
             {
-                var delivery = new DeliveryOptions { ApiSecretEnvPrefix = "JUICE_WEBHOOK_", ApiSecretDirectory = directory };
+                var delivery = new DeliveryOptions { AliasSecretEnvPrefix = "JUICE_WEBHOOK_", AliasSecretDirectory = directory };
                 var options = new EndpointMappingOptions(delivery);
                 foreach (var reference in new[] { "env:" + name, "file:" + file })
                 {

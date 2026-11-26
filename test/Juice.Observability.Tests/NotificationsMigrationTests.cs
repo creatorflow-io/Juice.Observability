@@ -86,8 +86,8 @@ namespace Juice.Observability.Tests
             {
                 ["Notifications:Database:Migrate"] = "true",
                 ["Notifications:Stages:Run"] = "false",
-                ["Notifications:Delivery:ApiSecretEnvPrefix"] = "JUICE_WEBHOOK_",
-                ["Notifications:Delivery:ApiSecretDirectory"] = "/run/secrets/juice",
+                ["Notifications:Delivery:AliasSecretEnvPrefix"] = "JUICE_WEBHOOK_",
+                ["Notifications:Delivery:AliasSecretDirectory"] = "/run/secrets/juice",
                 ["Notifications:Delivery:SmtpServers:observability:Host"] = "smtp.example.com",
             });
             builder.Services.AddJuiceNotificationsEmbedded(builder.Configuration.GetSection("Notifications"), o =>
@@ -240,7 +240,7 @@ namespace Juice.Observability.Tests
             {
                 using var context = NotificationsMessageContext.Begin("test");
                 return await sp.GetRequiredService<Juice.MediatR.IMediator>().Send(new PutIntegration(stack.Notifications, "ops", "webhook", "webhook",
-                    JsonDocument.Parse("{}").RootElement, "env:JUICE_WEBHOOK_MINE", 0, true), TestContext.Current.CancellationToken);
+                    JsonDocument.Parse("{}").RootElement, "env:NOTIFICATIONS_SECRET_MINE", 0, true), TestContext.Current.CancellationToken);
             });
             Assert.NotNull(made.Value);
 
@@ -255,7 +255,7 @@ namespace Juice.Observability.Tests
             {
                 var db = sp.GetRequiredService<NotificationsDbContext>();
                 var integration = await db.Integrations.SingleAsync(i => i.TenantId == stack.Notifications && i.Key == "ops");
-                Assert.Equal(("api", "env:JUICE_WEBHOOK_MINE"), (integration.ManagedBy, integration.SecretRef));
+                Assert.Equal(("api", "env:NOTIFICATIONS_SECRET_MINE"), (integration.ManagedBy, integration.SecretRef));
                 Assert.False(await db.Routes.AnyAsync(r => r.TenantId == stack.Notifications && r.Key == "ops"));
                 return 0;
             });
