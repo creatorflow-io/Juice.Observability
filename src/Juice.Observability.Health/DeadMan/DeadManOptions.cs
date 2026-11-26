@@ -42,6 +42,12 @@ namespace Juice.Observability.Health.DeadMan
         /// <summary><b>stuck in retry:</b> a delivery still in flight older than this (above a normal retry run, whose longest wait is 10 min).</summary>
         public TimeSpan UndeliveredThreshold { get; set; } = TimeSpan.FromMinutes(30);
 
+        /// <summary>
+        /// <b>kept:</b> a call or notification the platform kept for the pipeline (it was down) and hasn't handed over for longer than this: the
+        /// release pass, every 15 s, hands them over once the pipeline is up.
+        /// </summary>
+        public TimeSpan KeptThreshold { get; set; } = TimeSpan.FromMinutes(10);
+
         /// <summary><b>unreadable:</b> reading the pipeline's health takes longer than this (or throws).</summary>
         public TimeSpan ReadTimeout { get; set; } = TimeSpan.FromSeconds(5);
 
@@ -84,6 +90,7 @@ namespace Juice.Observability.Health.DeadMan
             if (UndeliveredThreshold < DueThreshold) problems.Add("Notifications:DeadMan:UndeliveredThreshold is at least the DueThreshold.");
             if (FailingFor <= TimeSpan.Zero) problems.Add("Notifications:DeadMan:FailingFor is positive.");
             if (ReadTimeout <= TimeSpan.Zero) problems.Add("Notifications:DeadMan:ReadTimeout is positive.");
+            if (KeptThreshold <= TimeSpan.Zero) problems.Add("Notifications:DeadMan:KeptThreshold is positive.");
             if (Interval <= TimeSpan.Zero) problems.Add("Notifications:DeadMan:Interval is positive.");
             if (ResendAfter < Interval) problems.Add("Notifications:DeadMan:ResendAfter is at least the Interval.");
             return problems;
@@ -105,5 +112,23 @@ namespace Juice.Observability.Health.DeadMan
     {
         /// <summary>Null while there is nothing to say; otherwise why the shadow comparison is failing.</summary>
         ValueTask<string?> FailingAsync(CancellationToken cancellationToken);
+    }
+}
+
+namespace Juice.Observability.Health.DeadMan
+{
+    /// <summary>
+    /// What the platform kept for the notification pipeline (review #15): whether the pipeline started, and the oldest call or notification
+    /// kept for it and not handed over. The pipeline's registration provides it (Health doesn't reference it); without one, <c>not-started</c>
+    /// and <c>kept</c> are never causes. A pipeline that didn't start but whose schema is there reads as quiet (nothing is due: it is all
+    /// kept), so its health alone would only ever resolve.
+    /// </summary>
+    public interface IPipelineKeptReport
+    {
+        /// <summary>Why the pipeline didn't start; null when it did (or hasn't tried yet).</summary>
+        string? StartFailure { get; }
+
+        /// <summary>When the oldest call or notification kept for the pipeline (and not handed over yet) was kept; null when none is.</summary>
+        ValueTask<DateTimeOffset?> OldestKeptAsync(CancellationToken cancellationToken);
     }
 }

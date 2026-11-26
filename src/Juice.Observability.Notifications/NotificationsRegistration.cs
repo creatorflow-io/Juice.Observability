@@ -94,6 +94,8 @@ namespace Juice.Observability.Notifications
                 throw new InvalidOperationException("The notification pipeline's dead-man: " + string.Join(" ", problems));
             }
             services.Configure<DeadManOptions>(deadMan);
+            // Whether the pipeline started, and what was kept for it (not-started, kept): its own health reads quiet when it didn't start.
+            services.AddScoped<IPipelineKeptReport, PipelineKeptReport>();
             services.AddSingleton<DeadManSender>();
             services.AddHostedService(sp => sp.GetRequiredService<DeadManSender>());
             services.AddHealthChecks().AddCheck<DeadManHealthCheck>(DeadManSender.Worker, tags: ["ready"]);

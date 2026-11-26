@@ -34,7 +34,13 @@ namespace Juice.Observability.Health.DeadMan
         /// <summary>The pipeline's health couldn't be read (an error, or longer than <see cref="DeadManOptions.ReadTimeout"/>).</summary>
         public const string Unreadable = "unreadable";
 
-        public static readonly string[] All = [Stalled, Failing, NoSuccess, StuckInRetry, Shadow, Unreadable];
+        /// <summary>The pipeline didn't start (its migration or provisioning failed: <see cref="IPipelineKeptReport.StartFailure"/>), so everything is kept, not sent.</summary>
+        public const string NotStarted = "not-started";
+
+        /// <summary>A call or notification the platform kept for the pipeline, not handed over for longer than <see cref="DeadManOptions.KeptThreshold"/>.</summary>
+        public const string Kept = "kept";
+
+        public static readonly string[] All = [Stalled, Failing, NoSuccess, StuckInRetry, Shadow, Unreadable, NotStarted, Kept];
     }
 
     /// <summary>
@@ -60,6 +66,8 @@ namespace Juice.Observability.Health.DeadMan
             public bool Active;
             public DateTimeOffset Since;
             public DateTimeOffset? SentAt;
+            /// <summary>When it was last told firing: a resolve doesn't reset it, so a flapping cause fires at most once per ResendAfter.</summary>
+            public DateTimeOffset? FiredAt;
             public string Detail = "";
         }
 
@@ -120,18 +128,21 @@ namespace Juice.Observability.Health.DeadMan
         {
             var now = clock.GetUtcNow();
             var (health, unreadable) = await ReadAsync(cancellationToken);
+            var (notStarted, kept) = await KeptAsync(now, cancellationToken);
+            // Not known yet: unread, or a condition seen once that needs a second read to stand.
+            var unknown = new HashSet<string>();
             var standing = new Dictionary<string, string?>
             {
-                [DeadManCauses.Unreadable] = unreadable,
+                [DeadManCauses.Unreadable] = Twice(DeadManCauses.Unreadable, unreadable, unknown),
                 // Unread, the pipeline's own causes are unknown: left as they were, neither raised nor resolved.
-                [DeadManCauses.Stalled] = health is null ? Keep(DeadManCauses.Stalled) : Stalled(health),
+                [DeadManCauses.Stalled] = health is null ? Keep(DeadManCauses.Stalled) : Twice(DeadManCauses.Stalled, Stalled(health), unknown),
                 [DeadManCauses.Failing] = health is null ? Keep(DeadManCauses.Failing) : Failing(health, now),
                 [DeadManCauses.NoSuccess] = health is null ? Keep(DeadManCauses.NoSuccess) : NoSuccess(health, now),
                 [DeadManCauses.StuckInRetry] = health is null ? Keep(DeadManCauses.StuckInRetry) : StuckInRetry(health),
                 [DeadManCauses.Shadow] = await ShadowAsync(cancellationToken),
+                [DeadManCauses.NotStarted] = notStarted,
+                [DeadManCauses.Kept] = kept,
             };
-            // Not known yet: unread, or a condition seen once that needs a second read to stand.
-            var unknown = new HashSet<string>();
             if (health is null)
             {
                 unknown.UnionWith([DeadManCauses.Stalled, DeadManCauses.Failing, DeadManCauses.NoSuccess, DeadManCauses.StuckInRetry]);
@@ -153,6 +164,7 @@ namespace Juice.Observability.Health.DeadMan
                         _reconcile.Remove(cause);
                         // The rate limit runs from this post.
                         (state.Active, state.SentAt) = detail is not null ? (true, (DateTimeOffset?)now) : (false, null);
+                        if (detail is not null) state.FiredAt = now;
                     }
                     continue;
                 }
@@ -163,11 +175,12 @@ namespace Juice.Observability.Health.DeadMan
                         (state.Active, state.Since, state.SentAt) = (true, now, null);
                     }
                     state.Detail = detail;
-                    if (state.SentAt is not { } sent || now - sent >= options.Value.ResendAfter)
+                    // At most once per ResendAfter: told and still standing, or told, resolved and back (a flapping cause).
+                    if ((state.SentAt ?? state.FiredAt) is not { } last || now - last >= options.Value.ResendAfter)
                     {
                         if (await PostAsync(cause, "firing", state, health, now, cancellationToken))
                         {
-                            state.SentAt = now;
+                            (state.SentAt, state.FiredAt) = (now, now);
                         }
                     }
                 }
@@ -184,6 +197,49 @@ namespace Juice.Observability.Health.DeadMan
         }
 
         private string? Keep(string cause) => _causes[cause].Active ? _causes[cause].Detail : null;
+
+        private readonly HashSet<string> _seenOnce = [];
+
+        /// <summary>
+        /// A cause that stands only on two reads in a row (<see cref="DeadManCauses.Unreadable"/>, <see cref="DeadManCauses.Stalled"/>): one slow or
+        /// missed read isn't an alarm. Seen once, it is unknown (left as it was) until the next read says.
+        /// </summary>
+        private string? Twice(string cause, string? detail, HashSet<string> unknown)
+        {
+            if (detail is null)
+            {
+                _seenOnce.Remove(cause);
+                return null;
+            }
+            if (_seenOnce.Add(cause) && !_causes[cause].Active)
+            {
+                unknown.Add(cause);
+                return null;
+            }
+            return detail;
+        }
+
+        /// <summary>
+        /// What the platform kept for the pipeline (<see cref="IPipelineKeptReport"/>, registered with the pipeline; read in a scope of its own):
+        /// whether it started, and the oldest call or notification kept and not handed over. None registered: nothing to say.
+        /// </summary>
+        private async Task<(string? NotStarted, string? Kept)> KeptAsync(DateTimeOffset now, CancellationToken cancellationToken)
+        {
+            await using var scope = scopes.CreateAsyncScope();
+            if (scope.ServiceProvider.GetService<IPipelineKeptReport>() is not { } report) return (null, null);
+            var notStarted = report.StartFailure is { } failure ? $"the notification pipeline didn't start: {failure}" : null;
+            try
+            {
+                var oldest = await report.OldestKeptAsync(cancellationToken);
+                var kept = oldest is { } at && now - at > options.Value.KeptThreshold ? $"kept for the pipeline and not handed over for {Minutes(now - at)}" : null;
+                return (notStarted, kept);
+            }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                logger.LogWarning(ex, "What was kept for the pipeline could not be read; the kept cause is left as it was");
+                return (notStarted, Keep(DeadManCauses.Kept));
+            }
+        }
 
         /// <summary>
         /// The shadow comparison's answer (<see cref="IShadowReport"/>, registered by M47 in shadow mode only; scoped, so read in a scope of its own

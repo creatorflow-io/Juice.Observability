@@ -45,6 +45,13 @@ namespace Juice.Observability.Tests
             }
         }
 
+        private sealed class FakeKept : IPipelineKeptReport
+        {
+            public string? StartFailure { get; set; }
+            public DateTimeOffset? Oldest { get; set; }
+            public ValueTask<DateTimeOffset?> OldestKeptAsync(CancellationToken cancellationToken) => ValueTask.FromResult(Oldest);
+        }
+
         private sealed class FakeShadow : IShadowReport
         {
             public string? Failing { get; set; }
@@ -64,7 +71,7 @@ namespace Juice.Observability.Tests
             },
         };
 
-        private sealed record Setup(DeadManSender Sender, FakeHealth Health, FakeShadow Shadow, Clock Clock, WebhookTests.Receiver Receiver) : IAsyncDisposable
+        private sealed record Setup(DeadManSender Sender, FakeHealth Health, FakeShadow Shadow, Clock Clock, WebhookTests.Receiver Receiver, FakeKept Kept) : IAsyncDisposable
         {
             public async ValueTask DisposeAsync()
             {
@@ -86,12 +93,13 @@ namespace Juice.Observability.Tests
             configure?.Invoke(options);
             var health = new FakeHealth();
             var shadow = new FakeShadow();
+            var kept = new FakeKept();
             var clock = new Clock(DateTimeOffset.UtcNow);
-            var services = new ServiceCollection().AddSingleton<INotificationsPipelineHealth>(health).AddScoped<IShadowReport>(_ => shadow)
+            var services = new ServiceCollection().AddSingleton<INotificationsPipelineHealth>(health).AddScoped<IShadowReport>(_ => shadow).AddScoped<IPipelineKeptReport>(_ => kept)
                 .BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
             var sender = new DeadManSender(services.GetRequiredService<IServiceScopeFactory>(), Options.Create(options),
                 Options.Create(new PlatformOptions { TenantKey = LocalStack.TenantKey }), clock, NullLogger<DeadManSender>.Instance);
-            return new Setup(sender, health, shadow, clock, receiver);
+            return new Setup(sender, health, shadow, clock, receiver, kept);
         }
 
         [Fact]
@@ -109,6 +117,9 @@ namespace Juice.Observability.Tests
             await using var setup = await SetupAsync();
             setup.Health.Health = Reading(dispatcherDue: TimeSpan.FromMinutes(6));
 
+            // One read isn't an alarm (review #15): it stands on the second.
+            await setup.Sender.RunOnceAsync(Ct);
+            Assert.Empty(setup.Posted());
             await setup.Sender.RunOnceAsync(Ct);
             var firing = Assert.Single(setup.Posted());
             Assert.Equal(("observability.deadman.firing", DeadManCauses.Stalled), (firing.GetProperty("type").GetString(), firing.GetProperty("cause").GetString()));
@@ -189,8 +200,12 @@ namespace Juice.Observability.Tests
             await using var setup = await SetupAsync();
             setup.Health.Health = Reading(dispatcherDue: TimeSpan.FromMinutes(6));
             await setup.Sender.RunOnceAsync(Ct);
+            await setup.Sender.RunOnceAsync(Ct);
 
             setup.Health.Error = new InvalidOperationException("relation \"notifications.deliveries\" does not exist");
+            // Unreadable once: not yet (review #15); twice: a cause.
+            await setup.Sender.RunOnceAsync(Ct);
+            Assert.DoesNotContain(setup.Posted(), p => p.GetProperty("cause").GetString() == DeadManCauses.Unreadable);
             await setup.Sender.RunOnceAsync(Ct);
             var unreadable = setup.Posted()[^1];
             Assert.Equal(DeadManCauses.Unreadable, unreadable.GetProperty("cause").GetString());
@@ -296,6 +311,9 @@ namespace Juice.Observability.Tests
             setup.Health.Health = Reading(dispatcherDue: TimeSpan.FromMinutes(6));
             setup.Sender.LeaseAcquired();
 
+            // Seen once, the stall isn't known yet: it waits for the second read to be reconciled.
+            await setup.Sender.RunOnceAsync(Ct);
+            Assert.DoesNotContain(Reconciled(setup), p => p.GetProperty("cause").GetString() == DeadManCauses.Stalled);
             await setup.Sender.RunOnceAsync(Ct);
             var stalled = Assert.Single(Reconciled(setup), p => p.GetProperty("cause").GetString() == DeadManCauses.Stalled);
             Assert.Equal("observability.deadman.firing", stalled.GetProperty("type").GetString());
@@ -365,6 +383,7 @@ namespace Juice.Observability.Tests
             setup.Health.Health = Reading(dispatcherDue: TimeSpan.FromMinutes(6));
 
             await setup.Sender.RunOnceAsync(Ct);
+            await setup.Sender.RunOnceAsync(Ct);
             Assert.Empty(setup.Receiver.Requests);
             // Not sent, so not rate-limited: the next pass tries again (and is refused again).
             Assert.Single(setup.Sender.Status.Causes);
@@ -392,13 +411,123 @@ namespace Juice.Observability.Tests
             });
             _ = factory.Server;
 
-            for (var i = 0; i < 100 && receiver.Requests.IsEmpty; i++) await Task.Delay(100, Ct);
+            List<JsonElement> Posted() => [.. receiver.Requests.Select(r => JsonDocument.Parse(r.Body).RootElement)];
+            bool Fired(string cause) => Posted().Any(p => p.GetProperty("cause").GetString() == cause && p.GetProperty("type").GetString() == "observability.deadman.firing");
+            for (var i = 0; i < 100 && !(Fired(DeadManCauses.NotStarted) && Fired(DeadManCauses.Unreadable)); i++) await Task.Delay(100, Ct);
 
-            // The pipeline's own services were never started; the alarm, which doesn't depend on them, was.
-            // Its first pass under the lease reconciles: the unreadable pipeline fires; the causes it can't read are left untold.
-            var posted = receiver.Requests.Select(r => JsonDocument.Parse(r.Body).RootElement).ToList();
-            Assert.Contains(posted, p => p.GetProperty("cause").GetString() == DeadManCauses.Unreadable && p.GetProperty("type").GetString() == "observability.deadman.firing");
-            Assert.DoesNotContain(posted, p => p.GetProperty("cause").GetString() is DeadManCauses.Stalled or DeadManCauses.Failing or DeadManCauses.NoSuccess or DeadManCauses.StuckInRetry);
+            // The pipeline's own services were never started; the alarm, which doesn't depend on them, was. It says the pipeline didn't start,
+            // and (on two reads) that it can't be read; the causes it can't read are left untold.
+            Assert.True(Fired(DeadManCauses.NotStarted));
+            Assert.True(Fired(DeadManCauses.Unreadable));
+            Assert.DoesNotContain(Posted(), p => p.GetProperty("cause").GetString() is DeadManCauses.Stalled or DeadManCauses.Failing or DeadManCauses.NoSuccess or DeadManCauses.StuckInRetry);
+        }
+
+        /// <summary>
+        /// Reviewer-2's case (review #15): the pipeline's schema is there but its start fails (a bad provisioning file), so everything is kept and
+        /// its health reads quiet: nothing due, nothing failing. The alarm says it didn't start.
+        /// </summary>
+        [Fact]
+        public async Task A_pipeline_whose_provisioning_fails_raises_not_started_though_its_health_reads_quiet_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var receiver = await WebhookTests.Receiver.StartAsync();
+            var file = Path.Combine(Path.GetTempPath(), $"juice-obs-deadman-{Guid.NewGuid():N}.json");
+            await File.WriteAllTextAsync(file, $$"""{ "tenants": { "{{LocalStack.TenantKey}}": { "integrations": { "mail": { "channel": "email", "kind": "smtp", "settings": { "server": "none" } } } } } }""", Ct);
+            try
+            {
+                await using var factory = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string>
+                {
+                    ["Notifications:Pipeline"] = "new", ["Notifications:Provisioning:Path"] = file,
+                    ["Notifications:DeadMan:Url"] = receiver.Url, ["Notifications:DeadMan:SecretRef"] = $"env:{SecretVariable}",
+                    ["Notifications:DeadMan:AllowHttpToAllowlisted"] = "true", ["Notifications:DeadMan:Interval"] = "00:00:01",
+                    ["Notifications:DeadMan:Allowlist:0:Destination"] = $"{receiver.Address}/32", ["Notifications:DeadMan:Allowlist:0:Ports:0"] = receiver.Port.ToString(),
+                });
+                _ = factory.Server;
+                Assert.NotNull(((Notifications.PipelineStart)factory.Services.GetService(typeof(Notifications.PipelineStart))!).Failure);
+
+                List<JsonElement> Posted() => [.. receiver.Requests.Select(r => JsonDocument.Parse(r.Body).RootElement)];
+                for (var i = 0; i < 100 && !Posted().Any(p => p.GetProperty("cause").GetString() == DeadManCauses.NotStarted); i++) await Task.Delay(100, Ct);
+
+                var notStarted = Assert.Single(Posted(), p => p.GetProperty("cause").GetString() == DeadManCauses.NotStarted);
+                Assert.Equal("observability.deadman.firing", notStarted.GetProperty("type").GetString());
+                Assert.Contains("didn't start", notStarted.GetProperty("detail").GetString());
+                // Its schema is there: it reads, and reads quiet.
+                Assert.DoesNotContain(Posted(), p => p.GetProperty("type").GetString() == "observability.deadman.firing" && p.GetProperty("cause").GetString() != DeadManCauses.NotStarted);
+            }
+            finally
+            {
+                File.Delete(file);
+            }
+        }
+
+        [Fact]
+        public async Task A_pipeline_that_didnt_start_is_a_cause_until_it_does_Async()
+        {
+            await using var setup = await SetupAsync();
+            setup.Kept.StartFailure = "provisioning: the integration mail is invalid";
+
+            await setup.Sender.RunOnceAsync(Ct);
+            var firing = Assert.Single(setup.Posted());
+            Assert.Equal((DeadManCauses.NotStarted, "observability.deadman.firing"), (firing.GetProperty("cause").GetString(), firing.GetProperty("type").GetString()));
+            Assert.Contains("mail is invalid", firing.GetProperty("detail").GetString());
+
+            setup.Kept.StartFailure = null;
+            await setup.Sender.RunOnceAsync(Ct);
+            Assert.Equal("observability.deadman.resolved", setup.Posted()[^1].GetProperty("type").GetString());
+        }
+
+        [Fact]
+        public async Task What_was_kept_for_the_pipeline_past_the_threshold_is_a_cause_Async()
+        {
+            await using var setup = await SetupAsync();
+            setup.Kept.Oldest = setup.Clock.GetUtcNow().AddMinutes(-5);
+            await setup.Sender.RunOnceAsync(Ct);
+            Assert.Empty(setup.Posted());
+
+            setup.Kept.Oldest = setup.Clock.GetUtcNow().AddMinutes(-11);
+            await setup.Sender.RunOnceAsync(Ct);
+            var kept = Assert.Single(setup.Posted());
+            Assert.Equal(DeadManCauses.Kept, kept.GetProperty("cause").GetString());
+            Assert.Contains("11 min", kept.GetProperty("detail").GetString());
+
+            setup.Kept.Oldest = null;
+            await setup.Sender.RunOnceAsync(Ct);
+            Assert.Equal("observability.deadman.resolved", setup.Posted()[^1].GetProperty("type").GetString());
+        }
+
+        /// <summary>Review #15 (LOW): reads that fail one at a time never stand; a cause that comes back right after it resolved isn't told again until ResendAfter.</summary>
+        [Fact]
+        public async Task A_flapping_read_raises_nothing_and_a_cause_back_soon_after_it_cleared_isnt_told_again_Async()
+        {
+            await using var setup = await SetupAsync();
+            setup.Health.Health = Reading();
+            for (var i = 0; i < 6; i++)
+            {
+                setup.Health.Error = i % 2 == 0 ? new InvalidOperationException("blip") : null;
+                await setup.Sender.RunOnceAsync(Ct);
+                setup.Clock.Advance(TimeSpan.FromSeconds(30));
+            }
+            Assert.Empty(setup.Posted());
+
+            // Stalled twice: told. Clears: resolved. Back (twice) a minute later: not told again before ResendAfter.
+            setup.Health.Health = Reading(dispatcherDue: TimeSpan.FromMinutes(6));
+            await setup.Sender.RunOnceAsync(Ct);
+            await setup.Sender.RunOnceAsync(Ct);
+            setup.Health.Health = Reading();
+            await setup.Sender.RunOnceAsync(Ct);
+            Assert.Equal(["observability.deadman.firing", "observability.deadman.resolved"], setup.Posted().Select(p => p.GetProperty("type").GetString()));
+            setup.Clock.Advance(TimeSpan.FromMinutes(1));
+            setup.Health.Health = Reading(dispatcherDue: TimeSpan.FromMinutes(6));
+            await setup.Sender.RunOnceAsync(Ct);
+            await setup.Sender.RunOnceAsync(Ct);
+            Assert.Equal(2, setup.Posted().Count);
+            Assert.Single(setup.Sender.Status.Causes);
+            // Still standing past ResendAfter from the first firing: told.
+            setup.Clock.Advance(TimeSpan.FromMinutes(15));
+            await setup.Sender.RunOnceAsync(Ct);
+            Assert.Equal("observability.deadman.firing", setup.Posted()[^1].GetProperty("type").GetString());
+            Assert.Equal(3, setup.Posted().Count);
         }
 
         [Theory]
