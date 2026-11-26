@@ -92,9 +92,10 @@ namespace Juice.Observability.Data
 
     /// <summary>
     /// An alert fired, or resolved after firing: the transitions that notify. A domain event, dispatched in the transaction that saves it, so
-    /// whatever its handlers add (an integration event in the outbox) commits with the alert.
+    /// whatever its handlers add (an integration event in the outbox) commits with the alert. Its handlers run one after another
+    /// (<see cref="ISequenceNotification"/>): they share the command's context and connection, which can't take two operations at once.
     /// </summary>
-    public sealed record AlertTransitioned(Guid PlatformTenantId, Guid AlertId, Guid TransitionId, AlertState ToState) : MessageBase, INotification;
+    public sealed record AlertTransitioned(Guid PlatformTenantId, Guid AlertId, Guid TransitionId, AlertState ToState) : MessageBase, ISequenceNotification;
 
     /// <summary>
     /// The stored outcome of a mutation sent with an <c>Idempotency-Key</c> (requirements §6.1): a retry with the same

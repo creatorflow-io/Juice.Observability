@@ -103,7 +103,9 @@ namespace Juice.Observability.Api
                 .RegisterServicesFromAssemblyContaining<PlanNotifications>()
                 .RegisterServicesFromAssemblyContaining<EvaluateSloBurns>()
                 .RegisterServicesFromAssemblyContaining<ChangeRule>(includeNonPublicTypes: true));
-            services.AddScoped(typeof(IPipelineBehavior<,>), typeof(PlatformTransactionBehavior<,>));
+            // Around the platform's own commands only: a product embedded in the host (the notification pipeline) has its own transaction.
+            services.AddScoped(typeof(PlatformTransactionBehavior<,>));
+            services.AddScoped(typeof(IPipelineBehavior<,>), typeof(PlatformCommandsTransaction<,>));
             var messaging = services.AddMessaging();
             messaging.AddOutbox();
             messaging.AddLocalChannel();
