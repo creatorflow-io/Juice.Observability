@@ -114,6 +114,7 @@ namespace Juice.Observability.Tests
 
         private static async Task<(List<WebhookEndpoint> Endpoints, List<Data.EscalationPolicy> Policies, List<WebhookAllowlistEntry> Allowlist)> RealLegacyAsync()
         {
+            LocalStack.RequireAvailable();
             var options = new DbContextOptionsBuilder<PlatformDbContext>();
             PlatformDbContext.Configure(options, LocalStack.PostgresConnection("juice_observability"));
             await using var live = new PlatformDbContext(options.Options);
@@ -184,6 +185,7 @@ namespace Juice.Observability.Tests
 
         private async Task RealCopyAsync(bool withPolicies)
         {
+            LocalStack.RequireAvailable();
             var (endpoints, policies, allowlist) = await RealLegacyAsync();
             if (!withPolicies)
             {
