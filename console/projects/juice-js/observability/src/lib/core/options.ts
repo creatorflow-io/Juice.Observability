@@ -12,13 +12,18 @@ export interface ObservabilityOptions {
    * `id => ['/audit/traces', id]`. A string is an external URL. Without it, no link.
    */
   auditLink?: ((traceId: string) => unknown[] | string | null) | null;
+  /**
+   * Where the host mounted the notification pages (`@juice-js/notifications-admin`, phase 5 M48), such as `/alerts/notifications`: the
+   * webhooks page links to them. Without it, no link.
+   */
+  notificationsLink?: string | null;
   /** Show on the Approvals menu entry how many action requests wait for the signed-in user. On unless false. */
   approvalCount?: boolean;
 }
 
 export const OBSERVABILITY_OPTIONS = new InjectionToken<ObservabilityOptions>('OBSERVABILITY_OPTIONS', {
   providedIn: 'root',
-  factory: () => ({ apiBase: '', basePath: '/', auditLink: null }),
+  factory: () => ({ apiBase: '', basePath: '/', auditLink: null, notificationsLink: null }),
 });
 
 /**
@@ -33,6 +38,7 @@ export function provideJuiceObservability(options: Partial<ObservabilityOptions>
         apiBase: options.apiBase ?? '',
         basePath: options.basePath ?? '/',
         auditLink: options.auditLink ?? null,
+        notificationsLink: options.notificationsLink ?? null,
       } satisfies ObservabilityOptions,
     },
     ...(options.approvalCount === false ? [] : [provideEnvironmentInitializer(() => { inject(ApprovalMenuBadge); })]),

@@ -8,7 +8,9 @@ import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSelectModule } from '@angular/material/select';
 import { Observable, forkJoin, map } from 'rxjs';
+import { RouterLink } from '@angular/router';
 import { ApiService } from '../core/api.service';
+import { OBSERVABILITY_OPTIONS } from '../core/options';
 import { Channel, EscalationPolicy, EscalationStep } from '../core/models';
 import { apiResource } from '../shared/resource';
 import { problemText } from '../shared/telemetry';
@@ -31,9 +33,14 @@ const NEW_POLICY: PolicyForm = { editing: false, key: '', name: '', ruleKeys: ''
  */
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [DatePipe, FormsModule, MatButtonModule, MatCheckboxModule, MatFormFieldModule, MatInputModule, MatProgressBarModule, MatSelectModule, ContextBar],
+  imports: [DatePipe, FormsModule, MatButtonModule, MatCheckboxModule, MatFormFieldModule, MatInputModule, MatProgressBarModule, MatSelectModule, ContextBar, RouterLink],
   template: `
     <jc-context-bar><h1>Notifications</h1></jc-context-bar>
+    @if (notificationsLink; as link) {
+      <p class="jc-notice" data-testid="notifications-moved">Alert notifications now have their own pages: deliveries, routes, integrations and
+        templates are in <a [routerLink]="link" data-testid="notifications-link">Alerts › Notifications</a>. The webhooks here keep working until
+        they are retired.</p>
+    }
     @if (data.isLoading()) { <mat-progress-bar mode="indeterminate" /> }
     @if (data.error()) { <p class="jc-error">{{ error() }}</p> }
 
@@ -174,6 +181,8 @@ const NEW_POLICY: PolicyForm = { editing: false, key: '', name: '', ruleKeys: ''
 })
 export class NotificationsPage {
   private readonly api = inject(ApiService);
+  /** The notification pages, when the host mounted them (`notificationsLink`). */
+  protected readonly notificationsLink = inject(OBSERVABILITY_OPTIONS).notificationsLink ?? null;
   protected readonly channel = signal<ChannelForm | null>(null);
   protected readonly policy = signal<PolicyForm | null>(null);
   protected readonly history = signal<string | null>(null);

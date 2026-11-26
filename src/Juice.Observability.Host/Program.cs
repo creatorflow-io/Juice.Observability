@@ -36,8 +36,8 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapJuiceObservability();
-// Any other path outside /api and /health is a Console route. API paths keep routing's own answers (404, 405).
-app.MapFallbackToFile("{*path:nonfile:regex(^(?!(api|health)(/|$)).*$)}", "index.html").AllowAnonymous();
+// Any other path outside /api, /health and the notifications admin API is a Console route. API paths keep routing's own answers (404, 405).
+app.MapFallbackToFile("{*path:nonfile:regex(^(?!(api|health|notifications/api)(/|$)).*$)}", "index.html").AllowAnonymous();
 
 app.Run();
 

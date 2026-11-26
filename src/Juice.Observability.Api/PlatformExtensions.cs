@@ -60,6 +60,7 @@ namespace Juice.Observability.Api
             services.Configure<LocalChannelOptions>(configuration.GetSection(LocalChannelSection));
             // After the platform's messaging and the provisioner: its schema migrates after the platform's (I60).
             services.AddPlatformNotifications(configuration);
+            services.AddPlatformNotificationsAdmin();
             services.AddPlatformDiscovery(configuration);
             services.AddPlatformHealth(configuration);
             services.AddPlatformRules(configuration);
@@ -156,6 +157,7 @@ namespace Juice.Observability.Api
             app.MapHealthChecks("/health/ready", new() { Predicate = check => check.Tags.Contains("ready") }).AllowAnonymous();
             app.MapPlatformStatus();
             app.MapInventoryEndpoints();
+            app.MapPlatformNotificationsAdmin();
             // Answers only on the agent listener, and only when agents are enabled (Agents:Enabled).
             app.MapAgentApi();
             return app;
