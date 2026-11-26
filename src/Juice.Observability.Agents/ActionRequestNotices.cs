@@ -16,11 +16,19 @@ namespace Juice.Observability.Agents
     /// </summary>
     public static class ActionRequestNotices
     {
-        /// <summary>Adds one delivery per configured endpoint that exists and is enabled; the caller saves them with the request.</summary>
-        public static async Task<int> AddAsync(PlatformDbContext db, ActionApprovalOptions options, string tenantKey, ActionRequest request, string hostname,
-            string type, DateTimeOffset now, CancellationToken ct)
+        /// <summary>
+        /// Adds one delivery per configured endpoint that exists and is enabled; the caller saves them with the request. With the notification
+        /// pipeline (<c>Notifications:Pipeline</c> <c>shadow</c> or <c>new</c>) it is also told, in the same transaction; in <c>new</c>, only it is.
+        /// </summary>
+        public static async Task<int> AddAsync(PlatformDbContext db, IServiceProvider services, ActionApprovalOptions options, string tenantKey, ActionRequest request,
+            string hostname, string type, DateTimeOffset now, CancellationToken ct)
         {
-            if (options.NotifyEndpoints.Count == 0) return 0;
+            var pipeline = services.GetService<IOptions<PlatformNotificationsOptions>>()?.Value ?? new PlatformNotificationsOptions();
+            if (pipeline.ProducesRequests && services.GetService<IActionRequestNotifications>() is { } notifications)
+            {
+                await notifications.NotifyAsync(request, hostname, type, now, ct);
+            }
+            if (!pipeline.LegacySends || options.NotifyEndpoints.Count == 0) return 0;
             var endpoints = await db.WebhookEndpoints.AsNoTracking()
                 .Where(e => e.TenantId == request.TenantId && e.Enabled && options.NotifyEndpoints.Contains(e.Key)).Select(e => e.Id).ToListAsync(ct);
             foreach (var endpoint in endpoints)
@@ -138,7 +146,7 @@ namespace Juice.Observability.Agents
                     TenantId = request.TenantId, Actor = Actor, Operation = "action.request.verify", TargetType = "action_request", TargetId = request.Id.ToString(),
                     Outcome = AuditOutcome.Succeeded, Metadata = new() { ["action"] = request.Action, ["verification"] = outcome.State.ToString(), ["note"] = request.VerificationNote },
                 });
-                await ActionRequestNotices.AddAsync(db, options.Value, platform.Value.TenantKey, request, hostnames.GetValueOrDefault(request.AgentId, ""),
+                await ActionRequestNotices.AddAsync(db, scope.ServiceProvider, options.Value, platform.Value.TenantKey, request, hostnames.GetValueOrDefault(request.AgentId, ""),
                     outcome.State == ActionVerification.Verified ? ActionRequestEvents.Verified : ActionRequestEvents.NotVerified, now, ct);
             }
             await db.SaveChangesAsync(ct);
@@ -175,7 +183,7 @@ namespace Juice.Observability.Agents
                     TenantId = request.TenantId, Actor = Actor, Operation = "action.request.expire", TargetType = "action_request", TargetId = request.Id.ToString(),
                     Outcome = AuditOutcome.Succeeded, Metadata = new() { ["action"] = request.Action, ["requestedBy"] = request.RequestedBy },
                 });
-                await ActionRequestNotices.AddAsync(db, options.Value, platform.Value.TenantKey, request, hostnames.GetValueOrDefault(request.AgentId, ""),
+                await ActionRequestNotices.AddAsync(db, scope.ServiceProvider, options.Value, platform.Value.TenantKey, request, hostnames.GetValueOrDefault(request.AgentId, ""),
                     ActionRequestEvents.Expired, now, ct);
             }
             await db.SaveChangesAsync(ct);

@@ -176,8 +176,12 @@ namespace Juice.Observability.Webhooks
     /// <summary>
     /// Plans a transition's notifications once. The outbox may hand a transition over twice, so a transition planned already is left alone, and two plans
     /// racing on different replicas meet at <see cref="AlertTransition.NotificationsPlannedAt"/>, a concurrency token: the second rolls back and, retried, finds it planned.
+    /// <para>With the notification pipeline (<c>Notifications:Pipeline</c> <c>shadow</c> or <c>new</c>), the alert raises
+    /// <see cref="AlertNotificationsPlanned"/> once the token is set, and its handler writes the request in this transaction (phase-5-plan I64). In
+    /// <c>new</c>, legacy plans nothing.</para>
     /// </summary>
-    public sealed class PlanNotificationsHandler(PlatformDbContext db, IOptions<PlatformOptions> platform, TimeProvider clock) : IRequestHandler<PlanNotifications, int>
+    public sealed class PlanNotificationsHandler(PlatformDbContext db, IOptions<PlatformOptions> platform, IOptions<PlatformNotificationsOptions> pipeline,
+        TimeProvider clock) : IRequestHandler<PlanNotifications, int>
     {
         public async ValueTask<int> Handle(PlanNotifications request, CancellationToken cancellationToken)
         {
@@ -186,12 +190,20 @@ namespace Juice.Observability.Webhooks
             {
                 return 0;
             }
-            var alert = await db.Alerts.AsNoTracking().SingleAsync(a => a.Id == transition.AlertId, cancellationToken);
+            var produces = pipeline.Value.ProducesRequests;
+            // Tracked only to carry the event: nothing of it changes here.
+            var alert = produces
+                ? await db.Alerts.SingleAsync(a => a.Id == transition.AlertId, cancellationToken)
+                : await db.Alerts.AsNoTracking().SingleAsync(a => a.Id == transition.AlertId, cancellationToken);
             var rule = await db.Rules.AsNoTracking().SingleAsync(r => r.Id == alert.RuleId, cancellationToken);
             var now = clock.GetUtcNow();
             transition.NotificationsPlannedAt = now;
+            if (produces)
+            {
+                alert.DomainEvents.Add(new AlertNotificationsPlanned(alert.TenantId, alert.Id, transition.Id));
+            }
             // From when the transition was committed, so the dispatch delay still counts the time it spent in the outbox.
-            return NotificationPlan.Plan(db, platform.Value.TenantKey, rule, alert, transition, request.CommittedAt, now);
+            return pipeline.Value.LegacySends ? NotificationPlan.Plan(db, platform.Value.TenantKey, rule, alert, transition, request.CommittedAt, now) : 0;
         }
     }
 
@@ -213,8 +225,7 @@ namespace Juice.Observability.Webhooks
         {
             var type = transition.ToState == AlertState.Firing ? Firing : Resolved;
             var context = new AlertContext(rule.Key, alert.SubjectKey, alert.Severity);
-            var silences = db.Silences.AsNoTracking().Where(s => s.TenantId == alert.TenantId && s.CancelledAt == null && s.StartsAt <= now && (s.RepeatWeekly || s.EndsAt > now)).ToList();
-            var silence = SilenceMatcher.Find(silences, context, now);
+            var silence = CoveringSilence(db, alert, context, now);
             var endpoints = db.WebhookEndpoints.AsNoTracking().Where(e => e.TenantId == alert.TenantId && e.Enabled).ToList()
                 .Where(e => e.Events.Contains(type) && (e.RuleKeys.Length == 0 || e.RuleKeys.Contains(rule.Key)) && alert.Severity >= e.MinimumSeverity
                     && (e.Environments.Length == 0 || context.Environment is { } environment && e.Environments.Contains(environment)));
@@ -239,16 +250,26 @@ namespace Juice.Observability.Webhooks
             return added;
         }
 
+        /// <summary>The active silence that covers the alert now, or null.</summary>
+        public static Silence? CoveringSilence(PlatformDbContext db, Alert alert, AlertContext context, DateTimeOffset now)
+        {
+            var silences = db.Silences.AsNoTracking().Where(s => s.TenantId == alert.TenantId && s.CancelledAt == null && s.StartsAt <= now && (s.RepeatWeekly || s.EndsAt > now)).ToList();
+            return SilenceMatcher.Find(silences, context, now);
+        }
+
+        /// <summary>The enabled policies with steps that match the alert (severity, rule keys, environments).</summary>
+        public static List<EscalationPolicy> MatchingPolicies(PlatformDbContext db, Alert alert, AlertContext context)
+            => db.EscalationPolicies.AsNoTracking().Where(p => p.TenantId == alert.TenantId && p.Enabled).ToList()
+                .Where(policy => policy.Steps.Count > 0 && alert.Severity >= policy.MinimumSeverity
+                    && (policy.RuleKeys.Length == 0 || policy.RuleKeys.Contains(context.RuleKey))
+                    && (policy.Environments.Length == 0 || context.Environment is { } environment && policy.Environments.Contains(environment)))
+                .ToList();
+
         /// <summary>Every enabled policy matching the alert, from its first step. A policy with no way to reach anyone would never have been accepted.</summary>
         private static void StartEscalations(PlatformDbContext db, Alert alert, AlertContext context, DateTimeOffset now)
         {
-            foreach (var policy in db.EscalationPolicies.AsNoTracking().Where(p => p.TenantId == alert.TenantId && p.Enabled).ToList())
+            foreach (var policy in MatchingPolicies(db, alert, context))
             {
-                if (policy.Steps.Count == 0 || alert.Severity < policy.MinimumSeverity || (policy.RuleKeys.Length > 0 && !policy.RuleKeys.Contains(context.RuleKey))
-                    || (policy.Environments.Length > 0 && (context.Environment is not { } environment || !policy.Environments.Contains(environment))))
-                {
-                    continue;
-                }
                 db.AlertEscalations.Add(new AlertEscalation
                 {
                     TenantId = alert.TenantId, AlertId = alert.Id, PolicyId = policy.Id, State = EscalationState.Active,
@@ -257,7 +278,7 @@ namespace Juice.Observability.Webhooks
             }
         }
 
-        internal static string Payload(Guid id, string type, string tenant, Rule rule, Alert alert, AlertTransition transition, (string Policy, int Step)? escalation)
+        public static string Payload(Guid id, string type, string tenant, Rule rule, Alert alert, AlertTransition transition, (string Policy, int Step)? escalation)
             => JsonSerializer.Serialize(new
             {
                 id,
