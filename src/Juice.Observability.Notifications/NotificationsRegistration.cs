@@ -97,6 +97,12 @@ namespace Juice.Observability.Notifications
         internal static IConfiguration PipelineSettings(IConfigurationSection section, IConfiguration configuration, NotificationsPipeline mode)
         {
             var overrides = new Dictionary<string, string?> { ["Database:Migrate"] = "false" };
+            // Plain http to an allowlisted receiver, as the legacy webhooks allow it, unless the pipeline's own setting says otherwise: the same
+            // receivers keep working when the pipeline sends to them.
+            if (section["Delivery:AllowHttpToAllowlisted"] is null && configuration["Webhooks:AllowHttpToAllowlisted"] is { Length: > 0 } http)
+            {
+                overrides["Delivery:AllowHttpToAllowlisted"] = http;
+            }
             if (mode == NotificationsPipeline.Legacy)
             {
                 overrides["Stages:Run"] = "false";

@@ -24,6 +24,21 @@ namespace Juice.Observability.Tests
             Assert.Equal("false", pipeline["Stages:Run"]);
         }
 
+        [Theory]
+        [InlineData("true", null, "true")]
+        [InlineData("false", null, "false")]
+        [InlineData("true", "false", "false")]
+        [InlineData(null, null, null)]
+        public void Http_to_allowlisted_receivers_carries_over_from_the_webhooks_unless_the_pipeline_says(string? webhooks, string? pipeline, string? expected)
+        {
+            var values = new List<(string, string)>();
+            if (webhooks is not null) values.Add(("Webhooks:AllowHttpToAllowlisted", webhooks));
+            if (pipeline is not null) values.Add(("Notifications:Delivery:AllowHttpToAllowlisted", pipeline));
+            var configuration = Settings([.. values]);
+            var settings = NotificationsRegistration.PipelineSettings(configuration.GetSection("Notifications"), configuration, NotificationsPipeline.New);
+            Assert.Equal(expected, settings["Delivery:AllowHttpToAllowlisted"]);
+        }
+
         [Fact]
         public void Legacy_runs_no_stage_even_when_the_section_says_so()
         {

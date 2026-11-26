@@ -58,7 +58,7 @@ namespace Juice.Observability.Tests
         public static string PostgresConnection(string database)
             => $"Host=127.0.0.1;Port=5433;Database={database};Username=juice;Password={Secret("POSTGRES_PASSWORD")};Maximum Pool Size={MaxPoolSize}";
 
-        public const int MaxPoolSize = 20;
+        public const int MaxPoolSize = 50;
 
         public static string ClickHouseReader
             => $"Host=127.0.0.1;Port=8123;Username=platform_reader;Password={Secret("CLICKHOUSE_PLATFORM_PASSWORD")};Database=otel";

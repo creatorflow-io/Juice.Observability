@@ -46,6 +46,10 @@ which pipeline sends:
 - `shadow`: legacy sends, and the pipeline plans the same notifications in dry run. Refused at start until the pipeline's dry run
   works (Juice.Notifications M44-2), since it would otherwise send twice.
 
+The pipeline's settings are the `Notifications` section's (`Stages`, `Delivery`, `Retention`, …). One carries over from the webhooks:
+plain http to an allowlisted receiver (`Webhooks:AllowHttpToAllowlisted`) is the pipeline's too, unless
+`Notifications:Delivery:AllowHttpToAllowlisted` sets it, so the same receivers keep working when the pipeline sends to them.
+
 If the pipeline's start fails (its migration or provisioning), `/health/ready` reports it (check `notifications`) and the platform runs on.
 In `new`, what the platform would have sent is kept and sent once a restart brings the pipeline up.
 
