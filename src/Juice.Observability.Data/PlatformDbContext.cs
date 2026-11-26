@@ -52,6 +52,8 @@ namespace Juice.Observability.Data
         public DbSet<NotificationHold> NotificationHolds => Set<NotificationHold>();
         public DbSet<AlertHold> AlertHolds => Set<AlertHold>();
         public DbSet<NotificationParkedCall> NotificationParkedCalls => Set<NotificationParkedCall>();
+        public DbSet<ShadowComparison> ShadowComparisons => Set<ShadowComparison>();
+        public DbSet<ShadowDifference> ShadowDifferences => Set<ShadowDifference>();
         public DbSet<Incident> Incidents => Set<Incident>();
         public DbSet<IncidentAlert> IncidentAlerts => Set<IncidentAlert>();
         public DbSet<IncidentEvent> IncidentEvents => Set<IncidentEvent>();
@@ -335,6 +337,31 @@ namespace Juice.Observability.Data
                 e.Property(x => x.By).HasMaxLength(256);
                 e.Property(x => x.Request).HasColumnType("jsonb");
                 e.HasIndex(x => x.Id).HasFilter("replayed_at IS NULL").HasDatabaseName("ix_notification_parked_calls_pending");
+            });
+
+            // The shadow comparison (M47): what was compared, once, and how the pipelines differed.
+            model.Entity<ShadowComparison>(e =>
+            {
+                e.ToTable("shadow_comparisons");
+                e.HasKey(x => new { x.TenantId, x.TransitionId, x.EscalationStep });
+                Tenant(e);
+                e.Property(x => x.Event).HasMaxLength(40);
+                e.HasIndex(x => new { x.TenantId, x.ComparedAt });
+            });
+
+            model.Entity<ShadowDifference>(e =>
+            {
+                e.ToTable("shadow_differences");
+                Tenant(e);
+                e.Property(x => x.Event).HasMaxLength(40);
+                e.Property(x => x.EndpointKey).HasMaxLength(100);
+                e.Property(x => x.Kind).HasMaxLength(40);
+                e.Property(x => x.Rule).HasMaxLength(40);
+                e.Property(x => x.Detail).HasMaxLength(2000);
+                // The report counts a window by rule and kind; the dead-man counts what no rule explains.
+                e.HasIndex(x => new { x.TenantId, x.DetectedAt, x.Rule, x.Kind });
+                e.HasIndex(x => new { x.TenantId, x.DetectedAt }).HasFilter("rule IS NULL").HasDatabaseName("ix_shadow_differences_unexplained");
+                e.HasIndex(x => new { x.TenantId, x.TransitionId, x.EscalationStep });
             });
         }
 
