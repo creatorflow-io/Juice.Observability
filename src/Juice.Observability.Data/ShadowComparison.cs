@@ -81,6 +81,12 @@ namespace Juice.Observability.Data
         /// </summary>
         public const string TemplatesNotPorted = "templates_not_ported";
 
-        public static readonly IReadOnlyList<string> All = [DigestBoundary, ResolveCancelsFiring, BlockedByPolicyInLegacy, ToldPerAlert, EmailFanOut, TemplatesNotPorted];
+        /// <summary>
+        /// A resolved notice a silence held, and the alert fired again after that transition: legacy sends the stale notice once the silence ends,
+        /// the new release pass drops it on purpose, as it would tell the receiver the recurrence is over (M46c).
+        /// </summary>
+        public const string StaleResolveDropped = "stale_resolve_dropped";
+
+        public static readonly IReadOnlyList<string> All = [DigestBoundary, ResolveCancelsFiring, BlockedByPolicyInLegacy, ToldPerAlert, EmailFanOut, TemplatesNotPorted, StaleResolveDropped];
     }
 }

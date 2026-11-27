@@ -115,14 +115,17 @@ namespace Juice.Observability.Notifications
                 }
                 var firing = firings.FirstOrDefault(f => f.AlertId == hold.AlertId);
                 var told = firing is null || firing.Outcome == NotificationHoldOutcomes.Sent;
-                var decided = HeldNotification.Decide(hold.Event, alert.State, told, alert.AcknowledgedAt is not null) == HeldOutcome.Send;
+                // A held resolve of an alert that has fired again since is stale: its notice would tell the receiver the recurrence is over, and
+                // its resolve would close the recurrence's escalation (review #13). Legacy sends the notice; this drops it on purpose (M46c), which
+                // the shadow comparer names as stale_resolve_dropped. Read once, so a retry decides the same.
+                var stale = hold.Event == NotificationPlan.Resolved && await FiredSinceAsync(db, hold, alert, cancellationToken);
+                var decided = !stale && HeldNotification.Decide(hold.Event, alert.State, told, alert.AcknowledgedAt is not null) == HeldOutcome.Send;
                 var sent = false;
                 var error = await EachAsync(transaction, async () =>
                 {
                     // Its resolve first, if it wasn't asked at plan (the pipeline was down, whatever the reason it was kept: a silence wins when
-                    // both apply, and it may have moved under a later silence), and never once the alert has fired again since: that closes
-                    // the escalation of the recurrence (review #13).
-                    if (hold.Event == NotificationPlan.Resolved && !hold.ResolveAsked && !await FiredSinceAsync(db, hold, alert, cancellationToken))
+                    // both apply, and it may have moved under a later silence), and never once the alert has fired again since.
+                    if (hold.Event == NotificationPlan.Resolved && !hold.ResolveAsked && !stale)
                     {
                         await adapter.ResolveAlertAsync(hold.AlertId, null, cancellationToken);
                     }
