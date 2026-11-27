@@ -148,6 +148,33 @@ namespace Juice.Observability.Tests
             Assert.Equal((AliasVocabulary.WebhooksAlias, true, AliasVocabulary.WebhooksAlias, true), (rows.IntegrationOwner, rows.IntegrationEnabled, rows.RouteOwner, rows.RouteEnabled));
         }
 
+        /// <summary>In new, an endpoint the file declares is the file's: the admin's PUT through /webhooks and the alias's own write both get managed_by_configuration (409).</summary>
+        [Fact]
+        public async Task New_ConfigEndpoint_AdminPutAndAliasPut_409ManagedByConfiguration()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var factory = new ApiTests.ApiFactory(database, settings: FileSettings("new", "from-file"));
+            var (_, _, admin, tenant) = await Caller.AllAsync(factory.CreateClient(), database);
+            var id = await RowsIdAsync(factory, "from-file");
+
+            var put = await admin.PutAsync($"/api/v1/tenants/{tenant}/webhooks/{id}", new { secretRef = Secret, enabled = false });
+            Assert.Equal(HttpStatusCode.Conflict, put.StatusCode);
+
+            await using var scope = factory.Services.CreateAsyncScope();
+            using var context = NotificationsMessageContext.Begin("test");
+            var outcome = await scope.ServiceProvider.GetRequiredService<IMediator>().Send(
+                new PutRoute(Guid.Parse(LocalStack.TenantKey), "from-file", null, null, false) { ManagedBy = AliasVocabulary.WebhooksAlias }, Ct);
+            Assert.Equal(ErrorCodes.ManagedByConfiguration, outcome.Code);
+            Assert.Equal(AliasVocabulary.AliasConfig, (await RowsAsync(factory, "from-file")).RouteOwner);
+        }
+
+        private static async Task<Guid> RowsIdAsync(ApiTests.ApiFactory factory, string key)
+        {
+            await using var scope = factory.Services.CreateAsyncScope();
+            return (await scope.ServiceProvider.GetRequiredService<NotificationsDbContext>().Integrations.AsNoTracking().SingleAsync(i => i.Key == key, Ct)).Id;
+        }
+
         /// <summary>The state the interim (8781935) left: legacy's row the API's and disabled, the alias's rows still the file's with the route stopped.</summary>
         [Fact]
         public async Task Upgrade_InterimRows_RouteStoppedAliasConfig_HandedBackOnNextStart()
