@@ -312,6 +312,69 @@ namespace Juice.Observability.Tests
         }
 
         /// <summary>
+        /// In new the delivery history is the pipeline's, read through the alias: an endpoint made through the API, a real alert sent through the
+        /// pipeline to a receiver that answers 503, and the endpoint's history shows it pending after one attempt, in legacy's words, with
+        /// nothing of the secret or the URL's path.
+        /// </summary>
+        [Fact]
+        public async Task In_new_a_delivery_failing_at_the_receiver_shows_in_the_endpoints_history_without_secrets_or_paths()
+        {
+            LocalStack.RequireAvailable();
+            Assert.SkipUnless(LocalStack.NotificationsPipeline == "new", "the history is the pipeline's only in new (JUICE_TEST_NOTIFICATIONS_PIPELINE=new)");
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var receiver = await Receiver.StartAsync(503, 503, 503, 503, 503, 503);
+            await using var factory = new ApiFactory(database, settings: new Dictionary<string, string>
+            {
+                ["Webhooks:AllowHttpToAllowlisted"] = "true",
+                ["Notifications:Delivery:AllowHttpToAllowlisted"] = "true", ["Notifications:Delivery:MaxAttempts"] = "5",
+                ["Notifications:Delivery:SmtpServers:observability:Host"] = "smtp.example.com",
+            });
+            using var client = factory.CreateClient();
+            var (_, _, admin, tenant) = await Caller.AllAsync(client, database);
+            var webhooks = $"/api/v1/tenants/{tenant}/webhooks";
+            await Caller.JsonAsync(await admin.SendAsync(HttpMethod.Put, $"{webhooks}/allowlist", new { destination = $"{receiver.Address}/32", ports = new[] { receiver.Port } }));
+            var url = $"http://{receiver.Address}:{receiver.Port}/hook";
+            var id = (await Caller.JsonAsync(await admin.PostAsync(webhooks, new { key = "ops", url, secretRef = $"env:{Secret}", events = new[] { "alert.firing" } }))).GetProperty("id").GetGuid();
+
+            var (alert, transition) = await ProducerAdapterTests.FireAsync(database);
+            await ProducerAdapterTests.PlanAsync(factory, database, transition);
+
+            System.Text.Json.JsonElement item = default;
+            string raw = "", rawRetrying = "";
+            for (var i = 0; i < 150; i++)
+            {
+                using var response = await admin.GetAsync($"{webhooks}/{id}/deliveries");
+                raw = await response.Content.ReadAsStringAsync(Ct);
+                var first = System.Text.Json.JsonDocument.Parse(raw).RootElement.GetProperty("items").EnumerateArray().FirstOrDefault();
+                if (first.ValueKind == System.Text.Json.JsonValueKind.Object && first.GetProperty("attempts").GetInt32() >= 1)
+                {
+                    item = first.Clone();
+                    break;
+                }
+                await Task.Delay(200, Ct);
+            }
+            Assert.True(item.ValueKind == System.Text.Json.JsonValueKind.Object, "the delivery never showed in the history");
+            Assert.True(item.GetProperty("status").GetString() == "Pending", item.ToString());
+            Assert.Equal(1, item.GetProperty("attempts").GetInt32());
+            Assert.NotEqual(System.Text.Json.JsonValueKind.Null, item.GetProperty("nextAttemptAt").ValueKind);
+            Assert.Equal(503, item.GetProperty("lastStatusCode").GetInt32());
+            Assert.Equal("alert.firing", item.GetProperty("event").GetString());
+            Assert.Equal(alert, item.GetProperty("alertId").GetGuid());
+
+            using (var retrying = await admin.GetAsync($"{webhooks}/{id}/deliveries?status=retrying"))
+            {
+                rawRetrying = await retrying.Content.ReadAsStringAsync(Ct);
+                Assert.Equal(item.GetProperty("id").GetGuid(), System.Text.Json.JsonDocument.Parse(rawRetrying).RootElement.GetProperty("items").EnumerateArray().Single().GetProperty("id").GetGuid());
+            }
+            foreach (var body in new[] { raw, rawRetrying })
+            {
+                Assert.DoesNotContain("ops-test-secret", body);
+                Assert.DoesNotContain(Secret, body);
+                Assert.DoesNotContain("/hook", body);
+            }
+        }
+
+        /// <summary>
         /// Through whichever pipeline sends (I74: <c>JUICE_TEST_NOTIFICATIONS_PIPELINE</c>; the alias maps the endpoint, M46b): an endpoint made
         /// through the API fails a delivery at the receiver (a 503, one attempt allowed), an admin retries it and it arrives under the same id,
         /// and a test send arrives signed with the endpoint's secret. Operators and viewers may do neither; each is audited.
