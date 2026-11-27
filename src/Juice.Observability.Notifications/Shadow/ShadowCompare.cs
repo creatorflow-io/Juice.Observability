@@ -22,7 +22,8 @@ namespace Juice.Observability.Notifications.Shadow
     /// <summary>
     /// What is compared: a transition's own notifications (step 0), or one escalation step of its alert. <c>ResolvedSince</c>: the alert
     /// resolved after it (a firing a resolve may have cancelled, Q2); <c>Held</c>: a silence held it in the new pipeline ("told" per alert, Q4).
-    /// <c>FiredSince</c>: for a resolved transition, the alert fired again after it (the new release pass drops a held resolve then, M46c).
+    /// <c>FiredSince</c>: for a resolved transition, the release pass dropped its hold because the alert fired again after it (outcome
+    /// <c>dropped_stale</c>, M46c), not for another reason.
     /// </summary>
     public sealed record ShadowUnit(Guid TenantId, Guid TransitionId, int EscalationStep, Guid AlertId, string Event, bool ResolvedSince, bool Held, bool FiredSince = false);
 

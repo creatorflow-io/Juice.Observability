@@ -294,7 +294,7 @@ namespace Juice.Observability.Tests
             await Pass(factory).ReleaseOnceAsync(Ct);
 
             var hold = Assert.Single(await HoldsAsync(database), h => h.Event == NotificationPlan.Resolved);
-            Assert.Equal((NotificationHoldOutcomes.Dropped, 0), (hold.Outcome, hold.Attempts));
+            Assert.Equal((NotificationHoldOutcomes.DroppedStale, 0), (hold.Outcome, hold.Attempts));
             Assert.Single(await RequestsAsync(database));
         }
 
@@ -323,7 +323,39 @@ namespace Juice.Observability.Tests
             await Pass(factory).ReleaseOnceAsync(Ct);
 
             var hold = Assert.Single(await HoldsAsync(database), h => h.Event == NotificationPlan.Resolved);
-            Assert.Equal((NotificationHoldOutcomes.Dropped, 0), (hold.Outcome, hold.Attempts));
+            Assert.Equal((NotificationHoldOutcomes.DroppedStale, 0), (hold.Outcome, hold.Attempts));
+        }
+
+        /// <summary>
+        /// A held resolve dropped for another reason (the receiver was never told of the firing) is plain <c>dropped</c> though the alert fired
+        /// again later: it is not the stale-resolve rule's (legacy would have sent it: told_per_alert).
+        /// </summary>
+        [Fact, Trait("Milestone", "M46c")]
+        public async Task ReleasePass_HeldResolve_DroppedForAnotherReason_AlertFiredLater_NotTaggedStale()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var factory = Factory(database);
+            _ = factory.Server;
+            var (alert, _, silence) = await HeldResolveAsync(factory, database);
+            await using (var db = database.Context())
+            {
+                // The firing was held and dropped earlier: the receiver was never told of it.
+                var held = await db.NotificationHolds.AsNoTracking().SingleAsync(h => h.Event == NotificationPlan.Resolved, Ct);
+                var firing = await db.AlertTransitions.AsNoTracking().FirstAsync(t => t.AlertId == alert && t.ToState == AlertState.Firing, Ct);
+                db.NotificationHolds.Add(new NotificationHold
+                {
+                    TenantId = held.TenantId, AlertId = alert, TransitionId = firing.Id, Event = NotificationPlan.Firing, SilenceId = silence, Request = held.Request,
+                    CreatedAt = DateTimeOffset.UtcNow, DecidedAt = DateTimeOffset.UtcNow, Reason = NotificationHoldReasons.Silence, Outcome = NotificationHoldOutcomes.Dropped,
+                });
+                await db.SaveChangesAsync(Ct);
+            }
+            await FireAgainAsync(database, alert);
+            await EndAsync(database, silence);
+
+            await Pass(factory).ReleaseOnceAsync(Ct);
+
+            Assert.Equal(NotificationHoldOutcomes.Dropped, Assert.Single(await HoldsAsync(database), h => h.Event == NotificationPlan.Resolved).Outcome);
         }
 
         [Fact, Trait("Milestone", "M46c")]
@@ -358,7 +390,7 @@ namespace Juice.Observability.Tests
 
             await Pass(factory).ReleaseOnceAsync(Ct);
 
-            Assert.Equal(NotificationHoldOutcomes.Dropped, Assert.Single(await HoldsAsync(database)).Outcome);
+            Assert.Equal(NotificationHoldOutcomes.DroppedStale, Assert.Single(await HoldsAsync(database)).Outcome);
             Assert.DoesNotContain(await RequestsAsync(database), r => r.Key == $"transition:{resolved}");
         }
 
@@ -383,6 +415,7 @@ namespace Juice.Observability.Tests
                 await Pass(failing).ReleaseOnceAsync(Ct);
             }
             var first = await HoldsAsync(database);
+            // (Dropped, not stale: the recurrence's firing is still unsent, so the receiver is not told of a firing, which is why the resolve is dropped.)
             Assert.Equal(NotificationHoldOutcomes.Dropped, first.Single(h => h.Event == NotificationPlan.Resolved).Outcome);
             Assert.Equal((1, (string?)null), (first.Single(h => h.Event == NotificationPlan.Firing).Attempts, first.Single(h => h.Event == NotificationPlan.Firing).Outcome));
 
