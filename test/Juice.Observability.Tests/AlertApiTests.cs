@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Juice.Observability.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using static Juice.Observability.Tests.ApiTests;
 
 namespace Juice.Observability.Tests
@@ -128,38 +129,61 @@ namespace Juice.Observability.Tests
             LocalStack.RequireAvailable();
             await using var database = await LocalStack.CreateDatabaseAsync();
             var (tenant, firing, _) = await SeedAsync(database);
-            Guid endpointId;
-            await using (var db = database.Context())
-            {
-                var endpoint = new WebhookEndpoint
-                {
-                    TenantId = tenant, Key = "ops", Url = "https://hooks.example.com:8443/T0K3N/path", SecretRef = "env:OPS_SECRET",
-                    Events = ["alert.firing"], DefinitionHash = "x", LoadedAt = DateTimeOffset.UtcNow,
-                };
-                var delivery = new WebhookDelivery
-                {
-                    TenantId = tenant, EndpointId = endpoint.Id, AlertId = firing, TransitionId = Guid.CreateVersion7(), Event = "alert.firing",
-                    Payload = "{}", Status = DeliveryStatus.Retrying, Attempts = 1, NextAttemptAt = DateTimeOffset.UtcNow.AddSeconds(10),
-                    LastStatusCode = 503, LastError = "status_503", CreatedAt = DateTimeOffset.UtcNow,
-                };
-                db.AddRange(endpoint, delivery);
-                db.WebhookAttempts.Add(new WebhookAttempt { TenantId = tenant, DeliveryId = delivery.Id, Number = 1, At = DateTimeOffset.UtcNow, StatusCode = 503, Error = "status_503", DurationMs = 12 });
-                await db.SaveChangesAsync();
-                endpointId = endpoint.Id;
-            }
             await using var factory = new ApiFactory(database);
             using var client = factory.CreateClient();
             var token = await LocalStack.TokenAsync("victor");
+            // The endpoint is made through the API, so whichever pipeline is on holds it (legacy's row, or the alias's integration in new).
+            using var made = new HttpRequestMessage(HttpMethod.Post, $"/api/v1/tenants/{tenant}/webhooks")
+            {
+                Content = JsonContent.Create(new { key = "ops", url = "https://hooks.example.com:8443/T0K3N/path", secretRef = "env:JUICE_WEBHOOK_OPS", events = new[] { "alert.firing" } }),
+            };
+            made.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await LocalStack.TokenAsync("alice"));
+            var endpointId = (await JsonAsync(await client.SendAsync(made, Ct))).GetProperty("id").GetGuid();
+            var inNew = LocalStack.NotificationsPipeline == "new";
+            if (!inNew)
+            {
+                await using var db = database.Context();
+                var delivery = new WebhookDelivery
+                {
+                    TenantId = tenant, EndpointId = endpointId, AlertId = firing, TransitionId = Guid.CreateVersion7(), Event = "alert.firing",
+                    Payload = "{}", Status = DeliveryStatus.Retrying, Attempts = 1, NextAttemptAt = DateTimeOffset.UtcNow.AddSeconds(10),
+                    LastStatusCode = 503, LastError = "status_503", CreatedAt = DateTimeOffset.UtcNow,
+                };
+                db.Add(delivery);
+                db.WebhookAttempts.Add(new WebhookAttempt { TenantId = tenant, DeliveryId = delivery.Id, Number = 1, At = DateTimeOffset.UtcNow, StatusCode = 503, Error = "status_503", DurationMs = 12 });
+                await db.SaveChangesAsync();
+            }
+            else
+            {
+                // In new there are no legacy deliveries: the history is the pipeline's, for the endpoint's integration.
+                await using var scope = factory.Services.CreateAsyncScope();
+                var notifications = scope.ServiceProvider.GetRequiredService<Juice.Notifications.Data.NotificationsDbContext>();
+                var notificationsTenant = factory.Services.GetRequiredService<Juice.Notifications.Embedded.NotificationsEmbeddedOptions>().TenantId;
+                using var context = Juice.Notifications.Data.NotificationsMessageContext.Begin("test");
+                var pending = new Juice.Notifications.Data.Delivery
+                {
+                    TenantId = notificationsTenant, Channel = "webhook", IntegrationId = endpointId, DestinationKey = "ext:ops", DestinationSnapshot = "https://hooks.example.com:8443",
+                    Locale = "en", RendererVersion = "1", Content = "{}", Status = Juice.Notifications.DeliveryStatus.Retrying, Attempts = 1, LastError = "status_503",
+                    CreatedAt = DateTimeOffset.UtcNow,
+                };
+                notifications.Deliveries.Add(pending);
+                notifications.Attempts.Add(new Juice.Notifications.Data.DeliveryAttempt
+                {
+                    TenantId = notificationsTenant, DeliveryId = pending.Id, Number = 1, IntegrationId = endpointId, At = DateTimeOffset.UtcNow, StatusCode = 503, Error = "status_503", DurationMs = 12,
+                });
+                await notifications.SaveChangesAsync(Ct);
+            }
 
             using var endpointsResponse = await Get(client, $"/api/v1/tenants/{tenant}/webhooks", token);
             var raw = await endpointsResponse.Content.ReadAsStringAsync(Ct);
             Assert.Contains("\"destination\":\"https://hooks.example.com:8443\"", raw);
             Assert.DoesNotContain("T0K3N", raw);
-            Assert.DoesNotContain("OPS_SECRET", raw);
+            Assert.DoesNotContain("JUICE_WEBHOOK_OPS", raw);
 
             var deliveries = await JsonAsync(await Get(client, $"/api/v1/tenants/{tenant}/webhooks/{endpointId}/deliveries?status=retrying", token));
             var item = Assert.Single(deliveries.GetProperty("items").EnumerateArray());
-            Assert.Equal("Retrying", item.GetProperty("status").GetString());
+            // Legacy's words: the pipeline's retrying delivery is pending (Q-C).
+            Assert.Equal(inNew ? "Pending" : "Retrying", item.GetProperty("status").GetString());
             Assert.Equal(503, item.GetProperty("history")[0].GetProperty("statusCode").GetInt32());
             Assert.Equal(HttpStatusCode.NotFound, (await Get(client, $"/api/v1/tenants/{tenant}/webhooks/{Guid.CreateVersion7()}/deliveries", token)).StatusCode);
         }
