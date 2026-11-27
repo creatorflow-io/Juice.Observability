@@ -220,6 +220,7 @@ pipeline stops getting notifications out. The alarm never goes through the pipel
 - **Receiving.**
   - A cause is posted at most once per `ResendAfter`, while it stands and also when it clears and comes back (a resolve doesn't restart
     the wait), and resolved when it clears.
+  - A cause that recurs within `ResendAfter` (15 minutes) of its last firing reaches the receiver only once it has stood out the rest of that window, though readiness shows it at once.
   - **Reconcile:** whichever replica takes the alarm's lease (at start, or on a failover) first tells every cause as it stands, `firing` or
     `resolved`, with `reconcile: true`. A `resolved` for a cause that isn't open is a no-op, so a receiver can always act on it.
   - Each post has a fresh `webhook-id`: dedupe on it, as for webhooks.

@@ -248,6 +248,126 @@ namespace Juice.Observability.Tests
             Assert.Contains(ErrorCodes.ConcurrentChange, hold.LastError);
         }
 
+        /// <summary>The alert fires again after its resolve: a new firing transition, the alert firing.</summary>
+        private static async Task<Guid> FireAgainAsync(ScratchDatabase database, Guid alertId)
+        {
+            await using var db = database.Context();
+            var alert = await db.Alerts.SingleAsync(a => a.Id == alertId, Ct);
+            var at = DateTimeOffset.UtcNow.AddSeconds(1);
+            var transition = new AlertTransition { TenantId = alert.TenantId, AlertId = alert.Id, FromState = AlertState.Resolved, ToState = AlertState.Firing, At = at, Value = 0.5, Reason = "again" };
+            db.AlertTransitions.Add(transition);
+            alert.State = AlertState.Firing;
+            alert.ResolvedAt = null;
+            alert.FiredAt = at;
+            await db.SaveChangesAsync(Ct);
+            return transition.Id;
+        }
+
+        /// <summary>A firing that was sent, then a silence, then a resolve it held; returns the alert, the held resolve's transition and the silence.</summary>
+        private static async Task<(Guid Alert, Guid Resolved, Guid Silence)> HeldResolveAsync(WebApplicationFactory<Program> factory, ScratchDatabase database)
+        {
+            var (alert, firing) = await FireAsync(database);
+            await PlanAsync(factory, database, firing);
+            var silence = await SilenceAsync(database);
+            var resolved = await ResolveAsync(database, alert);
+            await PlanAsync(factory, database, resolved);
+            return (alert, resolved, silence);
+        }
+
+        [Fact, Trait("Milestone", "M46c")]
+        public async Task ReleasePass_HeldResolve_AlertFiredAgain_NoticeDropped_NoResolveCall()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            Guid alert, silence;
+            await using (var healthy = Factory(database))
+            {
+                _ = healthy.Server;
+                (alert, _, silence) = await HeldResolveAsync(healthy, database);
+                await FireAgainAsync(database, alert);
+                await EndAsync(database, silence);
+            }
+            // Any call to the pipeline throws here: the stale notice is dropped with none made (neither its resolve nor its send).
+            await using var factory = Factory(database, s => s.AddScoped<INotificationClient, ConcurrentlyChanged>());
+            _ = factory.Server;
+
+            await Pass(factory).ReleaseOnceAsync(Ct);
+
+            var hold = Assert.Single(await HoldsAsync(database), h => h.Event == NotificationPlan.Resolved);
+            Assert.Equal((NotificationHoldOutcomes.Dropped, 0), (hold.Outcome, hold.Attempts));
+            Assert.Single(await RequestsAsync(database));
+        }
+
+        [Fact, Trait("Milestone", "M46c")]
+        public async Task ReleasePass_HeldResolve_NotFiredSince_NoticeSent()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var factory = Factory(database);
+            _ = factory.Server;
+            var (alert, resolved, silence) = await HeldResolveAsync(factory, database);
+            await EndAsync(database, silence);
+
+            await Pass(factory).ReleaseOnceAsync(Ct);
+
+            Assert.Equal(NotificationHoldOutcomes.Sent, Assert.Single(await HoldsAsync(database)).Outcome);
+            Assert.Contains(await RequestsAsync(database), r => r.Key == $"transition:{resolved}");
+            Assert.Equal("Resolved", await CorrelationStateAsync(database, $"alert:{alert}"));
+        }
+
+        [Fact, Trait("Milestone", "M46c")]
+        public async Task ReleasePass_HeldResolve_FiredAndResolvedAgainSince_NoticeDropped()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var factory = Factory(database);
+            _ = factory.Server;
+            var (alert, resolved, silence) = await HeldResolveAsync(factory, database);
+            // It fired again and resolved again before the silence ended: the alert is resolved now, but a firing came after the held resolve.
+            await FireAgainAsync(database, alert);
+            await ResolveAsync(database, alert);
+            await EndAsync(database, silence);
+
+            await Pass(factory).ReleaseOnceAsync(Ct);
+
+            Assert.Equal(NotificationHoldOutcomes.Dropped, Assert.Single(await HoldsAsync(database)).Outcome);
+            Assert.DoesNotContain(await RequestsAsync(database), r => r.Key == $"transition:{resolved}");
+        }
+
+        [Fact, Trait("Milestone", "M46c")]
+        public async Task ReleasePass_Retry_AfterError_SameDecision()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            Guid alert, silence, again;
+            await using (var healthy = Factory(database))
+            {
+                _ = healthy.Server;
+                (alert, _, silence) = await HeldResolveAsync(healthy, database);
+                // The recurrence's own firing is held too: a send that fails on the first pass and goes through on the second.
+                again = await FireAgainAsync(database, alert);
+                await PlanAsync(healthy, database, again);
+                await EndAsync(database, silence);
+            }
+            await using (var failing = Factory(database, s => s.AddScoped<INotificationClient, ConcurrentlyChanged>()))
+            {
+                _ = failing.Server;
+                await Pass(failing).ReleaseOnceAsync(Ct);
+            }
+            var first = await HoldsAsync(database);
+            Assert.Equal(NotificationHoldOutcomes.Dropped, first.Single(h => h.Event == NotificationPlan.Resolved).Outcome);
+            Assert.Equal((1, (string?)null), (first.Single(h => h.Event == NotificationPlan.Firing).Attempts, first.Single(h => h.Event == NotificationPlan.Firing).Outcome));
+
+            await using var factory = Factory(database);
+            _ = factory.Server;
+            await Pass(factory).ReleaseOnceAsync(Ct);
+
+            var second = await HoldsAsync(database);
+            Assert.Equal(NotificationHoldOutcomes.Dropped, second.Single(h => h.Event == NotificationPlan.Resolved).Outcome);
+            Assert.Equal(NotificationHoldOutcomes.Sent, second.Single(h => h.Event == NotificationPlan.Firing).Outcome);
+            Assert.Equal(0, await Pass(factory).ReleaseOnceAsync(Ct));
+        }
+
         [Fact]
         public async Task Passes_on_two_replicas_send_one_request_Async()
         {

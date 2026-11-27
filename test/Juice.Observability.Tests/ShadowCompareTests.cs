@@ -259,6 +259,6 @@ namespace Juice.Observability.Tests
         }
         [Fact]
         public void Every_rule_is_named_in_the_vocabulary()
-            => Assert.Equal(6, ShadowRules.All.Distinct().Count());
+            => Assert.Equal(7, ShadowRules.All.Distinct().Count());
     }
 }

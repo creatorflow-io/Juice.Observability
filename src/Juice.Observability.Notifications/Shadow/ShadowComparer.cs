@@ -136,7 +136,9 @@ namespace Juice.Observability.Notifications.Shadow
                 var unit = new ShadowUnit(platformTenant, transitionId, step, transition.AlertId,
                     step > 0 ? NotificationPlan.Escalated : transition.ToState == AlertState.Firing ? NotificationPlan.Firing : NotificationPlan.Resolved,
                     await db.AlertTransitions.AnyAsync(t => t.AlertId == transition.AlertId && t.ToState == AlertState.Resolved && t.At > transition.At, cancellationToken),
-                    await db.NotificationHolds.AnyAsync(h => h.TransitionId == transitionId, cancellationToken));
+                    await db.NotificationHolds.AnyAsync(h => h.TransitionId == transitionId, cancellationToken),
+                    transition.ToState == AlertState.Resolved
+                        && await db.AlertTransitions.AnyAsync(t => t.AlertId == transition.AlertId && t.ToState == AlertState.Firing && t.At > transition.At, cancellationToken));
                 var legacy = await LegacyAsync(db, transitionId, step, cancellationToken);
                 var @new = await NewAsync(pipeline, tenant, application, transitionId, step, cancellationToken);
                 var findings = ShadowCompare.Compare(unit, legacy, @new, compare);
@@ -158,7 +160,7 @@ namespace Juice.Observability.Notifications.Shadow
         /// pipeline ran at least the grace ago, not yet compared and not deferred. Oldest first. The new side's steps come from its escalations
         /// (one row a notification, with the steps it ran), not from scanning its recipients.
         /// </summary>
-        private static async Task<List<(Guid Tenant, Guid Transition, int Step, DateTimeOffset At)>> DueAsync(PlatformDbContext db, NotificationsDbContext pipeline,
+        internal static async Task<List<(Guid Tenant, Guid Transition, int Step, DateTimeOffset At)>> DueAsync(PlatformDbContext db, NotificationsDbContext pipeline,
             Guid tenant, Guid application, DateTimeOffset since, DateTimeOffset due, int batch, List<Guid> deferred, CancellationToken ct)
         {
             var transitions = await db.AlertTransitions.AsNoTracking()
@@ -175,31 +177,57 @@ namespace Juice.Observability.Notifications.Shadow
                 .GroupBy(d => new { d.TenantId, Transition = d.TransitionId!.Value, d.EscalationStep })
                 .Select(g => new { g.Key.TenantId, g.Key.Transition, g.Key.EscalationStep, At = g.Min(d => d.CreatedAt) })
                 .OrderBy(x => x.At).Take(batch).ToListAsync(ct);
-            var escalations = await (from e in pipeline.Escalations.AsNoTracking()
-                                     join n in pipeline.Notifications.AsNoTracking() on new { e.TenantId, Id = e.NotificationId } equals new { n.TenantId, n.Id }
-                                     join q in pipeline.Requests.AsNoTracking() on new { n.TenantId, Id = n.RequestId } equals new { q.TenantId, q.Id }
-                                     where e.TenantId == tenant && e.NextStep > 0 && e.UpdatedAt >= since && e.UpdatedAt <= due
-                                         && q.ApplicationId == application && q.IdempotencyKey.StartsWith("transition:")
-                                     orderby e.UpdatedAt
-                                     select new { q.IdempotencyKey, e.NextStep, e.UpdatedAt })
-                .Take(batch).ToListAsync(ct);
             var units = transitions.Select(t => (t.TenantId, t.Id, 0, t.At))
                 .Concat(legacySteps.Select(s => (s.TenantId, s.Transition, s.EscalationStep, s.At)))
                 .ToList();
             // New-side steps legacy never sent (steps 1 up to the escalation's next): the transition's tenant is the platform's, read with it.
-            var newOnly = escalations
-                .SelectMany(e => Enumerable.Range(1, e.NextStep).Select(step =>
-                    (Transition: Guid.TryParse(e.IdempotencyKey["transition:".Length..], out var id) ? id : Guid.Empty, Step: step, At: e.UpdatedAt)))
-                .Where(s => s.Transition != Guid.Empty && !deferred.Contains(s.Transition) && !units.Any(u => u.Item2 == s.Transition && u.Item3 == s.Step)).ToList();
-            if (newOnly.Count > 0)
+            // Read a page at a time, keyset-paged on (UpdatedAt, NotificationId): escalations already compared fill the oldest pages and must
+            // not hide a newer one that wasn't (M46c). Comparisons live in another context, so it is paged here rather than filtered in SQL.
+            var newOnly = new List<(Guid Tenant, Guid Transition, int Step, DateTimeOffset At)>();
+            (DateTimeOffset At, Guid Id)? after = null;
+            while (newOnly.Count < batch)
             {
-                var ids = newOnly.Select(s => s.Transition).Distinct().ToList();
-                var known = await db.AlertTransitions.AsNoTracking().Where(t => ids.Contains(t.Id)).Select(t => new { t.Id, t.TenantId }).ToDictionaryAsync(t => t.Id, t => t.TenantId, ct);
-                var compared = await db.ShadowComparisons.AsNoTracking().Where(c => ids.Contains(c.TransitionId)).Select(c => new { c.TransitionId, c.EscalationStep }).ToListAsync(ct);
-                units.AddRange(newOnly.Where(s => known.ContainsKey(s.Transition) && !compared.Any(c => c.TransitionId == s.Transition && c.EscalationStep == s.Step))
-                    .Select(s => (known[s.Transition], s.Transition, s.Step, s.At)));
+                var page = await EscalationPageAsync(pipeline, tenant, application, since, due, after, batch, ct);
+                var candidates = page
+                    .SelectMany(e => Enumerable.Range(1, e.NextStep).Select(step =>
+                        (Transition: Guid.TryParse(e.IdempotencyKey["transition:".Length..], out var id) ? id : Guid.Empty, Step: step, At: e.UpdatedAt)))
+                    .Where(s => s.Transition != Guid.Empty && !deferred.Contains(s.Transition) && !units.Any(u => u.Item2 == s.Transition && u.Item3 == s.Step)).ToList();
+                if (candidates.Count > 0)
+                {
+                    var ids = candidates.Select(s => s.Transition).Distinct().ToList();
+                    var known = await db.AlertTransitions.AsNoTracking().Where(t => ids.Contains(t.Id)).Select(t => new { t.Id, t.TenantId }).ToDictionaryAsync(t => t.Id, t => t.TenantId, ct);
+                    var compared = await db.ShadowComparisons.AsNoTracking().Where(c => ids.Contains(c.TransitionId)).Select(c => new { c.TransitionId, c.EscalationStep }).ToListAsync(ct);
+                    newOnly.AddRange(candidates.Where(s => known.ContainsKey(s.Transition) && !compared.Any(c => c.TransitionId == s.Transition && c.EscalationStep == s.Step))
+                        .Select(s => (known[s.Transition], s.Transition, s.Step, s.At)));
+                }
+                if (page.Count < batch)
+                {
+                    break;
+                }
+                after = (page[^1].UpdatedAt, page[^1].NotificationId);
             }
+            units.AddRange(newOnly);
             return [.. units.OrderBy(u => u.Item4).Take(batch)];
+        }
+
+        private sealed record EscalationRow(string IdempotencyKey, int NextStep, DateTimeOffset UpdatedAt, Guid NotificationId);
+
+        /// <summary>One page of the application's transition escalations in the window, oldest first, after the given (UpdatedAt, NotificationId).</summary>
+        private static async Task<List<EscalationRow>> EscalationPageAsync(NotificationsDbContext pipeline, Guid tenant, Guid application, DateTimeOffset since,
+            DateTimeOffset due, (DateTimeOffset At, Guid Id)? after, int batch, CancellationToken ct)
+        {
+            var query = from e in pipeline.Escalations.AsNoTracking()
+                        join n in pipeline.Notifications.AsNoTracking() on new { e.TenantId, Id = e.NotificationId } equals new { n.TenantId, n.Id }
+                        join q in pipeline.Requests.AsNoTracking() on new { n.TenantId, Id = n.RequestId } equals new { q.TenantId, q.Id }
+                        where e.TenantId == tenant && e.NextStep > 0 && e.UpdatedAt >= since && e.UpdatedAt <= due
+                            && q.ApplicationId == application && q.IdempotencyKey.StartsWith("transition:")
+                        select new { q.IdempotencyKey, e.NextStep, e.UpdatedAt, e.NotificationId };
+            if (after is { } last)
+            {
+                query = query.Where(r => r.UpdatedAt > last.At || r.UpdatedAt == last.At && r.NotificationId.CompareTo(last.Id) > 0);
+            }
+            var rows = await query.OrderBy(r => r.UpdatedAt).ThenBy(r => r.NotificationId).Take(batch).ToListAsync(ct);
+            return [.. rows.Select(r => new EscalationRow(r.IdempotencyKey, r.NextStep, r.UpdatedAt, r.NotificationId))];
         }
 
         /// <summary>What legacy sent for the unit, by endpoint: a grouped delivery with its group's body and send time.</summary>
