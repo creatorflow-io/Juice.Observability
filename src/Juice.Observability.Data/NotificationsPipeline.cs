@@ -104,6 +104,8 @@ namespace Juice.Observability.Data
     {
         public const string Sent = "sent";
         public const string Dropped = "dropped";
+        /// <summary>A held resolve dropped because the alert fired again since (it would have been sent otherwise): the shadow comparer's <c>stale_resolve_dropped</c>.</summary>
+        public const string DroppedStale = "dropped_stale";
         /// <summary>Its send kept failing (<see cref="MaxAttempts"/> tries): given up, so it no longer blocks the others.</summary>
         public const string Failed = "failed";
         public const int MaxAttempts = 5;

@@ -119,7 +119,10 @@ namespace Juice.Observability.Notifications
                 // its resolve would close the recurrence's escalation (review #13). Legacy sends the notice; this drops it on purpose (M46c), which
                 // the shadow comparer names as stale_resolve_dropped. Read once, so a retry decides the same.
                 var stale = hold.Event == NotificationPlan.Resolved && await FiredSinceAsync(db, hold, alert, cancellationToken);
-                var decided = !stale && HeldNotification.Decide(hold.Event, alert.State, told, alert.AcknowledgedAt is not null) == HeldOutcome.Send;
+                var wouldSend = HeldNotification.Decide(hold.Event, alert.State, told, alert.AcknowledgedAt is not null) == HeldOutcome.Send;
+                var decided = !stale && wouldSend;
+                // Dropped because the alert fired again: only when it would have been sent otherwise (a hold dropped for another reason stays "dropped").
+                var staleDropped = stale && wouldSend;
                 var sent = false;
                 var error = await EachAsync(transaction, async () =>
                 {
@@ -143,7 +146,7 @@ namespace Juice.Observability.Notifications
                     logger.LogError("Held notification {Hold} given up after {Attempts} tries: {Error}", hold.Id, hold.Attempts, error);
                 }
                 hold.DecidedAt = now;
-                hold.Outcome = error is not null ? NotificationHoldOutcomes.Failed : sent ? NotificationHoldOutcomes.Sent : NotificationHoldOutcomes.Dropped;
+                hold.Outcome = error is not null ? NotificationHoldOutcomes.Failed : sent ? NotificationHoldOutcomes.Sent : staleDropped ? NotificationHoldOutcomes.DroppedStale : NotificationHoldOutcomes.Dropped;
                 Released.Add(1, new KeyValuePair<string, object?>("outcome", hold.Outcome));
             }
             await db.SaveChangesAsync(cancellationToken);

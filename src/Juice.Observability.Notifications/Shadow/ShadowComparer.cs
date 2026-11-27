@@ -137,8 +137,9 @@ namespace Juice.Observability.Notifications.Shadow
                     step > 0 ? NotificationPlan.Escalated : transition.ToState == AlertState.Firing ? NotificationPlan.Firing : NotificationPlan.Resolved,
                     await db.AlertTransitions.AnyAsync(t => t.AlertId == transition.AlertId && t.ToState == AlertState.Resolved && t.At > transition.At, cancellationToken),
                     await db.NotificationHolds.AnyAsync(h => h.TransitionId == transitionId, cancellationToken),
+                    // The release pass dropped it because the alert fired again (not merely: it fired again and it was dropped).
                     transition.ToState == AlertState.Resolved
-                        && await db.AlertTransitions.AnyAsync(t => t.AlertId == transition.AlertId && t.ToState == AlertState.Firing && t.At > transition.At, cancellationToken));
+                        && await db.NotificationHolds.AnyAsync(h => h.TransitionId == transitionId && h.Outcome == NotificationHoldOutcomes.DroppedStale, cancellationToken));
                 var legacy = await LegacyAsync(db, transitionId, step, cancellationToken);
                 var @new = await NewAsync(pipeline, tenant, application, transitionId, step, cancellationToken);
                 var findings = ShadowCompare.Compare(unit, legacy, @new, compare);
