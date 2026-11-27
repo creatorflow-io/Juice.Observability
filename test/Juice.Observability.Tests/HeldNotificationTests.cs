@@ -298,6 +298,34 @@ namespace Juice.Observability.Tests
             Assert.Single(await RequestsAsync(database));
         }
 
+        /// <summary>The hold's resolve was not asked at plan (the pipeline was down), so the pass would make it, unless the alert fired again since: the guard on that call.</summary>
+        [Fact, Trait("Milestone", "M46c")]
+        public async Task ReleasePass_HeldResolve_ResolveNotAsked_AlertFiredAgain_NoResolveCall()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            Guid alert, silence;
+            await using (var healthy = Factory(database))
+            {
+                _ = healthy.Server;
+                (alert, _, silence) = await HeldResolveAsync(healthy, database);
+                await using (var db = database.Context())
+                {
+                    Assert.Equal(1, await db.NotificationHolds.Where(h => h.Event == NotificationPlan.Resolved).ExecuteUpdateAsync(h => h.SetProperty(x => x.ResolveAsked, false), Ct));
+                }
+                await FireAgainAsync(database, alert);
+                await EndAsync(database, silence);
+            }
+            // Any call to the pipeline throws here: a resolve made for the stale hold would leave it retried, not dropped.
+            await using var factory = Factory(database, s => s.AddScoped<INotificationClient, ConcurrentlyChanged>());
+            _ = factory.Server;
+
+            await Pass(factory).ReleaseOnceAsync(Ct);
+
+            var hold = Assert.Single(await HoldsAsync(database), h => h.Event == NotificationPlan.Resolved);
+            Assert.Equal((NotificationHoldOutcomes.Dropped, 0), (hold.Outcome, hold.Attempts));
+        }
+
         [Fact, Trait("Milestone", "M46c")]
         public async Task ReleasePass_HeldResolve_NotFiredSince_NoticeSent()
         {
