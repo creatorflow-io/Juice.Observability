@@ -12,6 +12,7 @@ namespace Juice.Observability.Tests
     /// endpoint. Matching bodies (modulo ids and times) and times find nothing; each explained rule names its difference (p5-d7); anything else is
     /// unexplained.
     /// </summary>
+    [Trait("Milestone", "M46c")]
     public class ShadowCompareTests
     {
         private static readonly Guid TenantId = Guid.Parse("0193f0aa-0000-7000-8000-0000000000f1");
@@ -257,6 +258,30 @@ namespace Juice.Observability.Tests
             var ported = ShadowCompare.Compare(Unit(a.Alert.Id), [Legacy(Payload(a))], [New(envelope)], Options);
             Assert.Null(Assert.Single(ported).Rule);
         }
+        /// <summary>A type with its templates ported (a delivery's template version is 1, M46c): a body that differs is a finding, never excused.</summary>
+        [Fact]
+        public void ShadowCompare_PortedType_BodyDiff_NotExcused()
+        {
+            var a = Alert();
+            var envelope = JsonSerializer.Serialize(new { ContentType = "application/json", Body = """{"id":"x","type":"observability.alert.firing","data":{}}""" });
+
+            var finding = Assert.Single(ShadowCompare.Compare(Unit(a.Alert.Id), [Legacy(Payload(a))], [New(envelope) with { DefaultTemplate = false }], Options));
+
+            Assert.Equal((ShadowDifferenceKinds.Body, (string?)null), (finding.Kind, finding.Rule));
+        }
+
+        /// <summary>The deliveries made before the port (template version 0) are still explained as templates_not_ported.</summary>
+        [Fact]
+        public void ShadowCompare_TemplateVersion0_StillTemplatesNotPorted()
+        {
+            var a = Alert();
+            var envelope = JsonSerializer.Serialize(new { ContentType = "application/json", Body = """{"id":"x","type":"observability.alert.firing","data":{}}""" });
+
+            var finding = Assert.Single(ShadowCompare.Compare(Unit(a.Alert.Id), [Legacy(Payload(a))], [New(envelope) with { DefaultTemplate = true }], Options));
+
+            Assert.Equal((ShadowDifferenceKinds.Body, ShadowRules.TemplatesNotPorted), (finding.Kind, finding.Rule));
+        }
+
         [Fact]
         public void Every_rule_is_named_in_the_vocabulary()
             => Assert.Equal(7, ShadowRules.All.Distinct().Count());

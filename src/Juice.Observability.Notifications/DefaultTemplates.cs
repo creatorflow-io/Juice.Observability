@@ -3,12 +3,12 @@ using System.Text.Json.Nodes;
 using Juice.Notifications;
 using Juice.Notifications.Providers.Chat;
 
-namespace Juice.Observability.Notifications.Migration
+namespace Juice.Observability.Notifications
 {
     /// <summary>
     /// The alert types' default templates (phase-5-plan p5-d8), ported from <c>ChannelFormatter</c> and <c>NotificationPlan.Payload</c>, for the
-    /// <see cref="Juice.Notifications.Types.TypeDeclaration"/>s of <see cref="AliasVocabulary.FiringType"/> and
-    /// <see cref="AliasVocabulary.ResolvedType"/> (M46b gives them to M45's types).
+    /// <see cref="Juice.Notifications.Types.TypeDeclaration"/>s of <see cref="ObservabilityTypes.AlertFiring"/> and
+    /// <see cref="ObservabilityTypes.AlertResolved"/> (M46c: the types declare them).
     /// <para>
     /// What they read: <c>data</c> is the legacy payload without its <c>id</c> (the producer adapter's request, M45); <c>delivery.id</c>,
     /// <c>escalation.step</c> and <c>escalation.policy</c> come from the render model (M46-0); <c>links.self</c> is the alert's page in the

@@ -56,8 +56,8 @@ namespace Juice.Observability.Notifications.Migration
 
         /// <summary>
         /// Whether the alias's API holds an endpoint of this id (its integration, as <c>webhooks-alias</c>): false for one it never could map, and
-        /// for one the deployment's file declared (<c>alias-config</c>): such a row, handed back to the API in legacy when the file drops it,
-        /// changes in legacy only, its alias copy stopped by the provisioner (M46c).
+        /// for one the deployment's file declares (<c>alias-config</c>), which legacy's API leaves alone as well. An endpoint the file drops is handed
+        /// back to the API by the provisioner (M46c), and is held from then on.
         /// </summary>
         public Task<bool> HoldsAsync(Guid id, CancellationToken ct)
             => notifications.Integrations.AsNoTracking().AnyAsync(i => i.TenantId == Tenant && i.Id == id && i.ManagedBy == AliasVocabulary.WebhooksAlias, ct);

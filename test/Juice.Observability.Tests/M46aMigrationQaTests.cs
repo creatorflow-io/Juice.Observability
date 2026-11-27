@@ -4,6 +4,7 @@ using Juice.Notifications.Data;
 using Juice.Notifications.Embedded;
 using Juice.Notifications.Providers.Chat;
 using Juice.Observability.Data;
+using Juice.Observability.Notifications;
 using Juice.Observability.Notifications.Migration;
 using Juice.Observability.Webhooks;
 using Microsoft.EntityFrameworkCore;
@@ -19,6 +20,7 @@ namespace Juice.Observability.Tests
     /// second time (row versions untouched); every kind of conflict through the planner, with the rows in the way left as they were; the tenant
     /// guard, including another notifications tenant's alias rows.
     /// </summary>
+    [Trait("Milestone", "M46c")]
     public class M46aMigrationQaTests
     {
         private static CancellationToken Ct => TestContext.Current.CancellationToken;

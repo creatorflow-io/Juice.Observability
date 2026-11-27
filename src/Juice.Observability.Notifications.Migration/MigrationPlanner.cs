@@ -53,6 +53,12 @@ namespace Juice.Observability.Notifications.Migration
     /// </summary>
     public enum MigrationAction { Create, Update, Unchanged, Conflict, PendingFeature, Remove, Stale }
 
+    /// <summary>
+    /// The hand-back of an endpoint the file dropped met a concurrent owner change (notifications' <c>concurrent_change</c>): nothing moved, and
+    /// the provisioner plans again once.
+    /// </summary>
+    internal sealed class HandBackConcurrentChange(Exception inner) : Exception("An alias row changed owner while it was being handed back.", inner);
+
     /// <summary>One legacy endpoint, policy or allowlist entry, and what the migration does with it.</summary>
     public sealed record MigrationItem(MigrationSubject Subject, string Key, MigrationAction Action, IReadOnlyList<MappingProblem> Problems);
 
@@ -151,8 +157,14 @@ namespace Juice.Observability.Notifications.Migration
             {
                 await using var transaction = await db.Database.BeginTransactionAsync(ct);
                 await db.Database.ExecuteSqlAsync($"SELECT pg_advisory_xact_lock(hashtext({"juice-observability:webhooks-alias:" + Tenant}))", ct);
+                var read = await ReadAsync(Tenant, ct);
+                if (AsProvisioner && await HandBackAsync(legacy, read, ct) > 0)
+                {
+                    // The rows moved: planned from what they are now, so the legacy row the file dropped is written as the alias's.
+                    read = await ReadAsync(Tenant, ct);
+                }
                 // Planned again under the lock: what the report saw may have changed.
-                var plan = Plan(legacy, await ReadAsync(Tenant, ct));
+                var plan = Plan(legacy, read);
                 var writes = 0;
                 foreach (var write in plan.Writes)
                 {
@@ -191,6 +203,69 @@ namespace Juice.Observability.Notifications.Migration
             {
                 db.EndManage();
             }
+        }
+
+        /// <summary>
+        /// Hands the alias's configuration rows of every endpoint the file no longer declares back to the alias's API, disabled (M46c; waves §6.4
+        /// B), as legacy hands an endpoint the file drops back to its API. "Declared" is what the setup read says: legacy has a row of that key
+        /// the configuration owns (while legacy sends, the file is loaded into legacy's tables first; in new, the setup is the file itself), so a
+        /// row legacy still holds as configuration is never handed back. One save moves every endpoint's rows or none: a concurrent owner change
+        /// (ManagedBy is a concurrency token) fails it as <see cref="HandBackConcurrentChange"/>.
+        /// </summary>
+        /// <returns>The number of rows moved.</returns>
+        private async Task<int> HandBackAsync(LegacySetup legacy, Current current, CancellationToken ct)
+        {
+            var declared = legacy.Endpoints.Where(e => e.ManagedBy == Juice.Observability.Data.ManagedBy.Configuration).Select(e => e.Key).ToHashSet(StringComparer.Ordinal);
+            var dropped = current.Integrations.Values.Where(i => i.ManagedBy == AliasVocabulary.AliasConfig && !declared.Contains(i.Key)).Select(i => i.Key)
+                .Order(StringComparer.Ordinal).ToList();
+            var moved = 0;
+            foreach (var key in dropped)
+            {
+                var outcome = await mediator.Send(new HandBackAliasConfig(Tenant, key) { ManagedBy = AliasVocabulary.AliasConfig }, ct);
+                if (EndpointWrites.Problem(outcome) is { } refused)
+                {
+                    throw new InvalidOperationException($"Notifications refused to hand the endpoint {key} back: {refused.Message}");
+                }
+                moved += outcome.Value is { } view ? view.Integrations + view.Targets + view.Routes : 0;
+            }
+            if (moved == 0)
+            {
+                return 0;
+            }
+            try
+            {
+                await db.SaveChangesAsync(ct);
+                // The hand-back disables every row it moves; the alias's own disabled endpoint is its route disabled, with the integration and
+                // the targets as they are written (what its API reads back, and can enable again). The endpoint stays stopped: its route is.
+                foreach (var key in dropped)
+                {
+                    if (await ReadSetupAsync(db, Tenant, key, ct) is not { } setup)
+                    {
+                        continue;
+                    }
+                    var shaped = setup with
+                    {
+                        Integration = setup.Integration with { Enabled = true },
+                        Targets = [.. setup.Targets.Select(t => t with { Enabled = true })],
+                        Route = setup.Route with { Enabled = false },
+                    };
+                    if (EndpointMapping.Unmap(shaped).Value is null)
+                    {
+                        continue;
+                    }
+                    if (await EndpointWrites.PutAsync(new Sender(this), Tenant, shaped, [], null, ct, AliasVocabulary.WebhooksAlias) is { } refused)
+                    {
+                        throw new InvalidOperationException($"Notifications refused the endpoint {key} as the alias's API holds it: {refused.Message}");
+                    }
+                }
+            }
+            catch (DbUpdateConcurrencyException ex)
+            {
+                throw new HandBackConcurrentChange(ex);
+            }
+            logger.LogInformation("Notifications alias: {Endpoints} endpoint(s) the file no longer declares handed back to the alias's API, disabled: {Keys}",
+                dropped.Count, string.Join(", ", dropped));
+            return moved;
         }
 
         private void Check(LegacySetup legacy)

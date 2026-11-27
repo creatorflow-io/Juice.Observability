@@ -15,6 +15,7 @@ namespace Juice.Observability.Tests
     /// Phase 6's limits on running channels, resolved: a test send, a failed delivery retried by an admin rather than by SQL, and an allowlist entry
     /// removed taking effect at the next send rather than after the pooled connection's minute.
     /// </summary>
+    [Trait("Milestone", "M46c")]
     public sealed class WebhookOperationsTests
     {
         private const string Secret = "JUICE_WEBHOOK_OPSTEST";
