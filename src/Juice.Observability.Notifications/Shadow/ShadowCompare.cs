@@ -346,7 +346,8 @@ namespace Juice.Observability.Notifications.Shadow
             {
                 case ChannelKind.Slack:
                     var blocks = Parse(ChannelFormatter.SlackBody(view, consoleUrl)).GetProperty("blocks");
-                    expected = [blocks[0].GetProperty("text").GetProperty("text").GetString(), blocks[1].GetProperty("text").GetProperty("text").GetString()];
+                    // Legacy puts the alert's link in its line (<link|subject>); the provider shows it as a button: the link is compared as the content's url.
+                    expected = [blocks[0].GetProperty("text").GetProperty("text").GetString(), WithoutInlineLinks(blocks[1].GetProperty("text").GetProperty("text").GetString()!)];
                     // Legacy escapes for mrkdwn itself; the Slack provider escapes the plain text the same way when it sends.
                     actual = [Text(content, "title"), Text(content, "text")?.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;")];
                     break;
@@ -362,6 +363,14 @@ namespace Juice.Observability.Notifications.Shadow
                     break;
             }
             string[] fields = kind == ChannelKind.Email ? ["subject", "text"] : ["title", "text"];
+            // The link of a single alert (a group's are the digest's): legacy's, when the Console's address is set, is the chat content's url.
+            if (kind != ChannelKind.Email && view.Alerts is [{ AlertId: var alertId }] && alertId != Guid.Empty
+                && Uri.TryCreate(consoleUrl, UriKind.Absolute, out var console) && console.Scheme is "https" or "http")
+            {
+                fields = [.. fields, "url"];
+                expected = [.. expected, $"{consoleUrl!.TrimEnd('/')}/alerts/{alertId}"];
+                actual = [.. actual, Text(content, "url")];
+            }
             for (var i = 0; i < fields.Length; i++)
             {
                 if (expected[i] != actual[i])
@@ -371,6 +380,10 @@ namespace Juice.Observability.Notifications.Shadow
             }
             return null;
         }
+
+        /// <summary>Slack's inline links (<c>&lt;url|label&gt;</c>) as their label: what the Slack provider's text shows beside its button.</summary>
+        private static string WithoutInlineLinks(string text)
+            => System.Text.RegularExpressions.Regex.Replace(text, @"<https?://[^|>]*\|([^>]*)>", "$1");
 
         private static string? Text(JsonElement content, string name) => Property(content, name) is { ValueKind: JsonValueKind.String } v ? v.GetString() : null;
 

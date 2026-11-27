@@ -310,10 +310,11 @@ namespace Juice.Observability.Tests
             Assert.Equal(ManagedBy.Configuration, Assert.Single(listed.GetProperty("items").EnumerateArray()).GetProperty("managedBy").GetString());
             if (pipeline == "legacy")
             {
-                // The migration tool doesn't write over what the alias's configuration holds: it says so.
+                // The migration tool leaves what the alias's configuration holds to the provisioner: it says so, and is no conflict.
                 var report = await MigrateAsync(owner, tenantId, apply: true);
                 var item = Assert.Single(report.Items, i => i.Key == "from-file");
-                Assert.Equal("conflict", item.Action);
+                Assert.Equal("unchanged", item.Action);
+                Assert.Contains(item.Problems, p => p.Code == ProblemCodes.OwnedByConfiguration);
             }
         }
 

@@ -112,6 +112,12 @@ namespace Juice.Observability.Notifications.Migration
         private string OwnerOf(string legacyOwner)
             => AsProvisioner && legacyOwner == Juice.Observability.Data.ManagedBy.Configuration ? AliasVocabulary.AliasConfig : AliasVocabulary.WebhooksAlias;
 
+        /// <summary>A legacy row the configuration owns is the provisioner's: the migration tool leaves it (and its alias rows) alone, and says so.</summary>
+        private bool OwnedByProvisioner(string legacyOwner) => !AsProvisioner && legacyOwner == Juice.Observability.Data.ManagedBy.Configuration;
+
+        private static readonly MappingProblem Informational = new(ProblemCodes.OwnedByConfiguration,
+            "Declared by the deployment's file: the platform loads it into notifications at start, so the migration tool leaves it as it is.");
+
         /// <summary>For the tests of a failure part-way: throws after this many writes.</summary>
         internal int? FailAfterWrites { get; set; }
 
@@ -235,29 +241,6 @@ namespace Juice.Observability.Notifications.Migration
             try
             {
                 await db.SaveChangesAsync(ct);
-                // The hand-back disables every row it moves; the alias's own disabled endpoint is its route disabled, with the integration and
-                // the targets as they are written (what its API reads back, and can enable again). The endpoint stays stopped: its route is.
-                foreach (var key in dropped)
-                {
-                    if (await ReadSetupAsync(db, Tenant, key, ct) is not { } setup)
-                    {
-                        continue;
-                    }
-                    var shaped = setup with
-                    {
-                        Integration = setup.Integration with { Enabled = true },
-                        Targets = [.. setup.Targets.Select(t => t with { Enabled = true })],
-                        Route = setup.Route with { Enabled = false },
-                    };
-                    if (EndpointMapping.Unmap(shaped).Value is null)
-                    {
-                        continue;
-                    }
-                    if (await EndpointWrites.PutAsync(new Sender(this), Tenant, shaped, [], null, ct, AliasVocabulary.WebhooksAlias) is { } refused)
-                    {
-                        throw new InvalidOperationException($"Notifications refused the endpoint {key} as the alias's API holds it: {refused.Message}");
-                    }
-                }
             }
             catch (DbUpdateConcurrencyException ex)
             {
@@ -315,6 +298,11 @@ namespace Juice.Observability.Notifications.Migration
             foreach (var (entry, mapped) in destinations)
             {
                 var item = (Subject: MigrationSubject.Allowlist, Key: entry.Destination);
+                if (OwnedByProvisioner(entry.ManagedBy))
+                {
+                    items.Add(new(item.Subject, item.Key, MigrationAction.Unchanged, [Informational]));
+                    continue;
+                }
                 if (!mapped.Succeeded)
                 {
                     items.Add(new(item.Subject, item.Key, MigrationAction.Conflict, mapped.Problems));
@@ -366,6 +354,13 @@ namespace Juice.Observability.Notifications.Migration
             foreach (var (endpoint, mapped) in mappedEndpoints)
             {
                 var item = (Subject: MigrationSubject.Endpoint, endpoint.Key);
+                if (OwnedByProvisioner(endpoint.ManagedBy))
+                {
+                    // The provisioner writes it from the file at start; the policies naming it follow it.
+                    items.Add(new(item.Subject, item.Key, MigrationAction.Unchanged, [Informational]));
+                    migrating.Add(endpoint.Key);
+                    continue;
+                }
                 if (!mapped.Succeeded)
                 {
                     items.Add(new(item.Subject, item.Key, MigrationAction.Conflict, mapped.Problems));

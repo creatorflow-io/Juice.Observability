@@ -32,20 +32,36 @@ namespace Juice.Observability.Notifications
             {"id":{{ delivery.id | json.encode }},"type":{{ if escalation }}"alert.escalated"{{ else }}{{ data.type | json.encode }}{{ end }},"occurredAt":{{ time(data.occurredAt) }},"tenant":{{ data.tenant | json.encode }},"escalation":{{ if escalation }}{"policy":{{ escalation.policy | json.encode }},"step":{{ escalation.step | json.encode }}}{{ else }}null{{ end }},"alert":{"id":{{ a.id | json.encode }},"rule":{{ a.rule | json.encode }},"ruleName":{{ a.ruleName | json.encode }},"severity":{{ a.severity | json.encode }},"state":{{ a.state | json.encode }},"subject":{{ a.subject | json.encode }},"value":{{ a.value | json.encode }},"breachStartedAt":{{ time(a.breachStartedAt) }},"firedAt":{{ time(a.firedAt) }},"resolvedAt":{{ time(a.resolvedAt) }},"reason":{{ a.reason | json.encode }},"slo":{{ a.slo | json.encode }}},"links":{{ data.links | json.encode }}}
             """;
 
-        // ChannelFormatter.Plain: control characters out (here line breaks and tabs, which are what a subject can carry), trimmed, 300
-        // characters and an ellipsis.
-        private const string Functions = """
+        // char.IsControl: C0 (U+0000-U+001F), DEL and C1 (U+007F-U+009F); the sandbox has no regex, so each is replaced in turn.
+        private static readonly string Controls = string.Join(", ", Enumerable.Range(0, 0x20).Concat(Enumerable.Range(0x7F, 0x21)).Select(c => $"\"{(char)92}u{c:X4}\""));
+
+        // ChannelFormatter.Plain: every control character out as a space, trimmed, and more than 300 characters cut to 300 and an ellipsis.
+        // Teams adds ChannelFormatter.Teams: no square brackets, so no markdown link.
+        private static readonly string Functions = $$$"""
+            {{~ func clean(t) ~}}
+            {{~ $s = t ?? "" ~}}
+            {{~ for $c in [{{{Controls}}}] ~}}
+            {{~ $s = $s | string.replace $c " " ~}}
+            {{~ end ~}}
+            {{~ ret $s | string.strip ~}}
+            {{~ end ~}}
             {{~ func plain(t) ~}}
-            {{~ ret (t ?? "") | string.replace "\r" " " | string.replace "\n" " " | string.replace "\t" " " | string.strip | string.truncate 301 "…" ~}}
+            {{~ ret clean(t).size > 300 ? ((clean(t) | string.truncate 300 "") + "…") : clean(t) ~}}
+            {{~ end ~}}
+            {{~ func teams(t) ~}}
+            {{~ ret plain(t) | string.replace "[" "(" | string.replace "]" ")" ~}}
+            {{~ end ~}}
+            {{~ func title_raw() ~}}
+            {{~ ret (escalation ? ("Escalated (step " + escalation.step + ")") : (data.type == "alert.resolved" ? "Resolved" : "Firing")) + ": " + data.alert.ruleName ~}}
             {{~ end ~}}
             {{~ func title() ~}}
-            {{~ ret (escalation ? ("Escalated (step " + escalation.step + ")") : (data.type == "alert.resolved" ? "Resolved" : "Firing")) + ": " + plain(data.alert.ruleName) ~}}
+            {{~ ret plain(title_raw()) ~}}
             {{~ end ~}}
             {{~ func value() ~}}
             {{~ ret data.alert.value == null ? "no data" : (data.alert.value | math.format "G6") ~}}
             {{~ end ~}}
             {{~ func rule_and_slo() ~}}
-            {{~ ret plain(data.alert.rule) + (data.alert.slo ? ", SLO " + plain(data.alert.slo.key) : "") ~}}
+            {{~ ret data.alert.rule + (data.alert.slo ? ", SLO " + data.alert.slo.key : "") ~}}
             {{~ end ~}}
 
             """;
@@ -54,19 +70,19 @@ namespace Juice.Observability.Notifications
         /// Slack: the formatter's header and its line, <c>• *Severity* subject: value (rule)</c>. Plain text: the provider escapes it for mrkdwn,
         /// and puts the alert's link (<c>links.self</c>) beside it.
         /// </summary>
-        public const string Slack = Functions + """
+        public static readonly string Slack = Functions + """
             Title: {{ title() }}
-            • *{{ plain(data.alert.severity) }}* {{ plain(data.alert.subject) }}: {{ value() }} ({{ rule_and_slo() }})
+            • *{{ plain(data.alert.severity) }}* {{ plain(data.alert.subject) }}: {{ value() }} ({{ plain(rule_and_slo()) }})
             """;
 
         /// <summary>Teams: the formatter's card title and its line, <c>Severity subject: value (rule)</c>; the link is the card's action.</summary>
-        public const string Teams = Functions + """
-            Title: {{ title() }}
-            {{ plain(data.alert.severity) }} {{ plain(data.alert.subject) }}: {{ value() }} ({{ rule_and_slo() }})
+        public static readonly string Teams = Functions + """
+            Title: {{ teams(title_raw()) }}
+            {{ teams(data.alert.severity) }} {{ teams(data.alert.subject) }}: {{ value() }} ({{ teams(rule_and_slo()) }})
             """;
 
         /// <summary>Email: the formatter's subject (<c>[Juice] …</c>) and body, the alert's link last when there is one.</summary>
-        public const string Email = Functions + """
+        public static readonly string Email = Functions + """
             Subject: [Juice] {{ title() }}
             {{ plain(data.alert.severity) }} {{ plain(data.alert.subject) }}: {{ value() }}
               Rule: {{ plain(data.alert.ruleName) }} ({{ plain(data.alert.rule) }}){{ if data.alert.slo }}

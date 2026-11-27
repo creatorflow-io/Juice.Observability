@@ -61,8 +61,11 @@ namespace Juice.Observability.Tests
             return new Rows(integration?.ManagedBy, integration?.Enabled, route?.ManagedBy, route?.Enabled, [.. targets.Select(t => t.ManagedBy).Distinct()], targets.Any(t => t.Enabled));
         }
 
-        /// <summary>The alias's disabled endpoint: its route is stopped; its integration and targets are as its API writes them.</summary>
-        private static readonly Rows HandedBack = new(AliasVocabulary.WebhooksAlias, true, AliasVocabulary.WebhooksAlias, false, [AliasVocabulary.WebhooksAlias], true);
+        /// <summary>
+        /// A handed-back endpoint: the alias's, with its route stopped. Where legacy sends the mirror writes its legacy row straight after (the integration and
+        /// targets as the alias writes them); in new nothing does, and the hand-back's own disabled rows stand.
+        /// </summary>
+        private static Rows HandedBack(bool mirrored) => new(AliasVocabulary.WebhooksAlias, mirrored, AliasVocabulary.WebhooksAlias, false, [AliasVocabulary.WebhooksAlias], mirrored);
         private static readonly Rows FromFile = new(AliasVocabulary.AliasConfig, true, AliasVocabulary.AliasConfig, true, [AliasVocabulary.AliasConfig], true);
 
         private static string Describe(Rows r) => $"integration {r.IntegrationOwner}/{r.IntegrationEnabled}, route {r.RouteOwner}/{r.RouteEnabled}, targets [{string.Join(",", r.TargetOwners)}]/{r.TargetsEnabled}";
@@ -98,7 +101,7 @@ namespace Juice.Observability.Tests
             await using var db = database.Context();
             var endpoint = await db.WebhookEndpoints.AsNoTracking().SingleAsync(e => e.Key == "from-file", Ct);
             Assert.Equal((ObsManagedBy.Api, false), (endpoint.ManagedBy, endpoint.Enabled));
-            AssertRows(HandedBack, await RowsAsync(second, "from-file"));
+            AssertRows(HandedBack(true), await RowsAsync(second, "from-file"));
 
             var put = await admin.PutAsync($"/api/v1/tenants/{tenant}/webhooks/{endpoint.Id}", new { secretRef = Secret, enabled = true });
             Assert.Equal(HttpStatusCode.OK, put.StatusCode);
@@ -118,7 +121,7 @@ namespace Juice.Observability.Tests
             await using var db = database.Context();
             var endpoint = await db.WebhookEndpoints.AsNoTracking().SingleAsync(e => e.Key == "from-file", Ct);
             Assert.Equal((ObsManagedBy.Api, false), (endpoint.ManagedBy, endpoint.Enabled));
-            AssertRows(HandedBack, await RowsAsync(second, "from-file"));
+            AssertRows(HandedBack(true), await RowsAsync(second, "from-file"));
 
             Assert.Equal(HttpStatusCode.OK, (await admin.PutAsync($"/api/v1/tenants/{tenant}/webhooks/{endpoint.Id}", new { secretRef = Secret, enabled = true })).StatusCode);
             Assert.True((await db.WebhookEndpoints.AsNoTracking().SingleAsync(e => e.Id == endpoint.Id, Ct)).Enabled);
@@ -132,7 +135,7 @@ namespace Juice.Observability.Tests
             await using var database = await LocalStack.CreateDatabaseAsync();
             await using var second = await DropAsync(database, "new");
             var (_, _, admin, tenant) = await Caller.AllAsync(second.CreateClient(), database);
-            AssertRows(HandedBack, await RowsAsync(second, "from-file"));
+            AssertRows(HandedBack(false), await RowsAsync(second, "from-file"));
             Guid id;
             await using (var scope = second.Services.CreateAsyncScope())
             {
@@ -196,7 +199,7 @@ namespace Juice.Observability.Tests
             await using var second = new ApiTests.ApiFactory(database, settings: FileSettings("legacy"));
             _ = second.CreateClient();
 
-            AssertRows(HandedBack, await RowsAsync(second, "from-file"));
+            AssertRows(HandedBack(true), await RowsAsync(second, "from-file"));
         }
 
         [Fact]
@@ -207,7 +210,7 @@ namespace Juice.Observability.Tests
             var pipeline = LocalStack.NotificationsPipeline ?? "legacy";
             await using (var dropped = await DropAsync(database, pipeline))
             {
-                AssertRows(HandedBack, await RowsAsync(dropped, "from-file"));
+                AssertRows(HandedBack(pipeline != "new"), await RowsAsync(dropped, "from-file"));
             }
 
             await using var third = new ApiTests.ApiFactory(database, settings: FileSettings(pipeline, "from-file"));
@@ -246,6 +249,27 @@ namespace Juice.Observability.Tests
             {
                 File.Delete(file);
             }
+        }
+
+        /// <summary>The migration command leaves what the file declares to the provisioner: informational, exit 0 (not a conflict), and the alias's rows stay the file's.</summary>
+        [Fact]
+        public async Task MigrationCommand_FileEndpoints_AreInformational_Exit0()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var settings = FileSettings("legacy", "from-file");
+            settings["Webhooks:Allowlist:0:Destination"] = "10.40.0.0/16";
+            await using var factory = new ApiTests.ApiFactory(database, settings: settings);
+            _ = factory.CreateClient();
+            var output = new StringWriter();
+
+            var reported = await new Api.NotificationsMigrationCommand(false, null).RunAsync(factory.Services, output, Ct);
+            var applied = await new Api.NotificationsMigrationCommand(true, null).RunAsync(factory.Services, output, Ct);
+
+            Assert.Equal((0, 0), (reported, applied));
+            Assert.Contains("owned_by_configuration", output.ToString());
+            Assert.DoesNotContain("\"conflict\"", output.ToString());
+            AssertRows(FromFile, await RowsAsync(factory, "from-file"));
         }
 
         // ─── The hand-back meeting a concurrent change ────────────────────────
@@ -324,7 +348,7 @@ namespace Juice.Observability.Tests
                 Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/health/live", Ct)).StatusCode);
                 // The first command's save failed and nothing moved; the second pass found "a-file" the alias's already and moved "b-file".
                 Assert.Equal(AliasVocabulary.WebhooksAlias, (await RowsAsync(second, "a-file")).IntegrationOwner);
-                AssertRows(HandedBack, await RowsAsync(second, "b-file"));
+                AssertRows(HandedBack(true), await RowsAsync(second, "b-file"));
                 Assert.DoesNotContain(once.Entries, e => e.Level >= LogLevel.Warning && e.Message.Contains("still changing owner"));
                 Assert.Contains(once.Entries, e => e.Message.Contains("planning again"));
             }
@@ -367,6 +391,14 @@ namespace Juice.Observability.Tests
             { NotificationPlan.Resolved, "service:shop/orders@production", "Orders errors", 0.01, "recovered" },
             { NotificationPlan.Escalated, "service:shop/orders@production", "Orders errors", null, "error rate 25% over 5%" },
             { NotificationPlan.Firing, "service:<a href=\"x\">&'é" + (char)0x2028 + "" + new string('x', 400) + "@prod", "Errors\r\nBcc: x\t+ a \\ b", 123456789.123456789, "a+b\tc\\d\"" },
+            // Control characters other than line breaks and tabs, and the length at which legacy cuts (300 stays, 301 is cut).
+            { NotificationPlan.Firing, "service:a\u000Bb\u0085c\u007Fd", "Orders errors", 0.25, "x" },
+            { NotificationPlan.Firing, "s" + new string('y', 299), "Orders errors", 0.25, "exactly 300" },
+            { NotificationPlan.Firing, "s" + new string('y', 300), "Orders errors", 0.25, "301" },
+            { NotificationPlan.Firing, "  " + new string('z', 305) + "  ", new string('n', 200), 0.25, new string('r', 301) },
+            // A subject is telemetry: it must not become a link in Teams.
+            { NotificationPlan.Firing, "service:[click](http://evil)", "Orders [errors]", 0.25, "[a](b)" },
+            { NotificationPlan.Escalated, "service:[click](http://evil)", "Orders errors", 0.25, "x" },
         };
 
         private static string DeclaredTemplate(string type, string channel)
@@ -408,6 +440,15 @@ namespace Juice.Observability.Tests
             Assert.Equal(payload, body);
         }
 
+        private const string ConsoleUrl = "https://console.example/";
+
+        private static string LinkOf(string payload)
+            => $"{ConsoleUrl}alerts/{JsonDocument.Parse(payload).RootElement.GetProperty("alert").GetProperty("id").GetString()}";
+
+        /// <summary>
+        /// Content parity: the same title and text, and the alert's link (legacy's, from the ConsoleUrl's address) as the content's url. The
+        /// provider presents the link as its own (Slack's button for legacy's inline link, a card action), so only the content is compared.
+        /// </summary>
         [Theory]
         [MemberData(nameof(Variants))]
         public async Task NewModeBody_Slack_Teams_EqualChannelFormatter_Bytes(string @event, string subject, string ruleName, double? value, string reason)
@@ -415,19 +456,27 @@ namespace Juice.Observability.Tests
             var (payload, id, escalation) = Legacy(@event, subject, ruleName, value, reason);
             var type = @event == NotificationPlan.Resolved ? ObservabilityTypes.AlertResolved : ObservabilityTypes.AlertFiring;
             var view = NotificationView.Parse(payload);
-            var link = "https://console.example/alerts/" + Guid.NewGuid();
+            var link = LinkOf(payload);
+            var links = new Dictionary<string, string> { ["self"] = link };
 
-            var slack = JsonSerializer.Deserialize<ChatContent>(ChannelContent.Chat(
-                await RenderAsync(type, "slack", payload, id, escalation, new Dictionary<string, string> { ["self"] = link }), "x", null, null))!;
-            var teams = JsonSerializer.Deserialize<ChatContent>(ChannelContent.Chat(
-                await RenderAsync(type, "teams", payload, id, escalation), "x", null, null))!;
+            var slack = JsonSerializer.Deserialize<ChatContent>(ChannelContent.Chat(await RenderAsync(type, "slack", payload, id, escalation, links), "x", links, null))!;
+            var teams = JsonSerializer.Deserialize<ChatContent>(ChannelContent.Chat(await RenderAsync(type, "teams", payload, id, escalation, links), "x", links, null))!;
 
-            var blocks = JsonDocument.Parse(ChannelFormatter.SlackBody(view, null)).RootElement.GetProperty("blocks");
+            var blocks = JsonDocument.Parse(ChannelFormatter.SlackBody(view, ConsoleUrl)).RootElement.GetProperty("blocks");
+            var legacyLine = blocks[1].GetProperty("text").GetProperty("text").GetString()!;
             Assert.Equal(blocks[0].GetProperty("text").GetProperty("text").GetString(), slack.Title);
-            Assert.Equal(blocks[1].GetProperty("text").GetProperty("text").GetString(), slack.Text.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;"));
-            var card = JsonDocument.Parse(ChannelFormatter.TeamsBody(view, null)).RootElement.GetProperty("attachments")[0].GetProperty("content").GetProperty("body");
-            Assert.Equal(card[0].GetProperty("text").GetString(), teams.Title);
-            Assert.Equal(card[1].GetProperty("text").GetString(), teams.Text);
+            Assert.Contains($"<{link}|", legacyLine);
+            Assert.Equal(System.Text.RegularExpressions.Regex.Replace(legacyLine, @"<https?://[^|>]*\|([^>]*)>", "$1"),
+                slack.Text.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;"));
+            Assert.Equal(link, slack.Url);
+
+            var card = JsonDocument.Parse(ChannelFormatter.TeamsBody(view, ConsoleUrl)).RootElement.GetProperty("attachments")[0].GetProperty("content");
+            Assert.Equal(card.GetProperty("body")[0].GetProperty("text").GetString(), teams.Title);
+            Assert.Equal(card.GetProperty("body")[1].GetProperty("text").GetString(), teams.Text);
+            Assert.Equal(link, card.GetProperty("actions")[0].GetProperty("url").GetString());
+            Assert.Equal(link, teams.Url);
+            // A subject can't write a link of its own into the card.
+            Assert.DoesNotContain("](", teams.Text);
         }
 
         [Theory]
@@ -436,15 +485,33 @@ namespace Juice.Observability.Tests
         {
             var (payload, id, escalation) = Legacy(@event, subject, ruleName, value, reason);
             var type = @event == NotificationPlan.Resolved ? ObservabilityTypes.AlertResolved : ObservabilityTypes.AlertFiring;
-            var alertId = JsonDocument.Parse(payload).RootElement.GetProperty("alert").GetProperty("id").GetString();
-            var console = "https://console.example/";
+            var link = LinkOf(payload);
 
-            var (legacySubject, legacyBody) = ChannelFormatter.Email(NotificationView.Parse(payload), console);
+            var (legacySubject, legacyBody) = ChannelFormatter.Email(NotificationView.Parse(payload), ConsoleUrl);
             var email = JsonSerializer.Deserialize<EmailContent>(ChannelContent.Email(
-                await RenderAsync(type, Channels.Email, payload, id, escalation, new Dictionary<string, string> { ["self"] = $"{console}alerts/{alertId}" }), "x"))!;
+                await RenderAsync(type, Channels.Email, payload, id, escalation, new Dictionary<string, string> { ["self"] = link }), "x"))!;
 
             Assert.Equal(legacySubject, email.Subject);
-            Assert.Equal(legacyBody.TrimEnd().Replace("\r\n", "\n"), email.Text);
+            Assert.Contains(link, legacyBody);
+            Assert.Equal(legacyBody.TrimEnd().ReplaceLineEndings("\n"), email.Text.TrimEnd().ReplaceLineEndings("\n"));
+        }
+
+        /// <summary>The shadow comparer reads a ported type's chat and email deliveries as legacy's: no difference, with the ConsoleUrl's address set.</summary>
+        [Theory]
+        [MemberData(nameof(Variants))]
+        public async Task ShadowCompare_PortedType_ChatAndEmail_NoUnexplainedDifference(string @event, string subject, string ruleName, double? value, string reason)
+        {
+            var (payload, id, escalation) = Legacy(@event, subject, ruleName, value, reason);
+            var type = @event == NotificationPlan.Resolved ? ObservabilityTypes.AlertResolved : ObservabilityTypes.AlertFiring;
+            var links = new Dictionary<string, string> { ["self"] = LinkOf(payload) };
+
+            var slack = ChannelContent.Chat(await RenderAsync(type, "slack", payload, id, escalation, links), "x", links, null);
+            var teams = ChannelContent.Chat(await RenderAsync(type, "teams", payload, id, escalation, links), "x", links, null);
+            var email = ChannelContent.Email(await RenderAsync(type, Channels.Email, payload, id, escalation, links), "x");
+
+            Assert.Null(Juice.Observability.Notifications.Shadow.ShadowBodies.Formatted(ChannelKind.Slack, payload, slack, ConsoleUrl));
+            Assert.Null(Juice.Observability.Notifications.Shadow.ShadowBodies.Formatted(ChannelKind.Teams, payload, teams, ConsoleUrl));
+            Assert.Null(Juice.Observability.Notifications.Shadow.ShadowBodies.Formatted(ChannelKind.Email, payload, email, ConsoleUrl));
         }
 
         // ─── Live ─────────────────────────────────────────────────────────────
@@ -565,6 +632,14 @@ namespace Juice.Observability.Tests
             var db = check.ServiceProvider.GetRequiredService<NotificationsDbContext>();
             var latest = await db.Types.AsNoTracking().SingleAsync(t => t.Key == ObservabilityTypes.AlertFiring && t.Version == 2, Ct);
             Assert.Equal(["email", "slack", "teams", "webhook"], await db.Templates.AsNoTracking().Where(t => t.TypeId == latest.Id).Select(t => t.Channel).OrderBy(c => c).ToListAsync(Ct));
+
+            // And a restart after the bump declares nothing again: still two versions, the latest the same.
+            await using var restarted = new ApiTests.ApiFactory(database, settings: settings);
+            _ = restarted.CreateClient();
+            Assert.Equal(new[] { 1, 2 }, await VersionsAsync(restarted));
+            await using var again = restarted.Services.CreateAsyncScope();
+            Assert.Equal(latest.DeclarationHash, (await again.ServiceProvider.GetRequiredService<NotificationsDbContext>().Types.AsNoTracking()
+                .SingleAsync(t => t.Key == ObservabilityTypes.AlertFiring && t.Version == 2, Ct)).DeclarationHash);
         }
     }
 }

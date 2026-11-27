@@ -24,7 +24,7 @@ namespace Juice.Observability.Notifications.Migration
     /// <item>The route matches <c>type</c> from <c>Events</c>, and the labels the producer adapter sets: <c>rule in(…)</c>,
     /// <c>environment in(…)</c>, <c>severity in(…)</c> (the levels at or above the minimum; none for <c>Info</c>, which is every level). An
     /// empty list matches any, as in legacy; a host alert has no environment label, so a list of environments leaves it out, as in legacy.</item>
-    /// <item><c>Enabled</c> is the route's: the integration and its targets are always enabled.</item>
+    /// <item><c>Enabled</c> is the route's: the integration and its targets are always enabled when written (a hand-back, M46c, leaves them disabled with the route: read as a disabled endpoint).</item>
     /// <item>Secret references keep their text (<see cref="SecretMapping"/>); no secret is read.</item>
     /// </list>
     /// <see cref="Unmap"/> is the exact inverse of <see cref="Map"/> for every definition <see cref="Map"/> accepts whose URL and addresses are
@@ -164,7 +164,9 @@ namespace Juice.Observability.Notifications.Migration
             static Mapped<LegacyEndpoint> NotOurs(string why) => Mapped<LegacyEndpoint>.Refused(new MappingProblem(ProblemCodes.NotAliasShaped, why));
 
             var (integration, route) = (s.Integration, s.Route);
-            if (integration.Key != route.Key || integration.Priority != 0 || !integration.Enabled || s.Targets.Any(t => !t.Enabled || t.IntegrationKey != integration.Key))
+            // A hand-back (M46c) leaves an endpoint wholly disabled: with its route stopped that is a disabled endpoint; with its route enabled it is no
+            // shape the alias writes.
+            if (integration.Key != route.Key || integration.Priority != 0 || (route.Enabled && (!integration.Enabled || s.Targets.Any(t => !t.Enabled))) || s.Targets.Any(t => t.IntegrationKey != integration.Key))
             {
                 return NotOurs("The integration, its targets and the route aren't the triple the alias writes.");
             }
