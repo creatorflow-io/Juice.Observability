@@ -137,9 +137,7 @@ namespace Juice.Observability.Notifications.Shadow
                     step > 0 ? NotificationPlan.Escalated : transition.ToState == AlertState.Firing ? NotificationPlan.Firing : NotificationPlan.Resolved,
                     await db.AlertTransitions.AnyAsync(t => t.AlertId == transition.AlertId && t.ToState == AlertState.Resolved && t.At > transition.At, cancellationToken),
                     await db.NotificationHolds.AnyAsync(h => h.TransitionId == transitionId, cancellationToken),
-                    // The release pass dropped it because the alert fired again (not merely: it fired again and it was dropped).
-                    transition.ToState == AlertState.Resolved
-                        && await db.NotificationHolds.AnyAsync(h => h.TransitionId == transitionId && h.Outcome == NotificationHoldOutcomes.DroppedStale, cancellationToken));
+                    transition.ToState == AlertState.Resolved && await StaleDroppedAsync(db, transitionId, cancellationToken));
                 var legacy = await LegacyAsync(db, transitionId, step, cancellationToken);
                 var @new = await NewAsync(pipeline, tenant, application, transitionId, step, cancellationToken);
                 var findings = ShadowCompare.Compare(unit, legacy, @new, compare);
@@ -155,6 +153,10 @@ namespace Juice.Observability.Notifications.Shadow
             }
             return recorded;
         }
+
+        /// <summary>The release pass dropped the transition's hold because the alert fired again (not merely: it fired again and the hold was dropped).</summary>
+        internal static Task<bool> StaleDroppedAsync(PlatformDbContext db, Guid transitionId, CancellationToken ct)
+            => db.NotificationHolds.AnyAsync(h => h.TransitionId == transitionId && h.Outcome == NotificationHoldOutcomes.DroppedStale, ct);
 
         /// <summary>
         /// Units due: transitions the platform planned since the shadow run began and at least the grace ago, and escalation steps either
