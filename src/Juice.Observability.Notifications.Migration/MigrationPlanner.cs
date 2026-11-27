@@ -118,6 +118,9 @@ namespace Juice.Observability.Notifications.Migration
         private static readonly MappingProblem Informational = new(ProblemCodes.OwnedByConfiguration,
             "Declared by the deployment's file: the platform loads it into notifications at start, so the migration tool leaves it as it is.");
 
+        private static readonly MappingProblem NotYetWritten = new(ProblemCodes.OwnedByConfigurationNotYetWritten,
+            "Declared by the deployment's file, but notifications has no rows for it yet (the pipeline was down at start): the provisioner writes it when it next runs, and a policy naming it waits for that.");
+
         /// <summary>For the tests of a failure part-way: throws after this many writes.</summary>
         internal int? FailAfterWrites { get; set; }
 
@@ -356,7 +359,13 @@ namespace Juice.Observability.Notifications.Migration
                 var item = (Subject: MigrationSubject.Endpoint, endpoint.Key);
                 if (OwnedByProvisioner(endpoint.ManagedBy))
                 {
-                    // The provisioner writes it from the file at start; the policies naming it follow it.
+                    // The provisioner writes it from the file at start; the policies naming it follow it, once it has.
+                    if (!current.Integrations.ContainsKey(endpoint.Key))
+                    {
+                        // Not written yet (the pipeline was down at start): a route step to it would reach nobody, so it isn't migrating.
+                        items.Add(new(item.Subject, item.Key, MigrationAction.Unchanged, [NotYetWritten]));
+                        continue;
+                    }
                     items.Add(new(item.Subject, item.Key, MigrationAction.Unchanged, [Informational]));
                     migrating.Add(endpoint.Key);
                     continue;

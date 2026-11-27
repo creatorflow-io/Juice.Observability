@@ -272,6 +272,32 @@ namespace Juice.Observability.Tests
             AssertRows(FromFile, await RowsAsync(factory, "from-file"));
         }
 
+        /// <summary>A file endpoint the provisioner hasn't written yet (the pipeline was down at start) has its own note, and isn't migrating: a policy naming it would route to nobody.</summary>
+        [Fact]
+        public async Task MigrationCommand_FileEndpoint_NoRowsYet_IsNotYetWritten_NotMigrating()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var factory = new ApiTests.ApiFactory(database, settings: FileSettings("legacy", "from-file"));
+            _ = factory.CreateClient();
+            await using (var scope = factory.Services.CreateAsyncScope())
+            {
+                var notifications = scope.ServiceProvider.GetRequiredService<NotificationsDbContext>();
+                var integration = await notifications.Integrations.SingleAsync(i => i.Key == "from-file", Ct);
+                await notifications.Routes.Where(r => r.Key == "from-file").ExecuteDeleteAsync(Ct);
+                await notifications.IntegrationTargets.Where(t => t.IntegrationId == integration.Id).ExecuteDeleteAsync(Ct);
+                await notifications.Integrations.Where(i => i.Id == integration.Id).ExecuteDeleteAsync(Ct);
+            }
+            var output = new StringWriter();
+
+            var reported = await new Api.NotificationsMigrationCommand(false, null).RunAsync(factory.Services, output, Ct);
+
+            Assert.Equal(0, reported);
+            Assert.Contains("owned_by_configuration_not_yet_written", output.ToString());
+            Assert.DoesNotContain("\"owned_by_configuration\"", output.ToString());
+            Assert.DoesNotContain("\"conflict\"", output.ToString());
+        }
+
         // ─── The hand-back meeting a concurrent change ────────────────────────
 
         private sealed class Logs : ILoggerProvider

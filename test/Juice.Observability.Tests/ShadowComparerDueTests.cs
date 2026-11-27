@@ -99,6 +99,17 @@ namespace Juice.Observability.Tests
         private static async Task<(ScratchDatabase Database, WebApplicationFactory<Program> Factory, Seed Seed)> StartAsync()
         {
             var database = await LocalStack.CreateDatabaseAsync();
+            // The seed switches foreign-key enforcement off (session_replication_role), which only a superuser may do: skip, don't fail, on any other role.
+            bool superuser;
+            await using (var probe = database.Context())
+            {
+                superuser = await probe.Database.SqlQueryRaw<bool>("SELECT rolsuper AS \"Value\" FROM pg_roles WHERE rolname = current_user").SingleAsync(Ct);
+            }
+            if (!superuser)
+            {
+                await database.DisposeAsync();
+            }
+            Assert.SkipUnless(superuser, "the test database's role is not a superuser, which seeding rows without their parents (session_replication_role) needs");
             var factory = Factory(database);
             _ = factory.Server;
             var seed = new Seed(factory, database);

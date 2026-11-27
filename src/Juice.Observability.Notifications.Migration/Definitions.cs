@@ -92,5 +92,7 @@ namespace Juice.Observability.Notifications.Migration
         public const string NotAliasShaped = "not_alias_shaped";
         /// <summary>Informational: a row legacy owns as configuration is the provisioner's (it writes it from the file at start), not the migration tool's.</summary>
         public const string OwnedByConfiguration = "owned_by_configuration";
+        /// <summary>Informational: as <see cref="OwnedByConfiguration"/>, but the provisioner hasn't written the endpoint's rows yet, so a policy naming it can't be routed.</summary>
+        public const string OwnedByConfigurationNotYetWritten = "owned_by_configuration_not_yet_written";
     }
 }
