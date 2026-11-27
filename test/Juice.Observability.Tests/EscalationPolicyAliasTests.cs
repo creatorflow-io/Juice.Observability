@@ -13,6 +13,7 @@ namespace Juice.Observability.Tests
     /// its notifications policy (relative waits naming the endpoints' routes by key) is what runs in new. A step names endpoints legacy has while
     /// it sends, and the alias's in new; a key must also pass notifications' key rule.
     /// </summary>
+    [Trait("Milestone", "M46c")]
     public sealed class EscalationPolicyAliasTests
     {
         private static CancellationToken Ct => TestContext.Current.CancellationToken;

@@ -44,6 +44,7 @@ namespace Juice.Observability.Tests
     }
 
     /// <summary>The Phase 6 configuration APIs: rules, endpoints and the allowlist can be changed through the API, by admins, with an audit, and never over what the deployment's file owns.</summary>
+    [Trait("Milestone", "M46c")]
     public class NotificationApiTests
     {
         private static CancellationToken Ct => TestContext.Current.CancellationToken;

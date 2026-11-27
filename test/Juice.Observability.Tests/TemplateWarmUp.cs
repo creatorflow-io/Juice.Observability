@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Juice.Notifications;
 using Juice.Notifications.Rendering;
+using Juice.Observability.Notifications;
 using Juice.Observability.Notifications.Migration;
 
 namespace Juice.Observability.Tests

@@ -51,7 +51,25 @@ namespace Juice.Observability.Notifications.Migration
                 planner.Reconciles = writesLegacy
                     ? new HashSet<string> { AliasVocabulary.WebhooksAlias, AliasVocabulary.AliasConfig }
                     : new HashSet<string> { AliasVocabulary.AliasConfig };
-                var report = await planner.ApplyAsync(setup, cancellationToken);
+                MigrationReport? report;
+                try
+                {
+                    report = await planner.ApplyAsync(setup, cancellationToken);
+                }
+                catch (HandBackConcurrentChange)
+                {
+                    // An alias row changed owner while it was handed back; nothing moved. Planned once more from what is there now.
+                    logger.LogInformation("An alias row changed owner during the hand-back; planning again");
+                    try
+                    {
+                        report = await planner.ApplyAsync(setup, cancellationToken);
+                    }
+                    catch (HandBackConcurrentChange)
+                    {
+                        logger.LogWarning("The alias's rows of endpoints the file dropped are still changing owner; the next start hands them back");
+                        return;
+                    }
+                }
                 foreach (var item in report.Items.Where(i => i.Action == MigrationAction.Conflict))
                 {
                     logger.LogWarning("Webhook {Subject} {Key} isn't in notifications: {Problems}", item.Subject, item.Key,

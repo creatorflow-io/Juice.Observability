@@ -18,6 +18,7 @@ namespace Juice.Observability.Tests
     /// The Phase 6 gate end to end, against a real receiver and a real database: silences hold and release, failures stay visible, groups and chat channels send, and escalation stops
     /// when its policy says. Moments are moved by editing rows rather than waiting.
     /// </summary>
+    [Trait("Milestone", "M46c")]
     public class NotificationFlowTests
     {
         internal const string SecretVariable = "JUICE_WEBHOOK_TEST";

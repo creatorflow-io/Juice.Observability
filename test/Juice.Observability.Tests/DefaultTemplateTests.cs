@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using Juice.Notifications;
 using Juice.Notifications.Rendering;
 using Juice.Observability.Data;
+using Juice.Observability.Notifications;
 using Juice.Observability.Notifications.Migration;
 using Juice.Observability.Webhooks;
 
@@ -13,6 +14,7 @@ namespace Juice.Observability.Tests
     /// adapter sends (the legacy payload without its id), compared with what legacy sends: the webhook body byte for byte but its id, and the chat
     /// and email text as <c>ChannelFormatter</c> writes it.
     /// </summary>
+    [Trait("Milestone", "M46c")]
     public class DefaultTemplateTests
     {
         private static readonly Guid TenantId = Guid.Parse("0193f0aa-0000-7000-8000-0000000000f1");

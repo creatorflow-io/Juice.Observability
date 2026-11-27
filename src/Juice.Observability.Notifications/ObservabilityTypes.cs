@@ -7,7 +7,7 @@ namespace Juice.Observability.Notifications
 {
     /// <summary>
     /// The platform's notification types (phase-5-plan I63), declared at start under the application <c>observability</c>. Their data is today's
-    /// webhook payload less its id; their templates are the pipeline's defaults until M46b ports the platform's. Each takes email recipients
+    /// webhook payload less its id; the alert types' templates are the platform's own, ported (<see cref="DefaultTemplates"/>, M46c); the action request types keep the pipeline's defaults. Each takes email recipients
     /// (<c>externalRecipients</c>).
     /// </summary>
     public static class ObservabilityTypes
@@ -32,9 +32,9 @@ namespace Juice.Observability.Notifications
         {
             yield return new TypeDeclaration(AlertFiring, "Alert firing", "alerts", null, null, null, ExternalRecipients: true,
                 Json(AlertSchema), CorrelationRules.Required, null,
-                Json($$"""[{"step":"send"},{"step":"escalate","policyFrom":"labels.{{EscalationPolicyLabel}}"}]"""), null);
+                Json($$"""[{"step":"send"},{"step":"escalate","policyFrom":"labels.{{EscalationPolicyLabel}}"}]"""), DefaultTemplates.Declaration());
             yield return new TypeDeclaration(AlertResolved, "Alert resolved", "alerts", null, null, null, ExternalRecipients: true,
-                Json(AlertSchema), CorrelationRules.Optional, null, Json(TypeRules.SendOnlyWorkflow), null);
+                Json(AlertSchema), CorrelationRules.Optional, null, Json(TypeRules.SendOnlyWorkflow), DefaultTemplates.Declaration());
             foreach (var type in ActionRequestEventTypes)
             {
                 yield return new TypeDeclaration(ForPlatformEvent(type), Name(type), "action-requests", null, null, null, ExternalRecipients: true,

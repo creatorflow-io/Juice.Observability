@@ -14,6 +14,7 @@ namespace Juice.Observability.Tests
     /// and the migration tool, over the HTTP endpoint, migrates the local stack's real legacy rows (written before M46b, so not mirrored yet)
     /// with the AliasSecret* defaults taken from Webhooks.
     /// </summary>
+    [Trait("Milestone", "M46c")]
     public class M46bQaTests
     {
         private static CancellationToken Ct => TestContext.Current.CancellationToken;

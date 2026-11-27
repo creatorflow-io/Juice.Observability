@@ -21,6 +21,7 @@ namespace Juice.Observability.Tests
     /// once both settled, the unit is compared once, endpoint by endpoint (an integration of the same key), recorded with its differences, and
     /// shown by the shadow report to operators.
     /// </summary>
+    [Trait("Milestone", "M46c")]
     public class ShadowComparerTests
     {
         private static CancellationToken Ct => TestContext.Current.CancellationToken;
