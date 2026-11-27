@@ -139,7 +139,8 @@ namespace Juice.Observability.Tests
         {
             LocalStack.RequireAvailable();
             await using var database = await LocalStack.CreateDatabaseAsync();
-            await using var factory = new ApiTests.ApiFactory(database);
+            // About legacy mode, whatever JUICE_TEST_NOTIFICATIONS_PIPELINE says (a test's own setting wins, I74).
+            await using var factory = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string> { ["Notifications:Pipeline"] = "legacy" });
             _ = factory.Server;
             await Task.Delay(TimeSpan.FromSeconds(3), Ct); // past start
             var before = await ReadsAsync(database);
