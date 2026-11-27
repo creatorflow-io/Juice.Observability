@@ -90,5 +90,7 @@ namespace Juice.Observability.Notifications.Migration
         public const string OverlappingPolicies = "overlapping_policies";
         public const string Destination = "invalid_destination";
         public const string NotAliasShaped = "not_alias_shaped";
+        /// <summary>Informational: a row legacy owns as configuration is the provisioner's (it writes it from the file at start), not the migration tool's.</summary>
+        public const string OwnedByConfiguration = "owned_by_configuration";
     }
 }
