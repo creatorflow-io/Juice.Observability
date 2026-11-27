@@ -139,6 +139,8 @@ The rule scheduler has no single pass: it shows as busy slots instead.
 | `juice.observability.notifications.refused` | counter | call, code | any: the notification pipeline refused a request the platform made (`shadow`, `new`); the log names it |
 | `juice.observability.notifications.dry_duplicates` | counter | type | any: in `new`, the pipeline took a send as a duplicate of one planned dry in shadow, so nothing was sent; the adapter must never send again what shadow planned (stays 0; M50 checks it), and the log names the request |
 | `juice.observability.notifications.deadman` | counter | cause, event, outcome | any `firing` sent: the notification pipeline stopped keeping up (`stalled`, `failing`, `no-success`, `stuck-in-retry`, `shadow`, `unreadable`); `failed`: the alarm itself couldn't be posted |
+| `juice.observability.notifications.shadow.differences` | counter | kind, rule, explained | `explained=false` (rule `unexplained`) at any rate: the new pipeline's dry run differed from what legacy sent and no known rule accounts for it; the stored `shadow_differences` row says how. Only in `shadow`, from the comparer |
+| `juice.observability.notifications.shadow.compared` | counter | event | Flat while alerts fire: the comparer is not matching anything (it runs once the leased worker has settled a transition). The denominator for `shadow.differences`: each transition or escalation step is counted once. Only in `shadow` |
 | `juice.observability.process.uptime` | gauge, s | – | Resets: the process restarted |
 
 ### ClickHouse queries the platform makes
