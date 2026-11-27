@@ -205,6 +205,45 @@ namespace Juice.Observability.Tests
 
         private static LegacySent Sent() => new("ops", ChannelKind.Webhook, 0, "{}", Juice.Observability.Data.DeliveryStatus.Delivered, null, At, At, 0);
 
+        /// <summary>
+        /// The comparer's FiredSince is the release pass's own reason (outcome dropped_stale), not a later firing: a resolve hold dropped plain
+        /// (another reason) with the alert firing later is not stale_resolve_dropped, and so is not explained by that rule.
+        /// </summary>
+        [Fact, Trait("Milestone", "M46c")]
+        public async Task StaleDropped_OnlyForDroppedStaleOutcome_NotForALaterFiring()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var (alert, _) = await ProducerAdapterTests.FireAsync(database);
+            Guid plain, stale;
+            await using (var db = database.Context())
+            {
+                var a = await db.Alerts.SingleAsync(x => x.Id == alert, Ct);
+                var t = new AlertTransition[]
+                {
+                    new() { TenantId = a.TenantId, AlertId = alert, FromState = AlertState.Firing, ToState = AlertState.Resolved, At = DateTimeOffset.UtcNow, Value = 0, Reason = "r1" },
+                    new() { TenantId = a.TenantId, AlertId = alert, FromState = AlertState.Firing, ToState = AlertState.Resolved, At = DateTimeOffset.UtcNow.AddSeconds(2), Value = 0, Reason = "r2" },
+                    // The alert fires again after both.
+                    new() { TenantId = a.TenantId, AlertId = alert, FromState = AlertState.Resolved, ToState = AlertState.Firing, At = DateTimeOffset.UtcNow.AddSeconds(4), Value = 1, Reason = "again" },
+                };
+                db.AlertTransitions.AddRange(t);
+                (plain, stale) = (t[0].Id, t[1].Id);
+                foreach (var (transition, outcome) in new[] { (plain, NotificationHoldOutcomes.Dropped), (stale, NotificationHoldOutcomes.DroppedStale) })
+                {
+                    db.NotificationHolds.Add(new NotificationHold
+                    {
+                        TenantId = a.TenantId, AlertId = alert, TransitionId = transition, Event = NotificationPlan.Resolved, SilenceId = Guid.CreateVersion7(), Request = "{}",
+                        CreatedAt = DateTimeOffset.UtcNow, DecidedAt = DateTimeOffset.UtcNow, Reason = NotificationHoldReasons.Silence, Outcome = outcome,
+                    });
+                }
+                await db.SaveChangesAsync(Ct);
+            }
+
+            await using var check = database.Context();
+            Assert.False(await ShadowComparer.StaleDroppedAsync(check, plain, Ct));
+            Assert.True(await ShadowComparer.StaleDroppedAsync(check, stale, Ct));
+        }
+
         [Fact, Trait("Milestone", "M46c")]
         public void ShadowCompare_StaleResolveDroppedInNew_IsExplained()
         {
