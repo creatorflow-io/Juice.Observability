@@ -591,6 +591,43 @@ namespace Juice.Observability.Tests
             Assert.Null(Juice.Observability.Notifications.Shadow.ShadowBodies.Formatted(ChannelKind.Email, payload, email, ConsoleUrl));
         }
 
+        /// <summary>
+        /// The adapter's link is the raw ConsoleUrl (legacy's), not the normalised Uri: <c>https://Ops.Example.com:443</c> stays as written, so
+        /// every channel's content carries legacy's link and the shadow comparer finds no difference.
+        /// </summary>
+        [Fact]
+        public async Task NewModeLink_RawConsoleUrl_EqualsLegacy_AllChannels_ShadowNoDifference()
+        {
+            LocalStack.RequireAvailable();
+            const string raw = "https://Ops.Example.com:443";
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var factory = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string> { ["Webhooks:ConsoleUrl"] = raw, ["Notifications:Pipeline"] = "legacy" })
+                .WithWebHostBuilder(b => b.ConfigureServices(s => s.PostConfigure<PlatformNotificationsOptions>(o => o.Pipeline = NotificationsPipeline.New)));
+            _ = factory.Server;
+            var (alert, transition) = await ProducerAdapterTests.FireAsync(database);
+            await ProducerAdapterTests.PlanAsync(factory, database, transition);
+            var request = Assert.Single(await ProducerAdapterTests.RequestsAsync(database));
+
+            var (payload, id, escalation) = Legacy(NotificationPlan.Firing, "service:shop/orders@production", "Orders errors", 0.25, "x");
+            var view = NotificationView.Parse(payload);
+            var legacyLink = $"{raw}/alerts/{view.Alerts![0].AlertId}";
+            // Legacy's own link in each of its formatters, and the adapter's for the same alert.
+            Assert.Contains(legacyLink, ChannelFormatter.SlackBody(view, raw));
+            Assert.Contains(legacyLink, ChannelFormatter.Email(view, raw).Body);
+            Assert.Equal(legacyLink.Replace(view.Alerts![0].AlertId.ToString(), alert.ToString()), request.Links["self"]);
+
+            var links = new Dictionary<string, string> { ["self"] = request.Links["self"].Replace(alert.ToString(), view.Alerts![0].AlertId.ToString()) };
+            var slack = ChannelContent.Chat(await RenderAsync(ObservabilityTypes.AlertFiring, "slack", payload, id, escalation, links), "x", links, null);
+            var teams = ChannelContent.Chat(await RenderAsync(ObservabilityTypes.AlertFiring, "teams", payload, id, escalation, links), "x", links, null);
+            var email = ChannelContent.Email(await RenderAsync(ObservabilityTypes.AlertFiring, Channels.Email, payload, id, escalation, links), "x");
+            Assert.Equal(legacyLink, JsonSerializer.Deserialize<ChatContent>(slack)!.Url);
+            Assert.Equal(legacyLink, JsonSerializer.Deserialize<ChatContent>(teams)!.Url);
+            Assert.Contains(legacyLink, JsonSerializer.Deserialize<EmailContent>(email)!.Text);
+            Assert.Null(Juice.Observability.Notifications.Shadow.ShadowBodies.Formatted(ChannelKind.Slack, payload, slack, raw));
+            Assert.Null(Juice.Observability.Notifications.Shadow.ShadowBodies.Formatted(ChannelKind.Teams, payload, teams, raw));
+            Assert.Null(Juice.Observability.Notifications.Shadow.ShadowBodies.Formatted(ChannelKind.Email, payload, email, raw));
+        }
+
         // ─── Live ─────────────────────────────────────────────────────────────
 
         private const string LiveSecret = "JUICE_WEBHOOK_M46C";

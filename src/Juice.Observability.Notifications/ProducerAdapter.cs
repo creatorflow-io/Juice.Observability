@@ -309,7 +309,7 @@ namespace Juice.Observability.Notifications
         /// <summary>The Console's page as <c>self</c>, when the Console's address is set and absolute (<c>Webhooks:ConsoleUrl</c>).</summary>
         private Dictionary<string, string>? Link(string page)
             => Uri.TryCreate(webhooks.Value.ConsoleUrl, UriKind.Absolute, out var console) && console.Scheme is "https" or "http"
-                ? new() { ["self"] = $"{console.AbsoluteUri.TrimEnd('/')}/{page}" }
+                ? new() { ["self"] = $"{webhooks.Value.ConsoleUrl!.TrimEnd('/')}/{page}" }
                 : null;
 
         /// <summary>Today's payload, less its id (each delivery's own in the webhooks; the pipeline gives its own).</summary>
