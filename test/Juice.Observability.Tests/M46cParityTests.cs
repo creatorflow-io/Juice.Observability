@@ -298,6 +298,57 @@ namespace Juice.Observability.Tests
             Assert.DoesNotContain("\"conflict\"", output.ToString());
         }
 
+        private static async Task<(int Exit, Dictionary<string, (string Action, string Problems)> Items)> ReportAsync(ApiTests.ApiFactory factory, bool apply)
+        {
+            var output = new StringWriter();
+            var exit = await new Api.NotificationsMigrationCommand(apply, null).RunAsync(factory.Services, output, Ct);
+            using var json = JsonDocument.Parse(output.ToString());
+            var items = json.RootElement.GetProperty("items").EnumerateArray().ToDictionary(
+                i => i.GetProperty("key").GetString()!,
+                i => (i.GetProperty("action").GetString()!, i.GetProperty("problems").EnumerateArray().Select(p => p.GetProperty("code").GetString()!).Order().Aggregate("", (a, c) => a + c + ";")));
+            return (exit, items);
+        }
+
+        /// <summary>A policy naming a file endpoint: it follows the endpoint once the provisioner wrote it, and is a conflict (and not written) while it hasn't.</summary>
+        [Fact]
+        public async Task MigrationCommand_PolicyNamingFileEndpoint_FollowsWhetherItsRowsAreWritten()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var factory = new ApiTests.ApiFactory(database, settings: FileSettings("legacy", "from-file"));
+            _ = factory.CreateClient();
+            var tenant = await ProducerAdapterTests.TenantAsync(database);
+            await using (var db = database.Context())
+            {
+                db.EscalationPolicies.Add(new Juice.Observability.Data.EscalationPolicy { TenantId = tenant, Key = "paging", Name = "Paging", Steps = [new() { AfterMinutes = 5, EndpointKeys = ["from-file"] }] });
+                await db.SaveChangesAsync(Ct);
+            }
+
+            var (written, items) = await ReportAsync(factory, apply: false);
+            Assert.Equal(0, written);
+            Assert.Equal(("unchanged", ProblemCodes.OwnedByConfiguration + ";"), items["from-file"]);
+            Assert.Equal("create", items["paging"].Action);
+
+            await using (var scope = factory.Services.CreateAsyncScope())
+            {
+                var notifications = scope.ServiceProvider.GetRequiredService<NotificationsDbContext>();
+                var integration = await notifications.Integrations.SingleAsync(i => i.Key == "from-file", Ct);
+                await notifications.Routes.Where(r => r.Key == "from-file").ExecuteDeleteAsync(Ct);
+                await notifications.IntegrationTargets.Where(t => t.IntegrationId == integration.Id).ExecuteDeleteAsync(Ct);
+                await notifications.Integrations.Where(i => i.Id == integration.Id).ExecuteDeleteAsync(Ct);
+            }
+
+            foreach (var apply in new[] { false, true })
+            {
+                var (exit, missing) = await ReportAsync(factory, apply);
+                Assert.Equal(2, exit);
+                Assert.Equal(("unchanged", ProblemCodes.OwnedByConfigurationNotYetWritten + ";"), missing["from-file"]);
+                Assert.Equal(("conflict", ProblemCodes.UnknownEndpoint + ";"), missing["paging"]);
+            }
+            await using var after = factory.Services.CreateAsyncScope();
+            Assert.False(await after.ServiceProvider.GetRequiredService<NotificationsDbContext>().EscalationPolicies.AnyAsync(p => p.Key == "paging", Ct));
+        }
+
         // ─── The hand-back meeting a concurrent change ────────────────────────
 
         private sealed class Logs : ILoggerProvider
