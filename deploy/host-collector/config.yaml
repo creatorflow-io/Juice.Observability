@@ -1,0 +1,112 @@
+# Juice Observability — host Collector (Phase 12 R7). Run one on every machine whose CPU, memory and disks should be watched:
+# it scrapes the host's own metrics and forwards them over OTLP to the platform Collector, which stamps the tenant (requirements §4).
+# Pinned: otel/opentelemetry-collector-contrib:0.163.1. deploy/host-collector/README.md says how to run it.
+#
+# What the platform's rules read:
+#   HostMemory  system.memory.usage                        (state: used, free, ...)
+#   HostCpu     system.cpu.time (cumulative, per cpu and state), or system.cpu.utilization
+#   HostDisk    system.filesystem.usage (state, mode, mountpoint, type), or system.filesystem.utilization
+#
+# Environment:
+#   JUICE_OTLP_ENDPOINT   the platform Collector's OTLP/gRPC address, for example https://otel-collector:4317
+#   JUICE_OTLP_TOKEN_FILE a file holding this Collector's bearer token (its own: a token line in the platform Collector's otlp-tokens)
+#   JUICE_OTLP_CA_FILE    the CA that signed the platform Collector's certificate
+#   JUICE_HOST_NAME       optional: names the host when the operating system's name is not the one to show (host.name)
+#   JUICE_HOST_ROOT       the host's root filesystem as the Collector sees it, mounted read-only (default /hostfs)
+
+extensions:
+  # The token is read from a file, so it is not in this config or the process list.
+  bearertokenauth/client:
+    scheme: Bearer
+    filename: ${env:JUICE_OTLP_TOKEN_FILE}
+
+receivers:
+  host_metrics:
+    root_path: ${env:JUICE_HOST_ROOT:-/hostfs}
+    collection_interval: 30s
+    scrapers:
+      memory:
+      cpu:
+        metrics:
+          system.cpu.utilization:
+            enabled: true
+      filesystem:
+        metrics:
+          system.filesystem.utilization:
+            enabled: true
+        # Real disks only. Pseudo and virtual filesystems and the mounts a container runtime or the kernel adds say nothing about
+        # capacity; a rule over the fullest mount would page on them (a tmpfs or a read-only squashfs is always 100 %).
+        exclude_fs_types:
+          match_type: strict
+          fs_types:
+            - autofs
+            - binfmt_misc
+            - bpf
+            - cgroup
+            - cgroup2
+            - configfs
+            - debugfs
+            - devpts
+            - devtmpfs
+            - fusectl
+            - hugetlbfs
+            - iso9660
+            - mqueue
+            - nsfs
+            - overlay
+            - proc
+            - procfs
+            - pstore
+            - ramfs
+            - rpc_pipefs
+            - securityfs
+            - selinuxfs
+            - squashfs
+            - sysfs
+            - tmpfs
+            - tracefs
+        exclude_mount_points:
+          match_type: regexp
+          mount_points:
+            - ^/(proc|sys|dev|run|snap)(/.*)?$
+            - ^/var/lib/docker(/.*)?$
+            - ^/etc/(hosts|hostname|resolv\.conf)$
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 20
+  # Names the host as the operating system does, unless JUICE_HOST_NAME (host.name, read by the env detector) says otherwise.
+  resource_detection:
+    detectors: [env, system]
+    system:
+      hostname_sources: [os]
+  batch:
+    timeout: 10s
+
+exporters:
+  otlp_grpc:
+    endpoint: ${env:JUICE_OTLP_ENDPOINT}
+    tls:
+      ca_file: ${env:JUICE_OTLP_CA_FILE}
+      min_version: "1.2"
+    auth:
+      authenticator: bearertokenauth/client
+    sending_queue:
+      enabled: true
+      queue_size: 1000
+    retry_on_failure:
+      enabled: true
+      max_elapsed_time: 300s
+
+service:
+  extensions: [bearertokenauth/client]
+  telemetry:
+    metrics:
+      level: none
+  pipelines:
+    metrics:
+      receivers: [host_metrics]
+      processors: [memory_limiter, resource_detection, batch]
+      exporters: [otlp_grpc]
