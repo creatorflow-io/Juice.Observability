@@ -17,11 +17,11 @@ namespace Juice.Observability.Tests
 
         private static string Never(string metric) => $"metric {metric} has not been reported in the last 24 h";
 
-        private static async Task AddRuleAsync(ScratchDatabase database, string key, string metric, bool enabled = true)
+        private static async Task AddRuleAsync(ScratchDatabase database, string key, string metric, bool enabled = true, TimeSpan? window = null)
         {
             var definition = new RuleDefinition
             {
-                Key = key, Name = key, Template = RuleTemplate.MetricThreshold, Threshold = 10, Enabled = enabled,
+                Key = key, Name = key, Template = RuleTemplate.MetricThreshold, Threshold = 10, Enabled = enabled, Window = window ?? TimeSpan.FromMinutes(5),
                 Metric = new MetricSpec { Name = metric, Kind = MetricKind.Gauge, Aggregation = MetricAggregation.Last },
             };
             await using var db = database.Context();
@@ -118,6 +118,86 @@ namespace Juice.Observability.Tests
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
             var rule = Assert.Single((await Caller.JsonAsync(response)).GetProperty("items").EnumerateArray());
             Assert.Equal(JsonValueKind.Null, rule.GetProperty("quiet").ValueKind);
+        }
+
+        private sealed class Capture : Microsoft.Extensions.Logging.ILogger
+        {
+            public List<(Microsoft.Extensions.Logging.LogLevel Level, Exception? Error)> Entries { get; } = [];
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+            public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+            public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId, TState state, Exception? exception,
+                Func<TState, Exception?, string> formatter) => Entries.Add((logLevel, exception));
+        }
+
+        private static List<Juice.Observability.Api.Endpoints.RuleDto> Page(string metric, TimeSpan? window = null)
+        {
+            var definition = new RuleDefinition
+            {
+                Key = "page-rule", Name = "n", Template = RuleTemplate.MetricThreshold, Threshold = 10, Window = window ?? TimeSpan.FromMinutes(5),
+                Metric = new MetricSpec { Name = metric, Kind = MetricKind.Gauge, Aggregation = MetricAggregation.Last },
+            };
+            return [new("page-rule", "n", "MetricThreshold", "Warning", true, definition, DateTimeOffset.UtcNow, "api", "etag")];
+        }
+
+        [Fact]
+        public async Task List_catalog_throws_anything_page_is_returned_without_marks_Async()
+        {
+            // An auth error, and an HttpClient timeout that isn't the request's own cancel.
+            foreach (Exception error in new Exception[] { new InvalidOperationException("Authentication failed"), new TaskCanceledException("The request timed out", new TimeoutException()) })
+            {
+                var log = new Capture();
+                var page = await Juice.Observability.Api.Endpoints.AlertEndpoints.MarkNeverObservedAsync(Page("m.x"),
+                    (_, _) => throw error, log, CancellationToken.None);
+
+                Assert.Null(Assert.Single(page).Quiet);
+                var entry = Assert.Single(log.Entries);
+                Assert.Equal((Microsoft.Extensions.Logging.LogLevel.Warning, error), entry);
+            }
+        }
+
+        [Fact]
+        public async Task List_request_cancel_still_cancels_Async()
+        {
+            using var cancel = new CancellationTokenSource();
+            await cancel.CancelAsync();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Juice.Observability.Api.Endpoints.AlertEndpoints.MarkNeverObservedAsync(Page("m.x"),
+                (_, _) => throw new OperationCanceledException(cancel.Token), new Capture(), cancel.Token));
+        }
+
+        [Fact]
+        public async Task List_catalog_auth_error_still_200_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await AddRuleAsync(database, "auth-rule", $"rq.{_run}.auth");
+            var wrong = LocalStack.ClickHouseReader.Replace(LocalStack.Secret("CLICKHOUSE_PLATFORM_PASSWORD"), "wrong-password");
+            await using var factory = new ApiFactory(database, settings: new Dictionary<string, string> { ["ClickHouse:ConnectionString"] = wrong });
+            using var client = factory.CreateClient();
+            var (viewer, _, _, tenant) = await Caller.AllAsync(client, database);
+
+            var rule = Assert.Single((await Caller.JsonAsync(await viewer.GetAsync($"/api/v1/tenants/{tenant}/rules"))).GetProperty("items").EnumerateArray());
+            Assert.Equal(JsonValueKind.Null, rule.GetProperty("quiet").ValueKind);
+        }
+
+        [Fact]
+        public async Task List_looks_back_over_24h_and_the_window_Async()
+        {
+            LocalStack.RequireAvailable();
+            var (metric, service) = ($"rq.{_run}.old", $"rq-{_run}-old");
+            await LocalStack.SendAsync("metrics", OtlpMetrics.Gauge([("service.name", service)], metric, [], (DateTimeOffset.UtcNow.AddHours(-26), 1)));
+            for (var i = 0; i < 100 && int.Parse(await LocalStack.ClickHouseAsync($"SELECT count() FROM otel.otel_metrics_gauge WHERE MetricName = '{metric}' AND JuiceTenant = '{LocalStack.TenantKey}'")) < 1; i++)
+                await Task.Delay(200, Ct);
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await AddRuleAsync(database, "short-window", metric, window: TimeSpan.FromMinutes(5));
+            await AddRuleAsync(database, "long-window", metric, window: TimeSpan.FromHours(6));
+            await using var factory = new ApiFactory(database);
+            using var client = factory.CreateClient();
+            var (viewer, _, _, tenant) = await Caller.AllAsync(client, database);
+
+            var rules = await ListAsync(viewer, tenant);
+
+            // One lookback per page (the longest window), as the catalog is read once: the page is not quiet when a preview of its longest rule has data.
+            Assert.Equal(JsonValueKind.Null, rules["long-window"].GetProperty("quiet").ValueKind);
         }
 
         [Fact]

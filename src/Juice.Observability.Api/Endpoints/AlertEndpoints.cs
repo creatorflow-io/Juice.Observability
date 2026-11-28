@@ -44,7 +44,7 @@ namespace Juice.Observability.Api.Endpoints
         }
 
         private static async Task<IResult> ListRulesAsync(Guid tenantId, int? limit, string? cursor, HttpContext http, PlatformDbContext db,
-            Discovery.ClickHouseTelemetrySource clickHouse, TimeProvider clock, CancellationToken ct)
+            Discovery.ClickHouseTelemetrySource clickHouse, TimeProvider clock, Microsoft.Extensions.Logging.ILoggerFactory loggers, CancellationToken ct)
         {
             if (Cursor.Validate(limit, cursor, out var take, out var after) is { } invalid)
             {
@@ -57,23 +57,39 @@ namespace Juice.Observability.Api.Endpoints
             var quiet = await SignalCoverage.QuietReasonsAsync(db, tenantId, page.Where(r => r.Enabled).Select(r => r.Definition).ToList(), ct);
             page = [.. page.Select(r => quiet.TryGetValue(r.Key, out var reason) ? r with { Quiet = reason } : r)];
 
-            // An enabled metric rule whose metric the tenant hasn't reported in 24 h: one catalog query for the page. ClickHouse busy or out of
-            // reach leaves them as they are: the listing doesn't depend on it.
-            var metrics = page.Where(r => r.Quiet is null && r.Enabled && r.Definition is { Template: RuleTemplate.MetricThreshold, Metric.Name.Length: > 0 })
-                .Select(r => r.Definition.Metric!.Name).Distinct().ToList();
-            if (metrics.Count > 0)
-            {
-                try
-                {
-                    var seen = await MetricCatalog.SeenAsync(clickHouse, (string)http.Items[TelemetryEndpoints.TenantKeyItem]!, metrics, clock.GetUtcNow(), ct);
-                    page = [.. page.Select(r => r.Quiet is null && r.Enabled && r.Definition is { Template: RuleTemplate.MetricThreshold, Metric.Name.Length: > 0 }
-                        && !seen.Contains(r.Definition.Metric!.Name) ? r with { Quiet = $"metric {r.Definition.Metric.Name} has not been reported in the last 24 h" } : r)];
-                }
-                catch (Exception e) when (e is Discovery.TelemetryBusyException or Discovery.TelemetryUnavailableException)
-                {
-                }
-            }
+            page = await MarkNeverObservedAsync(page, (names, lookback) => MetricCatalog.SeenAsync(clickHouse,
+                (string)http.Items[TelemetryEndpoints.TenantKeyItem]!, names, clock.GetUtcNow(), ct, lookback),
+                loggers.CreateLogger("Juice.Observability.Api.RuleList"), ct);
             return Results.Ok(new Page<RuleDto>(page, rows.Count > take ? new Cursor("r", rows[take - 1].Id).Encode() : null));
+        }
+
+        /// <summary>
+        /// An enabled metric rule whose metric the tenant hasn't reported over what a preview of it would read (24 h and its window): one catalog
+        /// query for the page. The listing never depends on the catalog: whatever it throws, but the request's own cancellation, leaves the page
+        /// without these marks, logged once.
+        /// </summary>
+        internal static async Task<List<RuleDto>> MarkNeverObservedAsync(List<RuleDto> page,
+            Func<IReadOnlyCollection<string>, TimeSpan, Task<IReadOnlySet<string>>> seenOf, Microsoft.Extensions.Logging.ILogger log, CancellationToken ct)
+        {
+            static bool Candidate(RuleDto r) => r.Quiet is null && r.Enabled && r.Definition is { Template: RuleTemplate.MetricThreshold, Metric.Name.Length: > 0 };
+            var candidates = page.Where(Candidate).ToList();
+            if (candidates.Count == 0) return page;
+            try
+            {
+                var lookback = MetricCatalog.Lookback + candidates.Max(r => r.Definition.Window);
+                var seen = await seenOf(candidates.Select(r => r.Definition.Metric!.Name).Distinct().ToList(), lookback);
+                return [.. page.Select(r => Candidate(r) && !seen.Contains(r.Definition.Metric!.Name)
+                    ? r with { Quiet = $"metric {r.Definition.Metric.Name} has not been reported in the last 24 h" } : r)];
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception e)
+            {
+                Microsoft.Extensions.Logging.LoggerExtensions.LogWarning(log, e, "The metric catalog could not be read; the rule list has no 'never observes' marks");
+                return page;
+            }
         }
 
         /// <summary>

@@ -134,14 +134,7 @@ namespace Juice.Observability.Api.Endpoints
         public static bool TryTakeRate(Guid tenantId, string actor, int perMinute, out int retryAfterSeconds)
         {
             var now = Stopwatch.GetTimestamp();
-            if (Buckets.Count > SweepAbove)
-            {
-                // A bucket idle for ten minutes is full again: dropping it loses nothing. Not disposed: with no timer it holds no resource.
-                foreach (var (key, value) in Buckets)
-                {
-                    if (now - value.Used > IdleTicks) Buckets.TryRemove(key, out _);
-                }
-            }
+            MaybeSweep(now);
             var entry = Buckets.AddOrUpdate((tenantId, actor, perMinute),
                 _ => (new TokenBucketRateLimiter(new TokenBucketRateLimiterOptions
                 {
@@ -154,6 +147,37 @@ namespace Juice.Observability.Api.Endpoints
             if (token.IsAcquired) return true;
             retryAfterSeconds = token.TryGetMetadata(MetadataName.RetryAfter, out var after) ? (int)Math.Ceiling(after.TotalSeconds) : RulePreviewEndpoints.RateRetrySeconds;
             return false;
+        }
+
+        private static long _lastSweep;
+        private static int _sweeps;
+
+        /// <summary>Sweeps that ran (for tests).</summary>
+        internal static int Sweeps => Volatile.Read(ref _sweeps);
+
+        internal static bool HasBucket(Guid tenantId, string actor, int perMinute) => Buckets.ContainsKey((tenantId, actor, perMinute));
+
+        /// <summary>At most once a minute, and only when there are many buckets, one request sweeps; the others go on without scanning.</summary>
+        internal static void MaybeSweep(long now)
+        {
+            if (Buckets.Count <= SweepAbove) return;
+            var last = Volatile.Read(ref _lastSweep);
+            if (now - last < Stopwatch.Frequency * 60 && last != 0) return;
+            if (Interlocked.CompareExchange(ref _lastSweep, now, last) != last) return;
+            Interlocked.Increment(ref _sweeps);
+            Sweep(now);
+        }
+
+        /// <summary>
+        /// Drops the buckets idle for ten minutes (full again, so nothing is lost). An entry goes only if it is still the value that was seen: one
+        /// used since is a new value and stays. Not disposed: with no timer a limiter holds no resource.
+        /// </summary>
+        internal static void Sweep(long now)
+        {
+            foreach (var entry in Buckets)
+            {
+                if (now - entry.Value.Used > IdleTicks) Buckets.TryRemove(entry);
+            }
         }
 
         /// <summary>One of the tenant's <paramref name="permits"/> previews at once; dispose it to give it back. Not acquired when they are all running.</summary>

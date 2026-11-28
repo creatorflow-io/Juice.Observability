@@ -96,6 +96,47 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
+        public async Task Preview_reads_back_past_24h_by_the_window_Async()
+        {
+            LocalStack.RequireAvailable();
+            var (service, metric) = ($"pv-{_run}-old", $"pv.{_run}.old");
+            await SendGaugeAsync(service, metric, (Ago(25 * 60), 90));   // 25 h ago: outside 24 h, inside the first point's 6 h window (from 27 h)
+            var (database, factory, _, _, admin, tenant) = await StartAsync();
+            await using var _d = database; await using var _f = factory;
+            var body = new
+            {
+                key = "old-rule", name = "Old", template = "MetricThreshold", threshold = 50, service, schedule = "01:00:00", window = "06:00:00", forDuration = "00:00:00",
+                metric = new { name = metric, aggregation = "Last" },
+            };
+
+            var preview = await Caller.JsonAsync(await admin.PostAsync(PreviewUrl(tenant), body));
+
+            Assert.Equal(JsonValueKind.Null, preview.GetProperty("quiet").ValueKind);
+            var subject = Assert.Single(preview.GetProperty("subjects").EnumerateArray());
+            Assert.Equal(90, subject.GetProperty("max").GetDouble());
+        }
+
+        [Fact]
+        public void Rate_bucket_sweep_drops_only_idle_buckets_and_is_amortised()
+        {
+            var (idle, busy) = (Guid.NewGuid(), Guid.NewGuid());
+            Assert.True(PreviewLimits.TryTakeRate(idle, "a", 7, out _));
+            Assert.True(PreviewLimits.TryTakeRate(busy, "a", 7, out _));
+            Assert.True(PreviewLimits.HasBucket(idle, "a", 7));
+            PreviewLimits.Sweep(System.Diagnostics.Stopwatch.GetTimestamp());   // nothing is idle yet
+            Assert.True(PreviewLimits.HasBucket(idle, "a", 7));
+            PreviewLimits.Sweep(System.Diagnostics.Stopwatch.GetTimestamp() + System.Diagnostics.Stopwatch.Frequency * 900);   // 15 min on
+            Assert.False(PreviewLimits.HasBucket(idle, "a", 7));
+            Assert.False(PreviewLimits.HasBucket(busy, "a", 7));
+
+            // With many buckets, a burst of requests sweeps once, not once each.
+            for (var i = 0; i < 2100; i++) PreviewLimits.TryTakeRate(Guid.NewGuid(), "bulk", 7, out _);
+            var before = PreviewLimits.Sweeps;
+            for (var i = 0; i < 50; i++) PreviewLimits.TryTakeRate(Guid.NewGuid(), "bulk", 7, out _);
+            Assert.True(PreviewLimits.Sweeps - before <= 1);
+        }
+
+        [Fact]
         public async Task Preview_histogram_last_detail_has_bucket_bounds_Async()
         {
             LocalStack.RequireAvailable();
