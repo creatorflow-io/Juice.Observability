@@ -3,6 +3,11 @@
   <!-- PostgreSQL domain model (requirements §6): tenant, applications, environments, services, instances, resources,
        dependencies, audit records and reconciliation checkpoints. -->
   <ItemGroup>
+    <!-- Leased-worker, event and module-data contracts (core 2.0 M2). -->
+    <ProjectReference Include="..\Juice.Observability.Extensibility\Juice.Observability.Extensibility.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
     <PackageReference Include="EFCore.NamingConventions" />
     <!-- one EF Core version for the design-time tools and every consumer -->
