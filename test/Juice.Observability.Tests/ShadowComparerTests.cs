@@ -381,6 +381,57 @@ namespace Juice.Observability.Tests
             return silence.Id;
         }
 
+        public static TheoryData<string, string, string?, string, string> WeeklyEnds => new()
+        {
+            // (start, end of the first run, cancelled, now, expected end): Monday 10:00-12:00 UTC, weekly.
+            { "2026-11-02T10:00Z", "2026-11-02T12:00Z", "2026-11-02T11:00Z", "2026-11-02T11:30Z", "2026-11-02T11:00Z" },   // cancelled in the first run
+            { "2026-11-02T10:00Z", "2026-11-02T12:00Z", "2026-11-16T11:00Z", "2026-11-16T11:30Z", "2026-11-16T11:00Z" },   // cancelled mid-way through a later run
+            { "2026-11-02T10:00Z", "2026-11-02T12:00Z", "2026-11-18T09:00Z", "2026-11-18T10:00Z", "2026-11-16T12:00Z" },   // cancelled between runs
+            { "2026-11-02T10:00Z", "2026-11-02T12:00Z", null, "2026-11-18T10:00Z", "2026-11-16T12:00Z" },                  // not cancelled, ended last week
+            { "2026-11-02T10:00Z", "2026-11-02T12:00Z", null, "2026-11-16T12:00Z", "2026-11-16T12:00Z" },                  // not cancelled, just ended
+            { "2026-11-02T10:00Z", "2026-11-02T12:00Z", "2026-11-01T09:00Z", "2026-11-01T10:00Z", "2026-11-01T09:00Z" },   // cancelled before it began
+        };
+
+        /// <summary>When a weekly silence last ended, and so what the release pass's MaxWait counts from.</summary>
+        [Theory, Trait("Milestone", "M53")]
+        [MemberData(nameof(WeeklyEnds))]
+        public void SilenceEnd_Weekly_IsTheEarlierOfRunEndAndCancellation(string start, string end, string? cancelled, string now, string expected)
+        {
+            var silence = new Silence
+            {
+                TenantId = Guid.CreateVersion7(), Comment = "m53", AllAlerts = true, RepeatWeekly = true, CreatedBy = "t",
+                StartsAt = DateTimeOffset.Parse(start), EndsAt = DateTimeOffset.Parse(end), CancelledAt = cancelled is null ? null : DateTimeOffset.Parse(cancelled),
+            };
+            var ended = ShadowComparer.EndedAt(silence, DateTimeOffset.Parse(now));
+
+            Assert.Equal(DateTimeOffset.Parse(expected), ended);
+            // MaxWait counts from there: not yet elapsed within it, elapsed after it.
+            Assert.True(DateTimeOffset.Parse(now) - ended <= TimeSpan.FromDays(7));
+        }
+
+        [Fact, Trait("Milestone", "M53")]
+        public void SilenceEnd_Weekly_CancelledMidRun_MaxWaitNotElapsedHalfAnHourLater()
+        {
+            var silence = new Silence
+            {
+                TenantId = Guid.CreateVersion7(), Comment = "m53", AllAlerts = true, RepeatWeekly = true, CreatedBy = "t",
+                StartsAt = DateTimeOffset.Parse("2026-11-02T10:00Z"), EndsAt = DateTimeOffset.Parse("2026-11-02T12:00Z"), CancelledAt = DateTimeOffset.Parse("2026-11-16T11:00Z"),
+            };
+            var now = DateTimeOffset.Parse("2026-11-16T11:30Z");
+
+            Assert.True(now - ShadowComparer.EndedAt(silence, now) < TimeSpan.FromHours(2));
+        }
+
+        [Fact, Trait("Milestone", "M53")]
+        public void SilenceEnd_NotWeekly_IsTheEarlierOfEndAndCancellation()
+        {
+            var s = new Silence { TenantId = Guid.CreateVersion7(), Comment = "m53", AllAlerts = true, CreatedBy = "t", StartsAt = DateTimeOffset.Parse("2026-11-02T10:00Z"), EndsAt = DateTimeOffset.Parse("2026-11-02T12:00Z") };
+            var now = DateTimeOffset.Parse("2026-11-03T00:00Z");
+            Assert.Equal(s.EndsAt, ShadowComparer.EndedAt(s, now));
+            s.CancelledAt = DateTimeOffset.Parse("2026-11-02T11:00Z");
+            Assert.Equal(s.CancelledAt, ShadowComparer.EndedAt(s, now));
+        }
+
         private static (bool, bool, bool) Flags(ShadowComparer.HoldState s) => (s.Held, s.Undecided, s.Covered);
 
         private static async Task<(WebApplicationFactory<Program> Factory, Guid Transition)> HeldFiringAsync(ScratchDatabase database, DateTimeOffset silenceStart, DateTimeOffset silenceEnd,

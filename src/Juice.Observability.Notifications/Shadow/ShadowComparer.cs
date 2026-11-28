@@ -212,20 +212,20 @@ namespace Juice.Observability.Notifications.Shadow
             return new(true, true, false, null, ended);
         }
 
-        /// <summary>When a silence that isn't active now last ended: its cancellation, or the end of its last run.</summary>
-        private static DateTimeOffset EndedAt(Silence s, DateTimeOffset now)
+        /// <summary>
+        /// When a silence that isn't active now last ended: the earlier of the end of its current or last run and its cancellation, the run being the
+        /// latest one that began no later than the cancellation (or now). A silence cancelled before it began ended at its cancellation.
+        /// </summary>
+        internal static DateTimeOffset EndedAt(Silence s, DateTimeOffset now)
         {
-            var end = s.EndsAt;
-            if (s.RepeatWeekly && now > s.EndsAt)
+            var at = s.CancelledAt is { } cancelled && cancelled < now ? cancelled : now;
+            if (at < s.StartsAt)
             {
-                var runs = Math.Floor((now - s.StartsAt).TotalDays / 7);
-                end = s.EndsAt.AddDays(7 * runs);
-                if (end > now)
-                {
-                    end = end.AddDays(-7);
-                }
+                return at;
             }
-            return s.CancelledAt is { } cancelled && cancelled < end ? cancelled : end;
+            var runs = s.RepeatWeekly ? Math.Floor((at - s.StartsAt).TotalDays / 7) : 0;
+            var end = s.EndsAt.AddDays(7 * runs);
+            return at < end ? at : end;
         }
 
         /// <summary>
