@@ -22,6 +22,7 @@
   <!-- the implicit usings of Microsoft.NET.Sdk.Web, which this project was -->
   <ItemGroup>
     <Using Include="System.Net.Http.Json" />
+    <Using Include="Juice.Observability.Extensibility" />
     <Using Include="Microsoft.AspNetCore.Builder" />
     <Using Include="Microsoft.AspNetCore.Hosting" />
     <Using Include="Microsoft.AspNetCore.Http" />
@@ -33,6 +34,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\Juice.Observability.Extensibility\Juice.Observability.Extensibility.csproj" />
     <ProjectReference Include="..\Juice.Observability.Data\Juice.Observability.Data.csproj" />
     <ProjectReference Include="..\Juice.Observability.Discovery\Juice.Observability.Discovery.csproj" />
     <ProjectReference Include="..\Juice.Observability.Health\Juice.Observability.Health.csproj" />

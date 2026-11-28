@@ -28,18 +28,18 @@ namespace Juice.Observability.Api
 
     public static class Roles
     {
-        public const string Viewer = "viewer";
-        public const string Operator = "operator";
-        public const string Admin = "admin";
+        public const string Viewer = Extensibility.CoreRoles.Viewer;
+        public const string Operator = Extensibility.CoreRoles.Operator;
+        public const string Admin = Extensibility.CoreRoles.Admin;
     }
 
     public static class Policies
     {
         /// <summary>Read inventory, health and alerts: any platform role.</summary>
-        public const string Read = "platform.read";
+        public const string Read = Extensibility.CorePolicies.Read;
 
         /// <summary>Run the platform: operators and admins (the platform's own status, Phase 11 R7).</summary>
-        public const string Operate = "platform.operate";
+        public const string Operate = Extensibility.CorePolicies.Operate;
     }
 
     public static class HostingExtensions

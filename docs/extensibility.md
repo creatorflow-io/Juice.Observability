@@ -39,6 +39,14 @@ makes no database access.
 - **Audit and idempotency** are written to the core store. A module's own state and its audit record are therefore **not** atomic in M1; a mutation
   must tolerate a retry (use the idempotency key) until E4 enlists the module context in the core transaction.
 - Modules are trusted compiled code. The contract bounds the honest path; code review bounds the rest.
+- **The core's Console manifest is null in M1.** The internal modules (`core`, `slos`, `agents`) declare none, because a manifest needs a
+  `@juice-js/observability-<name>` package and the core's own package has no such name. How the core and the internal modules appear in the
+  Console menu is a question for M3.
+
+## Breaking change for package consumers
+
+`Page<T>` moved from `Juice.Observability.Api.Endpoints` to `Juice.Observability.Extensibility` (one type for the core and its modules, the same
+JSON). Code that used `Juice.Observability.Api.Endpoints.Page<T>` adds `using Juice.Observability.Extensibility;`. This is a 2.0 breaking change.
 
 ## Compatibility rule for 2.x
 
