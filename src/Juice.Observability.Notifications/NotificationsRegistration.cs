@@ -29,8 +29,7 @@ namespace Juice.Observability.Notifications
         {
             LegacyConfiguration.Check(configuration);
             var section = configuration.GetSection(PlatformNotificationsOptions.Section);
-            services.AddOptions<PlatformNotificationsOptions>().Bind(section).ValidateOnStart();
-            services.TryAddEnumerable(ServiceDescriptor.Singleton<IValidateOptions<PlatformNotificationsOptions>, PlatformNotificationsOptionsValidation>());
+            AddPlatformNotificationsOptions(services, configuration);
             if (LegacyConfiguration.PipelineKeyPresent(configuration))
             {
                 services.AddHostedService<ObsoleteKeyNotice>();
@@ -82,6 +81,22 @@ namespace Juice.Observability.Notifications
             AddDeadMan(services, configuration, section);
             Coexistence.Isolate(services);
             return services;
+        }
+
+        /// <summary>The platform's <c>Notifications</c> options, checked at start. <c>"Roles": []</c> binds to nothing, as an absent key does: a key that is there is an empty list.</summary>
+        internal static void AddPlatformNotificationsOptions(IServiceCollection services, IConfiguration configuration)
+        {
+            var section = configuration.GetSection(PlatformNotificationsOptions.Section);
+            services.AddOptions<PlatformNotificationsOptions>().Bind(section)
+                .PostConfigure(options =>
+                {
+                    if (options.Inbox.Roles is null && section.GetSection("Inbox:Roles").Exists())
+                    {
+                        options.Inbox.Roles = [];
+                    }
+                })
+                .ValidateOnStart();
+            services.TryAddEnumerable(ServiceDescriptor.Singleton<IValidateOptions<PlatformNotificationsOptions>, PlatformNotificationsOptionsValidation>());
         }
 
         /// <summary>

@@ -113,7 +113,7 @@ preferences page, no push, and no backfill.
 | Key | Default | Notes |
 |---|---|---|
 | `Notifications:Inbox:Enabled` | `false` | maps the inbox API and hub under `/notifications` (`/notifications/api/v1/tenants/{id}/me/inbox…`, `/notifications/hubs/inbox`) |
-| `Notifications:Inbox:Roles` | `["operator", "admin"]` when the key is absent | the roles that get an item for each firing alert; any of `viewer`, `operator`, `admin`, in lowercase, each once. A list you set replaces the default (`["viewer"]` is exactly the viewers) |
+| `Notifications:Inbox:Roles` | `["operator", "admin"]` when the key is absent | the roles that get an item for each firing alert; any of `viewer`, `operator`, `admin`, in lowercase, each once. A list you set replaces the default (`["viewer"]` is exactly the viewers). A key that is there and empty (`"Roles": []`) refuses the start: it is not the default |
 | `Notifications:ConsoleUrl` | none | required when the inbox is on: an item links to its alert in the Console |
 | the Console's `config.json` `inbox` | `false` | `true` puts the bell in the header, for a host whose inbox is on |
 

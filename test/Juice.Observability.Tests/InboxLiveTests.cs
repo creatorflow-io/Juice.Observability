@@ -141,6 +141,39 @@ namespace Juice.Observability.Tests
             await hub.StopAsync(Ct);
         }
 
+        /// <summary>
+        /// An admin adds a second resolver of kind <c>signed-in</c> (the resolvers page allows it): a role recipient that names no resolver would be
+        /// refused as ambiguous, and the inbox would stop. The firing names the service's own.
+        /// </summary>
+        [Fact]
+        public async Task Inbox_SecondSignedInResolver_FiringStillReachesTheInboxAndTheRoute()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var factory = new ApiFactory(database, settings: Live());
+            using var client = factory.CreateClient();
+            var @operator = new Caller(client, await LocalStack.TokenAsync("erin"));
+            Assert.Empty(await ItemsAsync(@operator));
+            await using (var connection = new Npgsql.NpgsqlConnection(database.ConnectionString))
+            {
+                await connection.OpenAsync(Ct);
+                await using var insert = new Npgsql.NpgsqlCommand(
+                    "INSERT INTO notifications.recipient_resolvers (tenant_id, id, key, kind, handles, settings, enabled, managed_by, definition_hash, updated_at) " +
+                    "SELECT tenant_id, gen_random_uuid(), 'api', kind, handles, settings, true, 'api', 'x', now() FROM notifications.recipient_resolvers WHERE key = 'signed-in'", connection);
+                Assert.Equal(1, await insert.ExecuteNonQueryAsync(Ct));
+            }
+            var (alert, firing) = await FireAsync(database);
+
+            await PlanAsync(factory, database, firing);
+
+            var item = Assert.Single(await WaitForItemsAsync(@operator, 1, "the item despite the second resolver"));
+            Assert.Equal($"https://console.example.com/alerts/{alert}", item.GetProperty("url").GetString());
+            // The route's request is the same one: its recipients name the routes and the service's resolver.
+            var recipients = Assert.Single(await RecipientsAsync(database));
+            Assert.Contains(recipients, r => r.GetProperty("kind").GetString() == "route");
+            Assert.All(recipients.Where(r => r.GetProperty("kind").GetString() == "role"), r => Assert.Equal("signed-in", r.GetProperty("resolver").GetString()));
+        }
+
         /// <summary>A second alert, as <see cref="FireAsync"/> makes the first: its own rule, subject and firing.</summary>
         private static async Task<(Guid Alert, Guid Transition)> FireAnotherAsync(ScratchDatabase database, string key, string subject)
         {
