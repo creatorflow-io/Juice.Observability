@@ -1,5 +1,5 @@
 import { LinkPipe } from '../core/options';
-import { ChangeDetectionStrategy, Component, computed, effect, inject, input, signal, untracked } from '@angular/core';
+import { ChangeDetectionStrategy, Component, ElementRef, computed, effect, inject, input, signal, untracked } from '@angular/core';
 import { DatePipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
@@ -14,6 +14,7 @@ import { ContextService } from '../core/context.service';
 import { ActionParameter, AgentAction, AgentCommand, BundleSummary, EnrollmentToken } from '../core/models';
 import { MatCheckboxModule } from '@angular/material/checkbox';
 import { AgoPipe, ReasonPipe, copyText, formatBytes } from '../shared/format';
+import { AGENT_REQUEST_FIELDS, FieldError, FormMarks, ruleFieldErrors } from '../shared/form-errors';
 import { apiResource } from '../shared/resource';
 import { problemText } from '../shared/telemetry';
 import { ContextBar } from '../shared/ui';
@@ -37,6 +38,11 @@ const PARAMETER_LABELS: Record<string, string> = {
   keepHours: 'Keep files from the last (hours)', dryRun: 'Dry run: only report what would go', logLines: 'Lines from each log',
 };
 
+/** An approval policy as a noun phrase, for "needs ...". */
+function approvalName(policy: string): string {
+  return policy === 'None' ? 'no approval' : policy === 'Admin' ? 'an admin' : 'a second person';
+}
+
 function formatUptime(seconds: number): string {
   const days = Math.floor(seconds / 86_400);
   const hours = Math.floor((seconds % 86_400) / 3600);
@@ -49,7 +55,7 @@ function formatUptime(seconds: number): string {
  */
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [LinkPipe, RouterLink, DatePipe, FormsModule, MatButtonModule, MatCheckboxModule, MatFormFieldModule, MatInputModule, MatProgressBarModule, MatSelectModule, ContextBar, AgoPipe, ReasonPipe],
+  imports: [LinkPipe, RouterLink, DatePipe, FormsModule, MatButtonModule, MatCheckboxModule, MatFormFieldModule, MatInputModule, MatProgressBarModule, MatSelectModule, ContextBar, AgoPipe, ReasonPipe, FieldError],
   template: `
     <jc-context-bar>
       <a [routerLink]="['agents'] | jcLink" [queryParams]="ctx.keep()" class="jc-crumb">Agents</a><span class="jc-crumb-sep">›</span>
@@ -90,58 +96,61 @@ function formatUptime(seconds: number): string {
       } @else {
         <section class="jc-card">
           <h2>Ask the agent</h2>
-          <form class="jc-form" data-testid="command-form" (ngSubmit)="issue()">
-            <mat-form-field subscriptSizing="dynamic" class="jc-field-wide"><mat-label>Action</mat-label>
-              <mat-select name="action" data-testid="command-action" [ngModel]="action()" (ngModelChange)="choose($event)">
+          <form class="jc-form jc-form-grid" data-testid="command-form" (ngSubmit)="issue()">
+            <div class="jc-field jc-field-wide"><mat-form-field subscriptSizing="dynamic" class="jc-field-wide"><mat-label>Action</mat-label>
+              <mat-select name="action" data-field="action" data-testid="command-action" [ngModel]="action()" (ngModelChange)="choose($event)" [attr.aria-describedby]="marks.describedBy('action')">
                 @for (o of actionList(); track o.name) {
                   <mat-option [value]="o.name" [disabled]="o.permitted === false" [attr.data-testid]="'action-' + o.name">
                     {{ label(o.name) }}@if (o.custom) { <span class="jc-muted"> · custom</span> }@if (o.permitted === false) { <span class="jc-muted"> · not allowed on this host</span> }
                   </mat-option>
                 }
               </mat-select>
-            </mat-form-field>
+            </mat-form-field><jc-field-error field="action" [messages]="marks.msgs('action')" /></div>
             @if (action() === 'agent.update') {
-              <mat-form-field subscriptSizing="dynamic" class="jc-field-md"><mat-label>Version</mat-label>
-                <mat-select name="version" data-testid="command-version" [(ngModel)]="version">
+              <div class="jc-field"><mat-form-field subscriptSizing="dynamic"><mat-label>Version</mat-label>
+                <mat-select name="version" data-field="version" data-testid="command-version" [(ngModel)]="version" (ngModelChange)="marks.clear('version')" [attr.aria-invalid]="marks.bad('version')" [attr.aria-describedby]="marks.describedBy('version')">
                   @for (p of packages.value()?.items ?? []; track p.version) { <mat-option [value]="p.version">{{ p.version }}</mat-option> }
                 </mat-select>
-              </mat-form-field>
+              </mat-form-field><jc-field-error field="version" [messages]="marks.msgs('version')" /></div>
               @if (packages.value()?.items?.length === 0) { <span class="jc-muted jc-small">No signed packages are offered: see Agents:PackageDirectory.</span> }
             } @else {
               @for (p of selected()?.parameters ?? []; track p.name) {
                 @if (p.type === 'boolean') {
-                  <mat-checkbox [name]="p.name" [attr.data-testid]="'command-param-' + p.name" [ngModel]="values()[p.name] === true" (ngModelChange)="set(p.name, $event)">{{ title(p) }}</mat-checkbox>
+                  <div class="jc-field"><mat-checkbox [name]="p.name" [attr.data-field]="p.name" [attr.data-testid]="'command-param-' + p.name" [ngModel]="values()[p.name] === true" (ngModelChange)="set(p.name, $event)">{{ title(p) }}</mat-checkbox></div>
                 } @else if (p.allowed?.length) {
-                  <mat-form-field subscriptSizing="dynamic" [class.jc-field-md]="p.type !== 'string'" [class.jc-field-wide]="p.type === 'string'"><mat-label>{{ title(p) }}</mat-label>
-                    <mat-select [name]="p.name" [attr.data-testid]="'command-param-' + p.name" [ngModel]="values()[p.name] ?? ''" (ngModelChange)="set(p.name, $event)">
+                  <div class="jc-field" [class.jc-field-wide]="p.type === 'string'"><mat-form-field subscriptSizing="dynamic" [class.jc-field-wide]="p.type === 'string'"><mat-label>{{ title(p) }}</mat-label>
+                    <mat-select [name]="p.name" [attr.data-field]="p.name" [attr.data-testid]="'command-param-' + p.name" [ngModel]="values()[p.name] ?? ''" (ngModelChange)="set(p.name, $event)" [attr.aria-invalid]="marks.bad(p.name)" [attr.aria-describedby]="marks.describedBy(p.name)">
                       @if (!p.required) { <mat-option value="">Any</mat-option> }
                       @for (v of p.allowed; track v) { <mat-option [value]="v">{{ v }}</mat-option> }
                     </mat-select>
-                  </mat-form-field>
+                  </mat-form-field><jc-field-error [field]="p.name" [messages]="marks.msgs(p.name)" /></div>
                 } @else {
-                  <mat-form-field subscriptSizing="dynamic" [class.jc-field-sm]="p.type === 'integer'" [class.jc-field-wide]="p.type === 'string'"><mat-label>{{ title(p) }}</mat-label>
-                    <input matInput [type]="p.type === 'integer' ? 'number' : 'text'" [name]="p.name" [attr.data-testid]="'command-param-' + p.name" [attr.min]="p.minimum" [attr.max]="p.maximum"
-                           [attr.maxlength]="p.maxLength" [placeholder]="p.description ?? ''" [ngModel]="values()[p.name] ?? ''" (ngModelChange)="set(p.name, $event)">
-                  </mat-form-field>
+                  <div class="jc-field" [class.jc-field-wide]="p.type === 'string'"><mat-form-field subscriptSizing="dynamic" [class.jc-field-wide]="p.type === 'string'"><mat-label>{{ title(p) }}</mat-label>
+                    <input matInput [type]="p.type === 'integer' ? 'number' : 'text'" [name]="p.name" [attr.data-field]="p.name" [attr.data-testid]="'command-param-' + p.name" [attr.min]="p.minimum" [attr.max]="p.maximum"
+                           [attr.maxlength]="p.maxLength" [placeholder]="p.description ?? ''" [ngModel]="values()[p.name] ?? ''" (ngModelChange)="set(p.name, $event)" [attr.aria-invalid]="marks.bad(p.name)" [attr.aria-describedby]="marks.describedBy(p.name)">
+                  </mat-form-field><jc-field-error [field]="p.name" [messages]="marks.msgs(p.name)" /></div>
                 }
               }
             }
             @if (needsApproval()) {
-              <mat-form-field subscriptSizing="dynamic" class="jc-field-wide"><mat-label>Why (for whoever approves it)</mat-label>
-                <input matInput name="requestReason" data-testid="request-reason" maxlength="500" [(ngModel)]="requestReason">
-              </mat-form-field>
+              <div class="jc-field jc-field-wide"><mat-form-field subscriptSizing="dynamic" class="jc-field-wide"><mat-label>Why (for whoever approves it)</mat-label>
+                <input matInput name="requestReason" data-field="requestReason" data-testid="request-reason" maxlength="500" [(ngModel)]="requestReason" (ngModelChange)="marks.clear('requestReason')" required [attr.aria-invalid]="marks.bad('requestReason')" [attr.aria-describedby]="marks.describedBy('requestReason')">
+              </mat-form-field><jc-field-error field="requestReason" [messages]="marks.msgs('requestReason')" /></div>
               @if (selected()?.changing && agent.value()?.resourceId) {
-                <mat-checkbox name="watchHost" data-testid="request-watch-host" [(ngModel)]="watchHost">Fix this host's health: run only while it's unhealthy, and confirm recovery after</mat-checkbox>
+                <div class="jc-field jc-field-wide"><mat-checkbox name="watchHost" data-testid="request-watch-host" [(ngModel)]="watchHost">Fix this host's health: run only while it's unhealthy, and confirm recovery after</mat-checkbox></div>
               }
             }
+            @if (marks.summary()) { <p class="jc-error jc-small jc-form-actions" role="alert" data-testid="command-error">{{ marks.summary() }}</p> }
             <div class="jc-form-actions">
               <button mat-flat-button type="submit" data-testid="command-issue" [disabled]="issuing() || selected()?.permitted === false">{{ needsApproval() ? 'Request' : action() === 'agent.update' ? 'Update' : 'Run' }}</button>
-              @if (issueError()) { <span class="jc-error" data-testid="command-error">{{ issueError() }}</span> }
               @if (issued()) { <span class="jc-muted" data-testid="command-issued">{{ issued() }}</span> }
             </div>
             @if (selected(); as s) {
               <div class="jc-muted jc-small jc-form-actions" data-testid="command-hint">
-                <div>{{ s.description }} <span data-testid="command-approval">{{ s.risk }} risk: {{ approvalText(s.approval) }}.</span></div>
+                <div>{{ s.description }}
+                  @if (dryRunOn()) { <span data-testid="command-approval">Dry run: reports only, {{ policy() === 'None' ? 'no approval needed' : approvalText(policy()) }}.</span> }
+                  @else { <span data-testid="command-approval">{{ s.risk }} risk: {{ approvalText(policy()) }}.</span> }</div>
+                @if (dryRunHint(); as hint) { <div data-testid="command-dryrun-hint">{{ hint }}</div> }
                 @if (s.limits.length) { <div data-testid="command-limits">On this host: {{ s.limits.join('; ') }}.</div> }
               </div>
             }
@@ -282,7 +291,10 @@ export class AgentPage {
   /** The form's values for the chosen action, by parameter name. */
   protected readonly values = signal<Record<string, unknown>>({});
   protected readonly issuing = signal(false);
-  protected readonly issueError = signal('');
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  /** The form's field messages and its one sentence (what `issueError` was). */
+  protected readonly marks = new FormMarks();
+  protected readonly issueError = this.marks.summary;
   protected readonly confirming = signal(false);
   protected readonly revoking = signal(false);
   protected readonly revokeError = signal('');
@@ -293,7 +305,26 @@ export class AgentPage {
   protected watchHost = false;
   /** What happened to the last request, when it didn't simply run. */
   protected readonly issued = signal('');
-  protected readonly needsApproval = computed(() => (this.selected()?.approval ?? 'None') !== 'None');
+  /**
+   * What the platform's policy needs for this run: an action with a `dryRun` parameter that's checked follows `dryRunApproval` (a dry run only
+   * reports), but only when the server says so; otherwise the action's own approval.
+   */
+  protected readonly dryRunOn = computed(() => {
+    const s = this.selected();
+    return !!s?.dryRunApproval && s.parameters.some(p => p.name === 'dryRun') && this.values()['dryRun'] === true;
+  });
+  protected readonly policy = computed(() => {
+    const s = this.selected();
+    if (!s) return 'None';
+    return this.dryRunOn() ? s.dryRunApproval! : s.approval;
+  });
+  protected readonly needsApproval = computed(() => (this.selected() ? this.policy() : 'None') !== 'None');
+  /** Said only when the action has a `dryRun` parameter and the server says what a dry run needs: it never claims more than the server does. */
+  protected readonly dryRunHint = computed(() => {
+    const s = this.selected();
+    if (!s || !s.dryRunApproval || !s.parameters.some(p => p.name === 'dryRun')) return '';
+    return `A dry run only reports and needs ${approvalName(s.dryRunApproval)}; the real run needs ${approvalName(s.approval)}.`;
+  });
   protected readonly requests = apiResource({ params: () => this.id(), stream: ({ params }) => this.api.actionRequests({ agentId: params, limit: 20 }) });
   protected readonly requestList = computed(() => this.requests.value()?.items ?? []);
   protected readonly creating = signal(false);
@@ -370,7 +401,7 @@ export class AgentPage {
 
   protected choose(name: string) {
     this.action.set(name);
-    this.issueError.set('');
+    this.marks.reset();
     const defaults: Record<string, unknown> = {};
     for (const p of this.actionList().find(a => a.name === name)?.parameters ?? []) {
       if (p.default !== null) defaults[p.name] = p.type === 'integer' ? Number(p.default) : p.type === 'boolean' ? p.default === 'true' : p.default;
@@ -379,7 +410,7 @@ export class AgentPage {
     this.values.set(defaults);
   }
 
-  protected set(name: string, value: unknown) { this.values.update(v => ({ ...v, [name]: value })); }
+  protected set(name: string, value: unknown) { this.values.update(v => ({ ...v, [name]: value })); this.marks.clear(name); }
 
   /** A result of plain values reads as a table; anything nested as JSON. */
   protected flat(result: unknown): [string, string][] | null {
@@ -468,14 +499,41 @@ export class AgentPage {
   }
 
   /** What needs no one else runs; what needs approval becomes a request, which runs once approved. */
+  /** The fields the open form shows, in the order it shows them. */
+  private order(): string[] {
+    const params = this.action() === 'agent.update' ? ['version'] : (this.selected()?.parameters ?? []).map(p => p.name);
+    return ['action', ...params, ...(this.needsApproval() ? ['requestReason'] : [])];
+  }
+
+  /** Every required field at once, so the person fixes them in one go. */
+  private invalid(): Record<string, string[]> {
+    const out: Record<string, string[]> = {};
+    if (this.action() === 'agent.update') {
+      if (!this.version) out['version'] = ['Version: choose a version.'];
+    } else {
+      for (const p of this.selected()?.parameters ?? []) {
+        const v = this.values()[p.name];
+        if (p.required && p.type !== 'boolean' && (v === undefined || v === null || String(v).trim() === '')) out[p.name] = [`${this.title(p)}: enter a value.`];
+      }
+    }
+    if (this.needsApproval() && !this.requestReason.trim()) out['requestReason'] = ['Why: say why, for whoever approves it.'];
+    return out;
+  }
+
   protected issue() {
+    if (this.issuing()) return;
     const action = this.action();
+    const local = this.invalid();
+    if (Object.keys(local).length) { this.issued.set(''); this.marks.mark(local, '', this.order(), this.host.nativeElement); return; }
     this.issuing.set(true);
-    this.issueError.set('');
+    this.marks.reset();
     this.issued.set('');
     const failed = (e: unknown) => {
       this.issuing.set(false);
-      this.issueError.set((e as { status?: number }).status === 403 ? 'Asking an agent needs the operator or admin role.' : problemText(e));
+      // A 403, a 412 or a failed connection says one thing about the whole form; a 400 or 422 is placed by its paths.
+      const r = ruleFieldErrors(e, AGENT_REQUEST_FIELDS);
+      const forbidden = (e as { status?: number }).status === 403;
+      this.marks.mark(r.fields, forbidden ? 'Asking an agent needs the operator or admin role.' : r.rest, this.order(), this.host.nativeElement);
     };
     if (!this.needsApproval()) {
       this.api.issueCommand(this.id(), action, this.parameters()).subscribe({ next: () => { this.issuing.set(false); this.commands.reload(); }, error: failed });
