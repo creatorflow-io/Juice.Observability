@@ -332,7 +332,7 @@ namespace Juice.Observability.Tests
         /// Transactions begun on one database, per context type (EF's diagnostics), by the test's own flow: a host worker's pass (the action-request
         /// sweep and the SLO counter run one at the start, and a loaded machine puts it after the subscription) names its caller and is not counted.
         /// </summary>
-        private sealed class TransactionsBegun : IObserver<DiagnosticListener>, IObserver<KeyValuePair<string, object?>>, IDisposable
+        internal sealed class TransactionsBegun : IObserver<DiagnosticListener>, IObserver<KeyValuePair<string, object?>>, IDisposable
         {
             private readonly string _database;
             private readonly IDisposable _subscription;

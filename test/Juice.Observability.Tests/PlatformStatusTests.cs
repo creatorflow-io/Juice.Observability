@@ -455,11 +455,12 @@ namespace Juice.Observability.Tests
             Assert.Equal(["status"], okBody.EnumerateObject().Select(p => p.Name));
             Assert.Equal((HttpStatusCode.OK, "ok"), (okCode, okBody.GetProperty("status").GetString()));
 
-            // A worker another replica holds, stale: degraded, 503 (once the cached read expires).
+            // A worker another replica holds, stale: degraded, 503 (once the cached read expires). One this host runs would be superseded by its own
+            // pass (the notification passes run here and take the lease within seconds), so it is one the host switches off: health.
             await using (var db = database.Context())
             {
                 var now = await db.Database.SqlQuery<DateTimeOffset>($"SELECT now() AS \"Value\"").SingleAsync(ct);
-                db.WorkerHeartbeats.Add(PlatformStatusTests.Row("notifications-release", "other", held: true, endedAgo: TimeSpan.FromMinutes(5), now: now));
+                db.WorkerHeartbeats.Add(PlatformStatusTests.Row("health", "other", held: true, endedAgo: TimeSpan.FromMinutes(5), now: now));
                 await db.SaveChangesAsync(ct);
             }
             await Task.Delay(PlatformStatusService.Cache + TimeSpan.FromSeconds(1), ct);
@@ -476,7 +477,7 @@ namespace Juice.Observability.Tests
             }
             var status = await ApiTests.JsonAsync(await ApiTests.Get(client, "/api/v1/platform/status", await LocalStack.TokenAsync("erin")));
             Assert.Equal("degraded", status.GetProperty("status").GetString());
-            var stale = status.GetProperty("workers").EnumerateArray().Single(w => w.GetProperty("name").GetString() == "notifications-release");
+            var stale = status.GetProperty("workers").EnumerateArray().Single(w => w.GetProperty("name").GetString() == "health");
             Assert.Equal("stale", stale.GetProperty("state").GetString());
             // Disabled in this host (ApiFactory turns discovery off): off, and its backlog isn't judged.
             Assert.Equal("off", status.GetProperty("workers").EnumerateArray().Single(w => w.GetProperty("name").GetString() == "discovery").GetProperty("state").GetString());
