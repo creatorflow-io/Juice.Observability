@@ -38,7 +38,7 @@ namespace Juice.Observability.Tests
             public required Guid Agent { get; init; }
             public required LogCapture Logs { get; init; }
 
-            public static async Task<Rig> StartAsync(Dictionary<string, string>? extra = null, bool claimsHeader = false)
+            public static async Task<Rig> StartAsync(Dictionary<string, string>? extra = null, bool claimsHeader = false, Action<IServiceCollection>? services = null)
             {
                 LocalStack.RequireAvailable();
                 var database = await LocalStack.CreateDatabaseAsync();
@@ -53,13 +53,14 @@ namespace Juice.Observability.Tests
                     settings[key] = value;
                 }
                 var logs = new LogCapture();
-                var factory = new ApiFactory(database, settings: settings, services: services =>
+                var factory = new ApiFactory(database, settings: settings, services: collection =>
                 {
-                    services.AddSingleton<ILoggerProvider>(logs);
+                    collection.AddSingleton<ILoggerProvider>(logs);
                     if (claimsHeader)
                     {
-                        SignInByHeader(services);
+                        SignInByHeader(collection);
                     }
+                    services?.Invoke(collection);
                 });
                 var client = factory.CreateClient();
                 var tenant = await TenantAsync(database);
@@ -467,6 +468,38 @@ namespace Juice.Observability.Tests
             Assert.Equal(before, await rig.InteractionsAsync());
         }
 
+        /// <summary>Records the source of the message context each acknowledgement's event is handled in.</summary>
+        private sealed class SourceSpy : Juice.MediatR.INotificationHandler<AlertAcknowledged>
+        {
+            public static readonly ConcurrentQueue<string?> Sources = new();
+
+            public ValueTask Handle(AlertAcknowledged notification, CancellationToken cancellationToken)
+            {
+                Sources.Enqueue(Juice.Messaging.MessageContext.IsInitialized ? Juice.Messaging.MessageContext.Current.Source : null);
+                return ValueTask.CompletedTask;
+            }
+        }
+
+        [Fact]
+        public async Task BellAck_RunsInTheInboxContext_AndReadsNoIdempotencyKeyFromTheBellsRequest()
+        {
+            await using var rig = await Rig.StartAsync(services: s => s.AddScoped<Juice.MediatR.INotificationHandler<AlertAcknowledged>, SourceSpy>());
+            SourceSpy.Sources.Clear();
+            var erin = await Rig.CallerAsync(rig, "erin");
+            Assert.Empty(await rig.ItemsAsync(erin));
+            var (_, firing) = await FireAsync(rig.Database);
+            await PlanAsync(rig.Factory, rig.Database, firing);
+            var item = await rig.WaitItemAsync(erin, ObservabilityTypes.AlertFiring);
+
+            var response = await erin.SendAsync(HttpMethod.Post, Me($"/{item.GetProperty("id").GetGuid()}/acknowledge"), new { }, key: "bell-key-1");
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            // The bell's context, not the API endpoint's; and the bell's own header is no idempotency key of the acknowledgement.
+            Assert.Equal("inbox", Assert.Single(SourceSpy.Sources));
+            await using var db = rig.Database.Context();
+            Assert.Empty(await db.IdempotencyRecords.Where(r => r.Key == "bell-key-1").ToListAsync(Ct));
+        }
+
         // ─── The handler's own gates ──────────────────────────────────────────
 
         [Theory]
@@ -610,12 +643,16 @@ namespace Juice.Observability.Tests
                 var item = (await rig.WaitItemAsync(alice, ObservabilityTypes.ActionApproval, except: seen)).GetProperty("id").GetGuid();
                 seen.Add(item);
                 var before = await rig.CommandsAsync();
+                var recorded = await rig.InteractionsAsync();
 
                 var bell = rig.BellAsync(alice, item, "approve");
                 var page = adam.PostAsync($"/api/v1/tenants/{rig.Tenant}/action-requests/{request}/approval", new { comment = "page" });
-                var statuses = (await Task.WhenAll(bell, page)).Select(r => r.StatusCode).Order().ToList();
+                var answers = await Task.WhenAll(bell, page);
+                var statuses = answers.Select(r => r.StatusCode).Order().ToList();
 
                 Assert.Equal([HttpStatusCode.OK, HttpStatusCode.Conflict], statuses);
+                // A bell that lost records no interaction; one that won records exactly one.
+                Assert.Equal(recorded + (answers[0].StatusCode == HttpStatusCode.OK ? 1 : 0), await rig.InteractionsAsync());
                 Assert.Equal(before + 1, await rig.CommandsAsync());
                 Assert.Equal(ActionRequestState.Issued, (await rig.RequestRowAsync(request)).State);
             }
