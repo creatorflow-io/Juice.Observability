@@ -3,6 +3,7 @@ using Juice.Messaging;
 using Juice.Observability.Data;
 using Juice.Observability.Extensibility;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Juice.Observability.Rules
 {
@@ -17,13 +18,16 @@ namespace Juice.Observability.Rules
     /// before it saves the outbox), and <see cref="IMessageService{TContext}"/> defers the write to the TransactionBehavior, so the outbox row commits
     /// with the alert or not at all. The same goes for the modules' <see cref="AlertTransitionedEvent"/>, written when a module handles it.
     /// </summary>
-    public sealed class PublishAlertTransitioned(IMessageService<PlatformDbContext> messages, IPlatformEventPublisher? events = null, PlatformDbContext? db = null)
+    public sealed class PublishAlertTransitioned(IMessageService<PlatformDbContext> messages, IServiceProvider? services = null)
         : INotificationHandler<AlertTransitioned>
     {
         public async ValueTask Handle(AlertTransitioned notification, CancellationToken cancellationToken = default)
         {
             await messages.PublishAsync(new AlertTransitionedIntegrationEvent(notification.PlatformTenantId, notification.AlertId, notification.TransitionId,
                 notification.ToState), cancellationToken);
+            // The publisher is the core's, internal: found by the service provider rather than asked for, so this handler's constructor stays public.
+            var events = services?.GetService<IPlatformEventPublisher>();
+            var db = services?.GetService<PlatformDbContext>();
             if (events is null || db is null || !events.HasSubscribers<AlertTransitionedEvent>())
             {
                 return;

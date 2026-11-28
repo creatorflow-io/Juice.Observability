@@ -1,4 +1,3 @@
-using System.ComponentModel;
 using System.Reflection;
 using System.Text.Json;
 using Juice.Messaging;
@@ -12,8 +11,7 @@ namespace Juice.Observability.Api.Modules.Events
     /// One event for one module, as the outbox carries it: the module gets its own row, so a module whose handler fails is tried again alone.
     /// The payload is the event as JSON; <see cref="EventType"/> is its type's name.
     /// </summary>
-    [EditorBrowsable(EditorBrowsableState.Never)]
-    public sealed record ModuleEventEnvelope(string Module, string EventType, string Payload) : IntegrationEvent;
+    internal sealed record ModuleEventEnvelope(string Module, string EventType, string Payload) : IntegrationEvent;
 
     internal static class ModuleEventJson
     {

@@ -14,8 +14,14 @@ namespace Juice.Observability.Discovery
     /// resources; instances go inactive and are pruned after the retention (D3), and services silent for
     /// <see cref="DiscoveryOptions.ServiceRetireAfter"/> are retired, and restored when they report again. The caller owns the transaction.
     /// </summary>
-    public sealed class Reconciler(PlatformDbContext db, Normalizer normalizer, DiscoveryOptions options, TimeProvider clock, IPlatformEventPublisher? events = null)
+    public sealed class Reconciler(PlatformDbContext db, Normalizer normalizer, DiscoveryOptions options, TimeProvider clock)
     {
+        private readonly IPlatformEventPublisher? events;
+
+        /// <summary>With the publisher of the events modules handle (core side: it isn't in the module contract).</summary>
+        internal Reconciler(PlatformDbContext db, Normalizer normalizer, DiscoveryOptions options, TimeProvider clock, IPlatformEventPublisher? events)
+            : this(db, normalizer, options, clock) => this.events = events;
+
         // What changed, for the modules that handle it (with none, nothing is collected and nothing is read for it); published at the end of the
         // window, in the caller's transaction, so the events commit with the window and its checkpoint, or not at all.
         private readonly List<(string Kind, Guid Id, string Change)> _changes = [];

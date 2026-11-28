@@ -185,10 +185,20 @@ namespace Juice.Observability.Tests.Workers
         public void The_core_side_of_workers_and_events_is_not_in_the_module_contract()
         {
             var contract = typeof(IModuleServicesBuilder).Assembly.GetExportedTypes().Select(t => t.Name).ToHashSet();
-            foreach (var name in new[] { "ILeasedWorkerHostFactory", "LeasedWorkerRegistration", "ModuleEventSubscription", "IPlatformEventPublisher" })
+            foreach (var name in new[] { "ILeasedWorkerHostFactory", "LeasedWorkerRegistration", "ModuleEventSubscription", "IPlatformEventPublisher", "ICoreModuleBuilder" })
             {
                 Assert.DoesNotContain(name, contract);
             }
+            // nor is how the core raises them: a module can't publish as the core, or hand the delivery an envelope of its own
+            foreach (var assembly in new[] { typeof(PlatformDbContext).Assembly, typeof(PlatformExtensions).Assembly })
+            {
+                var exported = assembly.GetExportedTypes().Select(t => t.Name).ToHashSet();
+                foreach (var name in new[] { "IPlatformEventPublisher", "PlatformEventPublisher", "ModuleEventEnvelope", "ModuleEventEnvelopeConsumer", "LeasedWorkerHostFactory" })
+                {
+                    Assert.DoesNotContain(name, exported);
+                }
+            }
+            Assert.False(typeof(Api.Modules.Events.ModuleEventEnvelope).IsPublic);
         }
 
         [Fact]
