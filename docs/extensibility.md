@@ -72,7 +72,7 @@ domain events are in [extensibility-workers-events.md](extensibility-workers-eve
   audit or idempotency save leaves no module row. `BeginTransactionAsync` enlists the contexts already created and any created later. A module that
   calls `SaveChangesAsync` on its own context inside the transaction is still covered; outside one, that save commits on its own.
 
-**Alert sources** (`AddAlertSource(template)`; `IAlertSource` is a keyed scoped service, `GetRequiredKeyedService<IAlertSource>(template)`):
+**Alert sources** (`AddAlertSource(template)`; `IAlertSource` is a keyed scoped service, `GetRequiredKeyedService<IAlertSource>(AlertSourceKeys.Key(module, template))`: keyed by the declaring module, so a template alone names none):
 
 - A source acts only on the platform-managed rules of its template, in the platform tenant. A signal naming another rule, a subject or environment of
   another tenant, or a fire without a subject refuses the whole call with `ArgumentException`, and nothing is written.

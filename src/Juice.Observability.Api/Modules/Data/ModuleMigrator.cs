@@ -80,6 +80,22 @@ namespace Juice.Observability.Api.Modules.ModuleData
             foreach (var operation in migration.UpOperations)
             {
                 // The schema and table an operation acts on; additive when it only creates.
+                // A foreign key makes the module's table depend on the principal, and so reach it: only the module's own tables and the ones it adopts.
+                var principals = operation switch
+                {
+                    AddForeignKeyOperation o => new List<(string?, string)> { (o.PrincipalSchema, o.PrincipalTable) },
+                    CreateTableOperation o => o.ForeignKeys.Select(f => (f.PrincipalSchema, f.PrincipalTable)).ToList(),
+                    _ => new List<(string?, string)>(),
+                };
+                foreach (var (principalSchema, principalTable) in principals)
+                {
+                    if ((principalSchema ?? own) != own && !adopted.Contains(new AdoptedTable(principalSchema!, principalTable)))
+                    {
+                        throw new ModuleMigrationException(
+                            $"Module '{registration.Module}' migration {id} is refused: {operation.GetType().Name} has a foreign key to {principalSchema}.{principalTable}, "
+                            + $"which is neither in its schema '{own}' nor one of its adopted tables.");
+                    }
+                }
                 var (known, schema, table, additive) = Target(operation);
                 var unknown = !known;
                 var target = schema ?? own;

@@ -211,7 +211,7 @@ namespace Juice.Observability.Slos
             var at = SloCounter.Floor(now) - SloReader.Settle;
             // The burn alerts are the platform's alert source for the SloBurn template (core 2.0 M2): the handler decides, the source applies. A host that
             // registered none (a test's bare container) gets the core's own, over the same context.
-            var source = services.GetKeyedService<IAlertSource>(Template) ?? new PlatformAlertSource(Template, db, services, platform, clock);
+            var source = services.GetKeyedService<IAlertSource>(AlertSourceKeys.Key("slos", Template)) ?? new PlatformAlertSource(Template, db, services, platform, clock);
             var open = (await source.OpenAlertsAsync(ct)).ToDictionary(a => a.DedupKey);
             var signals = new List<AlertSignal>();
             var slos = await db.Slos.AsNoTracking().Where(s => s.TenantId == tenantId && !s.Retired).ToListAsync(ct);

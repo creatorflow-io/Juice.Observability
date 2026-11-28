@@ -123,11 +123,17 @@ namespace Juice.Observability.Api.Modules.ModuleData
                     {
                         throw new ModuleCompositionException($"Module '{module}': {entity.DisplayName()} is mapped to a SQL query or function, which can reach any table; map it to a table or view of the module.");
                     }
-                    foreach (var (kind, name, mapped) in new[]
+                    // Entity splitting maps the rest of an entity's properties to other tables or views: those are checked the same way.
+                    var mappings = new List<(string Kind, string? Name, string? Schema)>
                     {
                         ("table", entity.GetTableName(), entity.GetSchema()),
                         ("view", entity.GetViewName(), entity.GetViewSchema()),
-                    })
+                    };
+                    foreach (var storeType in new[] { StoreObjectType.Table, StoreObjectType.View })
+                    {
+                        mappings.AddRange(entity.GetMappingFragments(storeType).Select(f => (storeType == StoreObjectType.Table ? "table" : "view", (string?)f.StoreObject.Name, f.StoreObject.Schema)));
+                    }
+                    foreach (var (kind, name, mapped) in mappings)
                     {
                         if (name is null)
                         {
