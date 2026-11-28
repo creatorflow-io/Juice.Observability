@@ -37,10 +37,15 @@ namespace Juice.Observability.Tests.ModuleNotifications
 
         public virtual void ConfigureServices(IModuleServicesBuilder module)
         {
-            module.AddNotificationTypes(Types().ToArray());
-            if (Channels is not null)
+            // Taken once: what a test set is for the one composition after it, on whichever thread the continuation put it.
+            var types = Types().ToArray();
+            var channels = Channels;
+            _types = null;
+            _channels = null;
+            module.AddNotificationTypes(types);
+            if (channels is not null)
             {
-                module.AddNotificationChannels(Channels);
+                module.AddNotificationChannels(channels);
             }
         }
 

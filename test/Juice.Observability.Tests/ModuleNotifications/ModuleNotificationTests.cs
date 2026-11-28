@@ -75,6 +75,9 @@ namespace Juice.Observability.Tests.ModuleNotifications
                 var e = Refused<AlertNamedModule>(builder);
                 Assert.Contains("core type", e.Message);
                 Assert.Contains(ObservabilityTypes.AlertFiring, e.Message);
+            }
+            using (NotifySampleModule.Use(() => [Declare(ObservabilityTypes.AlertResolved)]))
+            {
                 Assert.Contains("core type", Refused<NotifySampleModule>(builder).Message);
             }
             Assert.Equal(ObservabilityTypes.All().Select(t => t.Key), Keys(builder.Services));
