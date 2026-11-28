@@ -361,6 +361,25 @@ The service registers `AddOtlpExporter()` on tracing, metrics and logging. On lo
 comes first. `deploy/local/scripts/run-sample.sh` shows a complete host. Services, instances, hosts and dependencies
 appear without registration within about a minute.
 
+## Watching other hosts, and a service that isn't .NET
+
+**The host Collector.** The HostMemory, HostCpu and HostDisk rules read what a Collector's `hostmetrics` receiver sends. The platform's own
+Collector scrapes its machine; for every other machine run the shipped one, `deploy/host-collector/config.yaml` (the `memory`, `cpu` and
+`filesystem` scrapers), which forwards over OTLP to the platform Collector. The platform Collector stamps the tenant, so the host
+Collector needs only an endpoint, the CA and a token. Give it **its own token**: add a line to `secrets/otlp-tokens` (restart the platform
+Collector) and put just that token in a file for the host Collector, so one machine's token can be revoked alone. The host Collector mounts
+the host's root filesystem **read-only** (`/:/hostfs:ro`); it needs nothing else from the machine and runs as the image's non-root user.
+`deploy/host-collector/README.md` has the `docker run` line, the variables and the filesystems it leaves out. A host appears under the name
+the operating system gives it (or `JUICE_HOST_NAME`), the name the agent on that machine reports, so the two link.
+
+The local stack runs one (`host-collector` in `deploy/local/docker-compose.yml`, in the default profile).
+
+**A service that isn't .NET.** Any OpenTelemetry SDK that sends to the platform Collector (section *Connecting a Juice service*, without
+the Juice parts) is discovered, and its own metrics can be alerted on with a MetricThreshold rule. `deploy/local/tests/sample-service` is a
+Python and Flask service on the stock SDK: `docker compose --profile sample up -d --build sample-service` starts it, and it sends spans and
+four metrics (a gauge, a counter, an up-down counter and a histogram). The `sample-queue-depth` rule in `deploy/local/rules.json` alerts on
+its gauge.
+
 ## Production differences
 
 The local profile cuts these corners on purpose. Each one changes for a production install:

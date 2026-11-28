@@ -75,7 +75,10 @@ as a resource dependency when they are a database or a queue.
 
 | Feature | Metric | Comes from |
 |---|---|---|
-| Host health, HostMemory rule | `system.memory.usage` (with `state`) | the Collector's `hostmetrics` receiver on each host |
+| Host health, HostMemory rule | `system.memory.usage` (with `state`) | the Collector's `hostmetrics` receiver on each host (the shipped [host Collector](../deploy/host-collector/README.md)) |
+| HostCpu rule | `system.cpu.time` (with `state`), or `system.cpu.utilization` (with `state`) when there is no `cpu.time` | the `hostmetrics` receiver's `cpu` scraper |
+| HostDisk rule | `system.filesystem.usage` (with `state`, `mode`, `mountpoint`, `type`), or `system.filesystem.utilization` | the `hostmetrics` receiver's `filesystem` scraper; the shipped config leaves out pseudo and virtual filesystems and the kernel's and the container runtime's mounts |
+| MetricThreshold rule | any gauge, sum or histogram your service sends: the rule names the metric, its type and attribute filters | the service's own instrumentation, no Juice code needed (the [sample service](../deploy/local/tests/sample-service/app.py) is plain Python) |
 | Capacity view: requests | `http.server.request.duration` | most HTTP server instrumentations |
 | Capacity view: CPU, memory and cores per instance | `dotnet.process.cpu.time`, `dotnet.process.memory.working_set`, `dotnet.process.cpu.count` | .NET 9+ runtime metrics **only**: the generic `process.cpu.time` and `process.memory.usage` are not read, so a non-.NET service has no CPU or memory in the capacity view |
 | Capacity view and load runs: thread pool queue | `dotnet.thread_pool.queue.length` | .NET 9+ runtime metrics only |
@@ -98,8 +101,8 @@ These are the Juice [signal pack](signal-packs.md), version 2; a deployment with
 | Outbox backlog and delivery delay (capacity view, load runs) | Juice's `create` and `deliver` spans (`ScopeName = 'Juice'`, `juice.delivery.outcome`) | no backlog line; the rest of the view works |
 | A failed message dispatch counted as a bad SLO request | `juice.dispatch.result = failure` on a Consumer span | only the span status counts |
 
-Everything else (discovery, topology, health, the ErrorRate, LatencyP95, ThroughputAbsent, HostMemory and SloBurn
-rules, alerts, incidents, notifications, search, change correlation and the agent) works on any service that meets
+Everything else (discovery, topology, health, the ErrorRate, LatencyP95, ThroughputAbsent, HostMemory, HostCpu, HostDisk,
+MetricThreshold and SloBurn rules, alerts, incidents, notifications, search, change correlation and the agent) works on any service that meets
 sections 2–5.
 
 ## 7. Checking a service
@@ -116,6 +119,9 @@ an environment that is not `unspecified`, its instances, and its dependencies in
 | No requests, health *Unknown* | no Server or Consumer spans |
 | Missing arrows in the topology | trace context not propagated, or wrong span kinds |
 | No host health | no `hostmetrics` receiver |
+| HostCpu or HostDisk observes nothing for a host | the host's Collector has no `cpu` or `filesystem` scraper (the shipped [host Collector](../deploy/host-collector/README.md) has both), or reports no `host.name` |
+| HostDisk names a mount you don't care about | exclude it in the host Collector's `exclude_mount_points`; the rule takes the fullest read-write mount it is sent |
+| A MetricThreshold rule says the metric has not been reported | the service sends it under another name, or not in the last 24 hours; check the name and type |
 
 ## 8. Checked against the OpenTelemetry Demo
 
