@@ -154,37 +154,50 @@ namespace Juice.Observability.Notifications
                 Request = request is null ? null : JsonSerializer.Serialize(request, JsonSerializerOptions.Web),
             });
 
-        /// <summary>Replays a kept call once the pipeline is up: an acknowledgement, or a resolve and the request.</summary>
-        internal async Task ReplayAsync(NotificationParkedCall call, CancellationToken cancellationToken)
+        /// <summary>
+        /// Replays a kept call once the pipeline is up: an acknowledgement, or a resolve and the request. False when it must stay kept for the next
+        /// pass (not a failed attempt): an approval whose request a decision holds right now.
+        /// </summary>
+        internal async Task<bool> ReplayAsync(NotificationParkedCall call, CancellationToken cancellationToken)
         {
             if (call.Kind == NotificationParkedCalls.Acknowledge)
             {
                 await TolerateAsync("acknowledge", () => client.AcknowledgeAsync(call.CorrelationKey!, call.By, cancellationToken), conflictThrows: true);
-                return;
+                return true;
             }
             if (call.Kind == NotificationParkedCalls.Resolve)
             {
                 // A resolve alone (an approval's): By is its outcome. None to resolve (the inbox was never on) is no failure.
                 await TolerateAsync("resolve", () => client.ResolveAsync(call.CorrelationKey!, call.By, null, cancellationToken), conflictThrows: true);
-                return;
+                return true;
             }
             if (call.CorrelationKey is { } resolve)
             {
                 await TolerateAsync("resolve", () => client.ResolveAsync(resolve, null, null, cancellationToken), conflictThrows: true);
             }
-            if (WithoutRolesIfInboxOff(JsonSerializer.Deserialize<NotificationToSend>(call.Request!, JsonSerializerOptions.Web)!) is { } request
-                && await StillWaitingAsync(request, cancellationToken))
+            if (WithoutRolesIfInboxOff(JsonSerializer.Deserialize<NotificationToSend>(call.Request!, JsonSerializerOptions.Web)!) is { } request)
             {
-                await SendAsync(request, cancellationToken, conflictThrows: true);
+                switch (await StillWaitingAsync(request, cancellationToken))
+                {
+                    case null:
+                        // A decision holds the request's row: it is not waited for (that could deadlock with the notice this pass replays before it).
+                        // Kept, and looked at again by the next pass.
+                        return false;
+                    case true:
+                        await SendAsync(request, cancellationToken, conflictThrows: true);
+                        break;
+                }
             }
+            return true;
         }
 
         /// <summary>
         /// False for an approval item whose request is not waiting any more: one decided after the call was kept (its resolve ran before the item
         /// existed, a no-op) would otherwise be sent and stay open for good. The request's row is locked shared while this reads it, so a decision
-        /// racing the send waits for it and its resolve then finds the item. Anything but an approval is as it was.
+        /// racing the send finds the item to resolve. Null when a decision holds the row now (<c>SKIP LOCKED</c>: it is not waited for), so the call
+        /// stays kept for the next pass. Anything but an approval is as it was.
         /// </summary>
-        private async Task<bool> StillWaitingAsync(NotificationToSend request, CancellationToken cancellationToken)
+        private async Task<bool?> StillWaitingAsync(NotificationToSend request, CancellationToken cancellationToken)
         {
             if (request.Type != ObservabilityTypes.ActionApproval)
             {
@@ -195,7 +208,12 @@ namespace Juice.Observability.Notifications
             {
                 return false;
             }
-            await db.Database.ExecuteSqlAsync($"SELECT 1 FROM action_requests WHERE id = {id} FOR SHARE", cancellationToken);
+            var locked = await db.Database.SqlQuery<Guid>($"SELECT id AS \"Value\" FROM action_requests WHERE id = {id} FOR SHARE SKIP LOCKED").ToListAsync(cancellationToken);
+            // No row locked: either none (the request is gone), or a decision holds it.
+            if (locked.Count == 0 && await db.ActionRequests.AsNoTracking().AnyAsync(r => r.Id == id, cancellationToken))
+            {
+                return null;
+            }
             var now = clock.GetUtcNow();
             var waiting = await db.ActionRequests.AsNoTracking().AnyAsync(r => r.Id == id && r.State == ActionRequestState.Pending && r.ExpiresAt > now, cancellationToken);
             if (!waiting)
