@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 namespace Juice.Observability.Tests
 {
     /// <summary>A logger provider that keeps what a host logged, so a test can say what it was told: <c>services.AddSingleton&lt;ILoggerProvider&gt;(capture)</c>.</summary>
+    [ProviderAlias("Capture")]
     internal sealed class LogCapture : ILoggerProvider
     {
         public sealed record Entry(string Category, LogLevel Level, string Message);

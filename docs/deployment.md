@@ -133,7 +133,9 @@ How it works, and what it does not do:
 - **The hub's token is in its URL.** A browser cannot set a header on a WebSocket, so the Console's session passes its token as `?access_token=`.
   The host reads it only on `/notifications/hubs/inbox`, and only when the query holds one value; on any other path it is ignored. A request log
   would write that query, so while the inbox is on the host does not log `Microsoft.AspNetCore.Hosting.Diagnostics` (its "Request starting" and
-  "Request finished" lines) below `Warning`. A reverse proxy or load balancer in front of the host must not log the query string of that path.
+  "Request finished" lines) below `Warning`, for every logging provider whatever the `Logging` configuration says. Nothing else of the host
+  may record that path's query string either: `UseHttpLogging` or W3C logging with the query fields, a reverse proxy or load balancer, or
+  AspNetCore tracing instrumentation that records `url.query` (the platform's own telemetry has none).
 - **Turning it off** is safe at any time: a notice a silence was holding, or one waiting for the pipeline to start, is sent to its routes without
   the role recipients; items that exist stay in the table, and are no longer served.
 - **Several replicas** each tell their own hub sessions: a session on another replica sees a change on reload or reconnect.

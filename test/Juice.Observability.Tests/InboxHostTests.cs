@@ -158,6 +158,58 @@ namespace Juice.Observability.Tests
             Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync(Me("/counts"), Ct)).StatusCode);
         }
 
+        /// <summary>Signs a caller in from the claims in <c>X-Test-Claims</c> (<c>type=value;type=value</c>): the host's own access judges them, through the real endpoints.</summary>
+        private sealed class ClaimsHeaderHandler(IOptionsMonitor<AuthenticationSchemeOptions> options, ILoggerFactory logger, System.Text.Encodings.Web.UrlEncoder encoder)
+            : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
+        {
+            public const string SchemeName = "TestClaims";
+
+            protected override Task<AuthenticateResult> HandleAuthenticateAsync()
+            {
+                if (!Request.Headers.TryGetValue("X-Test-Claims", out var header))
+                {
+                    return Task.FromResult(AuthenticateResult.NoResult());
+                }
+                var claims = header.ToString().Split(';', StringSplitOptions.RemoveEmptyEntries).Select(p => p.Split('=', 2)).Select(p => new Claim(p[0], p[1]));
+                var identity = new ClaimsIdentity(claims, SchemeName, "preferred_username", "roles");
+                return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), SchemeName)));
+            }
+        }
+
+        private static void SignInByHeader(IServiceCollection services)
+        {
+            services.AddAuthentication().AddScheme<AuthenticationSchemeOptions, ClaimsHeaderHandler>(ClaimsHeaderHandler.SchemeName, _ => { });
+            services.PostConfigure<AuthenticationOptions>(o => o.DefaultScheme = o.DefaultAuthenticateScheme = o.DefaultChallengeScheme = ClaimsHeaderHandler.SchemeName);
+        }
+
+        [Theory]
+        [InlineData("foreign", HttpStatusCode.Forbidden)]
+        [InlineData("uppercase", HttpStatusCode.Forbidden)]
+        [InlineData("none", HttpStatusCode.Forbidden)]
+        [InlineData("this", HttpStatusCode.OK)]
+        public async Task Inbox_ForeignTenantClaim_UppercaseGuidClaim_NoTenantClaim_403(string claim, HttpStatusCode expected)
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var factory = new ApiFactory(database, settings: On(), services: SignInByHeader);
+            using var client = factory.CreateClient();
+            var tenant = claim switch
+            {
+                "foreign" => $";platform_tenant={Guid.CreateVersion7()}", "uppercase" => $";platform_tenant={LocalStack.TenantKey.ToUpperInvariant()}",
+                "this" => $";platform_tenant={LocalStack.TenantKey}", _ => "",
+            };
+
+            foreach (var path in new[] { Me("/counts"), Me() })
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, path);
+                request.Headers.Add("X-Test-Claims", $"sub=s-1;preferred_username=erin;roles=operator{tenant}");
+                using var response = await client.SendAsync(request, Ct);
+                Assert.Equal(expected, response.StatusCode);
+            }
+            // A refused caller is never recorded.
+            Assert.Equal(expected == HttpStatusCode.OK ? 1L : 0L, await ScalarAsync(database, "SELECT count(*) FROM notifications.subscribers"));
+        }
+
         [Fact]
         public async Task Inbox_ForeignDeploymentsToken_403_NothingRecorded()
         {
@@ -238,7 +290,14 @@ namespace Juice.Observability.Tests
             LocalStack.RequireAvailable();
             await using var database = await LocalStack.CreateDatabaseAsync();
             var capture = new LogCapture();
-            await using var factory = new ApiFactory(database, settings: On(), services: services => services.AddSingleton<ILoggerProvider>(capture));
+            // The host's request log is on, as an operator may have it: the category at Information, globally and for the provider (a provider's own
+            // rule outranks a global one).
+            var logging = new Dictionary<string, string>
+            {
+                ["Logging:LogLevel:Default"] = "Information", ["Logging:LogLevel:Microsoft.AspNetCore"] = "Information",
+                ["Logging:Capture:LogLevel:Default"] = "Information", ["Logging:Capture:LogLevel:Microsoft.AspNetCore"] = "Information",
+            };
+            await using var factory = new ApiFactory(database, settings: On(logging), services: services => services.AddSingleton<ILoggerProvider>(capture));
             using var client = factory.CreateClient();
             var token = await LocalStack.TokenAsync("erin");
 

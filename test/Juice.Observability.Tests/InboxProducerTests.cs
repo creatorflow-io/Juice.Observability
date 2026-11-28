@@ -47,6 +47,36 @@ namespace Juice.Observability.Tests
             Assert.Equal(["route"], Named(recipients[1]));
         }
 
+        /// <summary>
+        /// A rolling toggle: another replica restarted with the inbox off and disabled the shared <c>signed-in</c> row, while this one still has it
+        /// on. The pipeline refuses the role recipients, and the firing must still reach its routes (and its correlation exist for the acknowledge).
+        /// </summary>
+        [Fact]
+        public async Task Firing_InboxOnHere_ResolverRowDisabledByAnotherReplica_IsSentWithoutRoles_WithAWarning()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var capture = new LogCapture();
+            await using var factory = new ApiFactory(database, settings: On(), services: s => s.AddSingleton<Microsoft.Extensions.Logging.ILoggerProvider>(capture));
+            _ = factory.Server;
+            await using (var connection = new Npgsql.NpgsqlConnection(database.ConnectionString))
+            {
+                await connection.OpenAsync(Ct);
+                await using var disable = new Npgsql.NpgsqlCommand("UPDATE notifications.recipient_resolvers SET enabled = false WHERE key = 'signed-in'", connection);
+                Assert.Equal(1, await disable.ExecuteNonQueryAsync(Ct));
+            }
+            var (alert, firing) = await FireAsync(database);
+
+            await PlanAsync(factory, database, firing);
+
+            var request = Assert.Single(await RequestsAsync(database));
+            Assert.Equal($"alert:{alert}", request.Correlation);
+            Assert.Equal(["route"], Named(Assert.Single(await RecipientsAsync(database))));
+            Assert.Contains(capture.Entries, e => e.Level == Microsoft.Extensions.Logging.LogLevel.Warning && e.Message.Contains("without its role recipients", StringComparison.Ordinal));
+            // The correlation is open, so the acknowledge and the resolve find it.
+            Assert.Equal("open", (await CorrelationStateAsync(database, $"alert:{alert}"))?.ToLowerInvariant());
+        }
+
         [Fact]
         public async Task Firing_NamesOnlyTheConfiguredRoles()
         {

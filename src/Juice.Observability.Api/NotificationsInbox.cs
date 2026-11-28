@@ -72,15 +72,28 @@ namespace Juice.Observability.Api
             return services;
         }
 
-        // Apart, so a host with the inbox off never loads the inbox package nor SignalR (the JIT resolves what a method calls when it compiles it).
+        // Apart, so a host with the inbox off loads no SignalR nor its connection stack (the JIT resolves what a method calls when it compiles it).
+        // The inbox package itself does load (this class names its types); InboxOffProcessTests probes a host process for it.
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
         private static void Add(IServiceCollection services)
         {
             services.AddJuiceNotificationsInbox();
             services.AddScoped<INotificationsInboxAccess, ObservabilityInboxAccess>();
             // The hub's token is in the query string, and the host's request log writes the query: it would put every session's token in the log.
-            services.AddLogging(logging => logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning));
+            // A provider's own rule (Logging:Console:LogLevel:…) outranks a global one, so the rule is added for every provider the configuration names too.
+            services.PostConfigure<LoggerFilterOptions>(options =>
+            {
+                var providers = options.Rules.Select(r => r.ProviderName).Where(p => p is not null).Distinct().ToList();
+                options.Rules.Add(new LoggerFilterRule(null, RequestLogCategory, LogLevel.Warning, null));
+                foreach (var provider in providers)
+                {
+                    options.Rules.Add(new LoggerFilterRule(provider, RequestLogCategory, LogLevel.Warning, null));
+                }
+            });
         }
+
+        /// <summary>The category of the host's "Request starting" and "Request finished" lines, which write the query string.</summary>
+        internal const string RequestLogCategory = "Microsoft.AspNetCore.Hosting.Diagnostics";
 
         /// <summary>The inbox's endpoints and hub under <see cref="NotificationsAdminExtensions.Prefix"/>, when the inbox is on; otherwise nothing is mapped.</summary>
         public static IEndpointRouteBuilder MapPlatformNotificationsInbox(this IEndpointRouteBuilder app)
