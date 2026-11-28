@@ -98,7 +98,7 @@ function formatUptime(seconds: number): string {
           <h2>Ask the agent</h2>
           <form class="jc-form jc-form-grid" data-testid="command-form" (ngSubmit)="issue()">
             <div class="jc-field jc-field-wide"><mat-form-field subscriptSizing="dynamic" class="jc-field-wide"><mat-label>Action</mat-label>
-              <mat-select name="action" data-testid="command-action" [ngModel]="action()" (ngModelChange)="choose($event)" [attr.aria-describedby]="marks.describedBy('action')">
+              <mat-select name="action" data-field="action"data-testid="command-action" [ngModel]="action()" (ngModelChange)="choose($event)" [attr.aria-describedby]="marks.describedBy('action')">
                 @for (o of actionList(); track o.name) {
                   <mat-option [value]="o.name" [disabled]="o.permitted === false" [attr.data-testid]="'action-' + o.name">
                     {{ label(o.name) }}@if (o.custom) { <span class="jc-muted"> · custom</span> }@if (o.permitted === false) { <span class="jc-muted"> · not allowed on this host</span> }
@@ -108,7 +108,7 @@ function formatUptime(seconds: number): string {
             </mat-form-field><jc-field-error field="action" [messages]="marks.msgs('action')" /></div>
             @if (action() === 'agent.update') {
               <div class="jc-field"><mat-form-field subscriptSizing="dynamic"><mat-label>Version</mat-label>
-                <mat-select name="version" data-testid="command-version" [(ngModel)]="version" (ngModelChange)="marks.clear('version')" [attr.aria-invalid]="marks.bad('version')" [attr.aria-describedby]="marks.describedBy('version')">
+                <mat-select name="version" data-field="version"data-testid="command-version" [(ngModel)]="version" (ngModelChange)="marks.clear('version')" [attr.aria-invalid]="marks.bad('version')" [attr.aria-describedby]="marks.describedBy('version')">
                   @for (p of packages.value()?.items ?? []; track p.version) { <mat-option [value]="p.version">{{ p.version }}</mat-option> }
                 </mat-select>
               </mat-form-field><jc-field-error field="version" [messages]="marks.msgs('version')" /></div>
@@ -119,14 +119,14 @@ function formatUptime(seconds: number): string {
                   <div class="jc-field"><mat-checkbox [name]="p.name" [attr.data-testid]="'command-param-' + p.name" [ngModel]="values()[p.name] === true" (ngModelChange)="set(p.name, $event)">{{ title(p) }}</mat-checkbox></div>
                 } @else if (p.allowed?.length) {
                   <div class="jc-field" [class.jc-field-wide]="p.type === 'string'"><mat-form-field subscriptSizing="dynamic" [class.jc-field-wide]="p.type === 'string'"><mat-label>{{ title(p) }}</mat-label>
-                    <mat-select [name]="p.name" [attr.data-testid]="'command-param-' + p.name" [ngModel]="values()[p.name] ?? ''" (ngModelChange)="set(p.name, $event)" [attr.aria-invalid]="marks.bad(p.name)" [attr.aria-describedby]="marks.describedBy(p.name)">
+                    <mat-select [name]="p.name" [attr.data-field]="p.name"[attr.data-testid]="'command-param-' + p.name" [ngModel]="values()[p.name] ?? ''" (ngModelChange)="set(p.name, $event)" [attr.aria-invalid]="marks.bad(p.name)" [attr.aria-describedby]="marks.describedBy(p.name)">
                       @if (!p.required) { <mat-option value="">Any</mat-option> }
                       @for (v of p.allowed; track v) { <mat-option [value]="v">{{ v }}</mat-option> }
                     </mat-select>
                   </mat-form-field><jc-field-error [field]="p.name" [messages]="marks.msgs(p.name)" /></div>
                 } @else {
                   <div class="jc-field" [class.jc-field-wide]="p.type === 'string'"><mat-form-field subscriptSizing="dynamic" [class.jc-field-wide]="p.type === 'string'"><mat-label>{{ title(p) }}</mat-label>
-                    <input matInput [type]="p.type === 'integer' ? 'number' : 'text'" [name]="p.name" [attr.data-testid]="'command-param-' + p.name" [attr.min]="p.minimum" [attr.max]="p.maximum"
+                    <input matInput [type]="p.type === 'integer' ? 'number' : 'text'" [name]="p.name" [attr.data-field]="p.name" [attr.data-testid]="'command-param-' + p.name" [attr.min]="p.minimum" [attr.max]="p.maximum"
                            [attr.maxlength]="p.maxLength" [placeholder]="p.description ?? ''" [ngModel]="values()[p.name] ?? ''" (ngModelChange)="set(p.name, $event)" [attr.aria-invalid]="marks.bad(p.name)" [attr.aria-describedby]="marks.describedBy(p.name)">
                   </mat-form-field><jc-field-error [field]="p.name" [messages]="marks.msgs(p.name)" /></div>
                 }
@@ -134,7 +134,7 @@ function formatUptime(seconds: number): string {
             }
             @if (needsApproval()) {
               <div class="jc-field jc-field-wide"><mat-form-field subscriptSizing="dynamic" class="jc-field-wide"><mat-label>Why (for whoever approves it)</mat-label>
-                <input matInput name="requestReason" data-testid="request-reason" maxlength="500" [(ngModel)]="requestReason" (ngModelChange)="marks.clear('requestReason')" required [attr.aria-invalid]="marks.bad('requestReason')" [attr.aria-describedby]="marks.describedBy('requestReason')">
+                <input matInput name="requestReason" data-field="requestReason"data-testid="request-reason" maxlength="500" [(ngModel)]="requestReason" (ngModelChange)="marks.clear('requestReason')" required [attr.aria-invalid]="marks.bad('requestReason')" [attr.aria-describedby]="marks.describedBy('requestReason')">
               </mat-form-field><jc-field-error field="requestReason" [messages]="marks.msgs('requestReason')" /></div>
               @if (selected()?.changing && agent.value()?.resourceId) {
                 <div class="jc-field jc-field-wide"><mat-checkbox name="watchHost" data-testid="request-watch-host" [(ngModel)]="watchHost">Fix this host's health: run only while it's unhealthy, and confirm recovery after</mat-checkbox></div>
@@ -147,7 +147,9 @@ function formatUptime(seconds: number): string {
             </div>
             @if (selected(); as s) {
               <div class="jc-muted jc-small jc-form-actions" data-testid="command-hint">
-                <div>{{ s.description }} <span data-testid="command-approval">{{ s.risk }} risk: {{ approvalText(policy()) }}.</span></div>
+                <div>{{ s.description }}
+                  @if (dryRunOn()) { <span data-testid="command-approval">Dry run: reports only, {{ policy() === 'None' ? 'no approval needed' : approvalText(policy()) }}.</span> }
+                  @else { <span data-testid="command-approval">{{ s.risk }} risk: {{ approvalText(policy()) }}.</span> }</div>
                 @if (dryRunHint(); as hint) { <div data-testid="command-dryrun-hint">{{ hint }}</div> }
                 @if (s.limits.length) { <div data-testid="command-limits">On this host: {{ s.limits.join('; ') }}.</div> }
               </div>
@@ -307,11 +309,14 @@ export class AgentPage {
    * What the platform's policy needs for this run: an action with a `dryRun` parameter that's checked follows `dryRunApproval` (a dry run only
    * reports), but only when the server says so; otherwise the action's own approval.
    */
+  protected readonly dryRunOn = computed(() => {
+    const s = this.selected();
+    return !!s?.dryRunApproval && s.parameters.some(p => p.name === 'dryRun') && this.values()['dryRun'] === true;
+  });
   protected readonly policy = computed(() => {
     const s = this.selected();
     if (!s) return 'None';
-    const dry = s.parameters.some(p => p.name === 'dryRun') && this.values()['dryRun'] === true;
-    return dry && s.dryRunApproval ? s.dryRunApproval : s.approval;
+    return this.dryRunOn() ? s.dryRunApproval! : s.approval;
   });
   protected readonly needsApproval = computed(() => (this.selected() ? this.policy() : 'None') !== 'None');
   /** Said only when the action has a `dryRun` parameter and the server says what a dry run needs: it never claims more than the server does. */

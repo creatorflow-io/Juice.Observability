@@ -23,6 +23,11 @@ const forms = {
     await page.locator('[data-testid=silence-form] mat-select[name=kind]').click();
     await page.locator('mat-option', { hasText: 'Maintenance window' }).click();
   } },
+  // The agent's "Ask the agent" form, on the first enrolled agent's page.
+  agent: { path: 'agents', form: 'command-form', prepare: async page => {
+    await page.locator('a[href*="/agents/"]').first().click({ timeout: 15000 });
+    await page.getByTestId('command-form').waitFor({ timeout: 15000 });
+  } },
   rules: { path: 'rules', open: 'rule-new', form: 'rule-form' },
   escalation: { path: 'escalation', open: 'policy-new', form: null },
 };
@@ -81,6 +86,10 @@ try {
         await page.locator('form').first().waitFor({ timeout: 15000 });
         if (f.prepare) await f.prepare(page);
         await page.waitForTimeout(300);
+        // No label loses its tail to its field's width (at 390 px above all).
+        const clipped = await page.evaluate(id => [...(document.querySelector(`[data-testid="${id}"]`) ?? document).querySelectorAll('mat-form-field label')]
+          .filter(l => l.getClientRects().length > 0 && l.scrollWidth > l.clientWidth + 1).map(l => l.textContent.trim()), f.form);
+        check(clipped.length === 0, `${name} at ${width}px, ${theme}: no label is clipped${clipped.length ? ` (${clipped.join(', ')})` : ''}`);
         for (const withErrors of [false, true]) {
           const rows = await page.evaluate(measure, { withErrors, formId: f.form });
           const at = `${name} at ${width}px, ${theme}${withErrors ? ', neighbours with errors' : ''}`;

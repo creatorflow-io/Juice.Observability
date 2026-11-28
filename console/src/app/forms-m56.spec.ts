@@ -97,6 +97,18 @@ describe('agent form (M56)', () => {
     expect(q(fixture, 'command-error')).toBeNull();
   });
 
+  it('the first invalid control is focused, an allowed-value select included', async () => {
+    const { fixture } = await openAgent([action('files.cleanup', { parameters: [param('mode', 'string', { required: true, allowed: ['a', 'b'] })] })]);
+    document.body.appendChild(fixture.nativeElement);
+    // choose() fills a lone allowed value; make sure none is chosen.
+    click(fixture, 'command-issue');
+    await flush(fixture);
+    await new Promise(r => setTimeout(r, 10));
+    expect(marked(fixture)).toEqual(['mode', 'requestReason']);
+    expect(document.activeElement?.closest('mat-select')?.getAttribute('data-field')).toBe('mode');
+    fixture.nativeElement.remove();
+  });
+
   it('a 403 is one sentence for the form, no field', async () => {
     const { fixture } = await openAgent([action('files.cleanup')], { requestAction: () => throwError(() => problem(403, 'Forbidden', 'no')) });
     await type(fixture, 'requestReason', 'because');
@@ -114,7 +126,9 @@ describe('agent form (M56)', () => {
     ((withHint.fixture.nativeElement as HTMLElement).querySelector('[data-testid="command-param-dryRun"] input') as HTMLInputElement).click();
     await flush(withHint.fixture);
     expect(q(withHint.fixture, 'command-issue').textContent!.trim()).toBe('Run');
-    expect(q(withHint.fixture, 'command-approval').textContent).toContain('runs when asked');
+    // The dry run's own outcome, not the real run's risk.
+    expect(q(withHint.fixture, 'command-approval').textContent).toContain('Dry run: reports only, no approval needed');
+    expect(q(withHint.fixture, 'command-approval').textContent).not.toContain('risk');
     expect(withHint.fixture.nativeElement.querySelector('input[name="requestReason"]')).toBeNull();
 
     // No field from the server: no claim, and a dry run is treated as the action itself.
