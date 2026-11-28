@@ -6,6 +6,8 @@ import { PING_LIBRARY, PING_SERVER, StubPage, entry, flat, server } from './test
 
 /** Plain data, as the snapshot is: functions and undefined members drop out. */
 const plain = (menus: Menus) => JSON.parse(JSON.stringify(menus));
+/** The old static menu is frozen: pages added since (Integrations) are in the manifests only, so the snapshot is compared without them. */
+const legacy = (menus: Menus) => menus.map(m => (m.children ? { ...m, children: m.children.filter(c => c.id !== 'integrations') } : m));
 const notifications = () => notificationsAdminMenus('/alerts/notifications', 1, NOTIFICATIONS_ADMIN_PAGES.embedded);
 const build = (servers = BUILTIN_MODULES, libraries: readonly ObservabilityConsoleModule[] = CORE_CONSOLE_MODULES, extra: object = {}) =>
   menusFromManifests({ servers, libraries, ...extra });
@@ -19,9 +21,9 @@ describe('Console menu from manifests (core 2.0 M3, E7)', () => {
   });
 
   it('observabilityMenus_output_unchanged', () => {
-    expect(plain(observabilityMenus('/', 1, notifications()))).toEqual(snapshot.host);
-    expect(plain(observabilityMenus('/', 1))).toEqual(snapshot.plain);
-    expect(plain(observabilityMenus('/observability/', 5))).toEqual(snapshot.mounted);
+    expect(plain(observabilityMenus('/', 1, notifications()))).toEqual(plain(legacy(snapshot.host as Menus)));
+    expect(plain(observabilityMenus('/', 1))).toEqual(plain(legacy(snapshot.plain as Menus)));
+    expect(plain(observabilityMenus('/observability/', 5))).toEqual(plain(legacy(snapshot.mounted as Menus)));
     // the approvals badge finds its entry by this id
     expect(APPROVALS_MENU_ID).toBe('approvals');
     expect(flat(build()).some(m => m.id === APPROVALS_MENU_ID)).toBe(true);

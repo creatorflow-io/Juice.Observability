@@ -27,6 +27,7 @@ export const TEMPLATES: Record<string, string> = {
   ConsumerFailures: 'Failed consumer messages in the window. Fires above the threshold.',
   MetricThreshold: 'One metric, aggregated over the window, against a threshold. Fires above it, or below it.',
   SloBurn: "An SLO's burn rate over a long and a short window. Fires when both reach the rate; one alert per SLO.",
+  IntegrationHealth: "An integration instance that has failed. The platform's own: one alert per instance, raised and resolved with its state.",
 };
 
 const HOST_TEMPLATES = ['HostMemory', 'HostCpu', 'HostDisk'];
@@ -257,7 +258,7 @@ export class RuleEditor {
   protected readonly lock = computed(() => { const r = this.rule(); return r && r.managedBy !== 'api' ? (r.managedBy === 'platform' ? 'platform' : 'config') : null; });
   /** Whether this form only shows: a locked rule, or a person who is not an admin. */
   protected readonly ro = computed(() => this.lock() !== null || !this.roles().admin);
-  protected readonly canPreview = computed(() => this.roles().operate && this.rule()?.template !== 'SloBurn');
+  protected readonly canPreview = computed(() => this.roles().operate && !['SloBurn', 'IntegrationHealth'].includes(this.rule()?.template ?? ''));
   protected readonly title = computed(() => { const r = this.rule(); return !r ? 'New rule' : `${this.ro() ? 'View' : 'Change'} ${r.key}`; });
   protected readonly metric = computed(() => { this.edits(); return this.f.template === 'MetricThreshold'; });
   private readonly byName = computed(() => new Map(this.catalog().map(m => [m.name, m])));

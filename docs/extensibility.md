@@ -44,6 +44,8 @@ makes no database access.
 
 ## Limits in 2.0 M2
 
+Integration plugins and instances (I1) are in [extensibility-integrations.md](extensibility-integrations.md).
+
 M2 adds the rest of the seams. Rule templates and threshold providers are in [extensibility-rules.md](extensibility-rules.md); leased workers and
 domain events are in [extensibility-workers-events.md](extensibility-workers-events.md). This page covers module data and alert sources.
 
