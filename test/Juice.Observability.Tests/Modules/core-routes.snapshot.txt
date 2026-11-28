@@ -31,6 +31,7 @@ GET /api/v1/tenants/{tenantId:guid}/agents/{agentId:guid}/commands | platform.re
 GET /api/v1/tenants/{tenantId:guid}/agents/{agentId:guid}/commands/{commandId:guid} | platform.read | -
 GET /api/v1/tenants/{tenantId:guid}/alerts | platform.read | -
 GET /api/v1/tenants/{tenantId:guid}/alerts/{alertId:guid} | platform.read | -
+GET /api/v1/tenants/{tenantId:guid}/alerts/{alertId:guid}/evidence-sections | platform.read | -
 GET /api/v1/tenants/{tenantId:guid}/alerts/{alertId:guid}/notifications | platform.read | -
 GET /api/v1/tenants/{tenantId:guid}/alerts/{alertId:guid}/related | platform.read | -
 GET /api/v1/tenants/{tenantId:guid}/alerts/{alertId:guid}/suggestions | platform.read | -
@@ -46,6 +47,7 @@ GET /api/v1/tenants/{tenantId:guid}/load-runs | platform.read | -
 GET /api/v1/tenants/{tenantId:guid}/load-runs/{runId:guid}/results | platform.read | -
 GET /api/v1/tenants/{tenantId:guid}/resources | platform.read | -
 GET /api/v1/tenants/{tenantId:guid}/resources/{resourceId:guid} | platform.read | -
+GET /api/v1/tenants/{tenantId:guid}/resources/{resourceId:guid}/evidence-sections | platform.read | -
 GET /api/v1/tenants/{tenantId:guid}/rules | platform.read | -
 GET /api/v1/tenants/{tenantId:guid}/search | platform.read | -
 GET /api/v1/tenants/{tenantId:guid}/silences | platform.read | -

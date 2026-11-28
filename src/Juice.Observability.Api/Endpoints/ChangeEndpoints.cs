@@ -245,6 +245,12 @@ namespace Juice.Observability.Api.Endpoints
             {
                 return Problem(StatusCodes.Status404NotFound, "Alert not found", "No such alert.");
             }
+            return Results.Ok(await RelatedForAsync(tenantId, alert, db, ct));
+        }
+
+        /// <summary>The related items of an alert of the tenant (the alert endpoint's body, and the <c>core.changes</c> evidence contributor's source).</summary>
+        internal static async Task<RelatedDto> RelatedForAsync(Guid tenantId, Alert alert, PlatformDbContext db, CancellationToken ct)
+        {
             var (start, end) = (alert.BreachStartedAt - CorrelationRanker.Lookback, alert.BreachStartedAt + CorrelationRanker.LookAhead);
             var environments = await db.Environments.AsNoTracking().Where(e => e.TenantId == tenantId).ToDictionaryAsync(e => e.Id, e => e.Key, ct);
             var environment = alert.EnvironmentId is { } alertEnvironment ? environments.GetValueOrDefault(alertEnvironment) : null;
@@ -294,7 +300,7 @@ namespace Juice.Observability.Api.Endpoints
             candidates.AddRange(health.Select(h => new CorrelationCandidate("health", h.Id, h.EvaluatedAt, $"{names.GetValueOrDefault(h.SubjectId, "A dependency")} became {h.ToState}",
                 string.Join(", ", h.ReasonCodes), null, CorrelationScope.Dependency, alert.EnvironmentId is null ? null : true)));
 
-            return Results.Ok(new RelatedDto(CorrelationRanker.Relation, CorrelationRanker.Note, alert.BreachStartedAt, CorrelationRanker.Rank(alert.BreachStartedAt, candidates)));
+            return new RelatedDto(CorrelationRanker.Relation, CorrelationRanker.Note, alert.BreachStartedAt, CorrelationRanker.Rank(alert.BreachStartedAt, candidates));
         }
 
         [GeneratedRegex(@"^[A-Za-z0-9._:/-]{1,128}$")]
