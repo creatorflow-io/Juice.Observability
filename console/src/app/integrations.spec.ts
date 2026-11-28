@@ -177,6 +177,21 @@ describe('integrations page (I1)', () => {
     expect(q(fixture, 'stale-reload')).not.toBeNull();
   });
 
+  it('a_400_errors_object_is_placed_under_its_fields', async () => {
+    const errors = { name: ['Name is taken.'], 'config.endpoint': ['Endpoint must use https.'], 'secretRefs.token': ['Outside the allowed prefix.'], other: ['Something else.'] };
+    const calls = setup({ create: () => throwError(() => ({ status: 400, error: { title: 'Invalid request', errors } })) });
+    const fixture = TestBed.createComponent(IntegrationForm);
+    fixture.componentRef.setInput('plugin', PLUGIN);
+    fixture.componentInstance['edited'].set({ ...initialValues(PLUGIN, null), name: 'a', 'config.endpoint': 'https://x', 'config.batch': '5', 'secret.token': 'env:JUICE_INTEGRATION_T' });
+    await flush(fixture);
+    q(fixture, 'integration-save')!.click();
+    await flush(fixture);
+    expect(calls['create'].length).toBe(1);
+    const marked = Array.from(fixture.nativeElement.querySelectorAll('[data-testid="rule-field-error"]')).map(e => (e as HTMLElement).dataset['field']).sort();
+    expect(marked).toEqual(['config.endpoint', 'name', 'secret.token']);
+    expect(q(fixture, 'integration-form-error')!.textContent).toContain('Something else.');
+  });
+
   it('no_plugins_empty_state', async () => {
     const { fixture } = await openList([], []);
     expect(q(fixture, 'integrations-none')!.textContent).toContain('No integration plugins are installed');

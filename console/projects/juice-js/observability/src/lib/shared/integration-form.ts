@@ -167,7 +167,7 @@ function placeKey(path: string, plugin: IntegrationPluginDto): string | null {
                 }
                 @default {
                   <mat-form-field subscriptSizing="dynamic" class="jc-field-wide">
-                    <mat-label>{{ f.label }}{{ f.required ? ' *' : '' }}{{ f.kind === 'duration' ? ' (hh:mm:ss)' : '' }}</mat-label>
+                    <mat-label>{{ f.label }}{{ f.required ? ' *' : '' }}{{ f.kind === 'duration' ? ' (hh:mm:ss or ISO 8601)' : '' }}</mat-label>
                     <input matInput [type]="f.kind === 'integer' || f.kind === 'number' ? 'number' : 'text'" [attr.step]="f.kind === 'number' ? 'any' : null"
                       [attr.min]="f.min ?? null" [attr.max]="f.max ?? null" [attr.maxlength]="f.maxLength ?? null"
                       [name]="key(section.name, f)" [attr.data-field]="key(section.name, f)" [attr.data-testid]="'if-' + key(section.name, f)"
