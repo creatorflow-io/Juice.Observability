@@ -29,21 +29,30 @@ namespace Juice.Observability.Api.Modules.Events
     {
         public bool HasSubscribers<TEvent>() where TEvent : ObservabilityEvent => subscriptions.Any(s => s.EventType == typeof(TEvent));
 
-        public async Task PublishAsync(ObservabilityEvent e, CancellationToken ct)
+        public async Task PublishAsync(IReadOnlyCollection<ObservabilityEvent> events, CancellationToken ct)
         {
-            var type = e.GetType();
-            var modules = subscriptions.Where(s => s.EventType == type).Select(s => s.Module).Distinct(StringComparer.Ordinal).ToList();
-            if (modules.Count == 0)
+            var envelopes = new List<ModuleEventEnvelope>();
+            foreach (var e in events)
+            {
+                var type = e.GetType();
+                var modules = subscriptions.Where(s => s.EventType == type).Select(s => s.Module).Distinct(StringComparer.Ordinal).ToList();
+                if (modules.Count == 0)
+                {
+                    continue;
+                }
+                var payload = JsonSerializer.Serialize(e, type, ModuleEventJson.Options);
+                envelopes.AddRange(modules.Select(module => new ModuleEventEnvelope(module, type.Name, payload)));
+            }
+            if (envelopes.Count == 0)
             {
                 return;
             }
-            var payload = JsonSerializer.Serialize(e, type, ModuleEventJson.Options);
             if (db is IManagable { IsManaged: true })
             {
-                // Inside a command: the transaction behavior saves the row with the change, and the channel dispatches right after the commit.
-                foreach (var module in modules)
+                // Inside a command: the transaction behavior saves the rows with the change, and the channel dispatches right after the commit.
+                foreach (var envelope in envelopes)
                 {
-                    await messages.PublishAsync(new ModuleEventEnvelope(module, type.Name, payload), ct);
+                    await messages.PublishAsync(envelope, ct);
                 }
                 return;
             }
@@ -52,9 +61,9 @@ namespace Juice.Observability.Api.Modules.Events
                 throw new InvalidOperationException("An event is published in the transaction of the change that raised it: none is open.");
             }
             using var context = PlatformMessageContext.Begin("events");
-            foreach (var module in modules)
+            foreach (var envelope in envelopes)
             {
-                await outbox.AddEventAsync(new ModuleEventEnvelope(module, type.Name, payload));
+                await outbox.AddEventAsync(envelope);
             }
             // In the open transaction, so delivery sees the rows once the change commits (and never if it rolls back).
             await outbox.SaveEventsAsync(null, ct);
@@ -62,7 +71,7 @@ namespace Juice.Observability.Api.Modules.Events
     }
 
     /// <summary>
-    /// Hands an envelope to its module's handlers, each module in a scope of its own. A handler that throws fails the delivery for that module only: the
+    /// Hands an envelope to its module's handlers, in a scope of its own. A handler that throws fails the delivery for that module only: the
     /// outbox hands it over again, and the handlers that succeeded run again too, which is why they must be idempotent on the event's id.
     /// </summary>
     internal sealed class ModuleEventEnvelopeConsumer(IServiceScopeFactory scopes, IEnumerable<ModuleEventSubscription> subscriptions,
