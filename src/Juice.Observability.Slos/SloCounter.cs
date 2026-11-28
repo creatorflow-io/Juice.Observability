@@ -3,6 +3,7 @@ using System.Diagnostics.Metrics;
 using Juice.MediatR;
 using Juice.Observability.Data;
 using Juice.Observability.Discovery;
+using Juice.Observability.Extensibility;
 using Juice.Observability.Signals;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -20,7 +21,8 @@ namespace Juice.Observability.Slos
     /// read leaves them as they were and is tried again. One replica at a time.
     /// </summary>
     public sealed class SloCounter(IServiceScopeFactory scopes, ClickHouseTelemetrySource clickHouse, IOptions<SloOptions> options,
-        IOptions<PlatformOptions> platform, TimeProvider clock, ILogger<SloCounter> logger, SignalPacks? packs = null) : BackgroundService
+        IOptions<PlatformOptions> platform, TimeProvider clock, ILogger<SloCounter> logger, SignalPacks? packs = null)
+        : LeasedWorkerService(CloseSloBurnAlertsHandler.CounterLease, scopes, logger)
     {
         private static readonly Meter Meter = new("Juice.Observability");
         private static readonly Counter<long> Passes = Meter.CreateCounter<long>("juice.observability.slos.counted", "{pass}",
@@ -110,42 +112,35 @@ namespace Juice.Observability.Slos
         /// <summary>Minutes counted per SLO per pass, halved after a pass that ran out of time and grown back after one that didn't.</summary>
         private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, int> _chunks = new();
 
-        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        protected override TimeSpan Interval => options.Value.Interval;
+
+        protected override async Task<LeasedPassOutcome> RunOnceAsync(LeasedPass pass, CancellationToken cancellationToken)
         {
-            PlatformCaller.Set(CloseSloBurnAlertsHandler.CounterLease, stoppingToken);
-            WorkerPulse.Register(CloseSloBurnAlertsHandler.CounterLease, options.Value.Interval, stopping: stoppingToken);
-            await using var lease = WorkerLease.For(scopes, CloseSloBurnAlertsHandler.CounterLease, logger);
-            using var timer = new PeriodicTimer(options.Value.Interval);
-            var generation = 0;
-            do
+            if (pass.Retaken)
             {
-                try
-                {
-                    var holds = await lease.TryHoldAsync(stoppingToken);
-                    if (holds && lease.Generation != generation)
-                    {
-                        // Taken (back), even within one call: another replica may have judged and counted meanwhile. Burn lag counts from this
-                        // replica's next judgment, and each SLO's totals are caught up once with whatever was counted without them.
-                        generation = lease.Generation;
-                        _lastBurnEnd = DateTimeOffset.MinValue;
-                        _caughtUp.Clear();
-                    }
-                    if (holds)
-                    {
-                        var started = Stopwatch.GetTimestamp();
-                        using var pass = WorkerPulse.Begin(CloseSloBurnAlertsHandler.CounterLease, stoppingToken);
-                        await PassAsync(stoppingToken);
-                        // Every SLO failed (ClickHouse unreachable, say): left unfinished, the pass is a failure.
-                        if (LastPassFailures == 0) pass.Succeeded(); else if (LastPassFailures < LastPassAttempted) pass.Partial();
-                        PassDuration.Record(Stopwatch.GetElapsedTime(started).TotalSeconds);
-                    }
-                }
-                catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
-                {
-                    logger.LogError(ex, "SLO counting failed; retrying next interval");
-                }
+                // Taken (back), even within one call: another replica may have judged and counted meanwhile. Burn lag counts from this
+                // replica's next judgment, and each SLO's totals are caught up once with whatever was counted without them.
+                _lastBurnEnd = DateTimeOffset.MinValue;
+                _caughtUp.Clear();
             }
-            while (await timer.WaitForNextTickAsync(stoppingToken));
+            var started = Stopwatch.GetTimestamp();
+            await PassAsync(cancellationToken);
+            PassDuration.Record(Stopwatch.GetElapsedTime(started).TotalSeconds);
+            // Every SLO failed (ClickHouse unreachable, say): left unfinished, the pass is a failure.
+            return LastPassFailures == 0 ? LeasedPassOutcome.Succeeded
+                : LastPassFailures < LastPassAttempted ? LeasedPassOutcome.Partial
+                : throw new EveryCountFailed();
+        }
+
+        // Each failure was logged as it happened; the pass only ends as a failure.
+        private sealed class EveryCountFailed : Exception;
+
+        protected override void LogFailure(Exception exception)
+        {
+            if (exception is not EveryCountFailed)
+            {
+                Logger.LogError(exception, "SLO counting failed; retrying next interval");
+            }
         }
 
         public static DateTimeOffset Floor(DateTimeOffset t) => new(t.UtcTicks - t.UtcTicks % TimeSpan.TicksPerMinute, TimeSpan.Zero);
@@ -161,7 +156,7 @@ namespace Juice.Observability.Slos
         {
             LastPassFailures = 0;
             LastPassAttempted = 0;
-            await using var scope = scopes.CreateAsyncScope();
+            await using var scope = Scopes.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
             var tenantId = await db.Tenants.Where(t => t.Key == platform.Value.TenantKey).Select(t => t.Id).SingleAsync(ct);
             var now = clock.GetUtcNow();
@@ -196,7 +191,7 @@ namespace Juice.Observability.Slos
                 }
                 catch (Exception ex) when (!ct.IsCancellationRequested)
                 {
-                    logger.LogWarning(ex, "SLO {Slo}: can't be counted; the other SLOs carry on", id);
+                    Logger.LogWarning(ex, "SLO {Slo}: can't be counted; the other SLOs carry on", id);
                     Passes.Add(1, new KeyValuePair<string, object?>("outcome", "failed"));
                     LastPassFailures++;
                 }
@@ -232,7 +227,7 @@ namespace Juice.Observability.Slos
             timeout.CancelAfter(options.Value.QueryTimeout);
             try
             {
-                await using var scope = scopes.CreateAsyncScope();
+                await using var scope = Scopes.CreateAsyncScope();
                 var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
                 var countedThrough = await db.Slos.Where(s => s.Id == id).Select(s => s.CountedThrough).SingleAsync(timeout.Token);
                 await SloDays.CatchUpAsync(db, id, countedThrough, Lookback(options.Value) + options.Value.Lateness, timeout.Token);
@@ -240,7 +235,7 @@ namespace Juice.Observability.Slos
             }
             catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
             {
-                logger.LogWarning(ex, "SLO {Slo}: its hourly and daily totals couldn't be caught up; counting carries on, and it's tried again next pass", id);
+                Logger.LogWarning(ex, "SLO {Slo}: its hourly and daily totals couldn't be caught up; counting carries on, and it's tried again next pass", id);
             }
         }
 
@@ -264,18 +259,18 @@ namespace Juice.Observability.Slos
             try
             {
                 using var context = PlatformMessageContext.Begin("slos");
-                await using var scope = scopes.CreateAsyncScope();
+                await using var scope = Scopes.CreateAsyncScope();
                 var result = await scope.ServiceProvider.GetRequiredService<IMediator>().Send(new EvaluateSloBurns(), ct);
                 _lastBurnEnd = end;
                 if (lag is { } late) BurnLag.Record(late);
                 if (result.Fired + result.Resolved > 0)
                 {
-                    logger.LogInformation("SLO burn alerts: {Fired} fired, {Resolved} resolved", result.Fired, result.Resolved);
+                    Logger.LogInformation("SLO burn alerts: {Fired} fired, {Resolved} resolved", result.Fired, result.Resolved);
                 }
             }
             catch (Exception ex) when (!ct.IsCancellationRequested)
             {
-                logger.LogWarning(ex, "SLO burn alerts couldn't be evaluated; they stay as they were until the next pass");
+                Logger.LogWarning(ex, "SLO burn alerts couldn't be evaluated; they stay as they were until the next pass");
             }
         }
 
@@ -326,7 +321,7 @@ namespace Juice.Observability.Slos
             }
             catch (Exception ex) when (!ct.IsCancellationRequested)
             {
-                logger.LogWarning(ex, "Can't read {Service}'s newest telemetry; its SLO minutes stay unknown until it's back", service);
+                Logger.LogWarning(ex, "Can't read {Service}'s newest telemetry; its SLO minutes stay unknown until it's back", service);
             }
             return cache.Watermarks[service] = newest;
         }
@@ -380,7 +375,7 @@ namespace Juice.Observability.Slos
             var chunk = _chunks.GetValueOrDefault(sloId, options.Value.MaxMinutesPerPass);
             try
             {
-                await using var scope = scopes.CreateAsyncScope();
+                await using var scope = Scopes.CreateAsyncScope();
                 var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
                 var slo = await db.Slos.SingleAsync(s => s.Id == sloId, ct);
                 var versions = await db.SloVersions.AsNoTracking().Where(v => v.SloId == sloId).OrderBy(v => v.Version).ToListAsync(ct);
@@ -442,7 +437,7 @@ namespace Juice.Observability.Slos
                 // time, so a stretch too big to count in time doesn't hold the SLO back for good.
                 var timedOut = timeout.IsCancellationRequested;
                 if (timedOut) _chunks[sloId] = NextChunk(chunk, options.Value);
-                logger.LogWarning(ex, "SLO {Slo}: counting failed{Narrowed}; its newest minutes stay unknown until a later pass", sloId,
+                Logger.LogWarning(ex, "SLO {Slo}: counting failed{Narrowed}; its newest minutes stay unknown until a later pass", sloId,
                     timedOut ? $", out of time: next pass counts {NextChunk(chunk, options.Value)} minutes" : "");
                 Passes.Add(1, new KeyValuePair<string, object?>("outcome", "failed"));
             }

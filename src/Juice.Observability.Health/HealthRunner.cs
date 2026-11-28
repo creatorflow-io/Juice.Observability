@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using Juice.Observability.Data;
 using Juice.Observability.Discovery;
+using Juice.Observability.Extensibility;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -378,32 +379,18 @@ namespace Juice.Observability.Health
 
     /// <summary>Runs <see cref="HealthRunner"/> every <see cref="HealthPolicy.Interval"/>, in one replica at a time (<see cref="WorkerLease"/>).</summary>
     public sealed class HealthWorker(HealthRunner runner, IServiceScopeFactory scopes, IOptions<HealthPolicy> options,
-        ILogger<HealthWorker> logger) : BackgroundService
+        ILogger<HealthWorker> logger) : LeasedWorkerService("health", scopes, logger)
     {
-        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        protected override TimeSpan Interval => options.Value.Interval;
+
+        protected override async Task<LeasedPassOutcome> RunOnceAsync(LeasedPass pass, CancellationToken cancellationToken)
         {
-            PlatformCaller.Set("health", stoppingToken);
-            WorkerPulse.Register("health", options.Value.Interval, stopping: stoppingToken);
-            await using var lease = WorkerLease.For(scopes, "health", logger);
-            using var timer = new PeriodicTimer(options.Value.Interval);
-            do
-            {
-                try
-                {
-                    if (await lease.TryHoldAsync(stoppingToken))
-                    {
-                        using var pass = WorkerPulse.Begin("health", stoppingToken);
-                        await runner.RunOnceAsync(stoppingToken);
-                        pass.Succeeded();
-                    }
-                }
-                catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
-                {
-                    logger.LogError(ex, "Health evaluation failed; states are kept and age until the next pass");
-                }
-            }
-            while (await timer.WaitForNextTickAsync(stoppingToken));
+            await runner.RunOnceAsync(cancellationToken);
+            return LeasedPassOutcome.Succeeded;
         }
+
+        protected override void LogFailure(Exception exception)
+            => Logger.LogError(exception, "Health evaluation failed; states are kept and age until the next pass");
     }
 
     public static class HealthServiceCollectionExtensions
