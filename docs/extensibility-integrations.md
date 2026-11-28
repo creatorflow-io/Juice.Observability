@@ -91,6 +91,8 @@ without integrations has no such rule. The alert resolves when the instance is E
 instance, the failure kind and the failures in a row, and never the plugin's own text. The rule belongs to the platform: it is not offered when making
 a rule, cannot be previewed and cannot be changed through the rules API or file. The service and host health the platform reports never include it.
 
+Silencing one instance isn't possible yet; silence the `integration-health` rule.
+
 ## The Console
 
 Configure > **Integrations** lists the instances with their state, health, last success and next run. With no plugin installed the page says "No
