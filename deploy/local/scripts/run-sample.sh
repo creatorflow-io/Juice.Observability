@@ -9,7 +9,7 @@ repo=${JUICE_REPO:-../../../Juice}
 here=$(pwd -W 2>/dev/null || pwd)
 
 export OTEL_EXPORTER_OTLP_ENDPOINT=https://localhost:4317
-export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer $(cut -d' ' -f1 secrets/otlp-tokens)"
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer $(head -n1 secrets/otlp-tokens | cut -d' ' -f1)"
 export OTEL_EXPORTER_OTLP_CERTIFICATE="$here/secrets/tls/ca.crt"
 export OTEL_METRIC_EXPORT_INTERVAL=${OTEL_METRIC_EXPORT_INTERVAL:-10000}
 export OTEL_RESOURCE_ATTRIBUTES=${OTEL_RESOURCE_ATTRIBUTES:-deployment.environment.name=local}

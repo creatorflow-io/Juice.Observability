@@ -50,4 +50,4 @@ like) and the mounts `/proc`, `/sys`, `/dev`, `/run`, `/snap` and `/var/lib/dock
 mount, is not tripped by a mount that is always full. The rule itself ignores read-only mounts and those types too, whatever sends them.
 To leave out another mount, add it to `exclude_mount_points`.
 
-The local stack (`deploy/local`) runs one in its default profile, sending to its own Collector with a token of its own (`secrets/host-collector-otlp-token`, written by `scripts/init.sh`, which also adds it to `otlp-tokens`).
+Run one per host, never on a host the platform Collector already scrapes (it would be counted twice). The local stack (`deploy/local`) has one in the opt-in profile `host` (`docker compose --profile host up -d host-collector`), sending to its own Collector with a token of its own (`secrets/host-collector-otlp-token`, written by `scripts/init.sh`, which also adds it to `otlp-tokens`).

@@ -13,7 +13,7 @@ source .env
 RUNS=${1:-1}
 API=http://localhost:5180/api/v1
 OTLP=https://localhost:4318
-TOKEN=$(cut -d' ' -f1 secrets/otlp-tokens)
+TOKEN=$(head -n1 secrets/otlp-tokens | cut -d' ' -f1)
 FOR_DURATION=120   # rules.json service-error-rate
 
 access_token() {

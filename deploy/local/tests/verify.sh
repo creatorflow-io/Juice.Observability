@@ -21,7 +21,7 @@ PUBLIC=${PUBLIC_HOST:-localhost}
 GRAFANA=http://$PUBLIC:3000
 KEYCLOAK=http://$PUBLIC:8080
 CA=secrets/tls/ca.crt
-TOKEN=$(cut -d' ' -f1 secrets/otlp-tokens)
+TOKEN=$(head -n1 secrets/otlp-tokens | cut -d' ' -f1)
 RUN=$(openssl rand -hex 8)
 failures=0
 

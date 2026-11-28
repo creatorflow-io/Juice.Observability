@@ -36,7 +36,7 @@ dc ps --status running --services 2>/dev/null | grep -qx platform-api || { echo 
 trap 'kill $(jobs -p) 2>/dev/null' EXIT
 trap 'touch "$out/stop"; kill $(jobs -p) 2>/dev/null; exit 130' INT TERM
 
-TOKEN=$(cut -d' ' -f1 secrets/otlp-tokens)
+TOKEN=$(head -n1 secrets/otlp-tokens | cut -d' ' -f1)
 run=$(openssl rand -hex 4)
 BREACH_MAX=420   # tests/breach-to-alert.sh gives up on a run after 7 minutes
 # The commit, and "+changes" if anything in the repository (the platform image included) differs from it.

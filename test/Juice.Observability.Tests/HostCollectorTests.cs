@@ -108,11 +108,36 @@ namespace Juice.Observability.Tests
             var compose = ParseYaml(File.ReadAllText(Path.Combine(Repo(), "deploy", "local", "docker-compose.yml")));
 
             var hostCollector = Child(compose, "services", "host-collector");
-            Assert.False(hostCollector.ContainsKey("profiles"));                                   // the default profile
+            Assert.Contains("host", Items(hostCollector, "profiles"));                              // opt-in: one scraper per host, the platform Collector already covers this one
             Assert.Contains("/:/hostfs:ro", Items(hostCollector, "volumes"));
             Assert.All(Items(hostCollector, "volumes").Where(v => v.Contains("/etc/otelcol/")), v => Assert.EndsWith(":ro", v));
 
             Assert.Contains("sample", Items(Child(compose, "services"), "sample-service", "profiles"));
+        }
+
+        [Fact]
+        public void Scripts_read_the_first_line_of_otlp_tokens_only()
+        {
+            var deploy = Path.Combine(Repo(), "deploy", "local");
+            var readers = Directory.EnumerateFiles(deploy, "*.sh", SearchOption.AllDirectories)
+                .Where(f => File.ReadAllText(f).Contains("-f1 secrets/otlp-tokens") || File.ReadAllText(f).Contains("head -n1 secrets/otlp-tokens")).ToList();
+            Assert.True(readers.Count >= 5);
+            Assert.All(readers, f => Assert.DoesNotContain("(cut -d' ' -f1 secrets/otlp-tokens)", File.ReadAllText(f)));
+
+            // The pipeline itself, on three lines as init.sh leaves the file (one per service), where bash exists.
+            try
+            {
+                var info = new System.Diagnostics.ProcessStartInfo("bash") { RedirectStandardInput = true, RedirectStandardOutput = true };
+                info.ArgumentList.Add("-c");
+                info.ArgumentList.Add("head -n1 | cut -d' ' -f1");
+                using var bash = System.Diagnostics.Process.Start(info)!;
+                bash.StandardInput.Write("first-token local\nsecond-token host-collector\nthird-token sample\n");
+                bash.StandardInput.Close();
+                var output = bash.StandardOutput.ReadToEnd();
+                bash.WaitForExit();
+                if (bash.ExitCode == 0) Assert.Equal("first-token", output.Trim());   // a bash that cannot run (WSL without a distro) is skipped
+            }
+            catch (System.ComponentModel.Win32Exception) { /* no bash on this machine: the text check above stands */ }
         }
 
         [Fact]
@@ -190,7 +215,7 @@ namespace Juice.Observability.Tests
                     count = int.Parse(await LocalStack.ClickHouseAsync(Recent(table, metric, extra)));
                     if (count == 0) await Task.Delay(1000, Ct);
                 }
-                Assert.True(count > 0, $"{metric} of host {host} from the host Collector did not arrive within 2.5 minutes (is `docker compose up -d host-collector` running?)");
+                Assert.True(count > 0, $"{metric} of host {host} from the host Collector did not arrive within 2.5 minutes (is `docker compose --profile host up -d host-collector` running, with the platform Collector's own host_metrics off for that host?)");
             }
 
             // Only real disks: no tmpfs or overlay mount, and none of the excluded mount points.

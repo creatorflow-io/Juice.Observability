@@ -372,7 +372,9 @@ the host's root filesystem **read-only** (`/:/hostfs:ro`); it needs nothing else
 `deploy/host-collector/README.md` has the `docker run` line, the variables and the filesystems it leaves out. A host appears under the name
 the operating system gives it (or `JUICE_HOST_NAME`), the name the agent on that machine reports, so the two link.
 
-The local stack runs one (`host-collector` in `deploy/local/docker-compose.yml`, in the default profile).
+**One scraper per host: never run both for the same host.** A host reported by two scrapers shows as two series under one `host.name`, and a MetricThreshold rule with Subject=Host sums them, doubling the value. The platform Collector already scrapes its own machine, so the host Collector is for other machines.
+
+The local stack has one (`host-collector` in `deploy/local/docker-compose.yml`) in the opt-in profile `host`, off by default because the platform Collector covers the local machine: `docker compose --profile host up -d host-collector`, and only with `host_metrics` turned off on the platform Collector.
 
 **A service that isn't .NET.** Any OpenTelemetry SDK that sends to the platform Collector (section *Connecting a Juice service*, without
 the Juice parts) is discovered, and its own metrics can be alerted on with a MetricThreshold rule. `deploy/local/tests/sample-service` is a
