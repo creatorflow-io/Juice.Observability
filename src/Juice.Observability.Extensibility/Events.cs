@@ -1,5 +1,12 @@
+using System.ComponentModel;
+using Microsoft.Extensions.DependencyInjection;
+
 namespace Juice.Observability.Extensibility;
 
+/// <summary>
+/// What a module can hear, delivered after the change commits, at least once, in no guaranteed order. An event carries the platform tenant only
+/// (<see cref="TenantId"/>). Handlers must be idempotent on <see cref="EventId"/>: the same event may arrive twice.
+/// </summary>
 public abstract record ObservabilityEvent
 {
     public required Guid EventId { get; init; }
@@ -9,6 +16,7 @@ public abstract record ObservabilityEvent
     public required DateTimeOffset At { get; init; }
 }
 
+/// <summary>An alert fired, or resolved after firing (a Pending alert that resolves never fired, and raises nothing).</summary>
 public sealed record AlertTransitionedEvent(Guid AlertId, Guid TransitionId, string RuleKey, string Template, string DedupKey, string SubjectKey, string State, string Severity) : ObservabilityEvent;
 
 /// <summary>Change: created, state, alerts or comment.</summary>
@@ -25,9 +33,57 @@ public interface IObservabilityEventHandler<in TEvent> where TEvent : Observabil
     Task HandleAsync(TEvent e, CancellationToken ct);
 }
 
+/// <summary>A module's handler of an event, as composed. Core side: modules don't create these.</summary>
+[EditorBrowsable(EditorBrowsableState.Never)]
+public sealed record ModuleEventSubscription(string Module, Type EventType, Type HandlerType);
+
+/// <summary>
+/// Core side: writes an event to the outbox in the transaction of the change that raised it, one envelope per module with a handler for it, and
+/// nothing when no module has one. Modules don't publish.
+/// </summary>
+[EditorBrowsable(EditorBrowsableState.Never)]
+public interface IPlatformEventPublisher
+{
+    /// <summary>Whether any module handles <typeparamref name="TEvent"/>: false means publishing it writes nothing, so don't build it.</summary>
+    bool HasSubscribers<TEvent>() where TEvent : ObservabilityEvent;
+
+    /// <summary>
+    /// Inside a command, the envelopes join its transaction (and are dispatched locally right after it commits). Elsewhere, the caller has a
+    /// transaction open on the platform's context, and they commit with it, and are delivered from the outbox.
+    /// </summary>
+    Task PublishAsync(ObservabilityEvent e, CancellationToken ct);
+}
+
 public static class EventModuleExtensions
 {
+    /// <summary>
+    /// The module's handler of <typeparamref name="TEvent"/>, one of the events above. Runs in a scope of its own, apart from other modules': when it
+    /// throws, the delivery is tried again for this module only.
+    /// </summary>
     public static IModuleServicesBuilder AddEventHandler<TEvent, THandler>(this IModuleServicesBuilder b)
         where TEvent : ObservabilityEvent where THandler : class, IObservabilityEventHandler<TEvent>
-        => throw new NotImplementedException();
+    {
+        ArgumentNullException.ThrowIfNull(b);
+        var module = b.Module.Name;
+        if (!EventTypes.Core.Contains(typeof(TEvent)))
+        {
+            throw new ModuleCompositionException($"Module '{module}' handler for {typeof(TEvent).Name} is refused: it is not one of the core's events.");
+        }
+        var subscription = new ModuleEventSubscription(module, typeof(TEvent), typeof(THandler));
+        if (b.Services.Any(d => d.ServiceType == typeof(ModuleEventSubscription) && subscription.Equals(d.ImplementationInstance)))
+        {
+            throw new ModuleCompositionException($"Module '{module}' handler {typeof(THandler).Name} for {typeof(TEvent).Name} is registered twice.");
+        }
+        b.Services.AddSingleton(subscription);
+        b.Services.AddScoped<THandler>();
+        return b;
+    }
+}
+
+internal static class EventTypes
+{
+    internal static readonly IReadOnlySet<Type> Core = new HashSet<Type>
+    {
+        typeof(AlertTransitionedEvent), typeof(IncidentChangedEvent), typeof(ResourceChangedEvent), typeof(ChangeRecordedEvent),
+    };
 }
