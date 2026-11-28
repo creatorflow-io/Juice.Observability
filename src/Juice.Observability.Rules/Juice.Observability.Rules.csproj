@@ -8,6 +8,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Juice.Observability.Discovery\Juice.Observability.Discovery.csproj" />
+    <!-- The template registry, threshold seam and alert-source contracts (core 2.0 M2). -->
+    <ProjectReference Include="..\Juice.Observability.Extensibility\Juice.Observability.Extensibility.csproj" />
     <!-- The Juice templates' metric names, and whether the Juice signal pack is on. -->
     <ProjectReference Include="..\Juice.Observability.Signals\Juice.Observability.Signals.csproj" />
   </ItemGroup>

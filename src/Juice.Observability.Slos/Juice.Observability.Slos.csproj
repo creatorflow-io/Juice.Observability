@@ -8,6 +8,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Juice.Observability.Discovery\Juice.Observability.Discovery.csproj" />
+    <!-- Leased-worker and alert-source contracts (core 2.0 M2). -->
+    <ProjectReference Include="..\Juice.Observability.Extensibility\Juice.Observability.Extensibility.csproj" />
     <!-- Burn alerts go through the rules' alert lifecycle, so they notify, escalate and are silenced as any alert is. -->
     <ProjectReference Include="..\Juice.Observability.Rules\Juice.Observability.Rules.csproj" />
   </ItemGroup>
