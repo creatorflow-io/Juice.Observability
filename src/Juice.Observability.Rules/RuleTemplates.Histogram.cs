@@ -25,7 +25,7 @@ namespace Juice.Observability.Rules
         // A series without a point in the window is left out. A sum of 0 behind observations in a bucket that can't hold 0 is a missing sum:
         // that series stays out of Avg (sum_ok). The outer query adds the series up per subject and bucket layout, keeps the most observed layouts
         // of each subject, and fetches one row more than the limit so a cut is seen.
-        // The metric, the scope and the filters are parameters ({m}, {svc}, {fk0}, {fv0}...); only their count shapes the text.
+        // The metric, the scope and the filters are parameters ({m}, {svc}, {f0k}, {f0v}...); only their count shapes the text.
         private static string HistogramQuery(string innerKeys, string outerKeys, string scope, string filters) => $"""
             SELECT {outerKeys}, bounds, sumForEach(inc) AS counts, sum(observed) AS obs, sumIf(observed, sum_ok) AS sum_obs, sumIf(series_sum, sum_ok) AS sum_total,
                    count() OVER (PARTITION BY {outerKeys}) AS layouts
@@ -66,12 +66,6 @@ namespace Juice.Observability.Rules
         private static string HistogramByHost(string filters) => HistogramQuery($"{HistogramHost} AS host", "host",
             $"({HostParam} = '' OR lower(JuiceHostName) = {HostParam} OR lower(JuiceHostId) = {HostParam}) AND {HistogramHost} != ''", filters);
 
-        // One predicate per filter: the attribute key and the values are parameters, matched literally.
-        private static string HistogramFilters(IReadOnlyList<MetricFilter> filters)
-            => string.Concat(filters.Select((f, i) => f.Op == FilterOp.In
-                ? $" AND Attributes[{{fk{i}:String}}] IN {{fv{i}:Array(String)}}"
-                : $" AND Attributes[{{fk{i}:String}}] = {{fv{i}:String}}"));
-
         private sealed record HistogramRow(string SubjectKey, string Ns, string Svc, string Env, string Host, double[] Bounds, long[] Counts,
             long Observed, long SumObserved, double SumTotal, long Layouts);
 
@@ -87,14 +81,10 @@ namespace Juice.Observability.Rules
             }
 
             var parameters = new Dictionary<string, object>(scope) { ["m"] = spec.Name };
-            for (var i = 0; i < spec.Filters.Count; i++)
-            {
-                parameters[$"fk{i}"] = spec.Filters[i].Key;
-                parameters[$"fv{i}"] = spec.Filters[i].Op == FilterOp.In ? spec.Filters[i].Values.ToArray() : (object)(spec.Filters[i].Values.FirstOrDefault() ?? "");
-            }
+            MetricFilters.AddParameters(spec.Filters, parameters);
 
             var host = spec.Subject == MetricSubject.Host;
-            var filters = HistogramFilters(spec.Filters);
+            var filters = MetricFilters.Sql(spec.Filters);
             var sql = host ? HistogramByHost(filters) : HistogramByService(filters);
             // One row more than the limit: only a result that exceeds it was cut.
             var rows = await clickHouse.QueryAsync(sql, window with { Limit = window.Limit + 1 }, r => host
