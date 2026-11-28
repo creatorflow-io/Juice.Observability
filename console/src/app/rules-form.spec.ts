@@ -11,7 +11,7 @@ const problem = (status: number, title: string, detail: string) => ({ status, er
 function setup(api: Record<string, (...args: never[]) => Observable<unknown>>) {
   const calls: Record<string, unknown[][]> = {};
   const fake = new Proxy({}, {
-    get: (_, name: string) => (...args: unknown[]) => {
+    get: (_, name: string) => name === 'tenant$' ? of({ id: 't1' }) : (...args: unknown[]) => {
       (calls[name] ??= []).push(args);
       return (api[name] as ((...a: unknown[]) => Observable<unknown>) | undefined)?.(...args) ?? EMPTY;
     },

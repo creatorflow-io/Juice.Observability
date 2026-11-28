@@ -4,7 +4,7 @@ import { EMPTY, Observable, expand, map, reduce, shareReplay, switchMap, tap } f
 import { OBSERVABILITY_OPTIONS } from './options';
 import {
   ActionRequest, ActionRequestsWaiting, ActionTarget, Agent, SloDetail, SloSummary, AgentActions, AgentCommand, AgentPackage, EnrollmentToken, AlertDetail, AlertNotifications, Alert, Application, EscalationPolicy, IncidentDetail, IncidentEvent, IncidentSummary, Silence, DependencyEvidence, DependencyStatsPage, DeploymentEnvironment, LoadRun, LoadRunResults, Related, Timeline, Health, LogRecord, MetricInfo, Operation,
-  Page, PlatformOverview, ResourceDetail, ResourceSummary, Rule, SearchHit, Series, Capacity, ServiceStats, Tenant, TelemetryPage, Topology, Trace,
+  Page, PlatformOverview, ResourceDetail, ResourceSummary, Rule, RulePreview, SearchHit, Series, Capacity, ServiceStats, Tenant, TelemetryPage, Topology, Trace,
   TraceSummary, Suggestions, CorrelationDecision, SignalPack
 } from './models';
 
@@ -82,6 +82,8 @@ export class ApiService {
   /** The deployment's signal packs: not a tenant's, so not under it. */
   signalPacks() { return this.http.get<SignalPack[]>(`${this.base}/signal-packs`); }
   createRule(definition: unknown) { return this.send<Rule>('POST', '/rules', definition); }
+  /** A dry evaluation of a draft over the last 24 hours: writes nothing. */
+  previewRule(definition: unknown) { return this.send<RulePreview>('POST', '/rules/preview', definition); }
   /** With the rule's etag, so a change made since it was read isn't overwritten. */
   updateRule(key: string, definition: unknown, etag: string) { return this.send<Rule>('PUT', `/rules/${key}`, definition, { 'If-Match': `"${etag}"` }); }
 

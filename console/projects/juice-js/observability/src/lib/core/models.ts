@@ -154,7 +154,18 @@ export interface Operation {
   p50Ms: number; p95Ms: number; p99Ms: number; lastSeen: string;
 }
 
-export interface MetricInfo { name: string; type: string; unit: string; description: string; }
+export interface MetricInfo { name: string; type: string; unit: string; description: string; /** Sums only: true for a monotonic sum (a counter), false for an up-down counter. */ monotonic?: boolean | null; }
+/** One evaluation of a rule's preview: the value (null for no data) and what the lifecycle made of it. */
+export interface PreviewPoint { at: string; value: number | null; condition: 'Breach' | 'Band' | 'Recovered' | 'NoData' | string; }
+export interface PreviewSubject {
+  subjectKey: string; subjectType: string; breaches: number; noData: number; wouldOpen: number; wouldFire: number; firstFiredAt: string | null;
+  last: number | null; min: number | null; max: number | null; lastDetail: Record<string, string> | null; points: PreviewPoint[];
+}
+/** What a draft rule would have done over the last 24 hours: a dry evaluation. `step` is a TimeSpan, so the result is approximate. */
+export interface RulePreview {
+  from: string; to: string; step: string; points: number; pointsEvaluated: number; complete: boolean; cut: string | null; quiet: string | null; unit: string | null;
+  definition: Record<string, unknown>; subjects: PreviewSubject[]; subjectsTruncated: boolean;
+}
 export interface Point { at: string; value: number | null; }
 export interface Series { name: string; type: string; unit: string; aggregation: string; stepSeconds: number; points: Point[]; }
 export interface ServiceStatsPoint { at: string; requestsPerSecond: number; messagesPerSecond: number; errorRate: number; p95Ms: number | null; }
