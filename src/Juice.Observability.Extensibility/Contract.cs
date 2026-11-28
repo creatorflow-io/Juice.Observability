@@ -1,3 +1,6 @@
+using System.Buffers.Text;
+using System.Reflection;
+using System.Text;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.Http;
@@ -25,22 +28,137 @@ public sealed record ModuleInfo(string Name, string DisplayName, string Version,
 /// <summary>A NuGet interval over the core version: <c>[2.0.0,3.0.0)</c>, <c>(1.9,2.1]</c>, <c>[2.0.0,)</c>, <c>[2.0.0]</c>.</summary>
 public readonly record struct CoreVersionRange(Version? Min, bool MinInclusive, Version? Max, bool MaxInclusive)
 {
-    public static bool TryParse(string text, out CoreVersionRange range) => throw new NotImplementedException();
+    public const int MaxLength = 64;
 
-    public bool Includes(Version core) => throw new NotImplementedException();
+    public static bool TryParse(string text, out CoreVersionRange range)
+    {
+        range = default;
+        if (string.IsNullOrEmpty(text) || text.Length > MaxLength)
+        {
+            return false;
+        }
+        var minInclusive = text[0] == '[';
+        var maxInclusive = text[^1] == ']';
+        if ((!minInclusive && text[0] != '(') || (!maxInclusive && text[^1] != ')') || text.Length < 3)
+        {
+            return false;
+        }
+        var inner = text[1..^1];
+        var comma = inner.IndexOf(',');
+        if (comma < 0)
+        {
+            // "[v]" is the only single-version form
+            if (!minInclusive || !maxInclusive || !TryVersion(inner, out var only))
+            {
+                return false;
+            }
+            range = new CoreVersionRange(only, true, only, true);
+            return true;
+        }
+        var left = inner[..comma];
+        var right = inner[(comma + 1)..];
+        Version? min = null, max = null;
+        if (left.Length > 0 && !TryVersion(left, out min))
+        {
+            return false;
+        }
+        if (right.Length > 0 && !TryVersion(right, out max))
+        {
+            return false;
+        }
+        if (min is null && max is null)
+        {
+            return false;
+        }
+        // an open end is always exclusive
+        if ((min is null && minInclusive) || (max is null && maxInclusive))
+        {
+            return false;
+        }
+        if (min is not null && max is not null)
+        {
+            var order = min.CompareTo(max);
+            if (order > 0 || (order == 0 && !(minInclusive && maxInclusive)))
+            {
+                return false;
+            }
+        }
+        range = new CoreVersionRange(min, minInclusive, max, maxInclusive);
+        return true;
+    }
+
+    public bool Includes(Version core)
+    {
+        ArgumentNullException.ThrowIfNull(core);
+        var version = CoreVersion.Normalize(core);
+        if (Min is not null)
+        {
+            var order = version.CompareTo(Min);
+            if (order < 0 || (order == 0 && !MinInclusive))
+            {
+                return false;
+            }
+        }
+        if (Max is not null)
+        {
+            var order = version.CompareTo(Max);
+            if (order > 0 || (order == 0 && !MaxInclusive))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // 1 to 3 numeric parts, no sign, no whitespace; normalized to Major.Minor.Patch
+    private static bool TryVersion(string text, out Version version)
+    {
+        version = null!;
+        var parts = text.Split('.');
+        if (parts.Length is < 1 or > 3)
+        {
+            return false;
+        }
+        var numbers = new int[3];
+        for (var i = 0; i < parts.Length; i++)
+        {
+            var part = parts[i];
+            if (part.Length is 0 or > 9 || !part.All(char.IsAsciiDigit))
+            {
+                return false;
+            }
+            numbers[i] = int.Parse(part, System.Globalization.CultureInfo.InvariantCulture);
+        }
+        version = new Version(numbers[0], numbers[1], numbers[2]);
+        return true;
+    }
 }
 
 /// <summary>The core's version: Major.Minor.Patch of this assembly's informational version; prerelease and metadata are ignored.</summary>
 public static class CoreVersion
 {
-    public static Version Current => throw new NotImplementedException();
+    public static Version Current { get; } = Parse(
+        typeof(CoreVersion).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+        ?? typeof(CoreVersion).Assembly.GetName().Version?.ToString()
+        ?? "0.0.0");
+
+    /// <summary>Major.Minor.Patch of an informational version; anything after <c>-</c> or <c>+</c> is ignored.</summary>
+    internal static Version Parse(string informational)
+    {
+        var end = informational.IndexOfAny(['-', '+']);
+        var core = end < 0 ? informational : informational[..end];
+        return Version.TryParse(core, out var version) ? Normalize(version) : new Version(0, 0, 0);
+    }
+
+    internal static Version Normalize(Version version)
+        => new(version.Major, Math.Max(version.Minor, 0), Math.Max(version.Build, 0));
 }
 
 public static class CoreRoles
 {
     public const string Viewer = "viewer", Operator = "operator", Admin = "admin";
 
-    public static IReadOnlySet<string> All => throw new NotImplementedException();
+    public static IReadOnlySet<string> All { get; } = new HashSet<string>(StringComparer.Ordinal) { Viewer, Operator, Admin };
 }
 
 public static class CorePolicies
@@ -114,9 +232,35 @@ public sealed record Page<T>(IReadOnlyList<T> Items, string? NextCursor);
 /// <summary>Opaque cursor; the phase names the table in lists that span two.</summary>
 public sealed record PageCursor(string Phase, Guid After)
 {
-    public string Encode() => throw new NotImplementedException();
+    public string Encode() => Base64Url.EncodeToString(Encoding.UTF8.GetBytes($"{Phase}:{After:N}"));
 
-    public static bool TryDecode(string? v, out PageCursor? c) => throw new NotImplementedException();
+    /// <summary>True for a null or empty value (no cursor) and for a valid one; false for anything else.</summary>
+    public static bool TryDecode(string? v, out PageCursor? c)
+    {
+        c = null;
+        if (string.IsNullOrEmpty(v))
+        {
+            return true;
+        }
+        if (v.Length > 128)
+        {
+            return false;
+        }
+        try
+        {
+            var text = Encoding.UTF8.GetString(Base64Url.DecodeFromChars(v));
+            var parts = text.Split(':');
+            if (parts.Length == 2 && parts[0].Length is > 0 and <= 8 && Guid.TryParseExact(parts[1], "N", out var after))
+            {
+                c = new PageCursor(parts[0], after);
+                return true;
+            }
+        }
+        catch (FormatException)
+        {
+        }
+        return false;
+    }
 }
 
 public static class Paging
@@ -124,7 +268,22 @@ public static class Paging
     public const int DefaultLimit = 50, MaxLimit = 200;
 
     /// <summary>Null when valid; a 400 problem otherwise.</summary>
-    public static IResult? Validate(int? limit, string? cursor, out int take, out PageCursor? after) => throw new NotImplementedException();
+    public static IResult? Validate(int? limit, string? cursor, out int take, out PageCursor? after)
+    {
+        take = limit ?? DefaultLimit;
+        after = null;
+        if (take is < 1 or > MaxLimit)
+        {
+            return Results.Problem(statusCode: StatusCodes.Status400BadRequest, title: "Invalid limit",
+                detail: $"limit must be between 1 and {MaxLimit}.");
+        }
+        if (!PageCursor.TryDecode(cursor, out after))
+        {
+            return Results.Problem(statusCode: StatusCodes.Status400BadRequest, title: "Invalid cursor",
+                detail: "cursor must be a value returned as nextCursor.");
+        }
+        return null;
+    }
 }
 
 /// <summary>Data only: validated at composition and returned by <c>/modules</c>.</summary>
