@@ -85,7 +85,7 @@ export class RulesPage {
   protected readonly templates = computed(() => {
     const off = new Set((this.data.value()?.packs ?? []).filter(p => !p.enabled).flatMap(p => p.ruleTemplates));
     const current = this.open()?.rule?.template;
-    return Object.keys(TEMPLATES).filter(t => t !== 'SloBurn' && (!off.has(t) || t === current));
+    return Object.keys(TEMPLATES).filter(t => t !== 'SloBurn' && t !== 'IntegrationHealth' && (!off.has(t) || t === current));
   });
   protected readonly rows = computed(() => {
     const d = this.data.value();
