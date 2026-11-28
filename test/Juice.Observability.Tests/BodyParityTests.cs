@@ -151,8 +151,10 @@ namespace Juice.Observability.Tests
             //  - the frozen formatter's AppendLine is Environment.NewLine: "\n" on the Linux containers 1.x ran in, "\r\n" on a Windows test host;
             //  - the pipeline's email content ends at its last line (ChannelContent.Email trims the end), where 1.x's body ended with a blank line.
             var legacyOnLinux = legacyBody.Replace(Environment.NewLine, "\n");
-            Assert.EndsWith("\n", legacyOnLinux);
-            Assert.Equal(legacyOnLinux.TrimEnd(), email.Text);
+            // Exactly that: the last line's break and the one blank line after it (the single alert's trailing AppendLine), not all trailing
+            // whitespace, so a stray extra blank line or space still fails.
+            Assert.EndsWith("\n\n", legacyOnLinux);
+            Assert.Equal(legacyOnLinux[..^2], email.Text);
         }
 
     }
