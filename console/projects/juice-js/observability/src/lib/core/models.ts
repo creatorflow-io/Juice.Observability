@@ -80,8 +80,6 @@ export interface AgentAction {
   risk: string;
   /** What the platform's policy needs before it runs: None, Admin or SecondPerson. */
   approval: string;
-  /** What a dry run needs (None, Admin or SecondPerson), for an action with a `dryRun` parameter; absent when the server doesn't say. */
-  dryRunApproval?: string | null;
 }
 /** A health subject an action should make healthy: Service or Application (with environmentId), Instance or Host. */
 export interface ActionTarget { type: string; id: string; environmentId?: string | null; }

@@ -7,6 +7,7 @@
     <Project Path="src/Juice.Observability.Api/Juice.Observability.Api.csproj" />
     <Project Path="src/Juice.Observability.Data/Juice.Observability.Data.csproj" />
     <Project Path="src/Juice.Observability.Discovery/Juice.Observability.Discovery.csproj" />
+    <Project Path="src/Juice.Observability.Extensibility/Juice.Observability.Extensibility.csproj" />
     <Project Path="src/Juice.Observability.Host/Juice.Observability.Host.csproj" />
     <Project Path="src/Juice.Observability.Health/Juice.Observability.Health.csproj" />
     <Project Path="src/Juice.Observability.Notifications/Juice.Observability.Notifications.csproj" />
