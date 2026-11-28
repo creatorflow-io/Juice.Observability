@@ -262,7 +262,10 @@ namespace Juice.Observability.Tests.Events
         [Fact]
         public void Alert_fire_and_resolve_after_fire_raise_event_pending_does_not()
         {
-            using var db = new ScratchDatabase("none").Context();
+            // Nothing is read or written: the context only collects the transition, so no stack is needed.
+            var options = new DbContextOptionsBuilder<PlatformDbContext>();
+            PlatformDbContext.Configure(options, "Host=127.0.0.1;Port=1;Database=none;Username=none;Password=none");
+            using var db = new PlatformDbContext(options.Options);
             Alert Open(DateTimeOffset? firedAt) => new() { TenantId = Guid.NewGuid(), DedupKey = "r|s", SubjectKey = "s", State = AlertState.Pending, FiredAt = firedAt };
 
             var pending = Open(null);
