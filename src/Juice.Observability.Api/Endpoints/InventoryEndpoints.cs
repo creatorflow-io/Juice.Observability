@@ -124,17 +124,10 @@ namespace Juice.Observability.Api.Endpoints
         private static async ValueTask<object?> TenantScopeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
         {
             var http = context.HttpContext;
-            var claim = http.User.FindFirst(http.RequestServices.GetRequiredService<IOptions<AuthOptions>>().Value.TenantClaim)?.Value;
-            var id = Guid.Parse((string)http.GetRouteValue("tenantId")!);
-            var db = http.RequestServices.GetRequiredService<PlatformDbContext>();
-            var tenant = claim is null ? null : await db.Tenants.AsNoTracking()
-                .SingleOrDefaultAsync(t => t.Id == id && t.Key == claim && t.Status == TenantStatus.Active, http.RequestAborted);
-            if (tenant is null)
+            if (await TenantScope.AuthorizeAsync(http, Guid.Parse((string)http.GetRouteValue("tenantId")!)) is { } refused)
             {
-                return Results.Problem(statusCode: StatusCodes.Status403Forbidden, title: "Tenant not authorized",
-                    detail: "The caller is not authorized for this tenant.");
+                return refused;
             }
-            http.Items[TelemetryEndpoints.TenantKeyItem] = tenant.Key;
             return await next(context);
         }
 
@@ -333,5 +326,31 @@ namespace Juice.Observability.Api.Endpoints
 
         private static Page<T> PageOf<T>(List<T> rows, int take, Func<T, Cursor> cursorOf)
             => rows.Count > take ? new Page<T>(rows[..take], cursorOf(rows[take - 1]).Encode()) : new Page<T>(rows, null);
+    }
+
+    /// <summary>
+    /// Whether the caller's token is for a tenant (requirements §6.1): its tenant claim names an Active tenant row of that id. The group filter of
+    /// every tenant route and the inbox's in-process decisions judge it here, so neither can be looser than the other.
+    /// </summary>
+    internal static class TenantScope
+    {
+        /// <summary>
+        /// Null when the caller may use the tenant; otherwise the 403. An unknown id and another tenant's id get the same answer, so the response
+        /// does not reveal which tenants exist. On success the tenant's key is kept for the telemetry endpoints (<see cref="TelemetryEndpoints.TenantKeyItem"/>).
+        /// </summary>
+        public static async ValueTask<IResult?> AuthorizeAsync(HttpContext http, Guid tenantId)
+        {
+            var claim = http.User.FindFirst(http.RequestServices.GetRequiredService<IOptions<AuthOptions>>().Value.TenantClaim)?.Value;
+            var db = http.RequestServices.GetRequiredService<PlatformDbContext>();
+            var tenant = claim is null ? null : await db.Tenants.AsNoTracking()
+                .SingleOrDefaultAsync(t => t.Id == tenantId && t.Key == claim && t.Status == TenantStatus.Active, http.RequestAborted);
+            if (tenant is null)
+            {
+                return Results.Problem(statusCode: StatusCodes.Status403Forbidden, title: "Tenant not authorized",
+                    detail: "The caller is not authorized for this tenant.");
+            }
+            http.Items[TelemetryEndpoints.TenantKeyItem] = tenant.Key;
+            return null;
+        }
     }
 }

@@ -36,8 +36,10 @@ namespace Juice.Observability.Api.Endpoints
     /// <param name="Limits">The host's other bounds, in words.</param>
     /// <param name="Risk">One of <c>ActionRisks</c>.</param>
     /// <param name="Approval">What the platform's policy needs before it's signed: one of <c>ApprovalPolicies</c>.</param>
+    /// <param name="DryRunApproval">For an action with a <c>dryRun</c> parameter: what its dry run needs (the policy for the risk of a run with <c>dryRun: true</c>,
+    /// as the platform resolves it); otherwise null.</param>
     public sealed record AgentActionDto(string Name, string Description, bool Changing, bool Custom, IReadOnlyList<ActionParameter> Parameters, bool? Permitted,
-        IReadOnlyList<string> Limits, string Risk, string Approval);
+        IReadOnlyList<string> Limits, string Risk, string Approval, string? DryRunApproval = null);
 
     /// <summary>An agent's actions, and when it last reported them; <c>ReportedAt</c> null means the built-in actions, as an older agent has.</summary>
     public sealed record AgentActionsDto(DateTimeOffset? ReportedAt, IReadOnlyList<AgentActionDto> Items);
@@ -109,12 +111,26 @@ namespace Juice.Observability.Api.Endpoints
             // A built-in's risk is the platform's own, whatever a report says.
             string RiskOf(ActionDescriptor d) => (AgentActions.Descriptors.FirstOrDefault(b => b.Name == d.Name) ?? d).RiskOf();
             AgentActionDto Dto(ActionDescriptor d, bool? permitted, IReadOnlyList<string> limits)
-                => new(d.Name, d.Description, d.Changing, d.Custom, d.Parameters, permitted, limits, RiskOf(d), approval.Value.PolicyFor(d.Name, RiskOf(d)));
+                => new(d.Name, d.Description, d.Changing, d.Custom, d.Parameters, permitted, limits, RiskOf(d), approval.Value.PolicyFor(d.Name, RiskOf(d)),
+                    DryRunApproval(d, approval.Value));
             if (ReportOf(agent) is { } report)
             {
                 return Results.Ok(new AgentActionsDto(agent.ActionsReportedAt, [.. report.Actions.Select(r => Dto(r.Action, r.Permitted, r.Limits))]));
             }
             return Results.Ok(new AgentActionsDto(null, [.. AgentActions.Descriptors.Select(d => Dto(d, null, []))]));
+        }
+
+        private static readonly JsonElement DryRunParameters = JsonDocument.Parse("""{"dryRun":true}""").RootElement.Clone();
+
+        /// <summary>What a dry run of the action needs, as <see cref="Resolve"/> decides it (its override, else the policy for the risk of a run with <c>dryRun</c>); null when it has no <c>dryRun</c> parameter.</summary>
+        private static string? DryRunApproval(ActionDescriptor d, ActionApprovalOptions approval)
+        {
+            if (!d.Parameters.Any(p => p.Name == "dryRun"))
+            {
+                return null;
+            }
+            var builtIn = AgentActions.Descriptors.FirstOrDefault(b => b.Name == d.Name) ?? d;
+            return approval.PolicyFor(d.Name, AgentActions.RiskOf(builtIn, DryRunParameters));
         }
 
         /// <summary>A one-time token for enrolling one agent, valid 5 minutes to 24 hours (an hour by default). Shown once.</summary>

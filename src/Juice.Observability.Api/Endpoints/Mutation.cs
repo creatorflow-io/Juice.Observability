@@ -19,15 +19,26 @@ namespace Juice.Observability.Api.Endpoints
 
         public string Actor { get; } = http.User.Actor();
 
+        /// <summary>How the change was reached when not by its own endpoint (<c>inbox</c>): kept as <c>via</c> in every audit record this writes. Null: the endpoint.</summary>
+        public string? Via { get; init; }
+
         public static IResult Problem(int status, string title, string detail) => Results.Problem(statusCode: status, title: title, detail: detail);
 
         public static IResult Invalid(IEnumerable<string> errors) => Results.Problem(statusCode: StatusCodes.Status400BadRequest, title: "Invalid request", detail: string.Join(" ", errors));
 
-        public void Audit(AuditOutcome outcome, string? target, Dictionary<string, string>? metadata = null) => db.AuditRecords.Add(new AuditRecord
+        public void Audit(AuditOutcome outcome, string? target, Dictionary<string, string>? metadata = null)
         {
-            TenantId = tenantId, Actor = Actor, Operation = operation, TargetType = targetType, TargetId = target, Outcome = outcome,
-            CorrelationId = CorrelationId.Get(http), Metadata = metadata ?? [],
-        });
+            metadata ??= [];
+            if (Via is not null)
+            {
+                metadata["via"] = Via;
+            }
+            db.AuditRecords.Add(new AuditRecord
+            {
+                TenantId = tenantId, Actor = Actor, Operation = operation, TargetType = targetType, TargetId = target, Outcome = outcome,
+                CorrelationId = CorrelationId.Get(http), Metadata = metadata,
+            });
+        }
 
         /// <summary>A configuration change, on the timeline beside deployments. Only names: never a URL, an address or a secret reference.</summary>
         public void RecordChange(string summary, DateTimeOffset now, Dictionary<string, string>? attributes = null) => db.ChangeEvents.Add(new ChangeEvent

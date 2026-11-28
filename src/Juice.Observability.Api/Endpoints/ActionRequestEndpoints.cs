@@ -267,16 +267,16 @@ namespace Juice.Observability.Api.Endpoints
         /// </summary>
         private static Task<IResult> ApproveAsync(Guid tenantId, Guid requestId, ActionDecision? decision, HttpContext http, PlatformDbContext db, IServiceProvider services,
             IOptions<PlatformOptions> platform, IOptions<ActionApprovalOptions> approval, TimeProvider clock, CancellationToken ct)
-            => ApproveCoreAsync(tenantId, requestId, decision?.Comment, http, db, services, platform, approval, clock, ct);
+            => ApproveCoreAsync(tenantId, requestId, decision?.Comment, null, http, db, services, platform, approval, clock, ct);
 
         /// <summary>
         /// The approval itself, for the HTTP endpoint and for any other entry point that decides in-process: the role is the caller's own token's, the
         /// request is looked up by the tenant given, and every check, the audit and the signing are the ones the endpoint runs.
         /// </summary>
-        internal static async Task<IResult> ApproveCoreAsync(Guid tenantId, Guid requestId, string? comment, HttpContext http, PlatformDbContext db, IServiceProvider services,
+        internal static async Task<IResult> ApproveCoreAsync(Guid tenantId, Guid requestId, string? comment, string? via, HttpContext http, PlatformDbContext db, IServiceProvider services,
             IOptions<PlatformOptions> platform, IOptions<ActionApprovalOptions> approval, TimeProvider clock, CancellationToken ct)
         {
-            var mutation = new Mutation(http, db, tenantId, "action.request.approve", "action_request");
+            var mutation = new Mutation(http, db, tenantId, "action.request.approve", "action_request") { Via = via };
             if (await mutation.RequireAsync(requestId.ToString(), ct, Roles.Admin) is { } denied) return denied;
             if (services.GetService<AgentAuthority>() is not { } authority) return Mutation.Problem(StatusCodes.Status409Conflict, "Agents are not enabled", "This deployment has no agent CA.");
             await using var transaction = await db.Database.BeginTransactionAsync(ct);
@@ -353,13 +353,13 @@ namespace Juice.Observability.Api.Endpoints
 
         private static Task<IResult> RejectAsync(Guid tenantId, Guid requestId, ActionDecision? decision, HttpContext http, PlatformDbContext db, IServiceProvider services,
             TimeProvider clock, CancellationToken ct)
-            => RejectCoreAsync(tenantId, requestId, decision?.Comment, http, db, services, clock, ct);
+            => RejectCoreAsync(tenantId, requestId, decision?.Comment, null, http, db, services, clock, ct);
 
         /// <summary>The rejection itself, for the HTTP endpoint and for any other entry point that decides in-process (see <see cref="ApproveCoreAsync"/>).</summary>
-        internal static async Task<IResult> RejectCoreAsync(Guid tenantId, Guid requestId, string? rawComment, HttpContext http, PlatformDbContext db, IServiceProvider services,
+        internal static async Task<IResult> RejectCoreAsync(Guid tenantId, Guid requestId, string? rawComment, string? via, HttpContext http, PlatformDbContext db, IServiceProvider services,
             TimeProvider clock, CancellationToken ct)
         {
-            var mutation = new Mutation(http, db, tenantId, "action.request.reject", "action_request");
+            var mutation = new Mutation(http, db, tenantId, "action.request.reject", "action_request") { Via = via };
             if (await mutation.RequireAsync(requestId.ToString(), ct, Roles.Admin) is { } denied) return denied;
             var comment = ChangeSanitizer.Text(rawComment, 500);
             if (comment.Length == 0) return Mutation.Invalid(["comment is required: say why it shouldn't run."]);

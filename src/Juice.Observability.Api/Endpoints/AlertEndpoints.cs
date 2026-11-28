@@ -130,10 +130,10 @@ namespace Juice.Observability.Api.Endpoints
         /// </summary>
         private static Task<IResult> AcknowledgeAsync(Guid tenantId, Guid alertId, AcknowledgeRequest? request, HttpContext http,
             PlatformDbContext db, IMediator mediator, CancellationToken ct)
-            => AcknowledgeCoreAsync(tenantId, alertId, request?.Comment, http, db, mediator, ct);
+            => AcknowledgeCoreAsync(tenantId, alertId, request?.Comment, null, http, db, mediator, ct);
 
         /// <summary>The acknowledgement itself, for the HTTP endpoint and for any other entry point that acts in-process: the role is the caller's own token's.</summary>
-        internal static async Task<IResult> AcknowledgeCoreAsync(Guid tenantId, Guid alertId, string? rawComment, HttpContext http,
+        internal static async Task<IResult> AcknowledgeCoreAsync(Guid tenantId, Guid alertId, string? rawComment, string? via, HttpContext http,
             PlatformDbContext db, IMediator mediator, CancellationToken ct)
         {
             var actor = http.User.Actor();
@@ -142,8 +142,7 @@ namespace Juice.Observability.Api.Endpoints
             void Audit(AuditOutcome outcome, string? reason = null) => db.AuditRecords.Add(new AuditRecord
             {
                 TenantId = tenantId, Actor = actor, Operation = "alert.acknowledge", TargetType = "alert", TargetId = alertId.ToString(),
-                Outcome = outcome, CorrelationId = correlationId,
-                Metadata = reason is null ? [] : new() { ["reason"] = reason },
+                Outcome = outcome, CorrelationId = correlationId, Metadata = AckMetadata(reason, via),
             });
 
             if (!http.User.IsInRole(Roles.Operator) && !http.User.IsInRole(Roles.Admin))
@@ -183,13 +182,24 @@ namespace Juice.Observability.Api.Endpoints
             }
 
             using var context = PlatformMessageContext.Begin("api", correlationId);
-            var outcome = await mediator.Send(new AcknowledgeAlert(tenantId, alertId, comment, actor, correlationId, key, operation, requestHash), ct);
+            var outcome = await mediator.Send(new AcknowledgeAlert(tenantId, alertId, comment, actor, correlationId, key, operation, requestHash, via), ct);
             return outcome.Status switch
             {
                 StatusCodes.Status404NotFound => Results.Problem(statusCode: StatusCodes.Status404NotFound, title: "Alert not found"),
                 StatusCodes.Status409Conflict => Results.Problem(statusCode: StatusCodes.Status409Conflict, title: "Alert resolved", detail: "A resolved alert cannot be acknowledged."),
                 _ => Results.Text(outcome.Body!, "application/json", Encoding.UTF8, outcome.Status),
             };
+        }
+
+        /// <summary>An acknowledgement's audit metadata: why it failed, and <c>via</c> when it didn't come through its own endpoint.</summary>
+        internal static Dictionary<string, string> AckMetadata(string? reason, string? via)
+        {
+            var metadata = reason is null ? new Dictionary<string, string>() : new() { ["reason"] = reason };
+            if (via is not null)
+            {
+                metadata["via"] = via;
+            }
+            return metadata;
         }
 
         internal static async Task<List<AlertDto>> ToDtosAsync(PlatformDbContext db, Guid tenantId, IReadOnlyList<Alert> alerts, CancellationToken ct)
@@ -208,7 +218,7 @@ namespace Juice.Observability.Api.Endpoints
 
     /// <summary>Acknowledge an alert, already checked by the endpoint (role, comment, a key not used before).</summary>
     internal sealed record AcknowledgeAlert(Guid PlatformTenantId, Guid AlertId, string? Comment, string Actor, string? CorrelationId,
-        string IdempotencyKey, string Operation, string RequestHash) : MessageBase, IRequest<AcknowledgeOutcome>;
+        string IdempotencyKey, string Operation, string RequestHash, string? Via = null) : MessageBase, IRequest<AcknowledgeOutcome>;
 
     /// <summary>The status to answer with, and the alert as JSON when it's 200.</summary>
     internal sealed record AcknowledgeOutcome(int Status, string? Body);
@@ -226,7 +236,7 @@ namespace Juice.Observability.Api.Endpoints
             void Audit(AuditOutcome outcome, string? reason = null) => db.AuditRecords.Add(new AuditRecord
             {
                 TenantId = request.PlatformTenantId, Actor = request.Actor, Operation = "alert.acknowledge", TargetType = "alert", TargetId = request.AlertId.ToString(),
-                Outcome = outcome, CorrelationId = request.CorrelationId, Metadata = reason is null ? [] : new() { ["reason"] = reason },
+                Outcome = outcome, CorrelationId = request.CorrelationId, Metadata = AlertEndpoints.AckMetadata(reason, request.Via),
             });
 
             var alert = await db.Alerts.SingleOrDefaultAsync(a => a.TenantId == request.PlatformTenantId && a.Id == request.AlertId, cancellationToken);
