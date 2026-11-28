@@ -73,8 +73,12 @@ namespace Juice.Observability.Tests.ModuleNotifications
             using (NotifySampleModule.Use(() => [Declare(ObservabilityTypes.AlertFiring)]))
             {
                 var e = Refused<AlertNamedModule>(builder);
-                Assert.Contains("core type", e.Message);
-                Assert.Contains(ObservabilityTypes.AlertFiring, e.Message);
+                Assert.Contains("core type family", e.Message);
+                Assert.Contains("alert", e.Message);
+            }
+            using (NotifySampleModule.Use(() => [Declare("observability.action.x")]))
+            {
+                Assert.Contains("core type family", Refused<ActionNamedModule>(builder).Message);
             }
             using (NotifySampleModule.Use(() => [Declare(ObservabilityTypes.AlertResolved)]))
             {
@@ -154,7 +158,7 @@ namespace Juice.Observability.Tests.ModuleNotifications
             var builder = Core();
             var before = Keys(builder.Services);
             Refused<DeclaresThenFailsModule>(builder);
-            // Its types were appended as it went; the next declaration, or the pipeline's start, takes them back.
+            // Its types were appended as it went; the next AddNotificationTypes call takes them back.
             builder.AddObservabilityModule<NotifySampleModule>();
             Assert.Equal([.. before, NotifySampleModule.Ping], Keys(builder.Services));
         }
@@ -311,5 +315,66 @@ namespace Juice.Observability.Tests.ModuleNotifications
         }
 
         private sealed class Recorder;
+
+        private class PagerProvider(string channel) : INotificationProvider
+        {
+            public PagerProvider() : this("notify-sample-pager")
+            {
+            }
+
+            public string Channel => channel;
+            public string Kind => "pager";
+            public bool Idempotent => true;
+            public bool RequiresSecret => false;
+            public string? CheckSettings(string settingsJson) => null;
+            public Task<SendResult> SendAsync(RenderedDelivery delivery, IntegrationContext integration, CancellationToken cancellationToken)
+                => Task.FromResult(new SendResult(AttemptOutcome.Delivered, null, "x", null, null));
+        }
+
+        private sealed class WebhookPagerProvider() : PagerProvider("webhook");
+
+        private sealed class OtherModulePagerProvider() : PagerProvider("notify-other-pager");
+
+        private sealed class NeedsServiceProvider(Recorder recorder) : PagerProvider
+        {
+            public Recorder Recorder => recorder;
+        }
+
+        [Fact]
+        public void A_provider_must_serve_the_modules_own_channel()
+        {
+            var builder = Core();
+            var before = builder.Services.Count;
+            // A new kind on a core channel: the pipeline would hand the module's provider the core channel's deliveries.
+            using (NotifySampleModule.Use(() => [], s => { s.AddSingleton(Channel("notify-sample-pager")); s.AddSingleton<INotificationProvider, WebhookPagerProvider>(); }))
+            {
+                Assert.Contains("webhook", Refused<NotifySampleModule>(builder).Message);
+            }
+            using (NotifySampleModule.Use(() => [], s => { s.AddSingleton(Channel("notify-sample-pager")); s.AddSingleton<INotificationProvider>(new PagerProvider("slack")); }))
+            {
+                Assert.Contains("slack", Refused<NotifySampleModule>(builder).Message);
+            }
+            // Another module's key, and a provider for a channel the call doesn't add.
+            using (NotifySampleModule.Use(() => [], s => { s.AddSingleton(Channel("notify-sample-pager")); s.AddSingleton<INotificationProvider, OtherModulePagerProvider>(); }))
+            {
+                Refused<NotifySampleModule>(builder);
+            }
+            // Built by a factory or with services, its channel can't be known now.
+            using (NotifySampleModule.Use(() => [], s => { s.AddSingleton(Channel("notify-sample-pager")); s.AddSingleton<INotificationProvider>(_ => new PagerProvider()); }))
+            {
+                Assert.Contains("provider", Refused<NotifySampleModule>(builder).Message);
+            }
+            using (NotifySampleModule.Use(() => [], s => { s.AddSingleton(Channel("notify-sample-pager")); s.AddSingleton<INotificationProvider, NeedsServiceProvider>(); }))
+            {
+                Refused<NotifySampleModule>(builder);
+            }
+            Assert.Equal(before, builder.Services.Count);
+
+            using (NotifySampleModule.Use(() => [], s => { s.AddSingleton(Channel("notify-sample-pager")); s.AddSingleton<INotificationProvider, PagerProvider>(); }))
+            {
+                builder.AddObservabilityModule<NotifySampleModule>();
+            }
+            Assert.Contains(builder.Services, d => d.ServiceType == typeof(INotificationProvider) && d.ImplementationType == typeof(PagerProvider));
+        }
     }
 }

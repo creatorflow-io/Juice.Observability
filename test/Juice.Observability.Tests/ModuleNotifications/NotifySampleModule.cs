@@ -76,6 +76,11 @@ namespace Juice.Observability.Tests.ModuleNotifications
         public override ModuleInfo Info { get; } = new("alert", "Alert named", "1.0.0", "[2.0.0,3.0.0)");
     }
 
+    public sealed class ActionNamedModule : NotifySampleModule
+    {
+        public override ModuleInfo Info { get; } = new("action", "Action named", "1.0.0", "[2.0.0,3.0.0)");
+    }
+
     /// <summary>Declares valid types, then fails: what it declared goes with it.</summary>
     public sealed class DeclaresThenFailsModule : NotifySampleModule
     {

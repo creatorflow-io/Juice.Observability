@@ -40,6 +40,10 @@ namespace Juice.Observability.Notifications
         /// <summary>The channels of the core: the built-ins and the chat providers' (a module's package can't replace one).</summary>
         private static readonly string[] ReservedChannels = ["webhook", "email", "inbox", "slack", "teams"];
 
+        /// <summary>The first segment after <c>observability.</c> of every core type (<c>alert</c>, <c>action</c>): no module takes it as its name.</summary>
+        private static readonly HashSet<string> CoreFamilies = ObservabilityTypes.All().Select(t => t.Key).OfType<string>()
+            .Select(k => k.Split('.')[1]).ToHashSet(StringComparer.Ordinal);
+
         // What this host's options hold that a module put there: lets a later call take back what a refused module left.
         private static readonly ConditionalWeakTable<NotificationsEmbeddedOptions, List<TypeDeclaration>> Appended = new();
 
@@ -54,6 +58,11 @@ namespace Juice.Observability.Notifications
             ArgumentNullException.ThrowIfNull(types);
             RequireHostBuilder(b);
             var module = b.Module.Name;
+            // A module named like a core family would own its types' prefix (observability.alert.*).
+            if (CoreFamilies.Contains(module))
+            {
+                throw new ModuleCompositionException($"Module '{module}' notification types are refused: the module's name is a core type family ('observability.{module}.*').");
+            }
             var options = Options(b);
             var records = b.Services.Where(d => d.ServiceType == typeof(ModuleNotificationTypes)).Select(d => d.ImplementationInstance).OfType<ModuleNotificationTypes>().ToList();
             TakeBackRefused(options, records);
@@ -103,7 +112,8 @@ namespace Juice.Observability.Notifications
         /// Adds channels to the embedded instance. <paramref name="register"/> runs on a scratch collection first. Every <see cref="ChannelDefinition"/> it adds
         /// must be an instance whose key matches <c>^[a-z][a-z0-9-]{1,31}$</c>, isn't <c>webhook</c>, <c>email</c>, <c>inbox</c>, <c>slack</c> or <c>teams</c>, and isn't a key
         /// already registered; otherwise the call is refused and nothing is added. Then the descriptors are copied over. The channel's provider is the module's
-        /// own trusted code: it must send through the pipeline's destination policy client (docs/extensibility-notifications.md).
+        /// own trusted code and must enforce its own destination allowlist (docs/extensibility-notifications.md). Every <see cref="INotificationProvider"/> the call
+        /// registers must serve one of the module's own channels (an instance, or a type with a public parameterless constructor), never a core or another module's.
         /// </summary>
         public static IModuleServicesBuilder AddNotificationChannels(this IModuleServicesBuilder b, Action<IServiceCollection> register)
         {
@@ -145,12 +155,41 @@ namespace Juice.Observability.Notifications
                 keys.Add(key);
             }
 
+            // The module's providers serve its own channels only: a provider of another kind on a core channel would be handed that channel's deliveries.
+            var own = keys.Concat(b.Services.Where(d => d.ServiceType == typeof(ModuleNotificationChannels)).Select(d => d.ImplementationInstance)
+                .OfType<ModuleNotificationChannels>().Where(c => c.Module == module).SelectMany(c => c.Keys)).ToHashSet(StringComparer.Ordinal);
+            foreach (var descriptor in scratch.Where(d => d.ServiceType == typeof(INotificationProvider) || d.ServiceType.IsAssignableTo(typeof(INotificationProvider))))
+            {
+                var channel = ProviderChannel(descriptor) ?? throw new ModuleCompositionException(
+                    $"Module '{module}' provider is refused: register an INotificationProvider as an instance, or as a type with a public parameterless constructor, so its channel can be checked.");
+                if (!own.Contains(channel))
+                {
+                    throw new ModuleCompositionException($"Module '{module}' provider for channel '{channel}' is refused: a provider serves its own module's channels only.");
+                }
+            }
+
             foreach (var descriptor in scratch)
             {
                 b.Services.Add(descriptor);
             }
             b.Services.AddSingleton(new ModuleNotificationChannels(module, keys));
             return b;
+        }
+
+        /// <summary>The channel a provider descriptor serves, or null when it can't be told without building it from the container.</summary>
+        private static string? ProviderChannel(ServiceDescriptor descriptor)
+        {
+            if (descriptor.IsKeyedService)
+            {
+                return null;
+            }
+            if (descriptor.ImplementationInstance is INotificationProvider instance)
+            {
+                return instance.Channel;
+            }
+            return descriptor.ImplementationType is { IsAbstract: false } type && type.GetConstructor(Type.EmptyTypes) is not null
+                ? ((INotificationProvider)Activator.CreateInstance(type)!).Channel
+                : null;
         }
 
         private static HashSet<string> RegisteredChannels(IServiceCollection services)

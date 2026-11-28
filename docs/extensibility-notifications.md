@@ -41,8 +41,13 @@ public void ConfigureServices(IModuleServicesBuilder module)
   or a keyed service), with a key matching `^[a-z][a-z0-9-]{1,31}$`. The key can't be `webhook`, `email`, `inbox`, `slack` or `teams`, or one already
   registered (the core's, another module's, or twice in one call). Otherwise the call is refused and none of its registrations is added.
 - The scratch descriptors are then copied into the host's services. The module's provider (`INotificationProvider`) is **trusted code**: it runs in
-  the pipeline's process with the pipeline's access. A provider that sends over HTTP must do it through the platform's destination policy client
-  (`SafeHttpClient`, which checks every address against `DestinationPolicy` and the allowlist), never a client of its own.
+  the pipeline's process with the pipeline's access. The pipeline's destination-checking client is private to its webhook provider, so **a module
+  channel's provider must enforce its own destination allowlist** (no redirects, every resolved address checked, as `SafeHttpClient` does for the
+  platform's own senders). A public pipeline client for providers is a request to Juice.Notifications.
+- Every `INotificationProvider` the call registers must serve one of the **module's own channels**: never `webhook`, `email`, `inbox`, `slack`, `teams`
+  or another module's key, whatever its `Kind`. So that the channel can be checked at composition, register it as an instance, or as a type with a public
+  parameterless constructor; a factory, a keyed registration or a type that needs services is refused.
+- A module can't be named `alert` or `action` (the first segment of the core's own types): it would own that prefix.
 - A channel whose shared targets have addresses of their own kind needs its provider to implement `ITargetAddresses` (the pipeline's default rule for
   a target's address is a URL).
 - The channel's key is a channel for the pipeline's routes and integrations (a provisioning file or the admin pages), like any other.
