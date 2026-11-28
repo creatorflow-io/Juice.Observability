@@ -100,9 +100,18 @@ public static class RuleTemplateModuleExtensions
         CoreBuilders.Require(b);
         Contribute<T>(b, "rule template");
         b.Services.AddSingleton<IRuleTemplate, T>();
-        if (typeof(T).GetConstructor(Type.EmptyTypes) is not null && RuleTemplateKeys.Error(b.Module.Name, Activator.CreateInstance<T>().Info.Key) is { } error)
+        if (typeof(T).GetConstructor(Type.EmptyTypes) is not null)
         {
-            throw new ModuleCompositionException($"module '{b.Module.Name}': rule template {typeof(T).Name}: {error}");
+            var key = Activator.CreateInstance<T>().Info.Key;
+            if (RuleTemplateKeys.Error(b.Module.Name, key) is { } error)
+            {
+                throw new ModuleCompositionException($"module '{b.Module.Name}': rule template {typeof(T).Name}: {error}");
+            }
+            // A template key is not an alert source's, whichever was declared first.
+            if (b.Services.Any(d => d.ServiceType == typeof(IAlertSource) && d.IsKeyedService && Equals(d.ServiceKey, AlertSourceKeys.Key(b.Module.Name, key))))
+            {
+                throw new ModuleCompositionException($"module '{b.Module.Name}': rule template {typeof(T).Name}: '{key}' is already declared as an alert source");
+            }
         }
         return b;
     }
