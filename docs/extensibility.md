@@ -43,6 +43,45 @@ makes no database access.
   `@juice-js/observability-<name>` package and the core's own package has no such name. How the core and the internal modules appear in the
   Console menu is a question for M3.
 
+## Limits in 2.0 M2
+
+M2 adds the rest of the seams. Rule templates and threshold providers are in [extensibility-rules.md](extensibility-rules.md); leased workers and
+domain events are in [extensibility-workers-events.md](extensibility-workers-events.md). This page covers module data and alert sources.
+
+**Module data** (`AddModuleData<TContext>`, `TContext : ModuleDbContext`; the M1 `AddMigrations` keeps its behaviour):
+
+- The module's tables live in its own schema, the module name with `-` turned into `_`. `ModuleDbContext.Module` must equal the registering module's
+  name, and the model must put every table in that schema (call the base `OnModelCreating`) or in `Adopts`. Anything else throws
+  `ModuleCompositionException` at composition. Nothing is applied to your model: naming convention and column names are yours, and your migrations
+  are generated with the schema, so design-time options must match.
+- The history table is `<schema>.__ef_migrations_history`. Migrations run at start, in module order, after the core's, on their own connection and
+  under a session advisory lock (`module-migrations:<module>`), so replicas starting together migrate once. A failure stops the host.
+  With `Database:Migrate` false, a pending module migration stops the host, naming the module and the migration.
+- **Adoption.** A module that takes over tables of a feature that moved out of the core (the SLO, load-run, correlation, escalation and agent tables,
+  `CoreMovedTables.All`), or tables outside the core's model, lists them in `Adopts`. Any other table of the core is refused at composition. While
+  the module's history is empty:
+  - all the tables exist, and every column the first migration's `CreateTable` operations name is there: the first migration is recorded as applied,
+    not run, and later migrations run as usual;
+  - none exists: migrated as usual, which creates them;
+  - otherwise (some exist, or a column is missing): the host stops and nothing is changed.
+
+  The first migration of an adopting module may hold only operations that create the adopted tables (and `EnsureSchema`); put the module's other
+  tables in a later migration. A module never drops or alters an adopted table.
+- **Atomic writes.** At runtime `TContext` is scoped over the request's connection and joins the core's transaction. `IModuleMutation.SaveAsync`
+  saves every module context of the request, then the core's audit and idempotency records, in one transaction (opened if none is), so a failed
+  audit or idempotency save leaves no module row. `BeginTransactionAsync` enlists the contexts already created and any created later. A module that
+  calls `SaveChangesAsync` on its own context inside the transaction is still covered; outside one, that save commits on its own.
+
+**Alert sources** (`AddAlertSource(template)`; `IAlertSource` is a keyed scoped service, `GetRequiredKeyedService<IAlertSource>(template)`):
+
+- A source acts only on the platform-managed rules of its template, in the platform tenant. A signal naming another rule, a subject or environment of
+  another tenant, or a fire without a subject refuses the whole call with `ArgumentException`, and nothing is written.
+- `ApplyAsync` joins a transaction already open (a command's handler, which is how the SLO burn evaluation calls it). Outside one it commits the
+  alerts, their transitions and the outbox rows together, and takes `pg_advisory_xact_lock('alert-source:<template>')` either way.
+- A template is declared once per host and is never a registry template. The core's `SloBurn` is the slos module's. Storing a rule of a module's own
+  template (and `IAlertSource.EnsureRules`) comes with the first module that moves a feature, so until then a module's source has no rules to act on.
+- The composition calls (`AddModuleData`, `AddAlertSource`) reach the host's implementation by name, so they work only in a Juice Observability host.
+
 ## Breaking change for package consumers
 
 `Page<T>` moved from `Juice.Observability.Api.Endpoints` to `Juice.Observability.Extensibility` (one type for the core and its modules, the same

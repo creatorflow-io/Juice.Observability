@@ -61,7 +61,8 @@ namespace Juice.Observability.Slos
             {
                 return new(0, 0, 0);
             }
-            if (db.Database.CurrentTransaction is not null)
+            // Inside a command (its TransactionBehavior saves and commits after the handler) or in a transaction someone began: join it.
+            if (db.IsManaged || db.HasActiveTransaction)
             {
                 return await ApplyInTransactionAsync(signals, ct);
             }
@@ -74,6 +75,25 @@ namespace Juice.Observability.Slos
         /// (<see cref="ArgumentException"/>).
         /// </summary>
         internal async Task<AlertSourceResult> ApplyInTransactionAsync(IReadOnlyList<AlertSignal> signals, CancellationToken ct)
+        {
+            // A command's handler runs before its transaction begins (the behavior then joins one already open): the lock needs one, so it is
+            // begun here, and given up if this fails, or the scope would keep a transaction nobody commits.
+            var own = db.Database.CurrentTransaction is null ? await db.Database.BeginTransactionAsync(ct) : null;
+            try
+            {
+                return await ApplyLockedAsync(signals, ct);
+            }
+            catch
+            {
+                if (own is not null)
+                {
+                    await own.DisposeAsync();
+                }
+                throw;
+            }
+        }
+
+        private async Task<AlertSourceResult> ApplyLockedAsync(IReadOnlyList<AlertSignal> signals, CancellationToken ct)
         {
             var tenantId = await TenantAsync(ct);
             await db.Database.ExecuteSqlAsync($"SELECT pg_advisory_xact_lock({WorkerLease.KeyOf($"alert-source:{Template}")})", ct);
