@@ -83,7 +83,7 @@ namespace Juice.Observability.Api.Endpoints
         // A W3C traceparent, "00-<trace id>-<span id>-<flags>": what Juice.Audit before 10.4 stored as a record's trace id.
         private static readonly Regex TraceParentPattern = new("^[0-9a-f]{2}-([0-9a-f]{32})-[0-9a-f]{16}-[0-9a-f]{2}$", RegexOptions.Compiled);
         private static readonly Regex AttributeKeyPattern = new(@"^[A-Za-z0-9_.\-]{1,128}$", RegexOptions.Compiled);
-        private static readonly Regex MetricNamePattern = new(@"^[A-Za-z_:][A-Za-z0-9_.:/\-]{0,254}$", RegexOptions.Compiled);
+        private static readonly Regex MetricNamePattern = new(Juice.Observability.Rules.MetricSpec.NamePattern, RegexOptions.Compiled);
 
         private const string Environment = "JuiceEnvironment";
         /// <summary>A newest-first search's lower bound for the slice being read (ClickHouseTelemetrySource.QueryNewestFirstAsync).</summary>

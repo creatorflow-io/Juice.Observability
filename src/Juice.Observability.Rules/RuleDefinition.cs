@@ -49,15 +49,26 @@ namespace Juice.Observability.Rules
         public TimeSpan Cooldown { get; set; } = TimeSpan.FromMinutes(10);
         public bool Enabled { get; set; } = true;
 
+        /// <summary>The metric a <see cref="RuleTemplate.MetricThreshold"/> rule watches; required for it, refused for any other template.</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public MetricSpec? Metric { get; set; }
+
         /// <summary>True when a higher value is worse (every template but ThroughputAbsent).</summary>
         [JsonIgnore]
-        public bool FiresAbove => Template != RuleTemplate.ThroughputAbsent;
+        public bool FiresAbove => Template == RuleTemplate.MetricThreshold ? Metric?.Comparison != Comparison.Below : Template != RuleTemplate.ThroughputAbsent;
+
+        /// <summary>HostMemory, HostCpu, HostDisk, or a MetricThreshold over hosts: scoped by <see cref="Host"/>, not Service or Environment.</summary>
+        [JsonIgnore]
+        public bool IsHostRule => Template is RuleTemplate.HostMemory or RuleTemplate.HostCpu or RuleTemplate.HostDisk
+            || Template == RuleTemplate.MetricThreshold && Metric?.Subject == MetricSubject.Host;
 
         [JsonIgnore]
         public double Recovery => RecoveryThreshold ?? Threshold;
 
         [JsonIgnore]
-        public bool UsesSamples => Template is RuleTemplate.ErrorRate or RuleTemplate.LatencyP95 or RuleTemplate.DeliveryFailureRate;
+        public bool UsesSamples => Template is RuleTemplate.ErrorRate or RuleTemplate.LatencyP95 or RuleTemplate.DeliveryFailureRate
+            || Template == RuleTemplate.MetricThreshold
+            && Metric is { Kind: MetricKind.Histogram, Aggregation: MetricAggregation.P50 or MetricAggregation.P90 or MetricAggregation.P95 or MetricAggregation.P99 or MetricAggregation.Avg };
 
         /// <summary>
         /// What is wrong with the definition. With <paramref name="packs"/>, an enabled rule whose template's signal pack is off is wrong too; a
@@ -77,15 +88,15 @@ namespace Juice.Observability.Rules
             if (RecoveryDuration < TimeSpan.Zero || RecoveryDuration > TimeSpan.FromDays(1)) yield return $"{at}: RecoveryDuration must be 0 to 24 h";
             if (Cooldown < TimeSpan.Zero || Cooldown > TimeSpan.FromDays(1)) yield return $"{at}: Cooldown must be 0 to 24 h";
             if (MinimumSamples is < 1 or > 1_000_000) yield return $"{at}: MinimumSamples must be 1 to 1,000,000";
-            if (Template is RuleTemplate.ErrorRate or RuleTemplate.DeliveryFailureRate or RuleTemplate.HostMemory
+            if (Template is RuleTemplate.ErrorRate or RuleTemplate.DeliveryFailureRate or RuleTemplate.HostMemory or RuleTemplate.HostCpu or RuleTemplate.HostDisk
                 && (Threshold is < 0 or > 1 || Recovery is < 0 or > 1))
                 yield return $"{at}: Threshold and RecoveryThreshold are ratios from 0 to 1";
             if (Template == RuleTemplate.LatencyP95 && (Threshold <= 0 || Recovery <= 0)) yield return $"{at}: latency thresholds are positive milliseconds";
             if (Template is RuleTemplate.MediatorErrors or RuleTemplate.ConsumerFailures && (Threshold < 0 || Recovery < 0)) yield return $"{at}: error thresholds are counts, not negative";
             if (Template == RuleTemplate.ThroughputAbsent && (Threshold < 0 || Recovery < Threshold)) yield return $"{at}: throughput thresholds are request counts, recovery at least the threshold";
             if (FiresAbove && Recovery > Threshold) yield return $"{at}: RecoveryThreshold must not be above Threshold";
-            if (Template == RuleTemplate.HostMemory && (Service.Length > 0 || Environment.Length > 0)) yield return $"{at}: host rules take Host, not Service or Environment";
-            if (Template != RuleTemplate.HostMemory && Host.Length > 0) yield return $"{at}: only host rules take Host";
+            if (IsHostRule && (Service.Length > 0 || Environment.Length > 0)) yield return $"{at}: host rules take Host, not Service or Environment";
+            if (!IsHostRule && Host.Length > 0) yield return $"{at}: only host rules take Host";
             if (Service.Length > 256 || Host.Length > 256 || Environment.Length > 256) yield return $"{at}: scope values are at most 256 characters";
             if (Environment != Environment.ToLowerInvariant()) yield return $"{at}: Environment is a lowercase key";
         }

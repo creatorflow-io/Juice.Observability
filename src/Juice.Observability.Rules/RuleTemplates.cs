@@ -10,13 +10,17 @@ namespace Juice.Observability.Rules
     /// never read as zero. <see cref="Samples"/> is how many records the value rests on.
     /// </summary>
     public sealed record RuleObservation(string SubjectKey, HealthSubject SubjectType, string ServiceNamespace, string ServiceName,
-        string Environment, string Host, double? Value, long Samples);
+        string Environment, string Host, double? Value, long Samples)
+    {
+        /// <summary>Extra evidence (bucket bounds, source, mount), merged into the alert's evidence; it can't override the base keys.</summary>
+        public IReadOnlyDictionary<string, string>? Detail { get; init; }
+    }
 
     /// <summary>
     /// The platform-owned ClickHouse query of each template (requirements §8). Every query filters on the Collector-stamped
     /// tenant, is bounded by the evidence window and row limit, and takes the rule's scope only as parameters.
     /// </summary>
-    public sealed class RuleTemplates(ClickHouseTelemetrySource clickHouse, SignalPacks? packs = null)
+    public sealed partial class RuleTemplates(ClickHouseTelemetrySource clickHouse, SignalPacks? packs = null)
     {
         private const string Svc = "{svc:String}", Ns = "{ns:String}", EnvParam = "{env:String}", HostParam = "{host:String}";
 
@@ -131,6 +135,11 @@ namespace Juice.Observability.Rules
                     HealthSubject.Host, "", "", "", r.GetString(0), Convert.ToDouble(r.GetValue(1)), 1), cancellationToken, scope),
                 RuleTemplate.MediatorErrors => await ObserveCountAsync(MediatorErrors, window, scope, cancellationToken),
                 RuleTemplate.ConsumerFailures => await ObserveCountAsync(ConsumerFailures, window, scope, cancellationToken),
+                RuleTemplate.MetricThreshold => rule.Metric is { Kind: MetricKind.Histogram }
+                    ? await ObserveHistogramAsync(rule, window, scope, cancellationToken)
+                    : await ObserveMetricAsync(rule, window, scope, cancellationToken),
+                RuleTemplate.HostCpu => await ObserveHostCpuAsync(window, scope, cancellationToken),
+                RuleTemplate.HostDisk => await ObserveHostDiskAsync(window, scope, cancellationToken),
                 _ => throw new ArgumentOutOfRangeException(nameof(rule), rule.Template, "Unknown template"),
             };
         }
@@ -139,6 +148,16 @@ namespace Juice.Observability.Rules
             Dictionary<string, object> scope, CancellationToken cancellationToken)
             => clickHouse.QueryAsync(query, window, r => Service(r.GetString(0), r.GetString(1), r.GetString(2),
                 Convert.ToDouble(r.GetValue(3)), Convert.ToInt64(Convert.ToDouble(r.GetValue(4)))), cancellationToken, scope);
+
+        // Bodies in RuleTemplates.Histogram.cs (histograms) and RuleTemplates.Host.cs (HostCpu, HostDisk).
+        private partial Task<IReadOnlyList<RuleObservation>> ObserveHistogramAsync(RuleDefinition rule, TelemetryWindow window,
+            Dictionary<string, object> scope, CancellationToken cancellationToken);
+
+        private partial Task<IReadOnlyList<RuleObservation>> ObserveHostCpuAsync(TelemetryWindow window,
+            Dictionary<string, object> scope, CancellationToken cancellationToken);
+
+        private partial Task<IReadOnlyList<RuleObservation>> ObserveHostDiskAsync(TelemetryWindow window,
+            Dictionary<string, object> scope, CancellationToken cancellationToken);
 
         public static string ServiceSubjectKey(string ns, string name, string environment)
             => $"service:{(ns.Length == 0 ? name : $"{ns}/{name}")}@{environment}";
