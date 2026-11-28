@@ -4,6 +4,7 @@ using Juice.Messaging.Outbox.Delivery.Internal;
 using Juice.Messaging.Policies;
 using Juice.Observability.Agents;
 using Juice.Observability.Api.Endpoints;
+using Juice.Observability.Api.Evidence;
 using Juice.Observability.Api.Modules;
 using Juice.Observability.Data;
 using Juice.Observability.Rules.Notifications;
@@ -66,6 +67,7 @@ namespace Juice.Observability.Api
             services.AddPlatformDiscovery(configuration);
             services.AddPlatformHealth(configuration);
             services.AddPlatformRules(configuration);
+            services.AddPlatformEvidence(configuration);
             // The slos and agents modules, in the slot they always had: composed through the module contract (docs/extensibility.md), registering the same services.
             services.AddInternalModules(configuration);
             services.Configure<IntegrationOptions>(configuration.GetSection(IntegrationOptions.Section));

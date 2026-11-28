@@ -1,3 +1,4 @@
+using Juice.Observability.Api.Evidence;
 using Juice.Observability.Data;
 using Microsoft.EntityFrameworkCore;
 using Juice.Observability.Health;
@@ -92,6 +93,7 @@ namespace Juice.Observability.Api.Endpoints
             tenant.MapAlertEndpoints();
             tenant.MapLoadRunEndpoints();
             tenant.MapChangeEndpoints();
+            tenant.MapEvidenceEndpoints();
             tenant.MapRuleAdminEndpoints();
             tenant.MapSilenceEndpoints();
             tenant.MapIncidentEndpoints();
