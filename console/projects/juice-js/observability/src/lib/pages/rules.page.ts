@@ -206,7 +206,11 @@ export class RulesPage {
     this.summary.set([summary, ...lost].filter(Boolean).join(' '));
     // In the order the form shows them, so a select is found as well as an input.
     const first = FIELD_ORDER.find(k => placed[k]);
-    if (first) setTimeout(() => (this.host.nativeElement as HTMLElement).querySelector<HTMLElement>(`[name="${INPUT_NAME[first] ?? first}"]`)?.focus());
+    if (first) setTimeout(() => {
+      const el = (this.host.nativeElement as HTMLElement).querySelector<HTMLElement>(`[name="${INPUT_NAME[first] ?? first}"]`);
+      // A mat-checkbox carries the name on its host; the focusable control is the input inside it.
+      (el?.matches('mat-checkbox') ? el.querySelector<HTMLElement>('input') : el)?.focus();
+    });
   }
 
   protected startNew() { this.editing.set(null); this.reset(); this.form.set({ ...NEW_RULE }); }

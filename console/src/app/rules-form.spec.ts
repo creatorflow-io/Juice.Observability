@@ -172,6 +172,23 @@ describe('rules form', () => {
     f.nativeElement.remove();
   });
 
+  it('an error on Enabled focuses the real checkbox input', async () => {
+    setup({ ...base, createRule: () => throwError(() => problem(400, 'Invalid request', 'Unreadable definition at $.enabled.')) });
+    const f = TestBed.createComponent(RulesPage);
+    document.body.appendChild(f.nativeElement);
+    await flush(f);
+    click(f, 'rule-new');
+    await flush(f);
+    await fillValid(f);
+    click(f, 'rule-save');
+    await flush(f);
+    await new Promise(r => setTimeout(r, 10));
+    const active = document.activeElement as HTMLInputElement;
+    expect(active.tagName).toBe('INPUT');
+    expect(active.type).toBe('checkbox');
+    f.nativeElement.remove();
+  });
+
   it('empty key, name and threshold are all marked in one submit, nothing is sent', async () => {
     const { fixture, calls } = await openNew();
     click(fixture, 'rule-save');
