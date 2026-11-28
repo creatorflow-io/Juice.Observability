@@ -536,6 +536,8 @@ namespace Juice.Observability.Tests.EvidenceContributors
             Assert.Equal(changes.Select(c => c.GetProperty("at").GetDateTimeOffset()), items.Select(i => i.GetProperty("at").GetDateTimeOffset()));
             Assert.Equal(changes.Select(c => c.GetProperty("detail").GetString()), items.Select(i => i.GetProperty("value").GetString()));
             Assert.Equal(related.GetProperty("note").GetString(), section.GetProperty("note").GetString());
+            // Each change links to the alert's service page, a route of the core's manifest.
+            Assert.All(items, i => Assert.Equal($"services/{seed.Service}", i.GetProperty("link").GetProperty("route").GetString()));
         }
 
         [Fact]
