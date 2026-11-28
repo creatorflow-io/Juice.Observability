@@ -80,7 +80,7 @@ domain events are in [extensibility-workers-events.md](extensibility-workers-eve
   alerts, their transitions and the outbox rows together, and takes `pg_advisory_xact_lock('alert-source:<template>')` either way.
 - A template is declared once per host and is never a registry template. The core's `SloBurn` is the slos module's. Storing a rule of a module's own
   template (and `IAlertSource.EnsureRules`) comes with the first module that moves a feature, so until then a module's source has no rules to act on.
-- The composition calls (`AddModuleData`, `AddAlertSource`) reach the host's implementation by name, so they work only in a Juice Observability host.
+- The composition calls (`AddModuleData`, `AddAlertSource`) reach the host's implementation through internal interfaces that only the host registers, so they work only in a Juice Observability host and no module assembly can name them.
 
 ## Breaking change for package consumers
 
