@@ -53,6 +53,13 @@ namespace Juice.Observability.Tests
                 }).ToArray()),
             });
 
+        /// <summary>The same payload with the metric's unit set (the builders send none).</summary>
+        public static JsonObject WithUnit(JsonObject payload, string unit)
+        {
+            payload["resourceMetrics"]![0]!["scopeMetrics"]![0]!["metrics"]![0]!["unit"] = unit;
+            return payload;
+        }
+
         private static JsonObject Wrap((string Key, string Value)[] resource, string name, string kind, JsonObject body) => new()
         {
             ["resourceMetrics"] = new JsonArray(new JsonObject
