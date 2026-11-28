@@ -17,12 +17,51 @@ namespace Juice.Observability.Api.Integrations.Health
 
         public TimeSpan Interval => options.Value.PollInterval;
 
+        /// <summary>How long a stopping host waits for the runs it cancelled to end before letting go of the services they use.</summary>
+        public static readonly TimeSpan StopGrace = TimeSpan.FromSeconds(5);
+
+        /// <summary>
+        /// The pass starts the due runs and reconciles the alerts, and then, while any run is in flight, stays open and does the same at each poll interval, so a
+        /// slow plugin holds back neither the other due instances nor the alerts. It stays open because only a pass has the lease watcher: the runs are cancelled
+        /// (their token lives with the worker, not the pass) when the lease is lost, when the lease is retaken, and when the host stops, and a stopping host
+        /// waits a short grace for them to end before its services are disposed.
+        /// </summary>
         public async Task<LeasedPassOutcome> RunOnceAsync(LeasedPass pass, CancellationToken ct)
         {
             if (pass.Retaken)
             {
+                // Another replica may have run meanwhile: whatever this one still has in flight is stale.
+                state.CancelRuns();
                 state.RuleReady = false;
             }
+            using var onLost = pass.LeaseLost.Register(state.CancelRuns);
+            using var onStop = ct.Register(state.CancelRuns);
+            var runs = state.RunToken;
+            try
+            {
+                var outcome = await IterateAsync(runs, ct);
+                while (state.HasRuns && !runs.IsCancellationRequested && !ct.IsCancellationRequested)
+                {
+                    await Task.WhenAny(state.WhenRunsDoneAsync(), Task.Delay(Interval, ct));
+                    if (state.HasRuns && !runs.IsCancellationRequested)
+                    {
+                        await IterateAsync(runs, ct);
+                    }
+                }
+                return outcome;
+            }
+            finally
+            {
+                if (ct.IsCancellationRequested || pass.LeaseLost.IsCancellationRequested)
+                {
+                    state.CancelRuns();
+                    await Task.WhenAny(state.WhenRunsDoneAsync(), Task.Delay(StopGrace, CancellationToken.None));
+                }
+            }
+        }
+
+        private async Task<LeasedPassOutcome> IterateAsync(CancellationToken runs, CancellationToken ct)
+        {
             var now = clock.GetUtcNow();
             var active = await db.Instances.AsNoTracking().Where(i => Active.Contains(i.State)).ToListAsync(ct);
             var work = new List<IntegrationInstance>();
@@ -54,7 +93,7 @@ namespace Juice.Observability.Api.Integrations.Health
             {
                 if (state.TryBegin(instance.Id))
                 {
-                    state.Track(StartRun(instance, pass.LeaseLost));
+                    state.Track(StartRun(instance, runs));
                 }
             }
             var reconciled = await ReconcileAsync(active.Count > 0, ct);

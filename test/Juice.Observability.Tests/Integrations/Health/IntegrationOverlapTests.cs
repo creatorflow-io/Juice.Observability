@@ -94,14 +94,20 @@ namespace Juice.Observability.Tests.Integrations.Health
             var failing = await host.AddAsync(plugin: "gone.plugin", name: "gone");
             host.Control.CollectDelay = TimeSpan.FromSeconds(20);
 
-            // The pass returns while the slow run is still going, and the alert for the instance whose plugin is gone has been raised by it.
-            var outcome = await host.OnePassAsync();
-            await host.OnePassAsync();
+            // The slow run is going, and the pass (which stays open for it) has already raised the alert of the instance whose plugin is gone.
+            using var lost = new CancellationTokenSource();
+            var pass = host.OnePassAsync(lost.Token);
+            var until = DateTime.UtcNow.AddSeconds(20);
+            while (!(await host.AlertsAsync()).Any(a => a.DedupKey.EndsWith(failing.ToString("N"), StringComparison.Ordinal)))
+            {
+                Assert.True(DateTime.UtcNow < until, "The alert wasn't raised while the slow run was going");
+                await Task.Delay(50, Ct);
+            }
 
-            Assert.Equal(LeasedPassOutcome.Succeeded, outcome);
             Assert.NotNull((await host.GetAsync(slow)).RunToken);
-            Assert.Contains(await host.AlertsAsync(), a => a.DedupKey.EndsWith(failing.ToString("N"), StringComparison.Ordinal));
-            await host.State.WhenRunsDoneAsync();
+            Assert.False(pass.IsCompleted);
+            await lost.CancelAsync();
+            Assert.Equal(LeasedPassOutcome.Succeeded, await pass);
         }
     }
 }

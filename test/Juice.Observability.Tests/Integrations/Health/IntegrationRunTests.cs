@@ -226,15 +226,59 @@ namespace Juice.Observability.Tests.Integrations.Health
             host.Control.CollectDelay = TimeSpan.FromSeconds(30);
             using var lost = new CancellationTokenSource();
 
-            var pass = host.PassAsync(lost.Token);
+            // The lease's watcher lives only while a pass does, and its token is disposed with the pass: so the pass stays open while a run is in flight.
+            var pass = host.OnePassAsync(lost.Token);
             await WaitUntilAsync(async () => (await host.GetAsync(id)).RunToken is not null);
+            await Task.Delay(300, Ct);
+            Assert.False(pass.IsCompleted);
             await lost.CancelAsync();
 
             await pass;
+            await host.State.WhenRunsDoneAsync();
             var run = await host.GetAsync(id);
             Assert.Null(run.LastOutcome);
             Assert.Equal(IntegrationState.Enabled, run.State);
             Assert.Empty(await host.CheckpointsAsync(id));
+            Assert.False(host.State.HasRuns);
+        }
+
+        [Fact]
+        public async Task Retaken_lease_cancels_runs_in_flight_no_outcome_written()
+        {
+            await using var host = await IntegrationHealthHost.StartAsync();
+            var id = await host.AddAsync();
+            host.Control.CollectDelay = TimeSpan.FromSeconds(30);
+
+            var first = host.OnePassAsync();
+            await WaitUntilAsync(async () => (await host.GetAsync(id)).RunToken is not null);
+            // The next pass finds the lease was taken again (a new generation): what the first started is stale.
+            host.Control.CollectDelay = TimeSpan.Zero;
+            await host.OnePassAsync(retaken: true);
+            await first;
+            await host.State.WhenRunsDoneAsync();
+
+            Assert.Null((await host.GetAsync(id)).LastOutcome);
+            Assert.Empty(await host.CheckpointsAsync(id));
+        }
+
+        [Fact]
+        public async Task Stopping_the_host_cancels_runs_in_flight_without_errors_from_disposed_services()
+        {
+            var logs = new LogCapture();
+            await using var host = await IntegrationHealthHost.StartAsync(new Dictionary<string, string?> { ["Modules:integrations:PollInterval"] = "00:00:00.5" }, logs: logs, hosted: true);
+            var id = await host.AddAsync();
+            host.Control.CollectDelay = TimeSpan.FromSeconds(60);
+            await WaitUntilAsync(async () => (await host.GetAsync(id)).RunToken is not null);
+
+            var started = DateTime.UtcNow;
+            await host.Host.App.StopAsync(Ct);
+
+            // Cancelled and waited for, within the grace: not left running into the disposal of the services it uses.
+            Assert.True(DateTime.UtcNow - started < TimeSpan.FromSeconds(20));
+            Assert.False(host.State.HasRuns);
+            Assert.DoesNotContain(logs.At(Microsoft.Extensions.Logging.LogLevel.Error), e => e.Category.Contains("ntegration", StringComparison.Ordinal));
+            Assert.DoesNotContain(logs.At(Microsoft.Extensions.Logging.LogLevel.Error), e => e.Message.Contains("disposed", StringComparison.OrdinalIgnoreCase));
+            Assert.Null((await host.GetAsync(id)).LastOutcome);
         }
 
         // ─── Missing plugin, dependencies ─────────────────────────────────────

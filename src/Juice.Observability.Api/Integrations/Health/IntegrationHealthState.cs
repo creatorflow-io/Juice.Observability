@@ -75,6 +75,46 @@ namespace Juice.Observability.Api.Integrations.Health
             _ = run.ContinueWith(t => _started.TryRemove(t, out _), TaskScheduler.Default);
         }
 
+        private CancellationTokenSource _lease = new();
+        private readonly object _leaseGate = new();
+
+        /// <summary>
+        /// Cancelled when this replica's lease is lost or retaken, and when the host stops: what every run is linked to. It lives with the worker, since a
+        /// pass's own lease token is gone when the pass returns.
+        /// </summary>
+        public CancellationToken RunToken
+        {
+            get
+            {
+                lock (_leaseGate)
+                {
+                    return _lease.Token;
+                }
+            }
+        }
+
+        /// <summary>Cancels the runs in flight; the next ones get a new token.</summary>
+        public void CancelRuns()
+        {
+            CancellationTokenSource old;
+            lock (_leaseGate)
+            {
+                old = _lease;
+                _lease = new CancellationTokenSource();
+            }
+            try
+            {
+                old.Cancel();
+            }
+            finally
+            {
+                old.Dispose();
+            }
+        }
+
+        /// <summary>A run is in flight.</summary>
+        public bool HasRuns => !_started.IsEmpty;
+
         private SemaphoreSlim? _slots;
 
         /// <summary>The runs at once across passes (<c>MaxConcurrentRuns</c>), shared by every pass of this replica.</summary>

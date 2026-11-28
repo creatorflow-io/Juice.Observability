@@ -32,7 +32,7 @@ namespace Juice.Observability.Tests.Integrations.Health
 
         public SampleJobsControl Control => Services.GetRequiredService<SampleJobsControl>();
 
-        public static async Task<IntegrationHealthHost> StartAsync(IReadOnlyDictionary<string, string?>? settings = null, bool sample = true, LogCapture? logs = null, Action<Microsoft.AspNetCore.Builder.WebApplicationBuilder>? compose = null)
+        public static async Task<IntegrationHealthHost> StartAsync(IReadOnlyDictionary<string, string?>? settings = null, bool sample = true, LogCapture? logs = null, Action<Microsoft.AspNetCore.Builder.WebApplicationBuilder>? compose = null, bool hosted = false)
         {
             LocalStack.RequireAvailable();
             Environment.SetEnvironmentVariable("JUICE_INTEGRATION_B_TOKEN", Canary);
@@ -48,8 +48,13 @@ namespace Juice.Observability.Tests.Integrations.Health
                 {
                     b.AddObservabilityModule<SampleModule>();
                 }
-            }, database, hostedServices: false, settings);
+            }, database, hostedServices: hosted, settings);
             var result = new IntegrationHealthHost(database, host);
+            if (hosted)
+            {
+                // The hosted migration runner made the tables.
+                return result;
+            }
             // The module's own migration is slice A's; the tables are what its model says, which is all a pass needs.
             await using var scope = host.App.Services.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<IntegrationsDbContext>();
