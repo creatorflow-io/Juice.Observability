@@ -74,6 +74,9 @@ namespace Juice.Observability.Tests.ModuleData
         }
 
         [Fact]
+        public void Entity_splitting_fragment_mapped_to_public_refused() => Assert.Contains("public.alerts", Refused<SplitModule>().Message);
+
+        [Fact]
         public void Adopting_the_notifications_schema_or_a_history_table_refused()
         {
             var b = Core();

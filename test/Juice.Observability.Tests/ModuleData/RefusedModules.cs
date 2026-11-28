@@ -71,6 +71,38 @@ namespace Juice.Observability.Tests.ModuleData
         }
     }
 
+    public sealed class SplitRow
+    {
+        public Guid Id { get; set; }
+        public string Name { get; set; } = "";
+        public string Kept { get; set; } = "";
+    }
+
+    /// <summary>Entity splitting: the main table is the module's own, and a fragment of it is mapped to the core's schema.</summary>
+    public sealed class SplitModule : IObservabilityModule
+    {
+        public ModuleInfo Info { get; } = new("data-split", "Split", "1.0.0", "[2.0.0,3.0.0)");
+
+        public void ConfigureServices(IModuleServicesBuilder module) => module.AddModuleData<SplitContext>();
+    }
+
+    public sealed class SplitContext(DbContextOptions<SplitContext> options) : ModuleDbContext(options)
+    {
+        public override string Module => "data-split";
+
+        public DbSet<SplitRow> Rows => Set<SplitRow>();
+
+        protected override void OnModelCreating(ModelBuilder model)
+        {
+            base.OnModelCreating(model);
+            model.Entity<SplitRow>(e =>
+            {
+                e.ToTable("rows");
+                e.SplitToTable("alerts", "public", t => t.Property(x => x.Name));
+            });
+        }
+    }
+
     /// <summary>Reads a table through a SQL query mapping.</summary>
     public sealed class QueryModule : IObservabilityModule
     {

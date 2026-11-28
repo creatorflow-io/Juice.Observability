@@ -31,10 +31,7 @@ namespace Juice.Observability.Api.Modules.AlertSources
 
         public static void Add(IModuleServicesBuilder b, string template)
         {
-            if (b is not ModuleServicesBuilder)
-            {
-                throw new ModuleCompositionException("An alert source is declared only through the host's own module builder.");
-            }
+            CoreBuilders.Require(b);
             var module = b.Module.Name;
             if (string.IsNullOrEmpty(template) || template.Length > 40)
             {
