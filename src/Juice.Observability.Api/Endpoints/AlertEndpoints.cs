@@ -128,12 +128,17 @@ namespace Juice.Observability.Api.Endpoints
         /// attempt is audited too. With an <c>Idempotency-Key</c>, a retry returns the first response and the same key
         /// with a different request is refused (requirements §6.1).
         /// </summary>
-        private static async Task<IResult> AcknowledgeAsync(Guid tenantId, Guid alertId, AcknowledgeRequest? request, HttpContext http,
+        private static Task<IResult> AcknowledgeAsync(Guid tenantId, Guid alertId, AcknowledgeRequest? request, HttpContext http,
+            PlatformDbContext db, IMediator mediator, CancellationToken ct)
+            => AcknowledgeCoreAsync(tenantId, alertId, request?.Comment, http, db, mediator, ct);
+
+        /// <summary>The acknowledgement itself, for the HTTP endpoint and for any other entry point that acts in-process: the role is the caller's own token's.</summary>
+        internal static async Task<IResult> AcknowledgeCoreAsync(Guid tenantId, Guid alertId, string? rawComment, HttpContext http,
             PlatformDbContext db, IMediator mediator, CancellationToken ct)
         {
             var actor = http.User.Actor();
             var correlationId = CorrelationId.Get(http);
-            var comment = request?.Comment?.Trim();
+            var comment = rawComment?.Trim();
             void Audit(AuditOutcome outcome, string? reason = null) => db.AuditRecords.Add(new AuditRecord
             {
                 TenantId = tenantId, Actor = actor, Operation = "alert.acknowledge", TargetType = "alert", TargetId = alertId.ToString(),

@@ -265,7 +265,15 @@ namespace Juice.Observability.Api.Endpoints
         /// An admin approves a pending request, and its command is signed with the request as its approval reference. Under <c>SecondPerson</c> the
         /// requester can't approve their own. The action is checked again against the agent as it is now: a request whose action no longer holds isn't signed.
         /// </summary>
-        private static async Task<IResult> ApproveAsync(Guid tenantId, Guid requestId, ActionDecision? decision, HttpContext http, PlatformDbContext db, IServiceProvider services,
+        private static Task<IResult> ApproveAsync(Guid tenantId, Guid requestId, ActionDecision? decision, HttpContext http, PlatformDbContext db, IServiceProvider services,
+            IOptions<PlatformOptions> platform, IOptions<ActionApprovalOptions> approval, TimeProvider clock, CancellationToken ct)
+            => ApproveCoreAsync(tenantId, requestId, decision?.Comment, http, db, services, platform, approval, clock, ct);
+
+        /// <summary>
+        /// The approval itself, for the HTTP endpoint and for any other entry point that decides in-process: the role is the caller's own token's, the
+        /// request is looked up by the tenant given, and every check, the audit and the signing are the ones the endpoint runs.
+        /// </summary>
+        internal static async Task<IResult> ApproveCoreAsync(Guid tenantId, Guid requestId, string? comment, HttpContext http, PlatformDbContext db, IServiceProvider services,
             IOptions<PlatformOptions> platform, IOptions<ActionApprovalOptions> approval, TimeProvider clock, CancellationToken ct)
         {
             var mutation = new Mutation(http, db, tenantId, "action.request.approve", "action_request");
@@ -313,7 +321,7 @@ namespace Juice.Observability.Api.Endpoints
             request.State = ActionRequestState.Issued;
             request.DecidedBy = mutation.Actor;
             request.DecidedAt = now;
-            request.Comment = ChangeSanitizer.Text(decision?.Comment, 500) is { Length: > 0 } comment ? comment : null;
+            request.Comment = ChangeSanitizer.Text(comment, 500) is { Length: > 0 } text ? text : null;
             var command = AgentEndpoints.Sign(authority, await AgentEndpoints.TenantForAsync(db, platform.Value, request.AgentId, ct), tenantId, request.AgentId,
                 action.Name, action.Parameters, mutation.Actor, now,
                 AgentEndpoints.DefaultLifetime(action), Reference(request));
@@ -343,12 +351,17 @@ namespace Juice.Observability.Api.Endpoints
                 : Mutation.Problem(StatusCodes.Status409Conflict, "Not waiting", $"This request is {request.State.ToString().ToLowerInvariant()}: only a pending one can be decided.");
         }
 
-        private static async Task<IResult> RejectAsync(Guid tenantId, Guid requestId, ActionDecision? decision, HttpContext http, PlatformDbContext db, IServiceProvider services,
+        private static Task<IResult> RejectAsync(Guid tenantId, Guid requestId, ActionDecision? decision, HttpContext http, PlatformDbContext db, IServiceProvider services,
+            TimeProvider clock, CancellationToken ct)
+            => RejectCoreAsync(tenantId, requestId, decision?.Comment, http, db, services, clock, ct);
+
+        /// <summary>The rejection itself, for the HTTP endpoint and for any other entry point that decides in-process (see <see cref="ApproveCoreAsync"/>).</summary>
+        internal static async Task<IResult> RejectCoreAsync(Guid tenantId, Guid requestId, string? rawComment, HttpContext http, PlatformDbContext db, IServiceProvider services,
             TimeProvider clock, CancellationToken ct)
         {
             var mutation = new Mutation(http, db, tenantId, "action.request.reject", "action_request");
             if (await mutation.RequireAsync(requestId.ToString(), ct, Roles.Admin) is { } denied) return denied;
-            var comment = ChangeSanitizer.Text(decision?.Comment, 500);
+            var comment = ChangeSanitizer.Text(rawComment, 500);
             if (comment.Length == 0) return Mutation.Invalid(["comment is required: say why it shouldn't run."]);
             return await CloseAsync(tenantId, requestId, ActionRequestState.Rejected, comment, mutation, db, services, clock, ct);
         }
