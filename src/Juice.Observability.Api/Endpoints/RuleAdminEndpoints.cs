@@ -23,7 +23,16 @@ namespace Juice.Observability.Api.Endpoints
         {
             tenant.MapPost("/rules", CreateAsync);
             tenant.MapPut("/rules/{key}", UpdateAsync);
+            tenant.MapRulePreviewEndpoints();
             return tenant;
+        }
+
+        /// <summary>A rule's 400: the same <c>detail</c> as ever, and <c>errors</c>, one message each, for the Console to place by field.</summary>
+        internal static IResult Invalid(IEnumerable<string> errors)
+        {
+            var list = errors.ToArray();
+            return Results.Problem(statusCode: StatusCodes.Status400BadRequest, title: "Invalid request", detail: string.Join(" ", list),
+                extensions: new Dictionary<string, object?> { ["errors"] = list });
         }
 
         internal static RuleDto ToDto(Rule r) => new(r.Key, r.Name, r.Template.ToString(), r.Severity.ToString(), r.Enabled, RuleDefinition.FromJson(r.Definition), r.LoadedAt, r.ManagedBy, r.DefinitionHash);
@@ -34,25 +43,41 @@ namespace Juice.Observability.Api.Endpoints
         /// conflicts with the catalog is refused; a metric not yet reported needs its kind and is accepted (<c>Unseen</c> says so, for the response's Quiet).
         /// When the catalog can't be read, a rule that gives its kind is accepted as it is, and one that doesn't is a 503.
         /// </summary>
-        private static async Task<(RuleDefinition? Definition, IResult? Problem, string? Unseen)> ReadAsync(JsonElement body, string? key, HttpContext http,
-            TimeProvider clock, CancellationToken ct)
+        /// <param name="body">The create or update body.</param>
+        /// <param name="key">The route's key (an update), or null.</param>
+        /// <param name="http">The request, for the route tenant's key.</param>
+        /// <param name="clock">The time the catalog's 24 h ends at.</param>
+        /// <param name="ct">The request's cancellation.</param>
+        /// <param name="preview">
+        /// For the preview of a draft: an empty key or name is filled with <c>preview</c> before validation, and Enabled is taken as true (a preview is of
+        /// the rule at work). The metric's catalog entry is returned too, for its unit.
+        /// </param>
+        internal static async Task<(RuleDefinition? Definition, IResult? Problem, string? Unseen, MetricCatalogEntry? Entry)> ReadAsync(JsonElement body, string? key,
+            HttpContext http, TimeProvider clock, CancellationToken ct, bool preview = false)
         {
             try
             {
                 if (body.ValueKind != JsonValueKind.Object || !body.TryGetProperty("template", out _) || !body.TryGetProperty("threshold", out _))
                 {
-                    return (null, Mutation.Invalid(["template and threshold are required."]), null);
+                    return (null, Invalid(["template and threshold are required."]), null, null);
                 }
                 var definition = body.Deserialize<RuleDefinition>(Json)!;
                 if (key is not null)
                 {
                     if (definition.Key.Length > 0 && definition.Key != key)
                     {
-                        return (null, Mutation.Invalid(["A rule's key can't change."]), null);
+                        return (null, Invalid(["A rule's key can't change."]), null, null);
                     }
                     definition.Key = key;
                 }
+                if (preview)
+                {
+                    if (string.IsNullOrEmpty(definition.Key)) definition.Key = "preview";
+                    if (string.IsNullOrEmpty(definition.Name)) definition.Name = "preview";
+                    definition.Enabled = true;
+                }
                 string? unseen = null;
+                MetricCatalogEntry? catalog = null;
                 if (definition is { Template: RuleTemplate.MetricThreshold, Metric: { } metric } && !string.IsNullOrEmpty(metric.Name)
                     && System.Text.RegularExpressions.Regex.IsMatch(metric.Name, MetricSpec.NamePattern) && !metric.Name.EndsWith('\n'))
                 {
@@ -67,11 +92,12 @@ namespace Juice.Observability.Api.Endpoints
                         }
                         else if (metric.Kind is { } given && given != entry.Kind)
                         {
-                            return (null, Mutation.Invalid([$"rule '{definition.Key}': Metric.Kind {given} conflicts with the catalog: {metric.Name} is a {entry.Kind}."]), null);
+                            return (null, Invalid([$"rule '{definition.Key}': Metric.Kind {given} conflicts with the catalog: {metric.Name} is a {entry.Kind}."]), null, null);
                         }
                         else
                         {
                             metric.Kind = entry.Kind;
+                            catalog = entry;
                         }
                     }
                     catch (Exception e) when (e is Discovery.TelemetryBusyException or Discovery.TelemetryUnavailableException && metric.Kind is not null)
@@ -80,11 +106,11 @@ namespace Juice.Observability.Api.Endpoints
                     }
                 }
                 var errors = definition.Validate(http.RequestServices.GetRequiredService<SignalPacks>()).ToList();
-                return errors.Count > 0 ? (null, Mutation.Invalid(errors), null) : (definition, null, unseen);
+                return errors.Count > 0 ? (null, Invalid(errors), null, null) : (definition, null, unseen, catalog);
             }
             catch (JsonException e)
             {
-                return (null, Mutation.Invalid([$"Unreadable definition at {e.Path}."]), null);
+                return (null, Invalid([$"Unreadable definition at {e.Path}."]), null, null);
             }
         }
 
@@ -92,10 +118,10 @@ namespace Juice.Observability.Api.Endpoints
         {
             var mutation = new Mutation(http, db, tenantId, "rule.create", "rule");
             if (await mutation.RequireAsync(null, ct, Roles.Admin) is { } denied) return denied;
-            var (definition, problem, unseen) = await ReadAsync(body, null, http, clock, ct);
+            var (definition, problem, unseen, _) = await ReadAsync(body, null, http, clock, ct);
             if (problem is not null) return problem;
             if (await QuietAsync(db, tenantId, definition!, ct) is { } quiet) return quiet;
-            if (RuleDefinition.IsReservedKey(definition!.Key)) return Mutation.Invalid([RuleDefinition.ReservedKeyError(definition.Key)]);
+            if (RuleDefinition.IsReservedKey(definition!.Key)) return Invalid([RuleDefinition.ReservedKeyError(definition.Key)]);
             if (await db.Rules.AnyAsync(r => r.TenantId == tenantId && r.Key == definition!.Key, ct))
             {
                 return Mutation.Problem(StatusCodes.Status409Conflict, "Rule exists", $"A rule with the key '{definition!.Key}' exists.");
@@ -137,7 +163,7 @@ namespace Juice.Observability.Api.Endpoints
             {
                 return Mutation.Problem(StatusCodes.Status412PreconditionFailed, "Rule changed", "Someone changed this rule since you read it. Read it again.");
             }
-            var (definition, problem, unseen) = await ReadAsync(body, key, http, clock, ct);
+            var (definition, problem, unseen, _) = await ReadAsync(body, key, http, clock, ct);
             if (problem is not null) return problem;
             if (await QuietAsync(db, tenantId, definition!, ct) is { } quiet) return quiet;
 
@@ -152,7 +178,7 @@ namespace Juice.Observability.Api.Endpoints
         /// <summary>An enabled rule that could never observe its service is refused (<see cref="SignalCoverage"/>); a disabled one isn't watching anything.</summary>
         private static async Task<IResult?> QuietAsync(PlatformDbContext db, Guid tenantId, RuleDefinition definition, CancellationToken ct)
             => definition.Enabled && await SignalCoverage.QuietReasonAsync(db, tenantId, definition, ct) is { } reason
-                ? Mutation.Invalid([$"rule '{definition.Key}': {reason}"]) : null;
+                ? Invalid([$"rule '{definition.Key}': {reason}"]) : null;
 
         internal static Dictionary<string, string> Metadata(Rule rule) => new() { ["hash"] = rule.DefinitionHash, ["template"] = rule.Template.ToString(), ["enabled"] = rule.Enabled ? "true" : "false" };
     }
