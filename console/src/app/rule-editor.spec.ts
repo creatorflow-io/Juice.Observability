@@ -226,6 +226,24 @@ describe('preview', () => {
     expect(id(f, 'rule-preview-stale')).toBeNull();
   });
 
+  it('reads the subject line: separator, unit once, bytes and seconds humanised', async () => {
+    const line = async (unit: string, over: object) => {
+      const { f } = await open({ previewRule: () => of(preview({ unit, subjects: [subject({ subjectKey: 'host:e2e-host', ...over })] })) });
+      await fillMetricRule(f);
+      await click(f, 'rule-preview');
+      return id(f, 'rule-preview-subject-0')!.textContent!.replace(/\s+/g, ' ');
+    };
+    const bytes = await line('By', { last: 6_999_660_566, min: 1_073_741_824, max: 6_999_660_566, lastDetail: { unit: 'By' } });
+    expect(bytes).toContain('host:e2e-host · Host: would fire 1');
+    expect(bytes).toContain('highest 6.5 GB');
+    expect(bytes).not.toContain('6,999,660,566');
+    expect(bytes).not.toMatch(/\bBy\b/);
+    expect(bytes).not.toMatch(/unit/i);
+    const secs = await line('s', { last: 90, min: 1.5, max: 90, lastDetail: null });
+    expect(secs).toContain('highest 1 m 30 s');
+    expect(secs).toContain('lowest 1.50 s');
+  });
+
   it('shows the bucket bounds of a histogram, a cut, a truncation and a quiet reason', async () => {
     const { f } = await open({
       previewRule: () => of(preview({ complete: false, cut: 'stopped after 40 of 96 points', subjectsTruncated: true, quiet: 'the metric was not reported in 24 h',
