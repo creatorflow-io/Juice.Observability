@@ -16,4 +16,4 @@ export { composeModules, firstSegment, type ComposedModules } from './lib/module
 export { menusFromManifests, ModuleMenuService, type ModuleMenuInput } from './lib/modules/module-menu';
 export { ModuleSlots } from './lib/modules/module-slots';
 export { installed, observabilityModuleRoutes, provideObservabilityModules } from './lib/modules/module-routes';
-export { EvidenceSections, evidenceLink, routeMatches } from './lib/shared/evidence-sections';
+export { EvidenceSections, clampWindow, evidenceLink, routeMatches } from './lib/shared/evidence-sections';

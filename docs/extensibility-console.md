@@ -53,7 +53,8 @@ when `/modules` arrives, so a shell built on a page that needs no sign-in still 
 ## `/modules` and failures
 
 - The answer is asked once and shared. Until it arrives the menu is the core's own modules (built-in manifests). Without a session nothing is asked, and
-  a module route matches so the host's sign-in guard takes over.
+  a module route matches so the host's sign-in guard takes over. The session is the host's `signedIn` option; without it, it is whether a page has
+  fetched the tenant. A 401 from `/modules` is not a failure: the route matches and the guard decides.
 - When it fails, the Console falls back to `builtin-manifests.json` for `core` only, with no module entries, and asks again on the next navigation.
   That file holds the internal manifests as JSON; a .NET test pins it to the served answer (`JUICE_WRITE_SNAPSHOTS=1` rewrites it).
 

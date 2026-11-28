@@ -76,7 +76,9 @@ export class InstalledModules {
         this._state.set('loaded');
         this.failedAt = null;
       })
-      .catch(() => {
+      .catch((error: { status?: number }) => {
+        // No session (401): not a failure of the server. The host's guard sends the user to sign in; ask again once there is one.
+        if (error?.status === 401) return;
         this._modules.set(FALLBACK_MODULES);
         this._state.set('failed');
         this.failedAt = navigation;

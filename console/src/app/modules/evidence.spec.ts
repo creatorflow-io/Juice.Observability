@@ -4,7 +4,7 @@ import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import {
-  BUILTIN_MODULES, CORE_CONSOLE_MODULES, EvidenceSections, InstalledModules, ModuleSlots, OBSERVABILITY_MODULES, ServerModule, provideJuiceObservability, routeMatches,
+  BUILTIN_MODULES, CORE_CONSOLE_MODULES, EvidenceSections, clampWindow, InstalledModules, ModuleSlots, OBSERVABILITY_MODULES, ServerModule, provideJuiceObservability, routeMatches,
 } from '@juice-js/observability';
 import { PING_LIBRARY, PING_SERVER, StubPage, settle } from './testing';
 
@@ -99,6 +99,41 @@ describe('Evidence sections and slots (core 2.0 M3, E7 E9)', () => {
     await settle(2);
     fixture.detectChanges();
     expect((fixture.nativeElement as HTMLElement).textContent?.trim()).toBe('');
+  });
+
+  async function service(http: HttpTestingController, env: string, answer: { status: number } | { items: unknown[] }) {
+    const { ContextService } = await import('@juice-js/observability');
+    vi.spyOn(TestBed.inject(ContextService), 'environment').mockReturnValue(env);
+    const fixture = TestBed.createComponent(EvidenceSections);
+    fixture.componentRef.setInput('target', 'service');
+    fixture.componentRef.setInput('subjectId', 's1');
+    fixture.detectChanges();
+    await settle(2);
+    http.expectOne('/api/v1/tenants').flush(TENANT);
+    await settle(2);
+    const request = http.expectOne('/api/v1/tenants/t1/environments');
+    if ('status' in answer) request.flush({}, { status: answer.status, statusText: 'err' }); else request.flush(answer);
+    await settle(3);
+  }
+
+  it('asks nothing for an environment that does not resolve', async () => {
+    const http = setup(BUILTIN_MODULES);
+    await service(http, 'prod', { status: 500 });
+    http.expectNone(r => r.url.includes('evidence-sections'));
+  });
+
+  it('asks nothing when the environment key is not in the list', async () => {
+    const http = setup(BUILTIN_MODULES);
+    await service(http, 'prod', { items: [{ id: 'e1', key: 'dev' }] });
+    http.expectNone(r => r.url.includes('evidence-sections'));
+  });
+
+  it('clamps an absolute window to 7 days, keeping its end', () => {
+    const w = clampWindow({ from: '2026-01-01T00:00:00.000Z', to: '2026-11-01T00:00:00.000Z' });
+    expect(w.to).toBe('2026-11-01T00:00:00.000Z');
+    expect(Date.parse(w.to) - Date.parse(w.from)).toBe(7 * 24 * 3_600_000);
+    const short = { from: '2026-10-30T00:00:00.000Z', to: '2026-11-01T00:00:00.000Z' };
+    expect(clampWindow(short)).toEqual(short);
   });
 
   it('matches route patterns by segment, a parameter taking one segment', () => {
