@@ -22,6 +22,8 @@ Turns telemetry from Juice services into a resource model, health, rules, alerts
 ## Build and test
 
 Needs the .NET 10 SDK. Integration tests need the local stack running with `--profile test` and are skipped otherwise.
+They read `.env` and `secrets/` from the checkout's own `deploy/local`, else from the folder in `JUICE_LOCAL_DEPLOY`, else
+from the main worktree's `deploy/local`, so a new git worktree needs no copies.
 
 ```bash
 deploy/local/scripts/init.sh && (cd deploy/local && docker compose --profile test up -d --wait)
