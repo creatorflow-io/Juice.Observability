@@ -60,7 +60,7 @@ namespace Juice.Observability.Data
         /// switched off, unless every live replica says it is off.
         /// </summary>
         public static readonly IReadOnlyList<string> KnownWorkers =
-            ["action-requests", "discovery", "health", "notifications", "rules", "sampler", "slos"];
+            ["action-requests", "discovery", "health", "notifications-holds", "notifications-release", "rules", "sampler", "slos"];
 
         /// <summary>The known workers that run in every replica, without a lease.</summary>
         public static readonly IReadOnlySet<string> UnleasedWorkers = new HashSet<string> { "sampler" };
