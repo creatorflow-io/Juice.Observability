@@ -9,7 +9,7 @@ reference configuration. A production install uses the same files with real cert
 |---|---|---|
 | OpenTelemetry Collector contrib | 0.163.1 | the only ingestion point: OTLP over TLS with bearer tokens |
 | ClickHouse | 26.8.36.3 | telemetry storage (traces 30 d, logs 30 d, metrics 90 d) |
-| PostgreSQL | 17.10 | platform state: inventory, health, rules, alerts, webhooks, audit |
+| PostgreSQL | 17.10 | platform state: inventory, health, rules, alerts, audit |
 | Platform API and Juice Console | this repository (`Dockerfile`) | `/api/v1`, the discovery, health, rule and webhook workers, and the Console (the product UI) on the same origin |
 | Keycloak | 26.7.5 | OIDC for the Console, the API and Grafana (replace with the customer's IdP) |
 | Grafana + ClickHouse plugin (optional) | 13.2.5 + 4.22.1 | only for customers who use Grafana: `docker compose --profile grafana` |
@@ -35,23 +35,79 @@ pattern, juice-docs decision record). Locally it defaults to the local stacks' t
 The API applies database migrations on start (`Database:Migrate`). It creates the tenant from
 `JUICE_PLATFORM_TENANT_ID`, and refuses to start against a database that belongs to another tenant.
 
-The Juice.Notifications pipeline is embedded in the API (phase 5): its tables are the platform database's `notifications` schema, migrated
-right after the platform's when `Database:Migrate` is on (`Notifications:Database:Migrate` overrides it). `Notifications:Pipeline` says
-which pipeline sends:
+The Juice.Notifications pipeline is embedded in the API, and it is the only way the platform sends (2.0): its tables are the platform
+database's `notifications` schema, migrated right after the platform's when `Database:Migrate` is on (`Notifications:Database:Migrate`
+overrides it). Alert transitions, acknowledgements and action requests become its requests, in the same transaction; silences hold
+escalations (`Notifications:HoldPassInterval`, 15 s, for silences that start or end by time; what a silence held is decided every
+`Notifications:ReleasePassInterval`, 2 s).
 
-- `legacy` (the default): the platform's own webhooks, as before; nothing of the pipeline runs beyond its schema and provisioning.
-- `new`: the pipeline only. Alert transitions, acknowledgements and action requests become its requests, in the same transaction;
-  silences hold escalations (`Notifications:HoldPassInterval`, 15 s, for silences that start or end by time). The webhook dispatcher
-  and its release and escalate passes don't run.
-- `shadow`: legacy sends, and the pipeline plans the same notifications in dry run. Refused at start until the pipeline's dry run
-  works (Juice.Notifications M44-2), since it would otherwise send twice.
+**Upgrading from 1.x.** 2.0 removes the legacy webhooks, the shadow run and the migration tool on purpose, so nothing in the old
+configuration is ignored: each of these refuses the start, with a message that names the key that replaces it.
 
-The pipeline's settings are the `Notifications` section's (`Stages`, `Delivery`, `Retention`, …). One carries over from the webhooks:
-plain http to an allowlisted receiver (`Webhooks:AllowHttpToAllowlisted`) is the pipeline's too, unless
-`Notifications:Delivery:AllowHttpToAllowlisted` sets it, so the same receivers keep working when the pipeline sends to them.
+| Refused | Use instead |
+|---|---|
+| any `Webhooks:*` key (`Webhooks:File` included, and an empty value too) | endpoints, routes and the allowlist in the provisioning file (`Notifications:Provisioning:Path`, below); the other keys in the table that follows |
+| `Actions:NotifyEndpoints` | a route in the provisioning file for the `observability.action.request.*` types |
+| `Notifications:Pipeline` other than `new` (`legacy`, `shadow`, empty) | remove it; `new` only logs that the key is obsolete |
+
+| 1.x key | 2.0 |
+|---|---|
+| `Webhooks:File`, `Webhooks:Endpoints`, `Webhooks:Allowlist` | `Notifications:Provisioning:Path`: the provisioning file |
+| `Webhooks:ConsoleUrl` | `Notifications:ConsoleUrl` |
+| `Webhooks:Smtp:*` | `Notifications:Delivery:SmtpServers:<name>` (`Host`, `Port`, `Security`, `Username`, `PasswordRef`), named by an email integration |
+| `Webhooks:AllowHttpToAllowlisted` | `Notifications:Delivery:AllowHttpToAllowlisted` |
+| `Webhooks:ApiSecretEnvPrefix`, `Webhooks:ApiSecretDirectory` | `Notifications:Delivery:ApiSecretEnvPrefix`, `Notifications:Delivery:ApiSecretDirectory` |
+| `Webhooks:AdditionalChatHosts` | an allowlist entry for the host |
+| `Webhooks:MaxAttempts`, `RetryBase`, `RetryMax`, `ConnectTimeout`, `RequestTimeout`, `MaxResponseBytes` | `Notifications:Delivery:*`, the same names |
+| `Webhooks:Enabled`, `Interval`, `BatchSize`, `MaxParallel` | `Notifications:Stages:<stage>:*` |
+
+The database upgrades itself (migration `RemoveLegacyNotifications`): the legacy tables (`webhook_endpoints`, `webhook_allowlist`,
+`webhook_deliveries`, `webhook_attempts`, `alert_escalations`, `shadow_comparisons`, `shadow_differences`) and an escalation policy's
+`steps` and `stop_on_acknowledge` are dropped. Nothing is migrated: 1.x had no deployments to move. A database that still holds what a
+shadow run kept is settled first: an undecided hold kept for a pipeline that hadn't started, and an unreplayed parked send, both from
+`shadow` mode, are closed as `kept_in_shadow` (legacy had sent them); a silence's hold and an acknowledgement are left as they are.
+
+### The provisioning file
+
+`Notifications:Provisioning:Path` names a file of the pipeline's endpoints, routes and allowlist, keyed by the platform's tenant Id
+(`Platform:TenantKey`, the same GUID as `JUICE_PLATFORM_TENANT_ID`). It is applied at start, in one transaction; the rows it lists are
+`ManagedBy=config`, so the admin pages show them read-only; what it no longer lists is handed back to the admin pages (disabled). A file
+that names any other tenant stops the pipeline's start (readiness `notifications` is unhealthy) and writes nothing; the platform runs on.
+Secrets are `env:NAME` or `file:/path`, never in the file. A route's `match` uses the producer's labels: `type`
+(`observability.alert.firing`, `observability.alert.resolved`, `observability.action.request.*`), `rule`, `environment` and `severity`
+(`info`, `warning` or `critical`).
+
+```json
+{
+  "tenants": {
+    "0193f0aa-0000-7000-8000-0000000000a1": {
+      "integrations": {
+        "ops-webhook": {
+          "channel": "webhook", "kind": "webhook", "secretRef": "env:OPS_WEBHOOK_SECRET",
+          "targets": { "ops": { "address": "https://hooks.example.com/juice" } }
+        }
+      },
+      "routes": {
+        "critical-production": {
+          "match": { "type": "observability.alert.*", "labels": { "environment": "production", "severity": "critical" } },
+          "targets": ["ops"]
+        }
+      },
+      "allowlist": [ { "destination": "10.20.0.0/16", "ports": [8443] } ]
+    }
+  }
+}
+```
+
+`Notifications:ConsoleUrl` is the Console's address for the links in notifications: an absolute `http` or `https` URL with no user
+information, query, fragment, whitespace or control character, at most 2,048 characters; a value that isn't refuses the start (the message never
+repeats it). The link is the address as written, without its trailing `/`, then `/` and the page (`https://Console.Example.com:443/alerts/<id>`):
+it is not normalised.
+
+The pipeline's other settings are the `Notifications` section's (`Stages`, `Delivery`, `Retention`, …).
 
 If the pipeline's start fails (its migration or provisioning), `/health/ready` reports it (check `notifications`) and the platform runs on.
-In `new`, what the platform would have sent is kept and sent once a restart brings the pipeline up.
+What the platform would have sent is kept and sent once a restart brings the pipeline up.
 
 ## Configuration
 
@@ -60,13 +116,13 @@ In `new`, what the platform would have sent is kept and sent once a restart brin
 | Tenant | `.env` `JUICE_PLATFORM_TENANT_ID` | the tenant's Id (a GUID); stamped by the Collector, provisioned by the API; a deployment named before the tenant pattern moves to its Id once (below) |
 | OTLP clients | `secrets/otlp-tokens`, one token per line | restart the Collector after a change (runbook) |
 | Rules | `rules.json` (`Rules:File`), or the API and Console | validated at start; an invalid rule stops the API; every change audited |
-| Channels and allowlist | `webhooks.json` (`Webhooks:File`), or the API and Console | secrets as `env:NAME` or `file:/path`, never in the file |
+| Endpoints, routes and allowlist | the provisioning file (`Notifications:Provisioning:Path`), or the Notifications admin pages | secrets as `env:NAME` or `file:/path`, never in the file; the file's rows are read-only on the pages |
 | SLOs | `slos.json` (`Slos:File`) only; the API and Console show them | validated at start; an invalid SLO stops the API; a changed one is a new version, audited (see below) |
 | SLO counting | `Slos:Interval` (30 s), `Slos:Lateness` (5 min), `Slos:MaxMinutesPerPass` (720), `Slos:Retention` (35 days), `Slos:QueryTimeout` (30 s), `Slos:MinimumEvents` (1,000 in 30 days), `Slos:MinimumBurnEvents` (10 per burn window), `Slos:UnknownTolerance` (0.10), `Slos:Enabled` | at most 200 SLOs; `Interval` at most 1 minute; `MaxMinutesPerPass` at least `Lateness` plus 5 minutes; the newest minutes are counted again until they're `Lateness` behind the service's newest telemetry, then sealed; a new SLO counts its 30 days `MaxMinutesPerPass` at a time, half that after a pass that runs out of `QueryTimeout` |
-| Secrets for channels set through the API | environment variables named `Webhooks:ApiSecretEnvPrefix` (default `JUICE_WEBHOOK_`) + a name, or files directly in `Webhooks:ApiSecretDirectory` | the API refuses any other reference, so an admin can't name other secrets on the host |
-| Email channels | `Webhooks:Smtp`: `Host`, `Port` (587), `From`, `UseTls` (true: STARTTLS), `UsernameRef`, `PasswordRef` | without it, email channels are refused; `UseTls` requires STARTTLS (a server without it is refused); implicit TLS on 465 isn't supported |
-| Slack and Teams | The channel's URL behind a secret reference | they post only to `hooks.slack.com`, `*.webhook.office.com`, `*.logic.azure.com` and `*.api.powerplatform.com`, plus any in `Webhooks:AdditionalChatHosts` |
-| Links in notifications | `Webhooks:ConsoleUrl` | optional; unset means no links |
+| Secrets for integrations set on the admin pages | environment variables named `Notifications:Delivery:ApiSecretEnvPrefix` (default `NOTIFICATIONS_SECRET_`) + a name, or files directly in `Notifications:Delivery:ApiSecretDirectory` | the pages refuse any other reference, so an admin can't name other secrets on the host; the file may name any |
+| Email channels | `Notifications:Delivery:SmtpServers:<name>`: `Host`, `Port` (587), `Security` (`StartTls`, `SslOnConnect`, `None`), `Username`, `PasswordRef` | an email integration names the server; without it, email is refused |
+| Slack and Teams | The integration's URL behind a secret reference | they post only to Slack and Teams hosts, plus what the allowlist lists |
+| Links in notifications | `Notifications:ConsoleUrl` | optional; unset means no links; checked at start |
 | Health policy | `Health` section (environment `Health__…`) | grace, thresholds, critical dependencies, service weights |
 | Users and roles | the IdP | Console and API: client `juice-console` (public, PKCE) issuing tokens for `juice-platform` with roles `admin`, `operator`, `viewer` and the `platform_tenant` claim; Grafana (optional): client `grafana` roles `admin`, `editor`, `viewer` |
 | Console sign-in | `wwwroot/config.json` in the API image | `{"apiBase": "", "auth": {"issuer": "<IdP>", "clientId": "juice-console", "scope": "openid profile email"}}`; mount your own file over it. `auth.requireHttps` (default `"remoteOnly"`: plain HTTP only for localhost) is `false` only for a local stack |
@@ -84,7 +140,7 @@ In `new`, what the platform would have sent is kept and sent once a restart brin
 | Grafana's data | ClickHouse user `grafana_reader` with the row policy `grafana_tenant` (`clickhouse/init-users.sh`, applied by the `clickhouse-access` service, which the Collectors, the API and Grafana wait for; needs `JUICE_PLATFORM_TENANT_ID`) | Grafana sees only this deployment's tenant, even when one ClickHouse holds more than one; except on the trace-ID index (`otel_traces_trace_id_ts`), which Grafana's trace view needs and which has no tenant: from it a Grafana user can list every tenant's trace IDs and times (no span content), so share one ClickHouse between deployments only if that is acceptable; `tests/verify.sh` checks every table with the tenant stamp has the policy |
 
 Every one of these files lives in version control (requirements §6.1). Changes take effect on the next API start, with
-an audit record for each. What the API creates lives in the platform database instead, also audited: the [runbook](runbook.md#change-rules-webhooks-or-the-allowlist) says which side owns what.
+an audit record for each. What the API creates lives in the platform database instead, also audited: the [runbook](runbook.md#change-rules-endpoints-or-the-allowlist) says which side owns what.
 
 ### An SLO
 
@@ -162,42 +218,40 @@ an audit record for each. What the API creates lives in the platform database in
 
 ### A webhook endpoint
 
-```json
-{
-  "Webhooks": {
-    "Endpoints": [
-      {
-        "Key": "ops-pager",
-        "Url": "https://hooks.example.com/juice",
-        "SecretRef": "env:WEBHOOK_OPS_SECRET",
-        "Events": ["alert.firing", "alert.resolved"],
-        "RuleKeys": [],
-        "MinimumSeverity": "Warning"
-      }
-    ],
-    "Allowlist": [ { "Destination": "10.20.0.0/16", "Ports": [8443] } ]
-  }
-}
-```
+An endpoint is an integration with a target, and a route that sends the platform's alerts to it, in the provisioning file (see the sample
+above), or the same on the Notifications admin pages.
 
-- **Allowlist.** Private receivers need an allowlist entry. Loopback, link-local and cloud-metadata addresses are
-  never reachable.
+- **Allowlist.** Private receivers need an allowlist entry (a CIDR or a host name, and its ports; none is 443 only), and plain `http`
+  to one needs `Notifications:Delivery:AllowHttpToAllowlisted`. Loopback, link-local and cloud-metadata addresses are never reachable.
 - **Signing.** Requests are signed with HMAC-SHA256 in the Standard Webhooks form:
   - headers `webhook-id`, `webhook-timestamp` and `webhook-signature: v1,<base64>`;
   - the signed content is `{id}.{timestamp}.{body}`.
 - **Receiving.** Receivers should:
-  - verify the signature with a constant-time comparison (reference: `WebhookSigner.Verify`);
+  - verify the signature with a constant-time comparison;
   - reject timestamps more than 5 minutes off;
   - deduplicate on `webhook-id`, since delivery is at least once.
-- **Action requests.** An endpoint listed in `Actions:NotifyEndpoints` also gets `action.request.created` (waiting for approval),
-  `.approved`, `.rejected`, `.cancelled` and `.expired`, signed the same way. They are never silenced or grouped. The body has `type`,
-  `occurredAt`, `tenant`, and `request`: `id`, `agent` (`id`, `hostname`), `action`, `parameters`, `risk`, `policy`, `reason`,
-  `requestedBy`, `requestedAt`, `expiresAt`, `state`, `decidedBy`, `decidedAt` and `comment`. Slack, Teams and email get it written for
-  people, with a link to the Console's Approvals page when `Webhooks:ConsoleUrl` is set.
+- **The body** is the one 1.x sent, byte for byte (proved by `BodyParityTests`, against a frozen copy of the 1.x formatter): `id`, `type`
+  (`alert.firing`, `alert.resolved`), `occurredAt`, `tenant`, `escalation`, `alert` and `links`.
+- **Action requests.** A route for `observability.action.request.*` gets `action.request.created` (waiting for approval), `.approved`,
+  `.rejected`, `.cancelled` and `.expired`, signed the same way. The body has `type`, `occurredAt`, `tenant`, and `request`: `id`, `agent`
+  (`id`, `hostname`), `action`, `parameters`, `risk`, `policy`, `reason`, `requestedBy`, `requestedAt`, `expiresAt`, `state`, `decidedBy`,
+  `decidedAt` and `comment`. Slack, Teams and email get it written for people, with a link to the Console's Approvals page when
+  `Notifications:ConsoleUrl` is set.
+
+### Escalation
+
+An escalation policy is two halves under one key. The pipeline's policy (its steps, who is told after how long, whether acknowledging stops
+it) is made on the Notifications admin pages. The platform's selection of it (`GET`, `POST` and `PUT` on `/api/v1/tenants/{id}/escalation-policies`, admin
+only) says which alerts escalate by it: `minimumSeverity`, `ruleKeys` and `environments` (a host alert has no environment). Of the
+policies that match an alert, the first by key (ordinal) is used, and more than one is logged. A body with `steps` or `stopOnAcknowledge` is
+refused (`422`, `steps_moved`), and so is a selection whose key the pipeline has no policy for (`422`, `no_pipeline_policy`). A policy deleted
+from the pipeline later leaves the selection (`pipelinePolicyExists: false`); its alerts are still notified, without escalating, and a warning says so.
+A silence still holds an alert's escalation (the pipeline's hold). One alert's notifications, deliveries and escalation are read on the admin
+page of its correlation, `alert:{id}` (`GET /api/v1/tenants/{id}/alerts/{alertId}/notifications` returns that key, the silences covering it and its incidents).
 
 ### The notification pipeline's dead-man alarm
 
-With `Notifications:Pipeline` `new` or `shadow`, the API watches the embedded pipeline and posts to one endpoint of its own when the
+The API watches the embedded pipeline and posts to one endpoint of its own when the
 pipeline stops getting notifications out. The alarm never goes through the pipeline it watches.
 - **Configure** `Notifications:DeadMan`:
   - `Url` and `SecretRef` (`env:NAME` or `file:/path`); without a `Url` there is no alarm;
@@ -210,7 +264,6 @@ pipeline stops getting notifications out. The alarm never goes through the pipel
   - `failing`: a stage's rows failing their steps, on two reads `FailingFor` apart;
   - `no-success`: failed attempts and none that got out in the last 15 minutes, on two reads `FailingFor` apart;
   - `stuck-in-retry`: a delivery in flight past `UndeliveredThreshold`;
-  - `shadow`: the shadow comparison failing;
   - `unreadable`: the pipeline's health can't be read, on two reads in a row;
   - `not-started`: the pipeline didn't start (its migration or provisioning failed), for as long as that stands. Its health alone can read
     quiet then: what the platform sends is kept for it, so nothing is due or failing;
@@ -303,7 +356,6 @@ Agents are off unless `Agents:Enabled` is `true`, with:
 | `Actions:Approval:{Low,Medium,High}` | what each risk needs before a command is signed: `None`, `Admin` or `SecondPerson`. Defaults: `None`, `Admin`, `SecondPerson` |
 | `Actions:Overrides:{action}` | the same, for one action over its risk's policy, e.g. `Actions__Overrides__agent.update=SecondPerson` |
 | `Actions:ApprovalLifetime` | how long a request waits for a decision, 30 minutes by default |
-| `Actions:NotifyEndpoints:{n}` | webhook endpoint keys (from `Webhooks:Endpoints` or the API) told when a request waits for approval and how it ends, whatever alert events they take. None by default: then only the Console's Approvals count tells anyone |
 | `Actions:SweepInterval` | how often requests past their deadline are closed as expired, and issued remediations checked for recovery, 30 seconds by default |
 | `Actions:StaleEvidence` | a request's alert or target health older than this is stale, and it's neither created nor approved on it (`stale_evidence`), 10 minutes by default |
 | `Actions:BundleRetention` | how long diagnostic bundles are kept in PostgreSQL before they're deleted, 14 days by default (each is at most 5 MB) |
@@ -447,7 +499,7 @@ with the Collector's ClickHouse pool at 32 connections, on a ClickHouse already 
   | Health | `Health:Enabled` | – |
   | Rules | `Rules:Enabled` | – |
   | SLOs | `Slos:Enabled` | – |
-  | Notification planning | `Webhooks:Enabled` | webhook delivery in that replica |
+  | Notification pipeline stages | `Notifications:Stages:Run` | the pipeline's stages in that replica |
   | Agent action requests | `Agents:Enabled` | the agent listener in that replica |
 
 - **ClickHouse is one node, and scales up:** more cores for the bursts, more memory for the merges. A second node (a replica for
@@ -475,7 +527,7 @@ with the Collector's ClickHouse pool at 32 connections, on a ClickHouse already 
 |---|---|---|
 | A worker's "busy" | its passes take most of its interval | its levers above; a replica of its own; fewer rules or SLOs |
 | A worker stale, stuck, unheld or gone | its replica stopped, or its passes do | the runbook's worker entries; `/api/v1/platform/status` names the replica |
-| A backlog behind | delivery or discovery is late | webhooks: the receiving end, or more replicas; discovery: its levers, ClickHouse's CPU |
+| A backlog behind | delivery or discovery is late | notifications: the receiving end (the admin pages show each delivery), or more replicas; discovery: its levers, ClickHouse's CPU |
 | Refused or dropped | the Collector's limit is reached: refused is what the receivers turned back (the memory limiter, or an export queue full), dropped is what an exporter's sends lost for good | less load per Collector; the ClickHouse driver's pool (`max_open_conns`, which caps the inserts in flight) with the export's consumers, and the batch size (measure first); ClickHouse's insert p95 |
 | An export queue filling | inserts are slower than the load | ClickHouse's CPU and insert p95; the queue absorbs bursts, and past its bound the receivers refuse what it can't take (the panel's refused; the platform's own telemetry, its dropped) |
 | ClickHouse CPU | the node is busy | a larger node; fewer searches at once (`ClickHouse:Api:MaxConcurrent`); the reads by caller say which worker or page costs most |

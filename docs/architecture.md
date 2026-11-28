@@ -49,10 +49,10 @@ the [README](../README.md), the [requirements](observability-platform-requiremen
      │                  │                                   │                                 │
      │                  ▼                                   ▼                                 │
      │  ┌───────────────────────────────┐   ┌───────────────────────────────┐                 │
-     │  │ REST /api/v1 (tenant-scoped)  │   │ Webhook dispatcher (every 2 s)│                 │
-     │  │ resources, topology, health,  │   │ HMAC-SHA256, HTTPS only,      │                 │
+     │  │ REST /api/v1 (tenant-scoped)  │   │ Notification pipeline (embedded)│                 │
+     │  │ resources, topology, health,  │   │ signed webhooks, chat, email, │                 │
      │  │ alerts, rules, telemetry      │   │ SSRF guard, retries with      │                 │
-     │  │ (traces/logs/metrics/search)  │   │ backoff (8 attempts)          │                 │
+     │  │ (traces/logs/metrics/search)  │   │ backoff, escalation, holds    │                 │
      │  └───────────────▲───────────────┘   └───────────────┬───────────────┘                 │
      └──────────────────┼───────────────────────────────────┼─────────────────────────────────┘
                         │ Bearer JWT (aud juice-platform,   │
@@ -85,7 +85,9 @@ the [README](../README.md), the [requirements](observability-platform-requiremen
    the API or the rules file, an acknowledgement. The command only changes entities, and the alert raises
    `AlertTransitioned` when it fires or resolves after firing. The framework's `TransactionBehavior` saves the change,
    dispatches that domain event (its handler publishes `AlertTransitionedIntegrationEvent`), saves the Juice outbox, and
-   commits, all in one transaction. The outbox's `local` route hands the event to the notification module right after
-   the commit, and its delivery retries for about 85 minutes if that fails. The notification module plans the channel
-   deliveries and escalations in a command of its own, once per transition even if the event arrives twice. The
-   dispatcher then sends them, so a channel can never roll an alert back.
+   commits, all in one transaction. The outbox's `local` route hands the event to the platform's notification consumer right after
+   the commit, and its delivery retries for about 85 minutes if that fails. The consumer plans the transition in a command of its
+   own, once per transition even if the event arrives twice: it raises `AlertNotificationsPlanned`, and the producer adapter writes the
+   request to the embedded Juice.Notifications pipeline in that same transaction (held instead, if a silence covers the alert). The
+   pipeline then routes, renders, sends and escalates it (by the policy the platform's selection names), so a channel can never roll an
+   alert back. Endpoints, routes and the allowlist are the pipeline's, declared in its provisioning file or on its admin pages.

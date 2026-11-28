@@ -68,7 +68,7 @@ GROUP BY replica, MetricName, Attributes ORDER BY MetricName, replica
   `juice.observability.rules.busy` at `rules.slots` with `rules.waiting` growing.
 - **ClickHouse is the limit:** `juice.observability.clickhouse.cpu` near the cores it has, and query durations rising for every caller
   at once. One caller slow alone points at its own queries.
-- **Notifications are late:** `juice.observability.outbox.oldest_age` or `juice.observability.webhooks.oldest_age` past a minute.
+- **Notifications are late:** `juice.observability.outbox.oldest_age` past a minute (the transition is waiting to be planned), or the pipeline's own health on the Notifications admin pages and its dead-man alarm.
 - **Disk:** `juice.observability.clickhouse.disk.free` against `juice.observability.clickhouse.table.size`'s daily growth.
 - **No platform metrics at all:** the API's startup log says `Platform metrics: ...` (no endpoint, an unreadable token file, or off).
   Then check the Collector's platform receiver (`otlp/platform`, port 4319) and `secrets/platform-otlp-token`.
@@ -114,53 +114,51 @@ For the application tokens:
 
 Token changes need the restart; this was tested.
 
-## Change rules, webhooks or the allowlist
+## Change rules, endpoints or the allowlist
 
-Each rule, endpoint and allowlist entry belongs to one side:
+Rules belong to one side. Endpoints, routes and the allowlist are the notification pipeline's, and come from its provisioning file or its admin pages.
 
 | It's | Change it | Notes |
 |---|---|---|
-| Listed in `rules.json` or `webhooks.json` | In the file, then restart the API | The API refuses with `409`. If the API created the same key, the file takes it over |
-| Created through the API or the Console | Through the API or the Console, as an admin | A restart leaves it alone |
-| Removed from the file | Through the API or the Console | A removed rule or endpoint is disabled and handed over; a removed allowlist entry is deleted |
+| A rule listed in `rules.json` | In the file, then restart the API | The API refuses with `409`. If the API created the same key, the file takes it over |
+| A rule created through the API or the Console | Through the API or the Console, as an admin | A restart leaves it alone |
+| A rule removed from the file | Through the API or the Console | It is disabled and handed over |
+| An endpoint, route or allowlist entry listed in `notifications-provisioning.json` (`Notifications:Provisioning:Path`) | In the file, then restart the API | The admin pages show it read-only (`ManagedBy=config`) |
+| An endpoint, route or allowlist entry made on the Notifications admin pages | On the pages, as an admin | A restart leaves it alone; one the file later lists is taken over by it |
+| One removed from the file | On the pages | Integrations, targets and routes are disabled and handed back; an allowlist entry is deleted |
 
 To change a file:
 
-1. Edit `rules.json` or `webhooks.json` and commit it.
+1. Edit `rules.json` or `notifications-provisioning.json` and commit it.
 2. Restart the API: `docker compose --profile platform restart platform-api`.
-3. Check `audit_records` for `rule.create|update|disable`, `webhook.*` and `webhook.allowlist.*`.
+3. Check `audit_records` for `rule.create|update|disable`; the pipeline's changes are audited under the actor `deployment-config` (operation `notifications.*`).
 
-An invalid file keeps the API from starting, and the log names every error.
+An invalid file keeps the API from starting for a rule file; a provisioning file the pipeline refuses (an invalid row, or a tenant other than the
+platform's) fails the pipeline's start instead: `/health/ready` reports `notifications`, nothing is written, and the platform runs on. Fix it and restart.
 
 **Disabling a rule, or changing its template or scope, resolves its open alerts** with the reason `rule_disabled` or `rule_changed`, and sends those notifications. Removing a rule from the file does too, so check a file before deploying it: an emptied one resolves every alert its rules had open.
 
-## Webhook deliveries
+## Notification deliveries
 
 - **An alert fired and nothing was planned.** An alert's change reaches notifications through the Juice outbox. Every
   transition that notifies has a row in `outbox_events`, and `alert_transitions.notifications_planned_at` is set once
-  its deliveries are planned. Waiting rows in `outbox_deliveries` have `state` 0, and ones that will retry have 3 with
+  its request is planned. Waiting rows in `outbox_deliveries` have `state` 0, and ones that will retry have 3 with
   `next_attempt_on`. Retries go on for about 85 minutes; the last error is in `last_error`. A row still 3 with no
   `next_attempt_on` has given up: fix the cause, then set it back to `state = 0`. Planning twice is harmless, since a
   transition already planned is skipped.
-- **History.** `GET /webhooks` lists the endpoints. `GET /webhooks/{id}/deliveries?status=failed` shows each
-  delivery with every attempt: status code or error, and duration.
-- **Retries.** Network errors, timeouts, 408, 429 and 5xx retry with backoff, from 10 s up to 10 minutes, for 8
-  attempts. Any other 4xx fails at once.
-- **Blocked destinations** show as `blocked_address:…`, `private_address_not_allowlisted:…` or `https_required`, and
-  are never retried.
-- **Alert state.** A failed delivery never changes alert state. To resend, fix the receiver, then press Retry beside the
-  delivery in the Console's channel history, or `POST /webhooks/{id}/deliveries/{deliveryId}/retry` (admin, audited). It
-  gets one more attempt. Receivers deduplicate on `webhook-id`.
-- **Check a channel** before relying on it: the Test button, or `POST /webhooks/{id}/test` (admin, audited). It sends a
-  `webhook.test` notification now through the same checks and signing as an alert, and answers with the status or the error.
-  It works on a disabled channel too.
-- **`escalation.step.unreachable`** in the audit: an escalation step reached nobody, because all its channels are disabled or gone.
-  The next step went at once; if it was the last, the escalation stopped as `unreachable`. Enable or replace the channels.
+- **History.** The Notifications admin pages list every delivery with its attempts, and an alert's own under its correlation,
+  `alert:{id}` (`GET /alerts/{id}/notifications` returns that key). Retries, blocked destinations (the allowlist), secrets
+  (`secret_unavailable`) and email errors are the pipeline's: its pages say why a delivery failed and whether it retries.
+- **Alert state.** A failed delivery never changes alert state. To resend, fix the receiver, then retry the delivery on its admin page.
+  Receivers deduplicate on `webhook-id`.
+- **Check a channel** before relying on it: the Test button on the integration's admin page.
+- **Held and kept.** `notification_holds` are what a silence covers (reason `silence`) or what the platform kept while the pipeline hadn't
+  started (`pipeline_unavailable`); the release pass decides each once no silence covers it, and a restart that brings the pipeline up replays
+  `notification_parked_calls` in order. The dead-man alarm names `not-started` and `kept` when they stand.
 - **A host on an older version** logs nothing wrong itself. The newer host logs `took … over from an older version`: upgrade or
   stop the older one.
-- **One alert.** `GET /alerts/{id}/notifications` and the alert page show every delivery, escalation, silence and incident for it.
-- **Other statuses.** `Suppressed` is held by a silence, `Dropped` was held and no longer mattered, and `Grouped` went out inside the delivery named by `groupedInto`.
-- **Other errors.** `chat_url_not_allowed`: the URL behind a Slack or Teams reference isn't that service's, and isn't in `Webhooks:AdditionalChatHosts`. `secret_unavailable`: the reference isn't set on the host; it retries. `smtp_not_configured`: no `Webhooks:Smtp`. `smtp_auth_failed`: the server refused the login (check `UsernameRef` and `PasswordRef`; for Gmail, an app password of the account in `From`); not retried. `smtp_auth_unsupported`: credentials are set but the server offers no login. `smtp_tls_unavailable`: `UseTls` is on and the server doesn't offer STARTTLS; not sent, not retried. `smtp_5xx`: the mail server refused for good. `smtp_4xx`, `smtp_tls_failed` and `smtp_unavailable` retry. Every email failure is logged as a warning with the server's reply.
+- **One alert.** `GET /alerts/{id}/notifications` returns its correlation key, the silences covering it and its incidents; the alert page links to the correlation.
+- **A policy "escalates by" a key the pipeline lacks.** The platform's selection (`pipelinePolicyExists: false`) is kept; the alert is notified without escalating, and a warning names the policy. Recreate it on the Escalation Policies page, or remove the selection.
 
 ## Silences and maintenance windows
 

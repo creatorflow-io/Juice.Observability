@@ -11,7 +11,7 @@ Turns telemetry from Juice services into a resource model, health, rules, alerts
 | `src/Juice.Observability.Discovery` | Discovery: reads Collector-stamped telemetry from ClickHouse and reconciles services, instances, environments, resources and dependencies |
 | `src/Juice.Observability.Health` | Health evaluation: instances, services and applications per environment, and hosts, from ClickHouse evidence |
 | `src/Juice.Observability.Rules` | Typed scheduled rules over ClickHouse templates and the alert lifecycle |
-| `src/Juice.Observability.Webhooks` | Notification of alert transitions, heard from the Juice outbox: SSRF-safe delivery to signed webhooks, Slack, Teams and email, retries, history, silences, grouping, escalation |
+| `src/Juice.Observability.Notifications` | The platform as a producer of the embedded Juice.Notifications pipeline: alert transitions, acknowledgements and action requests become its requests in the same transaction; silences hold them; the default templates reproduce the 1.x webhook, Slack, Teams and email bodies |
 | `src/Juice.Observability.Api` | `/api/v1` (OIDC, tenant-scoped) and the background workers, as a library (`AddJuiceObservability`, `MapJuiceObservability`) |
 | `src/Juice.Observability.Host` | The reference host (the image): the API library and the Console on one origin |
 | `src/Juice.Observability.Agents` | Juice Agent control plane: the agent CA, enrollment and revocation, the mTLS agent listener, signed read-only commands |
@@ -44,7 +44,7 @@ Besides the image, the platform ships as libraries for a host app of the custome
 
 | Package | Feed | Contents |
 |---|---|---|
-| `Juice.Observability.Api` (NuGet) | nuget.org; alpha/beta on GitHub Packages | `AddJuiceObservabilityFiles()`, `AddJuiceObservability()`, `MapJuiceObservability()`: the API, the workers, auth and health checks. Depends on `.Data`, `.Discovery`, `.Health`, `.Rules`, `.Webhooks`, also published |
+| `Juice.Observability.Api` (NuGet) | nuget.org; alpha/beta on GitHub Packages | `AddJuiceObservabilityFiles()`, `AddJuiceObservability()`, `MapJuiceObservability()`: the API, the workers, auth and health checks. Depends on `.Data`, `.Discovery`, `.Health`, `.Rules`, `.Notifications`, also published |
 | `@juice-js/observability` (npm) | npmjs | `provideJuiceObservability()`, `OBSERVABILITY_ROUTES`, `observabilityMenus()` and the page styles ([usage](console/projects/juice-js/observability/README.md)) |
 
 `src/Juice.Observability.Host` and `console/src` are the reference host and app: they use the packages the way a
@@ -106,10 +106,8 @@ page's `nextCursor`).
 | `GET /api/v1/tenants/{tenantId}/health?subjectType=&environment=&state=` | current health with reasons, policy version, evidence window and `stale` |
 | `GET /api/v1/tenants/{tenantId}/rules` | the rules, each with who owns it (`managedBy`) and its `etag` |
 | `POST …/rules`, `PUT …/rules/{key}` | create or change a rule (admin); a typed template, never a query. `If-Match` with the `etag` refuses a change over someone else's. Disabling or rescoping resolves its open alerts |
-| `GET`, `POST …/webhooks`, `PUT …/webhooks/{id}` | channels: `webhook`, `slack`, `teams` or `email`, with routing and `groupWindowSeconds`. Changes are admin only; no address or secret is ever returned |
-| `GET`, `PUT`, `DELETE …/webhooks/allowlist` | private destinations channels may reach (admin to change; `DELETE` takes `?destination=`) |
 | `GET`, `POST …/silences`, `DELETE …/silences/{id}` | silences and maintenance windows (operator or admin to change); `?all=true` includes those over |
-| `GET`, `POST …/escalation-policies`, `PUT …/escalation-policies/{key}` | who is told as an alert stays open (admin to change) |
+| `GET`, `POST …/escalation-policies`, `PUT …/escalation-policies/{key}` | which alerts escalate by the Notifications policy of that key (admin to change); its steps are edited on the Notifications admin pages (`422` otherwise) |
 | `GET …/alerts/{alertId}/notifications` | an alert's deliveries with their attempts, escalations, active silences and incidents |
 | `GET`, `POST …/incidents`, `GET …/incidents/{id}` | incidents with their alerts and record (operator or admin to change) |
 | `POST …/incidents/{id}/transitions`, `…/notes`, `…/alerts`, `DELETE …/incidents/{id}/alerts/{alertId}` | moving an incident, noting, and its alerts; each audited |
@@ -130,8 +128,6 @@ page's `nextCursor`).
 | `POST /api/v1/tenants/{tenantId}/load-runs`, `POST …/load-runs/{id}/end` | mark a load test's window (operator or admin; `Idempotency-Key` on start); the platform generates no load |
 | `GET /api/v1/tenants/{tenantId}/load-runs?environment=`, `…/load-runs/{id}/results` | the runs; each service's load, p95, errors, thread pool queue, consumer busy and outbox backlog per time step, and where it started to struggle |
 | `GET /api/v1/tenants/{tenantId}/search?q=` | a trace id or W3C `traceparent`, a span id (last 24 h) or services by name |
-| `GET /api/v1/tenants/{tenantId}/webhooks` | webhook endpoints (destination host only, never the secret) |
-| `GET /api/v1/tenants/{tenantId}/webhooks/{endpointId}/deliveries?status=` | delivery history, each with every attempt |
 | `POST /api/v1/tenants/{tenantId}/alerts/{alertId}/acknowledgement` | acknowledge an open alert: `operator` or `admin`; send `Idempotency-Key` to retry safely |
 | `POST …/agents/enrollment-tokens` | a one-time token to enroll one agent (admin), shown once, valid 5 minutes to 24 hours |
 | `GET …/agents?all=`, `GET …/agents/{id}`, `POST …/agents/{id}/revocation` | enrolled agents and whether they are online; revoking (admin, with a reason) refuses the agent from its next call |
@@ -278,9 +274,9 @@ a threshold and a recovery threshold (hysteresis), minimum samples, `ForDuration
 
 ## Notifications and incidents
 
-Rules, channels, the allowlist and escalation can be changed through the API and the Console, by admins, with an audit record. The deployment's files still work: a row belongs to whichever side created it, and the [runbook](docs/runbook.md#change-rules-webhooks-or-the-allowlist) has the details.
+Rules can be changed through the API and the Console, by admins, with an audit record; the deployment's files still work: a rule belongs to whichever side created it, and the [runbook](docs/runbook.md#change-rules-endpoints-or-the-allowlist) has the details. Endpoints, routes and the allowlist belong to the embedded notification pipeline (Juice.Notifications): a provisioning file (`Notifications:Provisioning:Path`) and its admin pages, under `/notifications`. Since 2.0 it is the only way the platform notifies, and the 1.x `Webhooks:*` configuration is refused at start ([deployment](docs/deployment.md#configuration)).
 
-A channel chooses what it takes by event, rule, environment and severity, and can group what arrives in a window into one notification. A **silence** or maintenance window holds notifications, not alerts, and what it held goes out when it ends if it still matters. An **escalation policy** tells more channels as an alert stays open, and stops when the alert resolves or, if the policy says so, when it's acknowledged. An **incident** groups alerts into a piece of work with its own record, and doesn't change them.
+A route chooses what it takes by type, rule, environment and severity. A **silence** or maintenance window holds notifications, not alerts, and what it held goes out when it ends if it still matters. An **escalation policy** (made on the pipeline's admin pages; the platform keeps which alerts select it) tells more people as an alert stays open, and stops when the alert resolves or, if the policy says so, when it's acknowledged. An **incident** groups alerts into a piece of work with its own record, and doesn't change them.
 
 **Status:** see [Phase 6 acceptance](docs/phase-6-acceptance.md), including what hasn't been tried against real Slack, Teams and TLS mail servers.
 
@@ -290,7 +286,7 @@ A change event comes from one of three places:
 
 - **Telemetry:** a new `service.version` from a new instance is recorded with no actor, since telemetry shows that it changed, not who changed it. A service's first version isn't a change, and old instances still reporting during a rollout don't read as going back.
 - **A pipeline:** `POST /changes` (operator or admin). The actor comes from the token. Reporting the same `source` and `externalKey` again returns the first event.
-- **The platform:** its own rules and webhooks when configuration loads them.
+- **The platform:** its own rules when configuration loads them.
 
 ```bash
 curl -X POST "$PLATFORM_URL/api/v1/tenants/$TENANT_ID/changes" -H "Authorization: Bearer $PLATFORM_TOKEN" -H 'Content-Type: application/json' -d '{
@@ -352,17 +348,16 @@ to an hour by the run's length. The broker's own queue depth and the database ar
 
 ## Webhooks
 
-When an alert fires, or resolves after firing, one delivery per matching endpoint is written in the same transaction
-as the alert change. A webhook can therefore never roll an alert back, and replaying an evaluation never notifies
-twice. The dispatcher sends every 2 s.
+When an alert fires, or resolves after firing, the platform writes one request to the embedded notification pipeline in the same
+transaction as the alert change. A notification can therefore never roll an alert back, and replaying an evaluation never notifies
+twice. The pipeline routes it to the endpoints its routes name.
 
 - **Signing.** HMAC-SHA256, Standard Webhooks form: `webhook-id`, `webhook-timestamp`,
-  `webhook-signature: v1,<base64>` over `{id}.{timestamp}.{body}`.
-- **Destinations.** HTTPS only, no redirects. DNS is checked on every connection: one internal answer blocks the
-  destination. Private addresses need an allowlist entry. Loopback, link-local and cloud metadata are never
-  reachable.
-- **Retries.** Transient failures retry with exponential backoff and jitter (10 s to 10 min, 8 attempts). Other 4xx
-  fail at once. Every attempt is recorded.
+  `webhook-signature: v1,<base64>` over `{id}.{timestamp}.{body}`. The body is the one 1.x sent, byte for byte.
+- **Destinations.** HTTPS only (plain http to an allowlisted receiver when told to), no redirects. DNS is checked on every connection:
+  one internal answer blocks the destination. Private addresses need an allowlist entry. Loopback, link-local and cloud metadata are
+  never reachable.
+- **Retries.** Transient failures retry with exponential backoff and jitter. Every attempt is recorded, and read on the admin pages.
 
 Configuration, secrets and receiver guidance are in [docs/deployment.md](docs/deployment.md).
 
