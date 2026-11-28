@@ -208,7 +208,9 @@ $_layout-tokens: (bg: bg, surface: surface, border: border, text: text, muted: m
     > .jc-field > mat-checkbox, > .jc-field > mat-slide-toggle, > .jc-field > mat-radio-group { display: block; padding-top: 10px; }
     // A label that wraps keeps the box at the first line, not centred beside all of them.
     > mat-checkbox .mdc-form-field, > .jc-field > mat-checkbox .mdc-form-field { align-items: flex-start; }
-    > mat-checkbox .mdc-form-field > label, > .jc-field > mat-checkbox .mdc-form-field > label { padding-top: 10px; }
+    // 6px puts the label's first line level with the box (measured, e2e/forms-layout.mjs: the 18px box is centred in its 32px state layer, the
+    // 20px label line is not).
+    > mat-checkbox .mdc-form-field > .mdc-label, > .jc-field > mat-checkbox .mdc-form-field > .mdc-label { padding-top: 6px; }
     > .jc-form-actions { grid-column: 1 / -1; }
     @media (max-width: 520px) { > mat-form-field.jc-field-wide, > .jc-field.jc-field-wide { grid-column: auto; } } }
   // The same in a plain (flex) form, where the rest of the row stays centred: a checkbox starts at the top, level with the inputs.
