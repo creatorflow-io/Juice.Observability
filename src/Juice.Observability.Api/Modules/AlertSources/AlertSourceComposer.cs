@@ -61,6 +61,8 @@ namespace Juice.Observability.Api.Modules.AlertSources
             {
                 throw new ModuleCompositionException($"Module '{module}' can't declare an alert source for '{template}': it is already declared.");
             }
+            // For the registry, which refuses a rule template with the same key whichever way the template is built.
+            b.Services.AddSingleton(new ModuleAlertSourceDeclaration(module, template));
             // The command an alert source sends outside a transaction: internal, so the mediator's assembly scan doesn't find it.
             b.Services.TryAddTransient<Juice.MediatR.IRequestHandler<ApplyAlertSignals, AlertSourceResult>, ApplyAlertSignalsHandler>();
             b.Services.AddKeyedScoped<IAlertSource>(AlertSourceKeys.Key(module, template), (services, key) => new PlatformAlertSource(template, services.GetRequiredService<PlatformDbContext>(), services,

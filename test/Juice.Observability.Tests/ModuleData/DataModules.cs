@@ -246,6 +246,30 @@ namespace Juice.Observability.Tests.ModuleData
         public void ConfigureServices(IModuleServicesBuilder module) => module.AddAlertSource("source-clash.split").AddRuleTemplate<ClashTemplate>();
     }
 
+    public sealed class ClashDependency;
+
+    /// <summary>A template the container builds (its constructor takes a dependency): composition can't read its key without building it.</summary>
+    public sealed class ClashDiTemplate(ClashDependency dependency) : IRuleTemplate
+    {
+        public ClashDependency Dependency { get; } = dependency;
+
+        public RuleTemplateInfo Info => new("source-di.split", "Clash", TemplateSubjectKind.Service);
+
+        public Task<IReadOnlyList<TemplateObservation>> ObserveAsync(RuleSpec rule, ITemplateTelemetry telemetry, TemplateWindow window, CancellationToken ct)
+            => Task.FromResult<IReadOnlyList<TemplateObservation>>([]);
+    }
+
+    public sealed class DiTemplateAndSourceModule : IObservabilityModule
+    {
+        public ModuleInfo Info { get; } = new("source-di", "Di", "1.0.0", "[2.0.0,3.0.0)");
+
+        public void ConfigureServices(IModuleServicesBuilder module)
+        {
+            module.Services.AddSingleton<ClashDependency>();
+            module.AddRuleTemplate<ClashDiTemplate>().AddAlertSource("source-di.split");
+        }
+    }
+
     /// <summary>Module keys are lower case, as a rule template's are.</summary>
     public sealed class UpperCaseSourceModule : IObservabilityModule
     {
