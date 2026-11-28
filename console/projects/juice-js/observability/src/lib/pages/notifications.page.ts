@@ -10,7 +10,7 @@ import { MatSelectModule } from '@angular/material/select';
 import { RouterLink } from '@angular/router';
 import { map } from 'rxjs';
 import { ApiService } from '../core/api.service';
-import { ObservabilityLinks } from '../core/options';
+import { OBSERVABILITY_CAN_ADMIN, ObservabilityLinks } from '../core/options';
 import { EscalationPolicy } from '../core/models';
 import { apiResource } from '../shared/resource';
 import { problemText } from '../shared/telemetry';
@@ -35,7 +35,7 @@ const NEW_POLICY: PolicyForm = { editing: false, key: '', name: '', ruleKeys: ''
     @if (error()) { <p class="jc-error">{{ error() }}</p> }
 
     <section class="jc-card">
-      <h2>Selections <button mat-button type="button" data-testid="policy-new" (click)="policy.set(newPolicy())">New selection</button></h2>
+      <h2>Selections @if (admin()) { <button mat-button type="button" data-testid="policy-new" (click)="policy.set(newPolicy())">New selection</button> }</h2>
       <p class="jc-muted jc-small">Which alerts escalate. What an escalation does is set on the Notifications Escalation Policies page.</p>
       @if (policy(); as f) {
         <form class="jc-form" data-testid="policy-form" (ngSubmit)="savePolicy(f)">
@@ -69,16 +69,24 @@ const NEW_POLICY: PolicyForm = { editing: false, key: '', name: '', ruleKeys: ''
                 @if (!p.pipelinePolicyExists) { <span class="jc-bad" [attr.data-testid]="'no-pipeline-policy-' + p.key">No policy with this key in Notifications: alerts notify once</span> }
               </td>
               <td class="jc-small jc-nowrap">{{ p.updatedAt | date: 'MMM d, HH:mm' }}</td>
-              <td class="jc-row-actions"><button mat-button type="button" (click)="editPolicy(p)">Change</button></td>
+              <td class="jc-row-actions">@if (admin()) {
+                <button mat-button type="button" [attr.data-testid]="'policy-change-' + p.key" (click)="editPolicy(p)">Change</button>
+                <button mat-button type="button" [attr.data-testid]="'policy-delete-' + p.key" [disabled]="saving()" (click)="deletePolicy(p.key)">Delete</button>
+              }</td>
             </tr>
           } @empty { <tr><td colspan="5" class="jc-muted">No selections: a firing alert notifies once.</td></tr> }
         </tbody>
       </table>
+      @if (deleteError()) { <p class="jc-error" data-testid="policy-delete-error">{{ deleteError() }}</p> }
     </section>`,
 })
 export class NotificationsPage {
   private readonly api = inject(ApiService);
   private readonly links = inject(ObservabilityLinks);
+  private readonly canAdmin = inject(OBSERVABILITY_CAN_ADMIN);
+  /** Changing a selection needs the admin role; the buttons are hidden without it (the API refuses with 403 anyway). */
+  protected readonly admin = () => this.canAdmin();
+  protected readonly deleteError = signal('');
   protected readonly policy = signal<PolicyForm | null>(null);
   protected readonly saving = signal(false);
   protected readonly policyError = signal('');
@@ -107,6 +115,16 @@ export class NotificationsPage {
     (f.editing ? this.api.updateEscalationPolicy(f.key, body) : this.api.createEscalationPolicy(body)).subscribe({
       next: () => { this.saving.set(false); this.policy.set(null); this.data.reload(); },
       error: e => { this.saving.set(false); this.policyError.set((e as { status?: number }).status === 403 ? 'This needs the admin role.' : problemText(e)); },
+    });
+  }
+
+  /** Removes a selection, including an orphaned one whose pipeline policy is gone. */
+  protected deletePolicy(key: string) {
+    this.saving.set(true);
+    this.deleteError.set('');
+    this.api.deleteEscalationPolicy(key).subscribe({
+      next: () => { this.saving.set(false); this.data.reload(); },
+      error: e => { this.saving.set(false); this.deleteError.set((e as { status?: number }).status === 403 ? 'This needs the admin role.' : problemText(e)); },
     });
   }
 }

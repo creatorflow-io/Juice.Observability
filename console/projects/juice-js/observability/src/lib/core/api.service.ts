@@ -88,6 +88,8 @@ export class ApiService {
   escalationPolicies() { return this.get<Page<EscalationPolicy>>('/escalation-policies'); }
   createEscalationPolicy(body: unknown) { return this.send<EscalationPolicy>('POST', '/escalation-policies', body); }
   updateEscalationPolicy(key: string, body: unknown) { return this.send<EscalationPolicy>('PUT', `/escalation-policies/${key}`, body); }
+  /** Removes a selection (admin); the pipeline's own policy of that key is not touched. */
+  deleteEscalationPolicy(key: string) { return this.send<void>('DELETE', `/escalation-policies/${key}`); }
 
   silences(query: Query = {}) { return this.get<Page<Silence>>('/silences', { limit: 200, ...query }); }
   createSilence(body: unknown) { return this.once<Silence>('/silences', body); }
