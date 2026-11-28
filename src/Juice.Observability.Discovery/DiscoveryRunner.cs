@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using Juice.Observability.Data;
+using Juice.Observability.Extensibility;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -194,32 +195,18 @@ namespace Juice.Observability.Discovery
     /// (<see cref="WorkerLease"/>). A failed pass is logged and retried next time.
     /// </summary>
     public sealed class DiscoveryWorker(DiscoveryRunner runner, IServiceScopeFactory scopes, IOptions<DiscoveryOptions> options,
-        ILogger<DiscoveryWorker> logger) : BackgroundService
+        ILogger<DiscoveryWorker> logger) : LeasedWorkerService("discovery", scopes, logger)
     {
-        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        protected override TimeSpan Interval => options.Value.Interval;
+
+        protected override async Task<LeasedPassOutcome> RunOnceAsync(LeasedPass pass, CancellationToken cancellationToken)
         {
-            PlatformCaller.Set("discovery", stoppingToken);
-            WorkerPulse.Register("discovery", options.Value.Interval, stopping: stoppingToken);
-            await using var lease = WorkerLease.For(scopes, "discovery", logger);
-            using var timer = new PeriodicTimer(options.Value.Interval);
-            do
-            {
-                try
-                {
-                    if (await lease.TryHoldAsync(stoppingToken))
-                    {
-                        using var pass = WorkerPulse.Begin("discovery", stoppingToken);
-                        await runner.RunOnceAsync(stoppingToken);
-                        pass.Succeeded();
-                    }
-                }
-                catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
-                {
-                    logger.LogError(ex, "Discovery pass failed; retrying in {Interval}", options.Value.Interval);
-                }
-            }
-            while (await timer.WaitForNextTickAsync(stoppingToken));
+            await runner.RunOnceAsync(cancellationToken);
+            return LeasedPassOutcome.Succeeded;
         }
+
+        protected override void LogFailure(Exception exception)
+            => Logger.LogError(exception, "Discovery pass failed; retrying in {Interval}", options.Value.Interval);
     }
 
     internal sealed class ClickHouseOptionsValidator : IValidateOptions<ClickHouseOptions>

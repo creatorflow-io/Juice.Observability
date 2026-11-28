@@ -71,6 +71,7 @@ namespace Juice.Observability.Data
         private static readonly Histogram<double> PassDuration = Meter.CreateHistogram<double>("juice.observability.worker.pass.duration", "s",
             "How long a worker's pass took");
         private static readonly ConcurrentDictionary<string, State> Workers = new();
+        private static readonly ConcurrentDictionary<string, byte> Declared = new();
 
         static WorkerPulse()
         {
@@ -114,7 +115,7 @@ namespace Juice.Observability.Data
         public static IReadOnlyList<WorkerState> Snapshot()
         {
             var states = new List<WorkerState>();
-            foreach (var worker in KnownWorkers.Union(Workers.Keys).Order())
+            foreach (var worker in KnownWorkers.Union(Workers.Keys).Union(Declared.Keys).Order())
             {
                 if (!Workers.TryGetValue(worker, out var state))
                 {
@@ -124,7 +125,7 @@ namespace Juice.Observability.Data
                 lock (state)
                 {
                     var enabled = state.Registrations > 0;
-                    if (!enabled && !KnownWorkers.Contains(worker))
+                    if (!enabled && !KnownWorkers.Contains(worker) && !Declared.ContainsKey(worker))
                     {
                         continue;
                     }
@@ -136,6 +137,12 @@ namespace Juice.Observability.Data
             }
             return states;
         }
+
+        /// <summary>
+        /// Names a worker that isn't one of <see cref="KnownWorkers"/> (a module's leased worker) so every replica reports it, enabled or not: one no live
+        /// replica runs reads as gone, not as switched off. It doesn't enable it: <see cref="Register"/> does.
+        /// </summary>
+        public static void Declare(string worker) => Declared.TryAdd(worker, 0);
 
         private static TimeSpan Age(long since) => Stopwatch.GetElapsedTime(since);
 
@@ -260,6 +267,7 @@ namespace Juice.Observability.Data
             private readonly long _started;
             private readonly CancellationToken _stopping;
             private bool _done;
+            private bool _idle;
             private string? _outcome;
 
             internal Pass(string worker, State state, long started, CancellationToken stopping) => (_worker, _state, _started, _stopping) = (worker, state, started, stopping);
@@ -269,6 +277,9 @@ namespace Juice.Observability.Data
             /// <summary>Finished, but part of the work failed (one SLO of many, say): logged by the worker.</summary>
             public void Partial() => _outcome = "partial";
 
+            /// <summary>Nothing to do this time: a heartbeat only, as <see cref="Tick"/>; no pass is counted or timed.</summary>
+            public void Idle() => _idle = true;
+
             public void Dispose()
             {
                 if (_done)
@@ -277,6 +288,16 @@ namespace Juice.Observability.Data
                 }
                 _done = true;
                 var ended = Stopwatch.GetTimestamp();
+                if (_idle && _outcome is null)
+                {
+                    lock (_state)
+                    {
+                        _state.Running = null;
+                        _state.LastEnd = ended;
+                        _state.LastOutcome = "success";
+                    }
+                    return;
+                }
                 var outcome = _outcome ?? (_stopping.IsCancellationRequested ? "canceled" : "failure");
                 var seconds = Stopwatch.GetElapsedTime(_started, ended).TotalSeconds;
                 lock (_state)
