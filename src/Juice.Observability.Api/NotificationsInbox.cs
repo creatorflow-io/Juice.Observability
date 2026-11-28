@@ -4,6 +4,7 @@ using Juice.Notifications.Inbox;
 using Juice.Observability.Data;
 using Juice.Observability.Discovery;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
 namespace Juice.Observability.Api
@@ -14,14 +15,45 @@ namespace Juice.Observability.Api
     /// record are the Console's three, read from the token as the platform reads them (<see cref="ClaimsPrincipal.IsInRole(string)"/>): the host
     /// records only the ones it allowlists, and any other claim (<c>offline_access</c>, <c>Operator</c>) never reaches it.
     /// </summary>
-    internal sealed class ObservabilityInboxAccess(NotificationsHosting hosting, IOptions<AuthOptions> auth, IOptions<PlatformOptions> platform)
+    internal sealed class ObservabilityInboxAccess(NotificationsHosting hosting, IOptions<AuthOptions> auth, IOptions<PlatformOptions> platform,
+        IServiceProvider? services = null)
         : SingleTenantInboxAccess(hosting.EmbeddedTenantId ?? throw new InvalidOperationException("The notification pipeline isn't embedded: it has no tenant."))
     {
-        protected override ValueTask<InboxAccessResult> PersonAsync(ClaimsPrincipal user, CancellationToken ct)
-            => ValueTask.FromResult(Person(user));
-
-        private InboxAccessResult Person(ClaimsPrincipal user)
+        protected override async ValueTask<InboxAccessResult> PersonAsync(ClaimsPrincipal user, CancellationToken ct)
         {
+            var result = Person(user, out var forgetSubject);
+            if (forgetSubject is not null)
+            {
+                await ForgetRolesAsync(forgetSubject, ct);
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// A person of this deployment whose token has no Console role any more: the roles recorded for them stop counting now (not after the
+        /// 30 days), and nobody is made a subscriber for it. Never fails the refusal it goes with.
+        /// </summary>
+        private async Task ForgetRolesAsync(string subject, CancellationToken ct)
+        {
+            if (services?.GetService<Juice.Notifications.Data.NotificationsDbContext>() is not { } db)
+            {
+                return;
+            }
+            try
+            {
+                var tenant = TenantId;
+                await db.SubscriberRoles.Where(r => r.TenantId == tenant && db.Subscribers.Any(s => s.TenantId == tenant && s.Id == r.SubscriberId
+                    && s.Source == InboxPeople.OidcSource && s.ExternalId == subject)).ExecuteDeleteAsync(ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // The refusal stands whether or not the rows could be removed (the schema not migrated yet, the database away).
+            }
+        }
+
+        private InboxAccessResult Person(ClaimsPrincipal user, out string? forgetSubject)
+        {
+            forgetSubject = null;
             // One IdP may serve several deployments, and roles alone don't say which.
             if (user.FindFirst(auth.Value.TenantClaim)?.Value is not { } claim || !string.Equals(claim, platform.Value.TenantKey, StringComparison.Ordinal))
             {
@@ -39,6 +71,7 @@ namespace Juice.Observability.Api
             var roles = InboxNotificationsOptions.KnownRoles.Where(user.IsInRole).ToList();
             if (roles.Count == 0)
             {
+                forgetSubject = subject;
                 return InboxAccessResult.NotAMember;
             }
             return InboxAccessResult.Of(new InboxPerson(subject, user.FindFirst("preferred_username")?.Value, roles));

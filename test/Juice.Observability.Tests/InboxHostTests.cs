@@ -176,7 +176,7 @@ namespace Juice.Observability.Tests
             }
         }
 
-        private static void SignInByHeader(IServiceCollection services)
+        internal static void SignInByHeader(IServiceCollection services)
         {
             services.AddAuthentication().AddScheme<AuthenticationSchemeOptions, ClaimsHeaderHandler>(ClaimsHeaderHandler.SchemeName, _ => { });
             services.PostConfigure<AuthenticationOptions>(o => o.DefaultScheme = o.DefaultAuthenticateScheme = o.DefaultChallengeScheme = ClaimsHeaderHandler.SchemeName);
@@ -208,6 +208,36 @@ namespace Juice.Observability.Tests
             }
             // A refused caller is never recorded.
             Assert.Equal(expected == HttpStatusCode.OK ? 1L : 0L, await ScalarAsync(database, "SELECT count(*) FROM notifications.subscribers"));
+        }
+
+        /// <summary>A person whose token no longer carries a Console role is refused, and their recorded roles go with it: they stop getting items at once.</summary>
+        [Fact]
+        public async Task Inbox_PersonWhoLostEveryRole_Refused_RecordedRolesDeleted_NoSubscriberForANewcomer()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var factory = new ApiFactory(database, settings: On(), services: SignInByHeader);
+            using var client = factory.CreateClient();
+            async Task<HttpStatusCode> CallAsync(string subject, string roles, string? tenant = null)
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, Me("/counts"));
+                request.Headers.Add("X-Test-Claims", $"sub={subject};preferred_username={subject};{roles};platform_tenant={tenant ?? LocalStack.TenantKey}");
+                return (await client.SendAsync(request, Ct)).StatusCode;
+            }
+
+            Assert.Equal(HttpStatusCode.OK, await CallAsync("s-erin", "roles=operator;roles=admin"));
+            Assert.Equal(2L, await ScalarAsync(database, "SELECT count(*) FROM notifications.subscriber_roles"));
+            // Another deployment's token of the same subject is no one here: nothing of ours changes.
+            Assert.Equal(HttpStatusCode.Forbidden, await CallAsync("s-erin", "roles=offline_access", Guid.CreateVersion7().ToString()));
+            Assert.Equal(2L, await ScalarAsync(database, "SELECT count(*) FROM notifications.subscriber_roles"));
+
+            // Their role was removed: refused, and the rows are gone.
+            Assert.Equal(HttpStatusCode.Forbidden, await CallAsync("s-erin", "roles=offline_access"));
+            Assert.Equal(0L, await ScalarAsync(database, "SELECT count(*) FROM notifications.subscriber_roles"));
+            Assert.Equal(1L, await ScalarAsync(database, "SELECT count(*) FROM notifications.subscribers"));
+            // Someone who never signed in and has no role: refused, and no subscriber made.
+            Assert.Equal(HttpStatusCode.Forbidden, await CallAsync("s-new", "roles=offline_access"));
+            Assert.Equal(1L, await ScalarAsync(database, "SELECT count(*) FROM notifications.subscribers"));
         }
 
         [Fact]

@@ -43,6 +43,12 @@ namespace Juice.Observability.Notifications
         /// <summary>The longest label value the pipeline takes.</summary>
         internal const int MaxLabel = 500;
 
+        /// <summary>
+        /// The key of the service-managed resolver of the people who signed in. Role recipients name it: with a second resolver of the kind (an admin may add
+        /// one), a recipient naming none is refused as ambiguous.
+        /// </summary>
+        internal const string SignedInResolver = "signed-in";
+
         public static string AlertCorrelation(Guid alertId) => $"alert:{alertId}";
 
         public static string TransitionKey(Guid transitionId) => $"transition:{transitionId}";
@@ -268,7 +274,7 @@ namespace Juice.Observability.Notifications
                 // The people of the configured Console roles, when the inbox is on (M54): who signed in with one gets an item. Naming recipients
                 // replaces the default (the routes the request matches), so the routes are named too: delivery to them is as it was.
                 Recipients = console.Value.Inbox.Enabled
-                    ? [new NotificationRecipientSpec(RecipientKinds.Route), .. console.Value.Inbox.EffectiveRoles.Select(role => new NotificationRecipientSpec(RecipientKinds.Role, Id: role))]
+                    ? [new NotificationRecipientSpec(RecipientKinds.Route), .. console.Value.Inbox.EffectiveRoles.Select(role => new NotificationRecipientSpec(RecipientKinds.Role, Id: role, Resolver: SignedInResolver))]
                     : null,
                 // When it fired: the escalation's first step is timed from it, so a firing sent late (held under a silence) still gets it on time.
                 OccurredAt = transition.At,

@@ -1,5 +1,6 @@
 using Juice.Observability.Data;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
 namespace Juice.Observability.Tests
@@ -81,6 +82,31 @@ namespace Juice.Observability.Tests
 
             Assert.Equal(["operator", "admin"], options.Inbox.EffectiveRoles);
             Assert.True(Validate(options).Succeeded);
+        }
+
+        /// <summary>Absent is the default; present and empty is a mistake that refuses the start (<c>"Roles": []</c> binds to nothing, as absent would).</summary>
+        [Theory]
+        [InlineData("""{"Notifications":{"ConsoleUrl":"https://console.example.com","Inbox":{"Enabled":true,"Roles":[]}}}""", false)]
+        [InlineData("""{"Notifications":{"ConsoleUrl":"https://console.example.com","Inbox":{"Enabled":true}}}""", true)]
+        [InlineData("""{"Notifications":{"ConsoleUrl":"https://console.example.com","Inbox":{"Enabled":true,"Roles":["viewer"]}}}""", true)]
+        [InlineData("""{"Notifications":{"Inbox":{"Roles":[]}}}""", true)]
+        public void InboxOptions_PresentAndEmptyRoles_RefusesTheStart_AbsentDoesNot(string json, bool starts)
+        {
+            var configuration = new ConfigurationBuilder().AddJsonStream(new MemoryStream(System.Text.Encoding.UTF8.GetBytes(json))).Build();
+            var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+            services.AddLogging();
+            Juice.Observability.Notifications.NotificationsRegistration.AddPlatformNotificationsOptions(services, configuration);
+
+            var options = services.BuildServiceProvider().GetRequiredService<IOptions<PlatformNotificationsOptions>>();
+            if (starts)
+            {
+                _ = options.Value;
+            }
+            else
+            {
+                var ex = Assert.Throws<OptionsValidationException>(() => options.Value);
+                Assert.Contains("Notifications:Inbox:Roles", ex.Message);
+            }
         }
 
         [Fact]
