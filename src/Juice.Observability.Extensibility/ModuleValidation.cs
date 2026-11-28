@@ -17,7 +17,7 @@ internal static partial class ModuleValidation
     /// <summary>Names an external module can't take: the core's own, the internal modules' and the core's tenant-root segments (a floor; the host pins the full list to the real routes).</summary>
     private static readonly HashSet<string> Reserved = new(StringComparer.Ordinal)
     {
-        "core", "platform", "slos", "agents", "modules", "tenants", "notifications", "inbox", "capacity", "correlation", "escalation",
+        "core", "platform", "slos", "agents", "integrations", "modules", "tenants", "notifications", "inbox", "capacity", "correlation", "escalation",
         "action-requests", "alerts", "applications", "changes", "environments", "escalation-policies", "health", "incidents",
         "load-runs", "resources", "rules", "search", "silences", "telemetry", "timeline", "topology",
     };

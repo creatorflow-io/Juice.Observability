@@ -46,7 +46,7 @@ namespace Juice.Observability.Api.Modules
         // Pinned to the real routes by CoreRouteSegments_matches_real_tenant_root_segments.
         public static readonly IReadOnlySet<string> All = new HashSet<string>(StringComparer.Ordinal)
         {
-            "action-requests", "agents", "alerts", "applications", "changes", "environments", "escalation-policies", "health", "incidents",
+            "action-requests", "agents", "alerts", "applications", "changes", "environments", "escalation-policies", "health", "incidents", "integrations",
             "load-runs", "resources", "rules", "search", "silences", "slos", "telemetry", "timeline", "topology",
         };
     }

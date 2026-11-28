@@ -29,7 +29,7 @@ public sealed record TemplateObservation(string SubjectKey, AlertSubjectKind Sub
     string Environment, string Host, double? Value, long Samples, IReadOnlyDictionary<string, string>? Detail = null);
 
 /// <summary>Grows additively.</summary>
-public enum AlertSubjectKind { Service, Host }
+public enum AlertSubjectKind { Service, Host, Integration }
 
 /// <summary>The placeholders every template query must contain.</summary>
 public static class TemplateSql

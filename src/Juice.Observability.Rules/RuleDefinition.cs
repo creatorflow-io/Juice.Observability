@@ -91,7 +91,8 @@ namespace Juice.Observability.Rules
             if (Name.Length is 0 or > 200) yield return $"{at}: Name is required (at most 200 characters)";
             if (!Enum.IsDefined(Template)) yield return $"{at}: unknown Template";
             if (Template == RuleTemplate.SloBurn) yield return $"{at}: SloBurn rules are the platform's own; define an SLO instead";
-            if (Enum.IsDefined(Template) && Template != RuleTemplate.SloBurn)
+            if (Template == RuleTemplate.IntegrationHealth) yield return $"{at}: IntegrationHealth rules are the platform's own; an integration instance raises them";
+            if (Enum.IsDefined(Template) && Template != RuleTemplate.SloBurn && Template != RuleTemplate.IntegrationHealth)
             {
                 // The template's own checks live with the template, on the registry.
                 if (!(registry ?? RuleTemplateRegistry.BuiltInOnly).TryGet(Template.ToString(), out var template)) yield return $"{at}: unknown Template";
@@ -153,9 +154,10 @@ namespace Juice.Observability.Rules
         /// A key the SLO burn rules hold (or will). Checked only when a rule is made: a rule that held one before they were reserved keeps it, and can
         /// still be changed or disabled, since rules can be neither deleted nor renamed.
         /// </summary>
-        public static bool IsReservedKey(string key) => SloBurnRules.Keys.Contains(key);
+        public static bool IsReservedKey(string key) => SloBurnRules.Keys.Contains(key) || key == IntegrationHealthRule.Key;
 
-        public static string ReservedKeyError(string key) => $"rule '{key}': the key is reserved for SLO burn alerts";
+        public static string ReservedKeyError(string key)
+            => key == IntegrationHealthRule.Key ? $"rule '{key}': the key is reserved for integration alerts" : $"rule '{key}': the key is reserved for SLO burn alerts";
 
         private static readonly JsonSerializerOptions Json = new() { WriteIndented = false };
 

@@ -10,7 +10,7 @@ namespace Juice.Observability.Api.Modules
     /// </summary>
     internal static class ModuleComposer
     {
-        /// <summary>Creates the registry with <c>core</c>, then composes <c>slos</c> and <c>agents</c> in the slot the platform always gave them.</summary>
+        /// <summary>Creates the registry with <c>core</c>, then composes <c>slos</c>, <c>agents</c> and <c>integrations</c> in the slot the platform always gave them.</summary>
         public static IServiceCollection AddInternalModules(this IServiceCollection services, IConfiguration configuration)
         {
             var registry = new ModuleRegistry();
@@ -19,6 +19,7 @@ namespace Juice.Observability.Api.Modules
             ComposeInternal(services, configuration, registry, new CoreModule(), InternalConsoleManifests.Core);
             ComposeInternal(services, configuration, registry, new SlosModule(), InternalConsoleManifests.Slos);
             ComposeInternal(services, configuration, registry, new AgentsModule(), InternalConsoleManifests.Agents);
+            ComposeInternal(services, configuration, registry, new IntegrationsModule(), new ConsoleManifest(InternalConsoleManifests.Package, [], []));
             return services;
         }
 

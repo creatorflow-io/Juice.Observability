@@ -21,7 +21,9 @@ namespace Juice.Observability.Api.Modules.AlertSources
     internal static partial class AlertSourceComposer
     {
         // The ten templates the registry evaluates: every RuleTemplate but SloBurn.
-        private static readonly HashSet<string> Registry = Enum.GetNames<RuleTemplate>().Where(n => n != SloBurnTemplate).ToHashSet(StringComparer.Ordinal);
+        private static readonly HashSet<string> Registry = Enum.GetNames<RuleTemplate>().Where(n => n != SloBurnTemplate && n != IntegrationHealthTemplate).ToHashSet(StringComparer.Ordinal);
+
+        private const string IntegrationHealthTemplate = IntegrationHealthRule.Template;
 
         private const string SloBurnTemplate = EvaluateSloBurnsHandler.Template;
 
@@ -37,13 +39,20 @@ namespace Juice.Observability.Api.Modules.AlertSources
             {
                 throw new ModuleCompositionException($"Module '{module}' can't declare an alert source for '{template}': it is a template of the rule registry, evaluated by the rule scheduler.");
             }
-            // The core's own burn template belongs to the slos module (its casing is the built-in's); any other is the declaring module's, by the same key
-            // rules as a module's rule template (RuleTemplateKeys).
+            // The core's own templates belong to their modules (their casing is the built-in's): burn to slos, integration health to integrations; any other is
+            // the declaring module's, by the same key rules as a module's rule template (RuleTemplateKeys).
             if (template == SloBurnTemplate)
             {
                 if (module != "slos")
                 {
                     throw new ModuleCompositionException($"Module '{module}' can't declare an alert source for '{template}': it is the slos module's.");
+                }
+            }
+            else if (template == IntegrationHealthTemplate)
+            {
+                if (module != "integrations")
+                {
+                    throw new ModuleCompositionException($"Module '{module}' can't declare an alert source for '{template}': it is the integrations module's.");
                 }
             }
             else if (RuleTemplateKeys.Error(module, template) is { } invalid)

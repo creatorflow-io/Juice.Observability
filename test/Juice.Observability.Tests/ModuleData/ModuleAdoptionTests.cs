@@ -235,6 +235,10 @@ namespace Juice.Observability.Tests.ModuleData
         {
             LocalStack.RequireAvailable();
             await using var database = await LocalStack.CreateDatabaseAsync();
+            // The integrations module (earlier in module order) has its schema already, so the pending migration is the sample's.
+            await using (var core = await ModuleTestHost.StartAsync(database: database, hostedServices: true))
+            {
+            }
 
             var e = await Assert.ThrowsAnyAsync<Exception>(async () => await HostAsync<DataSampleModule>(database, new() { ["Database:Migrate"] = "false" }));
 
@@ -256,7 +260,7 @@ namespace Juice.Observability.Tests.ModuleData
             await using var database = await LocalStack.CreateDatabaseAsync();
             // The host composed (not started) with its connection pointing nowhere, as CoreHost does: what a module's migration finds when the database is down.
             await using var app = CoreHost.Build(b => b.AddObservabilityModule<DataSampleModule>());
-            var registration = app.Services.GetServices<ModuleDataRegistration>().Single();
+            var registration = app.Services.GetServices<ModuleDataRegistration>().Single(r => r.Module == "data-sample");
             await using var scope = app.Services.CreateAsyncScope();
 
             await Assert.ThrowsAnyAsync<Exception>(() => ModuleMigrator.MigrateAsync(registration, scope.ServiceProvider,

@@ -10,7 +10,22 @@ namespace Juice.Observability.Data
     /// rates, not from a scheduled query, and neither the rules file nor the API can create or change them.
     /// </summary>
     public enum RuleTemplate { ErrorRate, LatencyP95, ThroughputAbsent, DeliveryFailureRate, HostMemory, MediatorErrors, ConsumerFailures, SloBurn,
-                           MetricThreshold, HostCpu, HostDisk }
+                           MetricThreshold, HostCpu, HostDisk, IntegrationHealth }
+
+    /// <summary>
+    /// The platform's integration alert (E10): one rule, <see cref="Key"/>, <see cref="ManagedBy.Platform"/>, raised through the <c>IntegrationHealth</c> alert source
+    /// that only the <c>integrations</c> module declares. Its key is reserved, like the SLO burn rules'.
+    /// </summary>
+    public static class IntegrationHealthRule
+    {
+        public const string Key = "integration-health";
+        public const string Template = nameof(RuleTemplate.IntegrationHealth);
+
+        /// <summary>The alert's subject key: one open alert per instance.</summary>
+        public static string SubjectKey(Guid instanceId) => $"integration:{instanceId:N}";
+
+        public static string DedupKey(Guid instanceId) => $"{Key}|{SubjectKey(instanceId)}";
+    }
 
     public enum AlertSeverity { Info, Warning, Critical }
 

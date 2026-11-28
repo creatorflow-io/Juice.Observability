@@ -2,6 +2,7 @@
 * /health/ready |  | anonymous
 DELETE /api/v1/tenants/{tenantId:guid}/escalation-policies/{key} | platform.read | -
 DELETE /api/v1/tenants/{tenantId:guid}/incidents/{incidentId:guid}/alerts/{alertId:guid} | platform.read | -
+DELETE /api/v1/tenants/{tenantId:guid}/integrations/instances/{id:guid} | platform.read | -
 DELETE /api/v1/tenants/{tenantId:guid}/resources/{resourceId:guid} | platform.read | -
 DELETE /api/v1/tenants/{tenantId:guid}/silences/{silenceId:guid} | platform.read | -
 DELETE /notifications/api/v1/tenants/{tenantId:guid}/allowlist | (authenticated) | -
@@ -43,6 +44,9 @@ GET /api/v1/tenants/{tenantId:guid}/health | platform.read | -
 GET /api/v1/tenants/{tenantId:guid}/incidents | platform.read | -
 GET /api/v1/tenants/{tenantId:guid}/incidents/{incidentId:guid} | platform.read | -
 GET /api/v1/tenants/{tenantId:guid}/incidents/{incidentId:guid}/suggestions | platform.read | -
+GET /api/v1/tenants/{tenantId:guid}/integrations/instances | platform.read | -
+GET /api/v1/tenants/{tenantId:guid}/integrations/instances/{id:guid} | platform.read | -
+GET /api/v1/tenants/{tenantId:guid}/integrations/plugins | platform.read | -
 GET /api/v1/tenants/{tenantId:guid}/load-runs | platform.read | -
 GET /api/v1/tenants/{tenantId:guid}/load-runs/{runId:guid}/results | platform.read | -
 GET /api/v1/tenants/{tenantId:guid}/resources | platform.read | -
@@ -107,6 +111,10 @@ POST /api/v1/tenants/{tenantId:guid}/incidents | platform.read | -
 POST /api/v1/tenants/{tenantId:guid}/incidents/{incidentId:guid}/alerts | platform.read | -
 POST /api/v1/tenants/{tenantId:guid}/incidents/{incidentId:guid}/notes | platform.read | -
 POST /api/v1/tenants/{tenantId:guid}/incidents/{incidentId:guid}/transitions | platform.read | -
+POST /api/v1/tenants/{tenantId:guid}/integrations/instances | platform.read | -
+POST /api/v1/tenants/{tenantId:guid}/integrations/instances/{id:guid}/disable | platform.read | -
+POST /api/v1/tenants/{tenantId:guid}/integrations/instances/{id:guid}/enable | platform.read | -
+POST /api/v1/tenants/{tenantId:guid}/integrations/instances/{id:guid}/validate | platform.read | -
 POST /api/v1/tenants/{tenantId:guid}/load-runs | platform.read | -
 POST /api/v1/tenants/{tenantId:guid}/load-runs/{runId:guid}/end | platform.read | -
 POST /api/v1/tenants/{tenantId:guid}/rules | platform.read | -
@@ -121,6 +129,7 @@ POST /notifications/api/v1/tenants/{tenantId:guid}/integrations/{key}/callbacks 
 POST /notifications/api/v1/tenants/{tenantId:guid}/mutes | (authenticated) | -
 POST /notifications/api/v1/tenants/{tenantId:guid}/templates/preview | (authenticated) | -
 PUT /api/v1/tenants/{tenantId:guid}/escalation-policies/{key} | platform.read | -
+PUT /api/v1/tenants/{tenantId:guid}/integrations/instances/{id:guid} | platform.read | -
 PUT /api/v1/tenants/{tenantId:guid}/rules/{key} | platform.read | -
 PUT /notifications/api/v1/tenants/{tenantId:guid}/allowlist | (authenticated) | -
 PUT /notifications/api/v1/tenants/{tenantId:guid}/escalation-policies/{key} | (authenticated) | -

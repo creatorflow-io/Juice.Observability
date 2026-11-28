@@ -108,7 +108,8 @@ namespace Juice.Observability.Tests.Modules
             builder.AddObservabilityModule<TestModule>();
             var all = CoreHost.HostedServices(builder.Services);
             Assert.Equal(core, all.Take(core.Count));
-            Assert.Equal([typeof(ModuleMigrationRunner).FullName, typeof(SampleWorker).FullName], all.Skip(core.Count));
+            // The runner is registered by the integrations module, among the core's own.
+            Assert.Equal([typeof(SampleWorker).FullName], all.Skip(core.Count));
         }
 
         [Fact]
@@ -178,9 +179,9 @@ namespace Juice.Observability.Tests.Modules
             var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).RootElement;
             Assert.Equal(CoreVersion.Current.ToString(), json.GetProperty("coreVersion").GetString());
             var items = json.GetProperty("items").EnumerateArray().ToList();
-            Assert.Equal(["core", "slos", "agents", "sample"], items.Select(i => i.GetProperty("name").GetString()));
-            Assert.Equal(["core", "module", "module", "module"], items.Select(i => i.GetProperty("kind").GetString()));
-            Assert.Equal("[2.0.0,3.0.0)", items[3].GetProperty("supportedCore").GetString());
+            Assert.Equal(["core", "slos", "agents", "integrations", "sample"], items.Select(i => i.GetProperty("name").GetString()));
+            Assert.Equal(["core", "module", "module", "module", "module"], items.Select(i => i.GetProperty("kind").GetString()));
+            Assert.Equal("[2.0.0,3.0.0)", items[4].GetProperty("supportedCore").GetString());
         }
 
         [Fact]

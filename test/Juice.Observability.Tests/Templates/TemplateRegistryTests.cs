@@ -50,7 +50,7 @@ namespace Juice.Observability.Tests.Templates
         {
             var registry = new RuleTemplates(ClickHouse()).Registry;
 
-            var expected = Enum.GetValues<RuleTemplate>().Where(t => t != RuleTemplate.SloBurn).Select(t => t.ToString()).ToList();
+            var expected = Enum.GetValues<RuleTemplate>().Where(t => t is not (RuleTemplate.SloBurn or RuleTemplate.IntegrationHealth)).Select(t => t.ToString()).ToList();
             Assert.Equal(10, expected.Count);
             Assert.Equal(expected.Order(StringComparer.Ordinal), registry.All.Select(i => i.Key).Order(StringComparer.Ordinal));
             Assert.False(registry.TryGet("SloBurn", out _));
