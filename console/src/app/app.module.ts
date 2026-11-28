@@ -1,16 +1,17 @@
-import { ChangeDetectionStrategy, Component, NgModule } from '@angular/core';
+import { ChangeDetectionStrategy, Component, NgModule, inject } from '@angular/core';
 import { provideHttpClient, withInterceptorsFromDi } from '@angular/common/http';
 import { BrowserModule } from '@angular/platform-browser';
 import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
 import { RouterOutlet } from '@angular/router';
 import { MissingTranslationHandler, TranslatePipe, provideTranslateService } from '@ngx-translate/core';
-import { OAuthModule } from 'angular-oauth2-oidc';
+import { OAuthModule, OAuthService } from 'angular-oauth2-oidc';
 import { LayoutModule, UserProfileDialogModule } from '@juice-js/layout';
 import { LocalizeModule } from '@juice-js/localize';
 import { AuthModule } from '@juice-js/auth';
 import { AppRoutingModule } from './app-routing.module';
-import { OBSERVABILITY_CAN_ADMIN, OBSERVABILITY_CAN_OPERATE, provideJuiceObservability } from '@juice-js/observability';
-import { provideNotificationsAdmin } from '@juice-js/notifications-admin';
+import { OBSERVABILITY_CAN_ADMIN, OBSERVABILITY_CAN_OPERATE, provideJuiceObservability, provideObservabilityModules } from '@juice-js/observability';
+import { NOTIFICATIONS_ADMIN_PAGES, notificationsAdminMenus, provideNotificationsAdmin } from '@juice-js/notifications-admin';
+import { CONSOLE_MODULES } from './console-modules';
 import { authOptions, settings } from './core/settings';
 import { ShowKeyHandler } from './core/show-key.handler';
 import { signedIn } from './core/signed-in';
@@ -46,6 +47,11 @@ export class AppComponent { }
   providers: [
     provideHttpClient(withInterceptorsFromDi()),
     provideJuiceObservability({ apiBase: settings.apiBase, basePath: '/', notificationsLink: NOTIFICATIONS_BASE_PATH }),
+    // The menu, routes and slots of the libraries in this build (console-modules.ts), as the server's /modules lists them installed.
+    provideObservabilityModules(CONSOLE_MODULES, {
+      signedIn: () => inject(OAuthService).hasValidAccessToken(),
+      alertNotifications: notificationsAdminMenus(NOTIFICATIONS_BASE_PATH, 1, NOTIFICATIONS_ADMIN_PAGES.embedded),
+    }),
     // The notification pages: the host maps their API under /notifications (Juice.Notifications.Admin), on the API's origin.
     { provide: OBSERVABILITY_CAN_ADMIN, useFactory: canAdmin },
     { provide: OBSERVABILITY_CAN_OPERATE, useFactory: canOperate },

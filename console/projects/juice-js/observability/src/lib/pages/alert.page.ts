@@ -14,6 +14,8 @@ import { AgoPipe, ReasonPipe } from '../shared/format';
 import { ContextBar, HealthBadge, KeyValueTable } from '../shared/ui';
 import { problemText } from '../shared/telemetry';
 import { SuggestionsCard } from '../shared/suggestions';
+import { ModuleSlots } from '../modules/module-slots';
+import { EvidenceSections } from '../shared/evidence-sections';
 import { CorrelationDecision } from '../core/models';
 
 /**
@@ -23,7 +25,7 @@ import { CorrelationDecision } from '../core/models';
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [LinkPipe, RouterLink, DatePipe, FormsModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatProgressBarModule,
-    ContextBar, HealthBadge, KeyValueTable, AgoPipe, ReasonPipe, SuggestionsCard],
+    ContextBar, HealthBadge, KeyValueTable, AgoPipe, ReasonPipe, SuggestionsCard, ModuleSlots, EvidenceSections],
   template: `
     <jc-context-bar>
       <a [routerLink]="['alerts'] | jcLink" [queryParams]="ctx.keep()" class="jc-crumb">Alerts</a><span class="jc-crumb-sep">›</span>
@@ -122,7 +124,9 @@ import { CorrelationDecision } from '../core/models';
           @if (ackError()) { <p class="jc-error">{{ ackError() }}</p> }
         } @else { <p class="jc-muted">Resolved without acknowledgement.</p> }
       </section>
-    }`,
+    }
+    <jc-module-slots kind="alert" [subjectId]="id()" />
+    <jc-evidence-sections target="alert" [subjectId]="id()" [skipCore]="true" />`,
 })
 export class AlertPage {
   protected readonly ctx = inject(ContextService);
