@@ -930,6 +930,7 @@ namespace Juice.Observability.Webhooks
         public static IServiceCollection AddPlatformWebhooks(this IServiceCollection services, IConfiguration configuration)
         {
             services.Configure<WebhookOptions>(configuration.GetSection(WebhookOptions.Section));
+            services.AddSingleton<IValidateOptions<WebhookOptions>, WebhookOptionsValidation>().AddOptions<WebhookOptions>().ValidateOnStart();
             services.AddMessaging().AddLocalConsumer(consumer => consumer.Subscribe<AlertTransitionedIntegrationEvent, AlertTransitionedConsumer>());
             services.AddHostedService<WebhookProvisioner>();
             var pipeline = configuration.GetSection(PlatformNotificationsOptions.Section)
