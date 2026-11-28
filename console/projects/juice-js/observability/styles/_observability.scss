@@ -257,6 +257,12 @@ $_layout-tokens: (bg: bg, surface: surface, border: border, text: text, muted: m
   .jc-line.jc-line-idle { opacity: 0.35; }
   .jc-side { align-self: start; }
 
+  // A table wider than a narrow page scrolls inside itself, not the whole page. Only here: a block table shrinks to its content, which
+  // would stop it filling a wide page.
+  @media (max-width: 1200px) {
+    .jc-table { display: block; overflow-x: auto; max-width: 100%; }
+  }
+
   @media (max-width: 900px) {
     .jc-trace.jc-with-detail, .jc-topology { grid-template-columns: minmax(0, 1fr); }
     // Stacked panes: the page scrolls as a whole again.
