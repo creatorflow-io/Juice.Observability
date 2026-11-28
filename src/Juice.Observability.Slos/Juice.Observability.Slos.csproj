@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Juice.Observability.Tests" />
+    <InternalsVisibleTo Include="Juice.Observability.Api" />
   </ItemGroup>
 
 </Project>

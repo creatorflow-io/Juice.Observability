@@ -60,6 +60,40 @@ namespace Juice.Observability.Tests.ModuleData
         }
 
         [Fact]
+        public void Module_schema_of_the_core_refused_even_when_it_maps_a_core_table()
+        {
+            // "public" is the core's schema, and the module's history table would have been the core's.
+            Assert.Contains("'public'", Refused<PublicSchemaModule>().Message);
+        }
+
+        [Fact]
+        public void Views_queries_and_functions_checked_like_tables()
+        {
+            Assert.Contains("view public.audit_records", Refused<ViewModule>().Message);
+            Assert.Contains("SQL query", Refused<QueryModule>().Message);
+        }
+
+        [Fact]
+        public void Adopting_the_notifications_schema_or_a_history_table_refused()
+        {
+            var b = Core();
+            var e = Assert.Throws<ModuleCompositionException>(() => b.AddObservabilityModule<AdoptNotificationsModule>());
+            Assert.Contains("notifications", e.Message);
+        }
+
+        [Fact]
+        public void A_builder_that_is_not_the_hosts_is_refused()
+        {
+            var builder = Core();
+            var fake = new FakeBuilder(builder.Services, "victim");
+            var before = builder.Services.Count;
+
+            Assert.Throws<ModuleCompositionException>(() => fake.AddModuleData<DataSampleContext>());
+            Assert.Throws<ModuleCompositionException>(() => fake.AddAlertSource("victim.burn"));
+            Assert.Equal(before, builder.Services.Count);
+        }
+
+        [Fact]
         public void Module_data_twice_refused() => Assert.Contains("twice", Refused<TwiceModule>().Message);
 
         [Fact]
