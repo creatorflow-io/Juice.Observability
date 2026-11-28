@@ -1,4 +1,4 @@
-// M56: a checkbox in a form is top-anchored, so its box lines up with the text line of the field beside it (the outlined box's input), and
+// M56: a checkbox in a form is top-anchored, so its box lines up with the text line of the field beside it (the fill-appearance field's input line), and
 // stays put when that field shows an error below. For the forms that have a checkbox (silences, rules, escalation selections, and the agent
 // form's request fields when an agent is enrolled), at 1440, 1024 and 390 px, light and dark: each checkbox that shares a row with a field
 // has its box centre within 2 px of that field's input centre, pristine and with a tall error under every neighbour.
