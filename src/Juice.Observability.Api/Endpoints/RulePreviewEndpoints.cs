@@ -45,7 +45,7 @@ namespace Juice.Observability.Api.Endpoints
         }
 
         private static async Task<IResult> PreviewAsync(Guid tenantId, JsonElement body, HttpContext http, PlatformDbContext db, TimeProvider clock,
-            IConfiguration configuration, RuleTemplates templates, IOptions<RulesOptions> rules, CancellationToken ct)
+            IConfiguration configuration, RuleTemplates templates, RuleThresholds thresholds, IOptions<RulesOptions> rules, CancellationToken ct)
         {
             var mutation = new Mutation(http, db, tenantId, "rule.preview", "rule");
             if (await mutation.RequireAsync(null, ct, Roles.Admin, Roles.Operator) is { } denied) return denied;
@@ -103,7 +103,7 @@ namespace Juice.Observability.Api.Endpoints
                 observed.AddRange(instants.Select(at => (at, (IReadOnlyList<RuleObservation>)[])));
             }
 
-            var subjects = RulePreview.Replay(definition, observed, MaxSubjects, out var truncated);
+            var subjects = RulePreview.Replay(definition, await RulePreview.WithThresholdsAsync(thresholds, definition, observed, ct), MaxSubjects, out var truncated);
             var unit = entry?.Unit is { Length: > 0 } u ? u : null;
             return Results.Ok(new RulePreviewDto(instants[0], instants[^1], step, instants.Count, observed.Count, cut is null, cut, quiet, unit, definition,
                 [.. subjects.Select(s => new PreviewSubjectDto(s.SubjectKey, s.SubjectType.ToString(), s.Breaches, s.NoData, s.WouldOpen, s.WouldFire, s.FirstFiredAt,

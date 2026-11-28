@@ -53,6 +53,9 @@ namespace Juice.Observability.Rules
             return result;
         }
 
+        /// <summary>Whether the provider the rule names is registered (a rule with no source: always).</summary>
+        public bool HasProvider(RuleDefinition rule) => _registry.TryGetProvider(rule.ThresholdSource?.Provider ?? FixedThresholdProvider.Key, out _);
+
         /// <summary>The provider a rule names; a rule with no source has the fixed one. One that is not registered fails the evaluation.</summary>
         private IRuleThresholdProvider Provider(RuleDefinition rule)
         {
