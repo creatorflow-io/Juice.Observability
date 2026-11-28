@@ -41,23 +41,24 @@ namespace Juice.Observability.Rules
             """;
 
         /// <summary>
-        /// Which of <paramref name="names"/> the tenant reported in the last 24 h, in one query for all of them (a rule list's page). The names are
+        /// Which of <paramref name="names"/> the tenant reported in the last 24 h (or <c>lookback</c>), in one query for all of them (a rule list's page). The names are
         /// a typed array parameter, never part of the SQL.
         /// </summary>
         public static async Task<IReadOnlySet<string>> SeenAsync(ClickHouseTelemetrySource ch, string tenantKey, IReadOnlyCollection<string> names,
-            DateTimeOffset now, CancellationToken ct)
+            DateTimeOffset now, CancellationToken ct, TimeSpan? lookback = null)
         {
             var distinct = names.Distinct(StringComparer.Ordinal).ToArray();
             if (distinct.Length == 0) return new HashSet<string>();
-            var rows = await ch.QueryAsync(SeenQuery, new TelemetryWindow(tenantKey, now - Lookback, now, distinct.Length),
+            var rows = await ch.QueryAsync(SeenQuery, new TelemetryWindow(tenantKey, now - (lookback ?? Lookback), now, distinct.Length),
                 r => r.GetString(0), ct, new Dictionary<string, object> { ["names"] = distinct });
             return new HashSet<string>(rows, StringComparer.Ordinal);
         }
 
         /// <summary>The metric's kind in the tenant's last 24 h (the commonest, should it be reported as more than one), or null when it has not been reported.</summary>
-        public static async Task<MetricCatalogEntry?> FindAsync(ClickHouseTelemetrySource ch, string tenantKey, string metric, DateTimeOffset now, CancellationToken ct)
+        public static async Task<MetricCatalogEntry?> FindAsync(ClickHouseTelemetrySource ch, string tenantKey, string metric, DateTimeOffset now, CancellationToken ct,
+            TimeSpan? lookback = null)
         {
-            var rows = await ch.QueryAsync(Query, new TelemetryWindow(tenantKey, now - Lookback, now, 10),
+            var rows = await ch.QueryAsync(Query, new TelemetryWindow(tenantKey, now - (lookback ?? Lookback), now, 10),
                 r => (Type: r.GetString(0), Monotonic: Convert.ToInt32(r.GetValue(1)) != 0, Unit: r.GetString(2)), ct,
                 new Dictionary<string, object> { ["metric"] = metric });
             if (rows.Count == 0) return null;
