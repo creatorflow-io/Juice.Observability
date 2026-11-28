@@ -78,7 +78,8 @@ namespace Juice.Observability.Notifications
                 "additionalchathosts" => "an allowlist entry for the host in " + Provisioning,
                 "maxattempts" or "retrybase" or "retrymax" or "connecttimeout" or "requesttimeout" or "maxresponsebytes"
                     => "Notifications:Delivery:" + char.ToUpperInvariant(name[0]) + name[1..].ToLowerInvariant() + " (the pipeline's own setting, with its own name: see docs/deployment.md)",
-                "enabled" or "interval" or "batchsize" or "maxparallel" => "Notifications:Stages:<stage>:* (the pipeline's own stage settings: docs/deployment.md)",
+                "interval" => "Notifications:ReleasePassInterval (the platform's pass over held and kept notifications) or Notifications:Stages:<stage>:Interval (a pipeline stage's own: docs/deployment.md)",
+                "enabled" or "batchsize" or "maxparallel" => "Notifications:Stages:<stage>:* (the pipeline's own stage settings: docs/deployment.md)",
                 _ => "the notification pipeline's own settings under Notifications (docs/deployment.md)",
             };
         }
