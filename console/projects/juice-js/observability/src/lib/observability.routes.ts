@@ -1,7 +1,8 @@
+import { inject } from '@angular/core';
 import { Routes } from '@angular/router';
 import { Menus } from '@juice-js/core';
 import { APPROVALS_MENU_ID } from './core/approval-count';
-import { normalizeBasePath } from './core/options';
+import { OBSERVABILITY_OPTIONS, normalizeBasePath } from './core/options';
 
 function page(path: string, title: string, load: Routes[number]['loadComponent']): Routes[number] {
   return { path, title: `${title} · Juice Observability`, loadComponent: load };
@@ -27,7 +28,8 @@ export const OBSERVABILITY_ROUTES: Routes = [
   page('alerts/:id', 'Alert', () => import('./pages/alert.page').then(m => m.AlertPage)),
   page('rules', 'Rules', () => import('./pages/rules.page').then(m => m.RulesPage)),
   page('escalation', 'Escalation selection', () => import('./pages/notifications.page').then(m => m.NotificationsPage)),
-  { path: 'notifications', redirectTo: 'escalation', pathMatch: 'full' },
+  // The old Webhooks page and any deep link under it open Escalation selection, under the host's base path.
+  { path: 'notifications', children: [{ path: '**', redirectTo: () => { const base = normalizeBasePath(inject(OBSERVABILITY_OPTIONS).basePath); return `${base === '/' ? '' : base}/escalation`; } }] },
   page('silences', 'Silences', () => import('./pages/silences.page').then(m => m.SilencesPage)),
   page('incidents', 'Incidents', () => import('./pages/incidents.page').then(m => m.IncidentsPage)),
   page('incidents/:id', 'Incident', () => import('./pages/incident.page').then(m => m.IncidentPage)),

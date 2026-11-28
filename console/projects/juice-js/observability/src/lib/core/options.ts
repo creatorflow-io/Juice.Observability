@@ -91,3 +91,9 @@ export class LinkPipe implements PipeTransform {
   private readonly links = inject(ObservabilityLinks);
   transform(segments: unknown[]): unknown[] { return this.links.to(...segments); }
 }
+
+/**
+ * Whether the signed-in user has the admin role, which the API requires to change an escalation selection. The host answers it from its
+ * sign-in (Console: the access token's roles); the default is true, which hides nothing, and the API still refuses a non-admin with 403.
+ */
+export const OBSERVABILITY_CAN_ADMIN = new InjectionToken<() => boolean>('OBSERVABILITY_CAN_ADMIN', { providedIn: 'root', factory: () => () => true });

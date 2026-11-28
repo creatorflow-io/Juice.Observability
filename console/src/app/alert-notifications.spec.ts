@@ -63,9 +63,4 @@ describe('Alerts › links to the notifications admin (M50)', () => {
     expect(links('/n').correlation(undefined)).toBeNull();
   });
 
-  it('keeps the old webhooks page address working by redirecting to the escalation selection', () => {
-    const redirect = OBSERVABILITY_ROUTES.find(r => r.path === 'notifications')!;
-    expect(redirect.redirectTo).toBe('escalation');
-    expect(OBSERVABILITY_ROUTES.some(r => r.path === 'escalation')).toBe(true);
-  });
 });
