@@ -44,6 +44,12 @@ namespace Juice.Observability.Data
         protected virtual void LogFailure(Exception exception)
             => Logger.LogError(exception, "{Worker} pass failed; retrying in {Interval}", Worker, Interval);
 
+        /// <summary>
+        /// Whether each pass is timed and counted in the worker's pulse (<see cref="WorkerPulse.Begin"/>). A worker with no pass to time (the rule
+        /// scheduler) turns it off and reports its own sign of life with <see cref="WorkerPulse.Tick"/>, so a failing one does not look alive.
+        /// </summary>
+        protected virtual bool ReportsPasses => true;
+
         /// <summary>At a tick where another replica holds the lease (or this one could not take it): for a worker that has work of its own to give up.</summary>
         protected virtual Task OnLeaseNotHeldAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
@@ -64,18 +70,18 @@ namespace Juice.Observability.Data
                         // Taken (back), even within one call: another replica may have run meanwhile.
                         var retaken = lease.Generation != generation;
                         generation = lease.Generation;
-                        using var pass = WorkerPulse.Begin(Worker, stoppingToken);
+                        using var pass = ReportsPasses ? WorkerPulse.Begin(Worker, stoppingToken) : null;
                         var outcome = await RunWatchedAsync(lease, new LeasedPass(Worker, generation, retaken, default), stoppingToken);
                         switch (outcome)
                         {
                             case LeasedPassOutcome.Succeeded:
-                                pass.Succeeded();
+                                pass?.Succeeded();
                                 break;
                             case LeasedPassOutcome.Partial:
-                                pass.Partial();
+                                pass?.Partial();
                                 break;
                             default:
-                                pass.Idle();
+                                pass?.Idle();
                                 break;
                         }
                     }

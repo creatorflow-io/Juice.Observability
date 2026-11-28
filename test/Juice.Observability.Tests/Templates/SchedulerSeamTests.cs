@@ -232,6 +232,60 @@ namespace Juice.Observability.Tests.Templates
             }
         }
 
+        /// <summary>1.x health: only a tick that worked is a sign of life. The leased loop's per-pass pulse is not the scheduler's.</summary>
+        [Fact]
+        public async Task A_scheduler_whose_ticks_fail_reports_no_pass_and_no_sign_of_life_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var passes = 0;
+            using var listener = new MeterListener
+            {
+                InstrumentPublished = (instrument, l) =>
+                {
+                    if (instrument.Meter.Name == "Juice.Observability" && instrument.Name.StartsWith("juice.observability.worker.pass", StringComparison.Ordinal))
+                        l.EnableMeasurementEvents(instrument);
+                },
+            };
+            listener.SetMeasurementEventCallback<long>((_, _, tags, _) =>
+            {
+                foreach (var tag in tags)
+                {
+                    if (tag is { Key: "worker", Value: "rules" }) Interlocked.Increment(ref passes);
+                }
+            });
+            listener.SetMeasurementEventCallback<double>((_, _, tags, _) =>
+            {
+                foreach (var tag in tags)
+                {
+                    if (tag is { Key: "worker", Value: "rules" }) Interlocked.Increment(ref passes);
+                }
+            });
+            listener.Start();
+            var options = new RulesOptions { Tick = TimeSpan.FromMilliseconds(100) };
+            var services = new ServiceCollection().AddDbContext<PlatformDbContext>(o => PlatformDbContext.Configure(o, database.ConnectionString)).BuildServiceProvider();
+            var failures = new LogCapture();
+            // No such tenant: every tick throws.
+            using var scheduler = new RuleScheduler(services.GetRequiredService<IServiceScopeFactory>(), PlatformServices.Evaluator(database, TimeProvider.System, options),
+                Options.Create(options), Options.Create(new PlatformOptions { TenantKey = "no-such-tenant" }), TimeProvider.System,
+                new LoggerFactory([failures]).CreateLogger<RuleScheduler>());
+            try
+            {
+                await scheduler.StartAsync(Ct);
+                await WaitAsync(() => failures.At(LogLevel.Error).Count() >= 3);
+
+                var rules = WorkerPulse.Snapshot().Single(w => w.Worker == "rules");
+                Assert.True(rules.Enabled);
+                Assert.Null(rules.SinceLastEnd);
+                Assert.Null(rules.LastOutcome);
+                Assert.Equal(0, Volatile.Read(ref passes));
+            }
+            finally
+            {
+                await scheduler.StopAsync(Ct);
+            }
+        }
+
         private static async Task WaitAsync(Func<bool> condition)
         {
             for (var i = 0; i < 150 && !condition(); i++) await Task.Delay(200, Ct);

@@ -110,9 +110,12 @@ namespace Juice.Observability.Rules
             }
             _held = true;
             await TickAsync(cancellationToken);
-            // No pass to time (each rule is its own evaluation): the tick tells the platform's status the scheduler is alive.
+            // No pass to time (each rule is its own evaluation): a tick that worked tells the platform's status the scheduler is alive.
+            WorkerPulse.Tick("rules");
             return LeasedPassOutcome.Idle;
         }
+
+        protected override bool ReportsPasses => false;
 
         protected override async Task OnLeaseNotHeldAsync(CancellationToken cancellationToken)
         {
