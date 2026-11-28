@@ -63,23 +63,50 @@ namespace Juice.Observability.Rules
         /// </summary>
         public static IReadOnlyList<PreviewSubject> Replay(RuleDefinition rule,
             IReadOnlyList<(DateTimeOffset At, IReadOnlyList<RuleObservation> Observed)> points, int maxSubjects, out bool truncated)
+            => Replay(rule, [.. points.Select(p => (p.At, p.Observed, (IReadOnlyDictionary<string, RuleThreshold>?)null))], maxSubjects, out truncated);
+
+        /// <summary>
+        /// The thresholds each point is judged by, as the scheduler resolves them (<see cref="RuleThresholds"/>): a rule with no source has none here and
+        /// uses its own numbers; with one, the provider's numbers at that instant, and a subject it has none for is no data.
+        /// A provider that is not installed leaves every subject without a threshold (no data).
+        /// </summary>
+        public static async Task<IReadOnlyList<(DateTimeOffset At, IReadOnlyList<RuleObservation> Observed, IReadOnlyDictionary<string, RuleThreshold>? Thresholds)>> WithThresholdsAsync(
+            RuleThresholds thresholds, RuleDefinition rule, IReadOnlyList<(DateTimeOffset At, IReadOnlyList<RuleObservation> Observed)> points, CancellationToken cancellationToken)
+        {
+            if (rule.ThresholdSource is null) return [.. points.Select(p => (p.At, p.Observed, (IReadOnlyDictionary<string, RuleThreshold>?)null))];
+            var keys = points.SelectMany(p => p.Observed).Select(o => o.SubjectKey).Distinct(StringComparer.Ordinal).ToList();
+            var installed = thresholds.HasProvider(rule);
+            var result = new List<(DateTimeOffset, IReadOnlyList<RuleObservation>, IReadOnlyDictionary<string, RuleThreshold>?)>();
+            foreach (var (at, observed) in points)
+            {
+                IReadOnlyDictionary<string, RuleThreshold> provided = installed && keys.Count > 0
+                    ? await thresholds.ResolveAsync(rule, keys, at, cancellationToken)
+                    : new Dictionary<string, RuleThreshold>();
+                result.Add((at, observed, provided));
+            }
+            return result;
+        }
+
+        public static IReadOnlyList<PreviewSubject> Replay(RuleDefinition rule,
+            IReadOnlyList<(DateTimeOffset At, IReadOnlyList<RuleObservation> Observed, IReadOnlyDictionary<string, RuleThreshold>? Thresholds)> points,
+            int maxSubjects, out bool truncated)
         {
             var trackers = new Dictionary<string, Tracker>(StringComparer.Ordinal);
-            foreach (var (_, observed) in points)
+            foreach (var (_, observed, _) in points)
             {
                 foreach (var o in observed)
                 {
                     trackers.TryAdd(o.SubjectKey, new Tracker(o.SubjectKey, o.SubjectType));
                 }
             }
-            foreach (var (at, observed) in points)
+            foreach (var (at, observed, provided) in points)
             {
                 var byKey = new Dictionary<string, RuleObservation>(StringComparer.Ordinal);
                 foreach (var o in observed) byKey.TryAdd(o.SubjectKey, o);
                 foreach (var t in trackers.Values)
                 {
                     byKey.TryGetValue(t.Key, out var observation);
-                    Step(rule, t, at, observation);
+                    Step(rule, t, at, observation, provided);
                 }
             }
             var ordered = trackers.Values
@@ -89,9 +116,13 @@ namespace Juice.Observability.Rules
                 t.FirstFiredAt, t.Last, t.Min, t.Max, t.LastDetail, t.Points))];
         }
 
-        private static void Step(RuleDefinition rule, Tracker t, DateTimeOffset at, RuleObservation? observation)
+        private static void Step(RuleDefinition rule, Tracker t, DateTimeOffset at, RuleObservation? observation,
+            IReadOnlyDictionary<string, RuleThreshold>? provided)
         {
-            var condition = observation is null ? Condition.NoData : AlertLifecycle.Classify(rule, RuleThresholds.Fixed(rule), observation.Value, observation.Samples);
+            // As the evaluator: no threshold for the subject is no data.
+            RuleThreshold? threshold = provided is null ? RuleThresholds.Fixed(rule) : provided.TryGetValue(t.Key, out var supplied) ? supplied : null;
+            var condition = observation is null || threshold is not { } used ? Condition.NoData
+                : AlertLifecycle.Classify(rule, used, observation.Value, observation.Samples);
             var value = condition == Condition.NoData ? null : observation!.Value;
             t.Points.Add(new PreviewPoint(at, value, condition));
             if (condition == Condition.Breach) t.Breaches++;
