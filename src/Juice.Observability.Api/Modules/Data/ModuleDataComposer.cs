@@ -40,10 +40,7 @@ namespace Juice.Observability.Api.Modules.ModuleData
         public static void Add<TContext>(IModuleServicesBuilder b, Action<ModuleDataOptions>? configure) where TContext : ModuleDbContext
         {
             // Only the host's own builder: a stand-in could report another module's name, and the module is named by what the host composes.
-            if (b is not ModuleServicesBuilder)
-            {
-                throw new ModuleCompositionException("Module data is composed only through the host's own module builder.");
-            }
+            CoreBuilders.Require(b);
             var module = b.Module.Name;
             var options = new ModuleDataOptions();
             configure?.Invoke(options);
