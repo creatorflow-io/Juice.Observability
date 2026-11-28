@@ -43,7 +43,7 @@ const MESSAGE_FIELD: Record<string, string> = {
 function placeMessage(raw: string): { field: string | undefined; message: string } {
   const message = raw.replace(/^rule '[^']*':\s*/, '').trim();
   const token = /^[A-Za-z][A-Za-z.]*/.exec(message)?.[0].toLowerCase();
-  return { field: token ? MESSAGE_FIELD[token] : undefined, message };
+  return { field: token && Object.hasOwn(MESSAGE_FIELD, token) ? MESSAGE_FIELD[token] : undefined, message };
 }
 
 /** The silence form: the API's names, and the form's own field name where it differs. */

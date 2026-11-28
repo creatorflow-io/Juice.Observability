@@ -379,6 +379,51 @@ describe('listing, stale state and tenants', () => {
   });
 });
 
+describe('review lows', () => {
+  it('a rule with no managedBy is read-only', async () => {
+    const { f } = await open({ rules: () => page([{ ...metricRule, managedBy: '' }]) }, {}, 'rule-view-m1');
+    expect(id(f, 'rule-readonly')).not.toBeNull();
+    expect(id(f, 'rule-save')).toBeNull();
+  });
+
+  it('Change and View are disabled while the list reloads after a tenant change', async () => {
+    const pending = new Subject<unknown>();
+    let first = true;
+    const { f, tenant } = await open({ rules: () => { if (first) { first = false; return page([metricRule]); } return pending; } }, {}, 'rule-edit-m1');
+    tenant.next({ id: 't2' });
+    f.detectChanges();
+    expect((id(f, 'rule-edit-m1') as HTMLButtonElement | null)?.disabled ?? true).toBe(true);
+  });
+
+  it('a catalog that arrives after the form opened sets the kind and fits the aggregation', async () => {
+    const late = new Subject<unknown>();
+    const { f } = await open({ metrics: () => late });
+    await choose(f, 'template', 'MetricThreshold');
+    await type(f, 'metricName', 'queue.depth');
+    expect(has(f, 'mat-select[name="metricKind"]')).toBe(true);
+    late.next({ truncated: false, items: [{ name: 'queue.depth', type: 'sum', monotonic: false, unit: '1', description: '' }] });
+    await flush(f);
+    expect(has(f, 'mat-select[name="metricKind"]')).toBe(false);
+    expect(options(f, 'aggregation')).toEqual(['Last']);
+  });
+
+  it('filter Remove buttons name their row and the inputs point at the filters error', async () => {
+    const { f } = await open({});
+    await fillMetricRule(f);
+    await click(f, 'rule-filter-add');
+    await click(f, 'rule-filter-add');
+    expect(id(f, 'rule-filter-remove-1')!.getAttribute('aria-label')).toBe('Remove filter 2');
+    await click(f, 'rule-save');
+    expect(f.nativeElement.querySelector('input[name="filterKey-0"]')!.getAttribute('aria-describedby')).toBe('err-filters');
+  });
+
+  it('a message led by an Object.prototype name is not a field', () => {
+    const r = ruleFieldErrors(problem(400, 'Invalid request', 'x', { errors: ['constructor is odd', 'toString too'] }));
+    expect(r.fields).toEqual({});
+    expect(r.rest).toBe('constructor is odd toString too');
+  });
+});
+
 describe('safety', () => {
   it('unknown error text placed in form sentence, escaped', async () => {
     const { f } = await open({ previewRule: () => throwError(() => problem(500, '<img src=x onerror=alert(1)>', '<b>boom</b>')) });
