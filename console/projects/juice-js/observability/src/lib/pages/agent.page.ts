@@ -116,7 +116,7 @@ function formatUptime(seconds: number): string {
             } @else {
               @for (p of selected()?.parameters ?? []; track p.name) {
                 @if (p.type === 'boolean') {
-                  <div class="jc-field"><mat-checkbox [name]="p.name" [attr.data-testid]="'command-param-' + p.name" [ngModel]="values()[p.name] === true" (ngModelChange)="set(p.name, $event)">{{ title(p) }}</mat-checkbox></div>
+                  <div class="jc-field"><mat-checkbox [name]="p.name" [attr.data-field]="p.name" [attr.data-testid]="'command-param-' + p.name" [ngModel]="values()[p.name] === true" (ngModelChange)="set(p.name, $event)">{{ title(p) }}</mat-checkbox></div>
                 } @else if (p.allowed?.length) {
                   <div class="jc-field" [class.jc-field-wide]="p.type === 'string'"><mat-form-field subscriptSizing="dynamic" [class.jc-field-wide]="p.type === 'string'"><mat-label>{{ title(p) }}</mat-label>
                     <mat-select [name]="p.name" [attr.data-field]="p.name" [attr.data-testid]="'command-param-' + p.name" [ngModel]="values()[p.name] ?? ''" (ngModelChange)="set(p.name, $event)" [attr.aria-invalid]="marks.bad(p.name)" [attr.aria-describedby]="marks.describedBy(p.name)">

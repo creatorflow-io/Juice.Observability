@@ -27,6 +27,10 @@ const forms = {
   agent: { path: 'agents', form: 'command-form', prepare: async page => {
     await page.locator('a[href*="/agents/"]').first().click({ timeout: 15000 });
     await page.getByTestId('command-form').waitFor({ timeout: 15000 });
+    // An action with a boolean parameter (a checkbox with a long label), when the agent offers one.
+    await page.getByTestId('command-action').click();
+    const cleanup = page.getByTestId('action-files.cleanup');
+    if (await cleanup.count()) await cleanup.click(); else await page.keyboard.press('Escape');
   } },
   rules: { path: 'rules', open: 'rule-new', form: 'rule-form' },
   escalation: { path: 'escalation', open: 'policy-new', form: null },
@@ -90,6 +94,21 @@ try {
         const clipped = await page.evaluate(id => [...(document.querySelector(`[data-testid="${id}"]`) ?? document).querySelectorAll('mat-form-field label')]
           .filter(l => l.getClientRects().length > 0 && l.scrollWidth > l.clientWidth + 1).map(l => l.textContent.trim()), f.form);
         check(clipped.length === 0, `${name} at ${width}px, ${theme}: no label is clipped${clipped.length ? ` (${clipped.join(', ')})` : ''}`);
+        // A checkbox's label (its first line, when it wraps) sits level with the box.
+        const labels = await page.evaluate(id => [...(document.querySelector(`[data-testid="${id}"]`) ?? document).querySelectorAll('mat-checkbox')]
+          .filter(cb => cb.getClientRects().length > 0).map(cb => {
+            const box = cb.querySelector('.mdc-checkbox__background').getBoundingClientRect();
+            // The first line of the label's own text (the first text node with something in it), not its box.
+            const walker = document.createTreeWalker(cb.querySelector('label'), NodeFilter.SHOW_TEXT);
+            let text;
+            while ((text = walker.nextNode()) && !text.textContent.trim()) { /* skip whitespace */ }
+            const range = document.createRange();
+            range.selectNodeContents(text);
+            const line = [...range.getClientRects()].find(r => r.width > 0);
+            return { text: cb.textContent.trim().slice(0, 30), delta: Math.round((line.top + line.height / 2 - (box.top + box.height / 2)) * 10) / 10 };
+          }), f.form);
+        const off = labels.filter(l => Math.abs(l.delta) > TOLERANCE);
+        check(off.length === 0, `${name} at ${width}px, ${theme}: ${labels.length} checkbox label(s) level with their box${off.length ? ` (off: ${off.map(l => `${l.text} ${l.delta}px`).join(', ')})` : ''}`);
         for (const withErrors of [false, true]) {
           const rows = await page.evaluate(measure, { withErrors, formId: f.form });
           const at = `${name} at ${width}px, ${theme}${withErrors ? ', neighbours with errors' : ''}`;
