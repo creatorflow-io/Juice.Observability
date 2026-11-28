@@ -45,8 +45,9 @@ try {
     expect(await badge(victor) === 0, 'victor (a viewer) gets no item');
   });
 
-  // Cleanup: the rule the journey made.
-  await must('alice', 'DELETE', `${await platformPath('rules')}/e2e-${run}`, undefined, { allow: [404] });
+  // Cleanup: the rule the journey made stops (rules can't be deleted, only disabled).
+  await must('alice', 'PUT', `${await platformPath('rules')}/e2e-${run}`, { name: `E2E ${run}`, template: 'ErrorRate', severity: 'Critical',
+    service: `e2e-m48/svc-${run}`, threshold: 0.05, forDuration: '00:00:00', enabled: false }, { allow: [404] });
 } catch (e) {
   problems.push(e.message.split('\n')[0]);
 } finally {

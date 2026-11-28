@@ -342,7 +342,38 @@ namespace Juice.Observability.Notifications
         private static string? Bounded(string? value, int max) => value is { Length: > 0 } ? value.Length > max ? value[..max] : value : null;
 
         private Task<bool> SendAsync(NotificationToSend request, CancellationToken cancellationToken, bool conflictThrows = false, Action? onConflict = null)
-            => TolerateAsync("send", () => client.SendAsync(request, cancellationToken), conflictThrows, request.IdempotencyKey, onConflict);
+            => TolerateAsync("send", () => SendOrWithoutRolesAsync(request, cancellationToken), conflictThrows, request.IdempotencyKey, onConflict);
+
+        /// <summary>
+        /// Sends the request; when the pipeline refuses only its role recipients (<see cref="ErrorCodes.RecipientNotAllowed"/>: the shared
+        /// <c>signed-in</c> resolver was disabled by a replica that restarted with the inbox off), sends it once more without them. Delivery to the
+        /// routes never depends on the inbox, and the correlation must exist for the acknowledgement and the resolve.
+        /// </summary>
+        private async Task<NotificationAccepted> SendOrWithoutRolesAsync(NotificationToSend request, CancellationToken cancellationToken)
+        {
+            try
+            {
+                return await client.SendAsync(request, cancellationToken);
+            }
+            catch (NotificationRefusedException refused) when (refused.Code is ErrorCodes.RecipientNotAllowed && OnlyRoles(request, refused))
+            {
+                logger.LogWarning("The notification pipeline refused the role recipients of {Key} (the inbox is off on another replica?): it is sent without its role recipients", request.IdempotencyKey);
+                var rest = request.Recipients!.Where(r => r.Kind != RecipientKinds.Role).ToList();
+                return await client.SendAsync(request with { Recipients = rest.Count == 0 ? null : rest }, cancellationToken);
+            }
+        }
+
+        /// <summary>Whether every field the refusal names is a role recipient of the request.</summary>
+        private static bool OnlyRoles(NotificationToSend request, NotificationRefusedException refused)
+        {
+            if (request.Recipients is not { } recipients || refused.Errors is not { Count: > 0 } errors)
+            {
+                return false;
+            }
+            return errors.All(e => e.Pointer.StartsWith("/recipients/", StringComparison.Ordinal)
+                && int.TryParse(e.Pointer.AsSpan("/recipients/".Length).ToString().Split('/')[0], out var at)
+                && at >= 0 && at < recipients.Count && recipients[at].Kind == RecipientKinds.Role);
+        }
 
         /// <summary>The pipeline mode, as a kept call or hold records it: the pipeline is the only one since 2.0.</summary>
         private const string Mode = "new";
