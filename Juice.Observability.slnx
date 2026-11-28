@@ -10,11 +10,9 @@
     <Project Path="src/Juice.Observability.Host/Juice.Observability.Host.csproj" />
     <Project Path="src/Juice.Observability.Health/Juice.Observability.Health.csproj" />
     <Project Path="src/Juice.Observability.Notifications/Juice.Observability.Notifications.csproj" />
-    <Project Path="src/Juice.Observability.Notifications.Migration/Juice.Observability.Notifications.Migration.csproj" />
     <Project Path="src/Juice.Observability.Rules/Juice.Observability.Rules.csproj" />
     <Project Path="src/Juice.Observability.Slos/Juice.Observability.Slos.csproj" />
     <Project Path="src/Juice.Observability.Signals/Juice.Observability.Signals.csproj" />
-    <Project Path="src/Juice.Observability.Webhooks/Juice.Observability.Webhooks.csproj" />
   </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/Juice.Observability.Agent.Sample/Juice.Observability.Agent.Sample.csproj" />

@@ -1,0 +1,6 @@
+// The notification pipeline's endpoints, routes and allowlist, declared in a file (Notifications__Provisioning__Path): version-controlled, applied at start,
+// and read-only on the admin pages. Keyed by the tenant's Id (JUICE_PLATFORM_TENANT_ID): the platform's own, and no other.
+// Empty here: the local stack declares nothing. docs/deployment.md has a sample with an integration, a route and an allowlist entry.
+{
+  "tenants": {}
+}

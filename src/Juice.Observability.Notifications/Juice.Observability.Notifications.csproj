@@ -11,14 +11,15 @@
     <PackageReference Include="Juice.Notifications.Abstractions" />
     <PackageReference Include="Juice.Notifications.Embedded" />
     <PackageReference Include="Juice.Notifications.Providers.Chat" />
+    <!-- Hears of alert transitions from the outbox's local route. -->
+    <PackageReference Include="Juice.Messaging.Local" />
   </ItemGroup>
 
   <ItemGroup>
-    <!-- The platform's own rules for what a transition sends, silences and held notifications (NotificationPlan, SilenceMatcher,
-         HeldNotification) and the action request notice, shared with the webhooks until M50 moves them. -->
-    <ProjectReference Include="..\Juice.Observability.Webhooks\Juice.Observability.Webhooks.csproj" />
+    <!-- The platform's own rules for what a transition sends (silences, held notifications, the escalation selection) and its alert transitions. -->
+    <ProjectReference Include="..\Juice.Observability.Rules\Juice.Observability.Rules.csproj" />
     <ProjectReference Include="..\Juice.Observability.Agents\Juice.Observability.Agents.csproj" />
-    <!-- The dead-man's shadow cause (M49's IShadowReport), which the comparer's report answers. -->
+    <!-- The dead-man alarm's options and sender (M49), registered with the pipeline. -->
     <ProjectReference Include="..\Juice.Observability.Health\Juice.Observability.Health.csproj" />
   </ItemGroup>
 

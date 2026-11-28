@@ -15,7 +15,7 @@ export Auth__Authority=http://localhost:8080/realms/juice
 export Auth__RequireHttpsMetadata=false   # local Keycloak serves plain HTTP
 export Database__Migrate=true
 export Rules__File="$(pwd -W 2>/dev/null || pwd)/rules.json"
-export Webhooks__File="$(pwd -W 2>/dev/null || pwd)/webhooks.json"
+export Notifications__Provisioning__Path="$(pwd -W 2>/dev/null || pwd)/notifications-provisioning.json"
 export Integrations__Grafana__BaseUrl=http://localhost:3000
 # The platform's own metrics (docs/platform-metrics.md): the Collector's platform receiver, published on loopback, and the sampler's user.
 here=$(pwd -W 2>/dev/null || pwd)

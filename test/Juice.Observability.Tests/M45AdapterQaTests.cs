@@ -1,3 +1,4 @@
+using Juice.Observability.Tests.Legacy;
 using System.Text.Json;
 using Juice.Notifications.Configuration;
 using Juice.Observability.Data;
@@ -23,7 +24,6 @@ namespace Juice.Observability.Tests
 
         private static Dictionary<string, string> New() => new()
         {
-            ["Notifications:Pipeline"] = "new",
             // The receiver is http on a private address, as legacy allows with Webhooks:AllowHttpToAllowlisted; the pipeline has its own switch.
             ["Notifications:Delivery:AllowHttpToAllowlisted"] = "true",
             ["Notifications:Stages:Planner:Poll"] = "00:00:00.200",
@@ -52,7 +52,7 @@ namespace Juice.Observability.Tests
         public async Task In_new_a_firing_and_its_resolve_reach_a_receiver_through_the_pipeline_and_legacy_sends_nothing_Async()
         {
             LocalStack.RequireAvailable();
-            await using var receiver = await WebhookTests.Receiver.StartAsync();
+            await using var receiver = await TestReceiver.StartAsync();
             Environment.SetEnvironmentVariable(SecretVariable, "qa-adapter-signing-secret");
             await using var database = await LocalStack.CreateDatabaseAsync();
             await using var factory = new ApiTests.ApiFactory(database, settings: New());
@@ -87,11 +87,10 @@ namespace Juice.Observability.Tests
             Assert.Contains("alert.resolved", receiver.Requests.ToArray()[1].Body);
             Assert.Equal("Resolved", await ProducerAdapterTests.CorrelationStateAsync(database, $"alert:{alert}"));
 
-            // Once each, and nothing through legacy.
+            // Once each.
             await Task.Delay(TimeSpan.FromSeconds(2), Ct);
             Assert.Equal(2, receiver.Requests.Count);
             await using var db = database.Context();
-            Assert.Empty(await db.WebhookDeliveries.ToListAsync(Ct));
             Assert.Equal(2, await ScalarAsync(database, "SELECT count(*) FROM notifications.deliveries WHERE status = 'Delivered'"));
         }
 
@@ -130,42 +129,6 @@ namespace Juice.Observability.Tests
                 await Task.Delay(200, Ct);
             }
             Assert.True(done(), $"timed out waiting for {what}");
-        }
-
-        // ─── legacy runs nothing of the pipeline ────────
-
-        [Fact]
-        public async Task Legacy_reads_none_of_the_pipelines_tables_while_it_runs_Async()
-        {
-            LocalStack.RequireAvailable();
-            await using var database = await LocalStack.CreateDatabaseAsync();
-            // About legacy mode, whatever JUICE_TEST_NOTIFICATIONS_PIPELINE says (a test's own setting wins, I74).
-            await using var factory = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string> { ["Notifications:Pipeline"] = "legacy" });
-            _ = factory.Server;
-            await Task.Delay(TimeSpan.FromSeconds(3), Ct); // past start
-            var before = await ReadsAsync(database);
-            // Longer than every poll the pipeline would run (stages, outbox delivery, backlog monitor, retention, the release and hold passes).
-            await Task.Delay(TimeSpan.FromSeconds(20), Ct);
-            var after = await ReadsAsync(database);
-            Assert.Equal(before, after);
-            // And the host keeps fewer connections to its database than a pipeline host would need.
-            var connections = await ScalarAsync(database, $"SELECT count(*) FROM pg_stat_activity WHERE datname = '{database.Name}'");
-            File.AppendAllText(Path.Combine(Path.GetTempPath(), "qa-m45-1.txt"), $"{DateTime.UtcNow:O} legacy host connections: {connections}{Environment.NewLine}");
-        }
-
-        /// <summary>Scans and fetches on the notifications schema's tables (statistics are flushed by the next stat read).</summary>
-        private static async Task<long> ReadsAsync(ScratchDatabase database)
-        {
-            await using var connection = new NpgsqlConnection(database.ConnectionString);
-            await connection.OpenAsync(Ct);
-            await using (var flush = new NpgsqlCommand("SELECT pg_stat_force_next_flush()", connection))
-            {
-                try { await flush.ExecuteNonQueryAsync(Ct); } catch (PostgresException) { } // PostgreSQL 15+
-            }
-            await Task.Delay(1500, Ct); // the stats collector's interval
-            await using var command = new NpgsqlCommand(
-                "SELECT coalesce(sum(seq_scan + coalesce(idx_scan, 0) + n_tup_ins + n_tup_upd + n_tup_del), 0) FROM pg_stat_user_tables WHERE schemaname = 'notifications'", connection);
-            return Convert.ToInt64(await command.ExecuteScalarAsync(Ct));
         }
 
         // ─── Two replicas: the silence pass at once ────────
@@ -207,7 +170,7 @@ namespace Juice.Observability.Tests
             => new(factory.Services.GetRequiredService<IServiceScopeFactory>(), Options.Create(new PlatformNotificationsOptions()), NullLogger<SilenceHoldPass>.Instance);
 
         private static NotificationsReleasePass Release(WebApplicationFactory<Program> factory)
-            => new(factory.Services.GetRequiredService<IServiceScopeFactory>(), Options.Create(new Webhooks.WebhookOptions()), TimeProvider.System,
+            => new(factory.Services.GetRequiredService<IServiceScopeFactory>(), Options.Create(new PlatformNotificationsOptions()), TimeProvider.System,
                 NullLogger<NotificationsReleasePass>.Instance);
 
         // ─── A failed start: everything kept is replayed in order, once ────────
@@ -242,7 +205,7 @@ namespace Juice.Observability.Tests
                     await using var scope = down.Services.CreateAsyncScope();
                     var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
                     await using var transaction = await db.Database.BeginTransactionAsync(Ct);
-                    await Agents.ActionRequestNotices.AddAsync(db, scope.ServiceProvider, new Agents.ActionApprovalOptions(), LocalStack.TenantKey, request, "web-1",
+                    await Agents.ActionRequestNotices.AddAsync(scope.ServiceProvider, request, "web-1",
                         type, DateTimeOffset.UtcNow, Ct);
                     await db.SaveChangesAsync(Ct);
                     await transaction.CommitAsync(Ct);

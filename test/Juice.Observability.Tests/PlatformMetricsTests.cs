@@ -386,7 +386,6 @@ namespace Juice.Observability.Tests
             Assert.True(first.Postgres.Size > 0);
             Assert.Equal(0, first.Postgres.OutboxPending);
             Assert.Null(first.Postgres.OutboxOldest);
-            Assert.Equal(0, first.Postgres.WebhookPending);
             var clickHouse = Assert.IsType<PlatformSampler.ClickHouseSample>(first.ClickHouse);
             Assert.True(clickHouse.Up);
             Assert.True(clickHouse.Memory > 0);
@@ -421,7 +420,7 @@ namespace Juice.Observability.Tests
         private static List<Instrument> PlatformInstruments()
         {
             foreach (var assembly in new[] { typeof(WorkerPulse), typeof(ClickHouseTelemetrySource), typeof(PlatformTelemetry), typeof(Health.HealthRunner),
-                typeof(Rules.RuleScheduler), typeof(Slos.SloCounter), typeof(Webhooks.WebhookDispatcher) }.Select(t => t.Assembly).Distinct())
+                typeof(Rules.RuleScheduler), typeof(Slos.SloCounter), typeof(Notifications.ProducerAdapter) }.Select(t => t.Assembly).Distinct())
             {
                 foreach (var type in assembly.GetTypes().Where(t => !t.ContainsGenericParameters && t.GetFields(BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public)
                     .Any(field => typeof(Meter).IsAssignableFrom(field.FieldType) || typeof(Instrument).IsAssignableFrom(field.FieldType))))

@@ -164,7 +164,7 @@ namespace Juice.Observability.Tests
 
             // The race over, the release pass replays it: the correlation is acknowledged, so its escalation stops.
             race.Left = 0;
-            await new NotificationsReleasePass(factory.Services.GetRequiredService<IServiceScopeFactory>(), Options.Create(new Webhooks.WebhookOptions()),
+            await new NotificationsReleasePass(factory.Services.GetRequiredService<IServiceScopeFactory>(), Options.Create(new PlatformNotificationsOptions()),
                 TimeProvider.System, NullLogger<NotificationsReleasePass>.Instance).ReleaseOnceAsync(Ct);
             Assert.Equal("Acknowledged", await CorrelationStateAsync(database, $"alert:{alert}"));
             await using (var db = database.Context())

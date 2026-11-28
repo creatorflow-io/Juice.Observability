@@ -107,14 +107,14 @@ const lags = [
   ['Rules: oldest last evaluation of an open alert', 'alert_stale', 60, 60, 30, true, 'due every 60 s'],
   ['SLOs: past when the next minute became countable', 'slo_excess', 0, 60, 60, false, `its end + 10 s; a pass every 30 s; raw: counted-through ${f(max(col('slo_lag')))} s behind now at most`],
   ['Outbox: oldest undelivered', 'outbox_oldest', 0, 60, 30, true, ''],
-  ['Webhooks: oldest pending (not retrying)', 'webhook_oldest', 0, 60, 30, true, ''],
+  ['Notifications: oldest transition not yet planned', 'planning_oldest', 0, 60, 30, true, ''],
 ].map(([what, k, delay, line, floor, emptyIsZero, note]) => {
   const values = col(k, emptyIsZero), mx = max(values), excess = mx === null ? null : mx - delay;
   return { what, k, delay, line, p95: pct(values, 0.95), max: mx, excess, ok: line === null ? null : within(excess, line) && values.every(v => v !== null) && lagCovered,
     growing: line === null ? null : growing(values, floor), note };
 });
 const counts = [['Outbox: rows not yet published (retries included)', 'outbox_pending', 50], ['Outbox: failed, waiting for a retry', 'outbox_failed', 20],
-  ['Webhooks: pending deliveries', 'webhook_pending', 20], ['Webhooks: retrying (backoff by design)', 'webhook_retrying', 20]]
+  ['Notifications: transitions not yet planned', 'planning_pending', 20]]
   .map(([what, k, floor]) => ({ what, p95: pct(col(k), 0.95), max: max(col(k)), growing: growing(col(k), floor) }));
 const queueRows = collector.filter(r => r.metric === 'otelcol_exporter_queue_size');
 const queueGrowing = cycles < 2 ? null : (() => {
@@ -169,7 +169,7 @@ const targets = [
     `age of the evidence behind each live subject's visible state: p95 ${f(healthP95)} s, max ${f(max(healthEvidence))} s${healthEvidence.some(v => v === null) ? `; ${healthEvidence.filter(v => v === null).length} samples with no live subject` : ''}; at evaluation p95 ${f(pct(col('health_age_p95'), 0.95))} s`],
   ['Rule breach-to-alert p95 ≤ 2 min after ForDuration', breach.length > 0 && within(pct(breach, 0.95), 120) && breachMissed === 0,
     `${breach.length ? `p95 ${pct(breach, 0.95)} s over ${breach.length} runs (${breach.join(', ')} s)` : 'no runs'}${breachMissed ? `; ${breachMissed} did not fire` : ''}`],
-  ['Webhook first dispatch p95 ≤ 30 s', whTotal > 0 && within(whP95, 30),
+  ['Notification planned p95 ≤ 30 s', whTotal > 0 && within(whP95, 30),
     whTotal ? `p95 ${f(whP95, 2)} s, p50 ${f(whP50, 2)} s, max ${f(whMax, 2)} s over ${whTotal} (${whAttempted} attempted, ${whDelivered} delivered, ${whUnplanned ?? 0} transitions not yet planned; anything unattempted counts until the window's end; ${transitions} alert transitions)` : 'no deliveries in the window'],
   ['Queue lag: each worker ≤ 1 min past its configured delay; no growing backlog', lagCovered && givenUp === 0 && lags.every(l => l.ok !== false) && ![...lags, ...counts].some(l => l.growing) && !queueGrowing,
     `${lagCovered ? '' : `lag samples in only ${lag.filter(inWindow).length} of ${slots} slots; `}${givenUp === null ? 'no count of given-up outbox deliveries; ' : givenUp > 0 ? `${givenUp} outbox deliveries given up for good; ` : ''}${lags.filter(l => l.ok === false).map(l => `${l.what} ${f(l.excess)} s past`).join('; ') || 'every worker within 60 s of its configured delay'}; ` +

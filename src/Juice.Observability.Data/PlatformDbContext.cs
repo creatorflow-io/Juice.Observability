@@ -39,21 +39,14 @@ namespace Juice.Observability.Data
         public DbSet<Alert> Alerts => Set<Alert>();
         public DbSet<AlertTransition> AlertTransitions => Set<AlertTransition>();
         public DbSet<IdempotencyRecord> IdempotencyRecords => Set<IdempotencyRecord>();
-        public DbSet<WebhookEndpoint> WebhookEndpoints => Set<WebhookEndpoint>();
-        public DbSet<WebhookAllowlistEntry> WebhookAllowlist => Set<WebhookAllowlistEntry>();
-        public DbSet<WebhookDelivery> WebhookDeliveries => Set<WebhookDelivery>();
-        public DbSet<WebhookAttempt> WebhookAttempts => Set<WebhookAttempt>();
         public DbSet<LoadRun> LoadRuns => Set<LoadRun>();
         public DbSet<WorkerHeartbeat> WorkerHeartbeats => Set<WorkerHeartbeat>();
         public DbSet<ChangeEvent> ChangeEvents => Set<ChangeEvent>();
         public DbSet<Silence> Silences => Set<Silence>();
         public DbSet<EscalationPolicy> EscalationPolicies => Set<EscalationPolicy>();
-        public DbSet<AlertEscalation> AlertEscalations => Set<AlertEscalation>();
         public DbSet<NotificationHold> NotificationHolds => Set<NotificationHold>();
         public DbSet<AlertHold> AlertHolds => Set<AlertHold>();
         public DbSet<NotificationParkedCall> NotificationParkedCalls => Set<NotificationParkedCall>();
-        public DbSet<ShadowComparison> ShadowComparisons => Set<ShadowComparison>();
-        public DbSet<ShadowDifference> ShadowDifferences => Set<ShadowDifference>();
         public DbSet<Incident> Incidents => Set<Incident>();
         public DbSet<IncidentAlert> IncidentAlerts => Set<IncidentAlert>();
         public DbSet<IncidentEvent> IncidentEvents => Set<IncidentEvent>();
@@ -224,7 +217,6 @@ namespace Juice.Observability.Data
             ConfigureLoadRuns(model);
             ConfigureHeartbeats(model);
             ConfigureChanges(model);
-            ConfigureWebhooks(model);
             ConfigureNotifications(model);
             ConfigureIncidents(model);
             ConfigureAgents(model);
@@ -280,26 +272,7 @@ namespace Juice.Observability.Data
                 e.Property(x => x.Key).HasMaxLength(63);
                 e.Property(x => x.Name).HasMaxLength(200);
                 e.Property(x => x.MinimumSeverity).HasConversion<string>().HasMaxLength(20);
-                e.Property(x => x.Steps).HasColumnType("jsonb").HasConversion(new ValueConverter<List<EscalationStep>, string>(
-                        v => JsonSerializer.Serialize(v, JsonOptions),
-                        v => JsonSerializer.Deserialize<List<EscalationStep>>(v, JsonOptions) ?? new()),
-                    new ValueComparer<List<EscalationStep>>(
-                        (a, b) => JsonSerializer.Serialize(a, JsonOptions) == JsonSerializer.Serialize(b, JsonOptions),
-                        v => JsonSerializer.Serialize(v, JsonOptions).GetHashCode(),
-                        v => JsonSerializer.Deserialize<List<EscalationStep>>(JsonSerializer.Serialize(v, JsonOptions), JsonOptions)!));
                 e.HasIndex(x => new { x.TenantId, x.Key }).IsUnique();
-            });
-
-            model.Entity<AlertEscalation>(e =>
-            {
-                e.ToTable("alert_escalations");
-                Tenant(e);
-                e.Property(x => x.State).HasConversion<string>().HasMaxLength(20);
-                e.Property(x => x.StopReason).HasMaxLength(40);
-                e.HasIndex(x => new { x.AlertId, x.PolicyId }).IsUnique();
-                e.HasIndex(x => new { x.State, x.NextAt });
-                e.HasOne<Alert>().WithMany().HasForeignKey(x => x.AlertId).OnDelete(DeleteBehavior.Cascade);
-                e.HasOne<EscalationPolicy>().WithMany().HasForeignKey(x => x.PolicyId).OnDelete(DeleteBehavior.Restrict);
             });
 
             // The notification pipeline's adapter (phase 5, M45): what a silence held, and the alerts whose correlation it holds.
@@ -337,31 +310,6 @@ namespace Juice.Observability.Data
                 e.Property(x => x.By).HasMaxLength(256);
                 e.Property(x => x.Request).HasColumnType("jsonb");
                 e.HasIndex(x => x.Id).HasFilter("replayed_at IS NULL").HasDatabaseName("ix_notification_parked_calls_pending");
-            });
-
-            // The shadow comparison (M47): what was compared, once, and how the pipelines differed.
-            model.Entity<ShadowComparison>(e =>
-            {
-                e.ToTable("shadow_comparisons");
-                e.HasKey(x => new { x.TenantId, x.TransitionId, x.EscalationStep });
-                Tenant(e);
-                e.Property(x => x.Event).HasMaxLength(40);
-                e.HasIndex(x => new { x.TenantId, x.ComparedAt });
-            });
-
-            model.Entity<ShadowDifference>(e =>
-            {
-                e.ToTable("shadow_differences");
-                Tenant(e);
-                e.Property(x => x.Event).HasMaxLength(40);
-                e.Property(x => x.EndpointKey).HasMaxLength(100);
-                e.Property(x => x.Kind).HasMaxLength(40);
-                e.Property(x => x.Rule).HasMaxLength(40);
-                e.Property(x => x.Detail).HasMaxLength(2000);
-                // The report counts a window by rule and kind; the dead-man counts what no rule explains.
-                e.HasIndex(x => new { x.TenantId, x.DetectedAt, x.Rule, x.Kind });
-                e.HasIndex(x => new { x.TenantId, x.DetectedAt }).HasFilter("rule IS NULL").HasDatabaseName("ix_shadow_differences_unexplained");
-                e.HasIndex(x => new { x.TenantId, x.TransitionId, x.EscalationStep });
             });
         }
 
@@ -676,7 +624,7 @@ namespace Juice.Observability.Data
                 e.Property(x => x.Reason).HasMaxLength(200);
                 e.Property(x => x.NotificationsPlannedAt).IsConcurrencyToken();
                 e.HasIndex(x => new { x.AlertId, x.At });
-                // The shadow comparer (M47) finds the transitions planned in its window.
+                // The transitions planned in a window (the oldest not yet planned, the planning rate).
                 e.HasIndex(x => x.NotificationsPlannedAt).HasDatabaseName("ix_alert_transitions_notifications_planned_at");
                 e.HasOne<Alert>().WithMany().HasForeignKey(x => x.AlertId).OnDelete(DeleteBehavior.Cascade);
             });
@@ -692,63 +640,6 @@ namespace Juice.Observability.Data
                 e.Property(x => x.ResponseBody).HasColumnType("text");
                 e.HasIndex(x => x.CreatedAt);
                 e.HasOne<PlatformTenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
-            });
-        }
-
-        private static void ConfigureWebhooks(ModelBuilder model)
-        {
-            model.Entity<WebhookEndpoint>(e =>
-            {
-                e.ToTable("webhook_endpoints");
-                Tenant(e);
-                e.Property(x => x.Key).HasMaxLength(63);
-                e.Property(x => x.Url).HasMaxLength(2048);
-                e.Property(x => x.SecretRef).HasMaxLength(512);
-                e.Property(x => x.Kind).HasConversion<string>().HasMaxLength(20).HasDefaultValue(ChannelKind.Webhook);
-                e.Property(x => x.MinimumSeverity).HasConversion<string>().HasMaxLength(20);
-                e.Property(x => x.DefinitionHash).HasMaxLength(64);
-                e.Property(x => x.ManagedBy).HasMaxLength(20).HasDefaultValue(ManagedBy.Configuration);
-                e.HasIndex(x => new { x.TenantId, x.Key }).IsUnique();
-            });
-
-            model.Entity<WebhookAllowlistEntry>(e =>
-            {
-                e.ToTable("webhook_allowlist");
-                e.HasKey(x => new { x.TenantId, x.Destination });
-                e.Property(x => x.Destination).HasMaxLength(256);
-                e.Property(x => x.ManagedBy).HasMaxLength(20).HasDefaultValue(ManagedBy.Configuration);
-                e.HasOne<PlatformTenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
-            });
-
-            model.Entity<WebhookDelivery>(e =>
-            {
-                e.ToTable("webhook_deliveries");
-                Tenant(e);
-                e.Property(x => x.Event).HasMaxLength(40);
-                e.Property(x => x.Payload).HasColumnType("text");
-                e.Property(x => x.Status).HasConversion<string>().HasMaxLength(20);
-                e.Property(x => x.LastError).HasMaxLength(500);
-                e.HasIndex(x => new { x.Status, x.NextAttemptAt });
-                e.HasIndex(x => new { x.TenantId, x.EndpointId, x.CreatedAt });
-                // One delivery per transition, endpoint and escalation step, so a replayed evaluation or escalation cannot notify twice.
-                e.HasIndex(x => new { x.TransitionId, x.EndpointId, x.EscalationStep }).IsUnique();
-                e.HasIndex(x => new { x.TenantId, x.AlertId });
-                // The shadow comparer (M47) finds escalation steps by when they were made.
-                e.HasIndex(x => x.CreatedAt).HasFilter("escalation_step > 0").HasDatabaseName("ix_webhook_deliveries_escalation_steps");
-                // One per request, endpoint and event: a decision retried can't notify twice.
-                e.HasIndex(x => new { x.ActionRequestId, x.EndpointId, x.Event }).IsUnique();
-                e.HasOne<WebhookEndpoint>().WithMany().HasForeignKey(x => x.EndpointId).OnDelete(DeleteBehavior.Restrict);
-                e.HasOne<Alert>().WithMany().HasForeignKey(x => x.AlertId).OnDelete(DeleteBehavior.Cascade);
-                e.HasOne<ActionRequest>().WithMany().HasForeignKey(x => x.ActionRequestId).OnDelete(DeleteBehavior.Cascade);
-            });
-
-            model.Entity<WebhookAttempt>(e =>
-            {
-                e.ToTable("webhook_attempts");
-                Tenant(e);
-                e.Property(x => x.Error).HasMaxLength(500);
-                e.HasIndex(x => new { x.DeliveryId, x.Number }).IsUnique();
-                e.HasOne<WebhookDelivery>().WithMany().HasForeignKey(x => x.DeliveryId).OnDelete(DeleteBehavior.Cascade);
             });
         }
 

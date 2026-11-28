@@ -5,17 +5,19 @@
 services:
   platform-api:
     environment:
-      # The sink's signing secret (scale/webhooks.json: env:JUICE_WEBHOOK_SCALE). A scratch value: the sink doesn't check it.
+      # The sink's signing secret (scale/notifications-provisioning.json: env:JUICE_WEBHOOK_SCALE). A scratch value: the sink doesn't check it.
       JUICE_WEBHOOK_SCALE: scale-sink-signing-secret
+      # The sink is http on a private address: the pipeline sends over http to what the allowlist lists only when told to.
+      Notifications__Delivery__AllowHttpToAllowlisted: "true"
     volumes:
       - ./scale/rules.json:/config/rules.json:ro
-      - ./scale/webhooks.json:/config/webhooks.json:ro
+      - ./scale/notifications-provisioning.json:/config/notifications-provisioning.json:ro
       - ./scale/slos.json:/config/slos.json:ro
     depends_on:
       webhook-sink:
         condition: service_healthy
 
-  # Answers every webhook with 200, as a healthy receiver would; when it was sent is in webhook_deliveries.
+  # Answers every webhook with 200, as a healthy receiver would; when it was sent is in the pipeline's notifications.deliveries.
   webhook-sink:
     profiles: ["platform"]
     image: node:24.11.1-alpine3.22
@@ -26,7 +28,7 @@ services:
       timeout: 2s
       retries: 15
 
-# Pinned so scale/webhooks.json can allowlist the sink's address.
+# Pinned so scale/notifications-provisioning.json can allowlist the sink's address.
 networks:
   default:
     ipam:

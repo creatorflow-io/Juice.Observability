@@ -1,3 +1,4 @@
+using Juice.Observability.Tests.Legacy;
 using System.Text.Json;
 using Juice.MediatR;
 using Juice.Notifications;
@@ -6,7 +7,6 @@ using Juice.Observability.Api.Endpoints;
 using Juice.Observability.Data;
 using Juice.Observability.Rules.Notifications;
 using Juice.Observability.Notifications;
-using Juice.Observability.Webhooks;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
@@ -17,7 +17,7 @@ namespace Juice.Observability.Tests
 {
     /// <summary>
     /// The producer adapter (phase-5-plan I64, M45 QA plan): what a transition, an acknowledgement and an action request become in the pipeline,
-    /// written in the platform transaction that made them. The pipeline's stages don't run here (its registration is <c>legacy</c>); the platform
+    /// written in the platform transaction that made them. The pipeline's stages don't run here; the platform
     /// produces requests as in <c>new</c>.
     /// </summary>
     public class ProducerAdapterTests
@@ -26,12 +26,20 @@ namespace Juice.Observability.Tests
 
         private const string Console = "https://console.example/";
 
+        /// <summary>
+        /// Settings of a host whose pipeline runs no stage and whose passes are far apart: the tests that drive the platform's side by hand
+        /// (a plan, a release) do, and nothing else touches what they check.
+        /// </summary>
+        internal static Dictionary<string, string> Quiet() => new()
+        {
+            ["Notifications:Stages:Run"] = "false", ["Notifications:ReleasePassInterval"] = "01:00:00", ["Notifications:HoldPassInterval"] = "01:00:00",
+        };
+
         internal static WebApplicationFactory<Program> Factory(ScratchDatabase database, Action<IServiceCollection>? configure = null)
-            // The pipeline registered as legacy (no stage, no pass of its own runs) and producing as new: each test drives what it checks.
-            => new ApiTests.ApiFactory(database, settings: new Dictionary<string, string> { ["Webhooks:ConsoleUrl"] = Console, ["Notifications:Pipeline"] = "legacy" })
+            // The pipeline's stages and the platform's passes don't run (see Quiet): each test drives what it checks.
+            => new ApiTests.ApiFactory(database, settings: new Dictionary<string, string>(Quiet()) { ["Notifications:ConsoleUrl"] = Console })
                 .WithWebHostBuilder(builder => builder.ConfigureServices(services =>
                 {
-                    services.PostConfigure<PlatformNotificationsOptions>(o => o.Pipeline = NotificationsPipeline.New);
                     configure?.Invoke(services);
                 }));
 
@@ -60,9 +68,6 @@ namespace Juice.Observability.Tests
             Assert.Equal("alert.firing", request.Data.GetProperty("type").GetString());
             Assert.Equal(alert.ToString(), request.Data.GetProperty("alert").GetProperty("id").GetString());
             Assert.Equal(LocalStack.TenantKey, request.Data.GetProperty("tenant").GetString());
-            // Legacy planned nothing (new).
-            await using var db = database.Context();
-            Assert.Empty(await db.WebhookDeliveries.ToListAsync(Ct));
         }
 
         [Fact]
@@ -191,11 +196,11 @@ namespace Juice.Observability.Tests
                     db.EscalationPolicies.Add(new EscalationPolicy
                     {
                         TenantId = tenant, Key = key, Name = key, MinimumSeverity = minimum, Enabled = key != "pager-0",
-                        Steps = [new EscalationStep { AfterMinutes = 5, EndpointKeys = ["ops"] }],
                     });
                 }
                 await db.SaveChangesAsync(Ct);
             }
+            foreach (var key in new[] { "pager-b", "pager-a", "pager-0" }) await PipelinePolicyAsync(factory, key);
             var (_, transition) = await FireAsync(database);
 
             await PlanAsync(factory, database, transition);
@@ -218,10 +223,10 @@ namespace Juice.Observability.Tests
                 Reason = "stuck", RequestedBy = "erin", RequestedAt = DateTimeOffset.UtcNow, ExpiresAt = DateTimeOffset.UtcNow.AddHours(1), State = ActionRequestState.Pending,
             };
 
-            await InTransactionAsync(factory, (services, db) => ActionRequestNotices.AddAsync(db, services, new ActionApprovalOptions(), LocalStack.TenantKey, request, "web-1",
+            await InTransactionAsync(factory, (services, db) => ActionRequestNotices.AddAsync(services, request, "web-1",
                 ActionRequestEvents.Created, DateTimeOffset.UtcNow, Ct));
             request.State = ActionRequestState.Expired;
-            await InTransactionAsync(factory, (services, db) => ActionRequestNotices.AddAsync(db, services, new ActionApprovalOptions(), LocalStack.TenantKey, request, "web-1",
+            await InTransactionAsync(factory, (services, db) => ActionRequestNotices.AddAsync(services, request, "web-1",
                 ActionRequestEvents.Expired, DateTimeOffset.UtcNow, Ct));
 
             var requests = await RequestsAsync(database);
@@ -351,6 +356,20 @@ namespace Juice.Observability.Tests
             await using var scope = factory.Services.CreateAsyncScope();
             using var _ = PlatformMessageContext.Begin("test");
             return await scope.ServiceProvider.GetRequiredService<IMediator>().Send(new PlanNotifications(await TenantAsync(database), transition, DateTimeOffset.UtcNow), Ct);
+        }
+
+        /// <summary>The embedded tenant's escalation policy of this key in the notification pipeline (what the platform's selection of it escalates by).</summary>
+        internal static async Task PipelinePolicyAsync(WebApplicationFactory<Program> factory, string key)
+        {
+            await using var scope = factory.Services.CreateAsyncScope();
+            using var context = PlatformMessageContext.Begin("test");
+            var put = await scope.ServiceProvider.GetRequiredService<Juice.MediatR.IMediator>().Send(new Juice.Notifications.Configuration.PutEscalationPolicy(
+                Guid.Parse(LocalStack.TenantKey), key, JsonSerializer.SerializeToElement(new[]
+                {
+                    new { afterMinutes = 1, recipients = new[] { new { kind = "route", key = "pager" } } },
+                }), true), Ct);
+            Assert.True(put.Kind is Juice.Notifications.OutcomeKind.Ok or Juice.Notifications.OutcomeKind.Created,
+                put.Message + " " + string.Join("; ", put.Errors?.Select(e => $"{e.Pointer} {e.Message}") ?? []));
         }
 
         private static async Task InTransactionAsync(WebApplicationFactory<Program> factory, Func<IServiceProvider, PlatformDbContext, Task> work)

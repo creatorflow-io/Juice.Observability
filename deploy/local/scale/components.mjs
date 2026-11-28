@@ -70,7 +70,7 @@ for (const dir of process.argv.slice(2)) {
       SELECT Attributes['db.client.connection.state'] AS state, toStartOfInterval(TimeUnix, INTERVAL 15 SECOND) AS t, sum(Value) AS v FROM otel.otel_metrics_sum
       WHERE ${tenant} AND MetricName = 'db.client.connection.count' AND ${mwin} GROUP BY state, t) GROUP BY state`);
   const gauges = await q(`SELECT MetricName AS name, avg(Value) AS avg, max(Value) AS max FROM otel.otel_metrics_gauge
-      WHERE ${tenant} AND ${mwin} AND MetricName IN ('juice.observability.outbox.oldest_age', 'juice.observability.webhooks.oldest_age',
+      WHERE ${tenant} AND ${mwin} AND MetricName IN ('juice.observability.outbox.oldest_age',
         'juice.observability.discovery.watermark_lag', 'juice.observability.postgres.sample.duration', 'juice.observability.clickhouse.cpu',
         'juice.observability.clickhouse.running_queries', 'juice.observability.rules.busy') GROUP BY name ORDER BY name`);
 

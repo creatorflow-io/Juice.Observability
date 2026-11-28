@@ -14,7 +14,7 @@ namespace Juice.Observability.Api
     /// Samples, every <see cref="Interval"/>, what the platform can only read from its stores (Phase 11 R4, R5), and publishes the latest sample
     /// as gauges under the platform's meter. Never per request: a page or a probe reads the last sample.
     /// <list type="bullet">
-    /// <item>PostgreSQL: the outbox and webhook backlogs and their oldest age, the discovery watermark's lag behind now, the database's size, and
+    /// <item>PostgreSQL: the outbox backlog and its oldest age, the discovery watermark's lag behind now, the database's size, and
     /// whether it answered and how fast;</item>
     /// <item>ClickHouse, through <c>platform_monitor</c> (<see cref="ClickHouseOptions.MonitorConnectionString"/>; skipped when unset): its CPU,
     /// resident memory, running queries per user, the queries it finished per user and kind with their p95 (inserts are the Collector's
@@ -60,10 +60,6 @@ namespace Juice.Observability.Api
                 s => s.Postgres is { Up: true } p ? [new(p.OutboxPending, Tag("state", "pending")), new(p.OutboxRetrying, Tag("state", "retrying"))] : []);
             Gauge("juice.observability.outbox.oldest_age", "s", "How overdue the most overdue outbox message is (new: since written; failed: since its retry fell due); 0 when none",
                 s => s.Postgres is { Up: true } p ? [new(p.OutboxOldest ?? 0)] : []);
-            Gauge("juice.observability.webhooks.backlog", "{delivery}", "Webhook deliveries not yet done, by state (pending, retrying)",
-                s => s.Postgres is { Up: true } p ? [new(p.WebhookPending, Tag("state", "pending")), new(p.WebhookRetrying, Tag("state", "retrying"))] : []);
-            Gauge("juice.observability.webhooks.oldest_age", "s", "How overdue the most overdue pending webhook delivery is (since it fell due: a grouped one after its window); 0 when none",
-                s => s.Postgres is { Up: true } p ? [new(p.WebhookOldest ?? 0)] : []);
 
             Gauge("juice.observability.collector.up", "{up}", "1 when the Collector's health check answered the last sample, else 0 (absent when it isn't checked)",
                 s => s.Collector is { } c ? [new(c.Up ? 1 : 0)] : []);
@@ -99,7 +95,7 @@ namespace Juice.Observability.Api
         /// <summary>One PostgreSQL sample. Rules (enabled), Slos (not retired) and Services (null until first read) count the deployment's
         /// tenant: the mix the capacity view sets beside its calibration's (Phase 11 R9).</summary>
         public sealed record PostgresSample(bool Up, double Duration, double Size, double? WatermarkLag, long OutboxPending, long OutboxRetrying,
-            double? OutboxOldest, long WebhookPending, long WebhookRetrying, double? WebhookOldest, long? Rules = null, long? Slos = null, long? Services = null);
+            double? OutboxOldest, long? Rules = null, long? Slos = null, long? Services = null);
 
         public sealed record FinishedQueries(string User, string Kind, long Succeeded, long Failed, double? P95);
 
@@ -266,11 +262,7 @@ namespace Juice.Observability.Api
               -- a retry in progress from when it started; one waiting for a later retry or its deferred time isn't.
               extract(epoch FROM now() - (SELECT min(CASE WHEN state = 3 THEN next_attempt_on WHEN state = 1 AND retry_count > 0 THEN processed_on
                 ELSE coalesce(next_attempt_on, creation_time) END) FROM outbox_deliveries
-                WHERE (state = 0 AND (next_attempt_on IS NULL OR next_attempt_on <= now())) OR state = 1 OR (state = 3 AND next_attempt_on <= now())))::float8,
-              (SELECT count(*) FROM webhook_deliveries WHERE status = 'Pending'),
-              (SELECT count(*) FROM webhook_deliveries WHERE status = 'Retrying'),
-              -- Overdue: a pending delivery from when it fell due (a grouped one waits for its window on purpose).
-              extract(epoch FROM now() - (SELECT min(next_attempt_at) FROM webhook_deliveries WHERE status = 'Pending' AND next_attempt_at <= now()))::float8
+                WHERE (state = 0 AND (next_attempt_on IS NULL OR next_attempt_on <= now())) OR state = 1 OR (state = 3 AND next_attempt_on <= now())))::float8
             """;
 
         /// <summary>The mix (Phase 11 R9): what drives the workers' cost besides the load. Apart from <see cref="PostgresSql"/>, which says whether PostgreSQL is up.</summary>
@@ -301,7 +293,7 @@ namespace Juice.Observability.Api
                     {
                         await reader.ReadAsync(cancellationToken);
                         sample = new PostgresSample(true, Stopwatch.GetElapsedTime(started).TotalSeconds, reader.GetDouble(0), Maybe(reader, 1),
-                            reader.GetInt64(2), reader.GetInt64(3), Maybe(reader, 4), reader.GetInt64(5), reader.GetInt64(6), Maybe(reader, 7));
+                            reader.GetInt64(2), reader.GetInt64(3), Maybe(reader, 4));
                     }
                     // Only the capacity view uses the mix: a failure there leaves PostgreSQL up, and the last mix read stands.
                     try
@@ -328,7 +320,7 @@ namespace Juice.Observability.Api
             catch (Exception ex) when (ex is not OperationCanceledException || !StoppingNow(cancellationToken))
             {
                 logger.LogWarning(ex, "The platform database didn't answer the sample");
-                return new PostgresSample(false, Stopwatch.GetElapsedTime(started).TotalSeconds, 0, null, 0, 0, null, 0, 0, null);
+                return new PostgresSample(false, Stopwatch.GetElapsedTime(started).TotalSeconds, 0, null, 0, 0, null);
             }
         }
 

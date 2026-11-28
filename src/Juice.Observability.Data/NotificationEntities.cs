@@ -1,8 +1,8 @@
 namespace Juice.Observability.Data
 {
-    // Silences, maintenance windows and escalation (roadmap Phase 6).
+    // Silences, maintenance windows and the selection of an escalation policy (roadmap Phase 6; the policy itself is the notification pipeline's).
 
-    /// <summary>Who owns a rule, endpoint or allowlist entry: the deployment's configuration file, or the API. Each leaves the other's alone.</summary>
+    /// <summary>Who owns a rule: the deployment's configuration file, or the API. Each leaves the other's alone.</summary>
     public static class ManagedBy
     {
         public const string Configuration = "config";
@@ -49,14 +49,10 @@ namespace Juice.Observability.Data
         public string? CancelledBy { get; set; }
     }
 
-    /// <summary>One level of a policy: <see cref="AfterMinutes"/> after the alert fired, these endpoints are notified if it's still open.</summary>
-    public sealed class EscalationStep
-    {
-        public int AfterMinutes { get; set; }
-        public List<string> EndpointKeys { get; set; } = [];
-    }
-
-    /// <summary>Who to notify as an alert stays open. Matches alerts as an endpoint does; its endpoints are named per step.</summary>
+    /// <summary>
+    /// Which escalation policy an alert escalates by: the severity, rules and environments that select it. The policy of that key in the
+    /// notification pipeline says what it does (its steps), so the platform keeps no steps of its own.
+    /// </summary>
     public sealed class EscalationPolicy
     {
         public Guid Id { get; init; } = Guid.CreateVersion7();
@@ -67,26 +63,6 @@ namespace Juice.Observability.Data
         public string[] RuleKeys { get; set; } = [];
         public string[] Environments { get; set; } = [];
         public AlertSeverity MinimumSeverity { get; set; }
-        /// <summary>Stop when someone acknowledges. A resolved alert always stops.</summary>
-        public bool StopOnAcknowledge { get; set; } = true;
-        public List<EscalationStep> Steps { get; set; } = [];
         public DateTimeOffset UpdatedAt { get; set; }
-    }
-
-    public enum EscalationState { Active, Stopped, Completed }
-
-    /// <summary>A policy running on one alert, started when the alert fires.</summary>
-    public sealed class AlertEscalation
-    {
-        public Guid Id { get; init; } = Guid.CreateVersion7();
-        public Guid TenantId { get; init; }
-        public Guid AlertId { get; init; }
-        public Guid PolicyId { get; init; }
-        public EscalationState State { get; set; }
-        public int NextStep { get; set; }
-        public DateTimeOffset NextAt { get; set; }
-        /// <summary><c>resolved</c>, <c>acknowledged</c> or <c>policy_disabled</c> when stopped.</summary>
-        public string? StopReason { get; set; }
-        public DateTimeOffset? EndedAt { get; set; }
     }
 }

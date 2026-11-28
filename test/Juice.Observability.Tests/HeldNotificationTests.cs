@@ -4,7 +4,6 @@ using Juice.Observability.Api.Endpoints;
 using Juice.Observability.Data;
 using Juice.Observability.Rules.Notifications;
 using Juice.Observability.Notifications;
-using Juice.Observability.Webhooks;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -23,7 +22,7 @@ namespace Juice.Observability.Tests
         private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
         private static NotificationsReleasePass Pass(WebApplicationFactory<Program> factory)
-            => new(factory.Services.GetRequiredService<IServiceScopeFactory>(), Options.Create(new WebhookOptions()), TimeProvider.System,
+            => new(factory.Services.GetRequiredService<IServiceScopeFactory>(), Options.Create(new PlatformNotificationsOptions()), TimeProvider.System,
                 NullLogger<NotificationsReleasePass>.Instance);
 
         private static async Task EndAsync(ScratchDatabase database, Guid silence)

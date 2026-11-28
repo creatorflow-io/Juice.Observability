@@ -1,3 +1,4 @@
+using Juice.Observability.Tests.Legacy;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Juice.Notifications;
@@ -5,8 +6,6 @@ using Juice.Notifications.Rendering;
 using Juice.Observability.Data;
 using Juice.Observability.Rules.Notifications;
 using Juice.Observability.Notifications;
-using Juice.Observability.Notifications.Migration;
-using Juice.Observability.Webhooks;
 
 namespace Juice.Observability.Tests
 {
@@ -46,7 +45,7 @@ namespace Juice.Observability.Tests
         private static async Task<string> RenderAsync(string template, string payload, IReadOnlyDictionary<string, string>? links = null)
         {
             await TemplateWarmUp.EnsureAsync();
-            return await TemplateRenderer.RenderAsync(template, new RenderModel(AliasVocabulary.FiringType, 1, "Alert firing", NotificationPriority.High, Data(payload),
+            return await TemplateRenderer.RenderAsync(template, new RenderModel(ObservabilityTypes.AlertFiring, 1, "Alert firing", NotificationPriority.High, Data(payload),
                 new Dictionary<string, string>(), links ?? new Dictionary<string, string>()), TestContext.Current.CancellationToken);
         }
 
@@ -114,7 +113,7 @@ namespace Juice.Observability.Tests
             // Legacy's escalated payload: the firing transition, type alert.escalated, the policy and the step.
             var legacy = NotificationPlan.Payload(id, NotificationPlan.Escalated, "t", rule, alert, transition, ("paging", 2));
             var firing = NotificationPlan.Payload(Guid.CreateVersion7(), NotificationPlan.Firing, "t", rule, alert, transition, null);
-            var model = new RenderModel(AliasVocabulary.FiringType, 1, "Alert firing", NotificationPriority.High, Data(firing),
+            var model = new RenderModel(ObservabilityTypes.AlertFiring, 1, "Alert firing", NotificationPriority.High, Data(firing),
                 new Dictionary<string, string>(), new Dictionary<string, string>(), Delivery: new RenderDelivery(id), Escalation: new RenderEscalation(2, "paging"));
 
             Assert.Equal(legacy, await TemplateRenderer.RenderAsync(DefaultTemplates.Webhook, model, TestContext.Current.CancellationToken));
@@ -129,7 +128,7 @@ namespace Juice.Observability.Tests
             var (rule, alert, transition) = Alert();
             var id = Guid.CreateVersion7();
             var legacy = NotificationPlan.Payload(id, NotificationPlan.Firing, "t", rule, alert, transition, null);
-            var model = new RenderModel(AliasVocabulary.FiringType, 1, "Alert firing", NotificationPriority.High, Data(legacy),
+            var model = new RenderModel(ObservabilityTypes.AlertFiring, 1, "Alert firing", NotificationPriority.High, Data(legacy),
                 new Dictionary<string, string>(), new Dictionary<string, string>(), Delivery: new RenderDelivery(id));
 
             Assert.Equal(legacy, await TemplateRenderer.RenderAsync(DefaultTemplates.Webhook, model, TestContext.Current.CancellationToken));

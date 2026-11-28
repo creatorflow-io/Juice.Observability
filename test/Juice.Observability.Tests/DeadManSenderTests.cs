@@ -52,12 +52,6 @@ namespace Juice.Observability.Tests
             public ValueTask<DateTimeOffset?> OldestKeptAsync(CancellationToken cancellationToken) => ValueTask.FromResult(Oldest);
         }
 
-        private sealed class FakeShadow : IShadowReport
-        {
-            public string? Failing { get; set; }
-            public Exception? Error { get; set; }
-            public ValueTask<string?> FailingAsync(CancellationToken cancellationToken) => Error is { } error ? throw error : ValueTask.FromResult(Failing);
-        }
 
         private static PipelineHealth Reading(TimeSpan? dispatcherDue = null, int dispatcherFailing = 0, SendHealth? sends = null) => new()
         {
@@ -71,7 +65,7 @@ namespace Juice.Observability.Tests
             },
         };
 
-        private sealed record Setup(DeadManSender Sender, FakeHealth Health, FakeShadow Shadow, Clock Clock, WebhookTests.Receiver Receiver, FakeKept Kept) : IAsyncDisposable
+        private sealed record Setup(DeadManSender Sender, FakeHealth Health, Clock Clock, TestReceiver Receiver, FakeKept Kept) : IAsyncDisposable
         {
             public async ValueTask DisposeAsync()
             {
@@ -84,7 +78,7 @@ namespace Juice.Observability.Tests
 
         private static async Task<Setup> SetupAsync(Action<DeadManOptions>? configure = null, bool allowlisted = true)
         {
-            var receiver = await WebhookTests.Receiver.StartAsync();
+            var receiver = await TestReceiver.StartAsync();
             var options = new DeadManOptions
             {
                 Url = receiver.Url, SecretRef = $"env:{SecretVariable}", AllowHttpToAllowlisted = true, ReadTimeout = TimeSpan.FromMilliseconds(300),
@@ -92,14 +86,13 @@ namespace Juice.Observability.Tests
             };
             configure?.Invoke(options);
             var health = new FakeHealth();
-            var shadow = new FakeShadow();
             var kept = new FakeKept();
             var clock = new Clock(DateTimeOffset.UtcNow);
-            var services = new ServiceCollection().AddSingleton<INotificationsPipelineHealth>(health).AddScoped<IShadowReport>(_ => shadow).AddScoped<IPipelineKeptReport>(_ => kept)
+            var services = new ServiceCollection().AddSingleton<INotificationsPipelineHealth>(health).AddScoped<IPipelineKeptReport>(_ => kept)
                 .BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
             var sender = new DeadManSender(services.GetRequiredService<IServiceScopeFactory>(), Options.Create(options),
                 Options.Create(new PlatformOptions { TenantKey = LocalStack.TenantKey }), clock, NullLogger<DeadManSender>.Instance);
-            return new Setup(sender, health, shadow, clock, receiver, kept);
+            return new Setup(sender, health, clock, receiver, kept);
         }
 
         [Fact]
@@ -353,28 +346,18 @@ namespace Juice.Observability.Tests
             Assert.Equal("observability.deadman.firing", failing.GetProperty("type").GetString());
         }
 
-        [Fact]
-        public async Task A_failing_shadow_comparison_is_a_cause_Async()
+        /// <summary>The shadow comparison is gone with the shadow run (2.0): no cause for it, and the others still fire.</summary>
+        [Fact, Trait("Milestone", "M50")]
+        public async Task DeadMan_NoShadowCause_OtherCausesStillFire_Async()
         {
+            Assert.DoesNotContain("shadow", DeadManCauses.All);
             await using var setup = await SetupAsync();
-            setup.Shadow.Failing = "12 differences in the last hour";
+            setup.Health.Health = Reading(dispatcherDue: TimeSpan.FromHours(2));
+            setup.Kept.StartFailure = "migration failed";
             await setup.Sender.RunOnceAsync(Ct);
-            Assert.Equal(DeadManCauses.Shadow, Assert.Single(setup.Posted()).GetProperty("cause").GetString());
+            Assert.Equal(DeadManCauses.NotStarted, Assert.Single(setup.Posted()).GetProperty("cause").GetString());
         }
 
-        [Fact]
-        public async Task A_shadow_report_that_cant_answer_leaves_the_cause_as_it_was_Async()
-        {
-            await using var setup = await SetupAsync();
-            setup.Shadow.Failing = "12 differences in the last hour";
-            await setup.Sender.RunOnceAsync(Ct);
-            setup.Shadow.Error = new InvalidOperationException("comparer down");
-            setup.Shadow.Failing = null;
-            await setup.Sender.RunOnceAsync(Ct);
-            // Neither resolved nor raised again: still the one firing.
-            var posted = Assert.Single(setup.Posted());
-            Assert.Equal("observability.deadman.firing", posted.GetProperty("type").GetString());
-        }
 
         [Fact]
         public async Task A_private_endpoint_that_isnt_allowlisted_is_refused_and_tried_again_Async()
@@ -402,10 +385,10 @@ namespace Juice.Observability.Tests
                 await using var block = new Npgsql.NpgsqlCommand("CREATE SCHEMA notifications; CREATE TABLE notifications.applications (unrelated int);", connection);
                 await block.ExecuteNonQueryAsync(Ct);
             }
-            await using var receiver = await WebhookTests.Receiver.StartAsync();
+            await using var receiver = await TestReceiver.StartAsync();
             await using var factory = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string>
             {
-                ["Notifications:Pipeline"] = "new", ["Notifications:DeadMan:Url"] = receiver.Url, ["Notifications:DeadMan:SecretRef"] = $"env:{SecretVariable}",
+                ["Notifications:DeadMan:Url"] = receiver.Url, ["Notifications:DeadMan:SecretRef"] = $"env:{SecretVariable}",
                 ["Notifications:DeadMan:AllowHttpToAllowlisted"] = "true", ["Notifications:DeadMan:Interval"] = "00:00:01",
                 ["Notifications:DeadMan:Allowlist:0:Destination"] = $"{receiver.Address}/32", ["Notifications:DeadMan:Allowlist:0:Ports:0"] = receiver.Port.ToString(),
             });
@@ -431,14 +414,14 @@ namespace Juice.Observability.Tests
         {
             LocalStack.RequireAvailable();
             await using var database = await LocalStack.CreateDatabaseAsync();
-            await using var receiver = await WebhookTests.Receiver.StartAsync();
+            await using var receiver = await TestReceiver.StartAsync();
             var file = Path.Combine(Path.GetTempPath(), $"juice-obs-deadman-{Guid.NewGuid():N}.json");
             await File.WriteAllTextAsync(file, $$"""{ "tenants": { "{{LocalStack.TenantKey}}": { "integrations": { "mail": { "channel": "email", "kind": "smtp", "settings": { "server": "none" } } } } } }""", Ct);
             try
             {
                 await using var factory = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string>
                 {
-                    ["Notifications:Pipeline"] = "new", ["Notifications:Provisioning:Path"] = file,
+                    ["Notifications:Provisioning:Path"] = file,
                     ["Notifications:DeadMan:Url"] = receiver.Url, ["Notifications:DeadMan:SecretRef"] = $"env:{SecretVariable}",
                     ["Notifications:DeadMan:AllowHttpToAllowlisted"] = "true", ["Notifications:DeadMan:Interval"] = "00:00:01",
                     ["Notifications:DeadMan:Allowlist:0:Destination"] = $"{receiver.Address}/32", ["Notifications:DeadMan:Allowlist:0:Ports:0"] = receiver.Port.ToString(),
@@ -540,11 +523,11 @@ namespace Juice.Observability.Tests
             Assert.Empty(new DeadManOptions { Url = "https://alarm.example/hook", SecretRef = "env:X" }.Problems(TimeSpan.FromSeconds(1)));
         }
 
-        private static IServiceCollection Register(string pipeline, Dictionary<string, string?>? extra = null)
+        private static IServiceCollection Register(Dictionary<string, string?>? extra = null)
         {
             var values = new Dictionary<string, string?>
             {
-                ["ConnectionStrings:Platform"] = "Host=x", ["Platform:TenantKey"] = LocalStack.TenantKey, ["Notifications:Pipeline"] = pipeline,
+                ["ConnectionStrings:Platform"] = "Host=x", ["Platform:TenantKey"] = LocalStack.TenantKey,
                 ["Notifications:DeadMan:Url"] = "https://alarm.example/hook", ["Notifications:DeadMan:SecretRef"] = "env:X",
             };
             foreach (var (key, value) in extra ?? []) values[key] = value;
@@ -555,17 +538,16 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
-        public void It_runs_beside_the_pipeline_whatever_the_pipeline_does_and_never_in_legacy()
+        public void It_runs_beside_the_pipeline_whatever_the_pipeline_does()
         {
-            var services = Register("new");
+            var services = Register();
             Assert.Contains(services, s => s.ServiceType == typeof(DeadManSender));
             // Registered after the gating of the pipeline's services: a failed pipeline start doesn't stop it.
             var hosted = services.Where(s => s.ServiceType == typeof(Microsoft.Extensions.Hosting.IHostedService)).ToList();
             Assert.Contains(hosted, h => h.ImplementationFactory?.Method.DeclaringType?.DeclaringType == typeof(NotificationsRegistration)
                 || h.ImplementationFactory?.Method.DeclaringType == typeof(NotificationsRegistration));
-            Assert.DoesNotContain(Register("legacy"), s => s.ServiceType == typeof(DeadManSender));
             // Below the minimum given the stages' poll: refused at start.
-            Assert.Throws<InvalidOperationException>(() => Register("new", new() { ["Notifications:DeadMan:DueThreshold"] = "00:01:00" }));
+            Assert.Throws<InvalidOperationException>(() => Register(new() { ["Notifications:DeadMan:DueThreshold"] = "00:01:00" }));
         }
     }
 }

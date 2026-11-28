@@ -40,7 +40,7 @@ namespace Juice.Observability.Data
     /// What the platform's workers report about themselves (Phase 11 R4, R6), under the platform's meter <c>Juice.Observability</c>:
     /// <list type="bullet">
     /// <item><c>juice.observability.worker.passes</c> and <c>juice.observability.worker.pass.duration</c>: each pass of a worker that runs in
-    /// passes (discovery, health, SLO counting, notifications, action requests, each webhook dispatch batch, the platform sampler), with its
+    /// passes (discovery, health, SLO counting, notifications, action requests, the platform sampler), with its
     /// outcome: <c>success</c>, <c>partial</c> (done, but part of it failed, such as one SLO of many), <c>failure</c>, or <c>canceled</c> (the
     /// host stopping);</item>
     /// <item><c>juice.observability.worker.pass.age</c>: how long the pass in progress has run (0 between passes), so a pass stuck in a query shows;</item>
@@ -60,10 +60,10 @@ namespace Juice.Observability.Data
         /// switched off, unless every live replica says it is off.
         /// </summary>
         public static readonly IReadOnlyList<string> KnownWorkers =
-            ["action-requests", "discovery", "health", "notifications", "rules", "sampler", "slos", "webhooks"];
+            ["action-requests", "discovery", "health", "notifications", "rules", "sampler", "slos"];
 
         /// <summary>The known workers that run in every replica, without a lease.</summary>
-        public static readonly IReadOnlySet<string> UnleasedWorkers = new HashSet<string> { "sampler", "webhooks" };
+        public static readonly IReadOnlySet<string> UnleasedWorkers = new HashSet<string> { "sampler" };
 
         private static readonly Meter Meter = new(MeterName);
         private static readonly Counter<long> Passes = Meter.CreateCounter<long>("juice.observability.worker.passes", "{pass}",

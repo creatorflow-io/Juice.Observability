@@ -1,3 +1,4 @@
+using Juice.Observability.Notifications;
 using Juice.Messaging.Outbox;
 using Juice.Messaging.Outbox.Delivery;
 using Juice.Messaging.Outbox.Delivery.Processing;
@@ -6,7 +7,6 @@ using Juice.Observability.Data;
 using Juice.Observability.Rules.Notifications;
 using Juice.Observability.Discovery;
 using Juice.Observability.Rules;
-using Juice.Observability.Webhooks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;

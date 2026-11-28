@@ -28,9 +28,6 @@ namespace Juice.Observability.Health.DeadMan
         /// <summary>A delivery still in flight older than <see cref="DeadManOptions.UndeliveredThreshold"/>.</summary>
         public const string StuckInRetry = "stuck-in-retry";
 
-        /// <summary>The shadow comparison is failing (<see cref="IShadowReport"/>, M47).</summary>
-        public const string Shadow = "shadow";
-
         /// <summary>The pipeline's health couldn't be read (an error, or longer than <see cref="DeadManOptions.ReadTimeout"/>).</summary>
         public const string Unreadable = "unreadable";
 
@@ -40,7 +37,7 @@ namespace Juice.Observability.Health.DeadMan
         /// <summary>A call or notification the platform kept for the pipeline, not handed over for longer than <see cref="DeadManOptions.KeptThreshold"/>.</summary>
         public const string Kept = "kept";
 
-        public static readonly string[] All = [Stalled, Failing, NoSuccess, StuckInRetry, Shadow, Unreadable, NotStarted, Kept];
+        public static readonly string[] All = [Stalled, Failing, NoSuccess, StuckInRetry, Unreadable, NotStarted, Kept];
     }
 
     /// <summary>
@@ -139,7 +136,6 @@ namespace Juice.Observability.Health.DeadMan
                 [DeadManCauses.Failing] = health is null ? Keep(DeadManCauses.Failing) : Failing(health, now),
                 [DeadManCauses.NoSuccess] = health is null ? Keep(DeadManCauses.NoSuccess) : NoSuccess(health, now),
                 [DeadManCauses.StuckInRetry] = health is null ? Keep(DeadManCauses.StuckInRetry) : StuckInRetry(health),
-                [DeadManCauses.Shadow] = await ShadowAsync(cancellationToken),
                 [DeadManCauses.NotStarted] = notStarted,
                 [DeadManCauses.Kept] = kept,
             };
@@ -241,24 +237,6 @@ namespace Juice.Observability.Health.DeadMan
             }
         }
 
-        /// <summary>
-        /// The shadow comparison's answer (<see cref="IShadowReport"/>, registered by M47 in shadow mode only; scoped, so read in a scope of its own
-        /// each pass). None registered: nothing to say. If it can't answer, the cause is left as it was.
-        /// </summary>
-        private async Task<string?> ShadowAsync(CancellationToken cancellationToken)
-        {
-            await using var scope = scopes.CreateAsyncScope();
-            if (scope.ServiceProvider.GetService<IShadowReport>() is not { } report) return null;
-            try
-            {
-                return await report.FailingAsync(cancellationToken);
-            }
-            catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
-            {
-                logger.LogWarning(ex, "The shadow report could not be read; the shadow cause is left as it was");
-                return Keep(DeadManCauses.Shadow);
-            }
-        }
 
         private async Task<(PipelineHealth? Health, string? Unreadable)> ReadAsync(CancellationToken cancellationToken)
         {

@@ -340,7 +340,7 @@ namespace Juice.Observability.Tests
             await using var database = await LocalStack.CreateDatabaseAsync();
             await using var factory = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string>
             {
-                ["Notifications:Pipeline"] = "new", ["Notifications:Stages:Planner:Poll"] = "00:00:00.2", ["Notifications:Stages:Escalation:Poll"] = "00:00:00.2",
+                ["Notifications:Stages:Planner:Poll"] = "00:00:00.2", ["Notifications:Stages:Escalation:Poll"] = "00:00:00.2",
             });
             _ = factory.Server;
             var tenant = await TenantAsync(database);
@@ -349,7 +349,7 @@ namespace Juice.Observability.Tests
             {
                 db.EscalationPolicies.Add(new EscalationPolicy
                 {
-                    TenantId = tenant, Key = "pager", Name = "pager", MinimumSeverity = AlertSeverity.Info, Steps = [new EscalationStep { AfterMinutes = 1, EndpointKeys = ["ops"] }],
+                    TenantId = tenant, Key = "pager", Name = "pager", MinimumSeverity = AlertSeverity.Info,
                 });
                 await db.SaveChangesAsync(Ct);
             }
@@ -390,7 +390,7 @@ namespace Juice.Observability.Tests
             }
 
             var released = DateTimeOffset.UtcNow;
-            await new NotificationsReleasePass(factory.Services.GetRequiredService<IServiceScopeFactory>(), Options.Create(new Webhooks.WebhookOptions()),
+            await new NotificationsReleasePass(factory.Services.GetRequiredService<IServiceScopeFactory>(), Options.Create(new PlatformNotificationsOptions()),
                 TimeProvider.System, NullLogger<NotificationsReleasePass>.Instance).ReleaseOnceAsync(Ct);
 
             // The pipeline's escalation of it: its first step due at once (two minutes late already), not a minute after the release.

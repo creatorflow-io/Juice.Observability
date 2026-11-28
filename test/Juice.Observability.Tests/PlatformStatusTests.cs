@@ -34,7 +34,7 @@ namespace Juice.Observability.Tests
 
         private static PlatformSampler.Sample Sample(bool postgres = true, bool? clickHouse = true, bool? collector = true, double outbox = 0,
             double watermarkLag = 70, DateTimeOffset? at = null) => new((at ?? Now) - TimeSpan.FromSeconds(5),
-            new PlatformSampler.PostgresSample(postgres, 0.01, 1e6, watermarkLag, 0, 0, outbox, 0, 0, null),
+            new PlatformSampler.PostgresSample(postgres, 0.01, 1e6, watermarkLag, 0, 0, outbox),
             clickHouse is { } ch ? new PlatformSampler.ClickHouseSample(ch, 1, 1e9, new Dictionary<string, long>(), [], [], []) : null,
             collector is { } co ? new PlatformSampler.CollectorSample(co, 0.01) : null);
 
@@ -52,13 +52,13 @@ namespace Juice.Observability.Tests
         {
             var report = Evaluate([.. Base(),
                 Row("discovery", "b"),                                           // the standby: never ran, not stale
-                Row("webhooks", Self, leased: false, interval: 2, endedAgo: TimeSpan.FromSeconds(1)),
-                Row("webhooks", "b", leased: false, interval: 2, runningFor: TimeSpan.FromSeconds(3)),
+                Row("sampler", Self, leased: false, interval: 2, endedAgo: TimeSpan.FromSeconds(1)),
+                Row("sampler", "b", leased: false, interval: 2, runningFor: TimeSpan.FromSeconds(3)),
             ]);
             Assert.Equal(PlatformStatus.Ok, report.Status);
             Assert.Equal("ok", Worker(report, "discovery").State);
             Assert.Equal(Self, Worker(report, "discovery").Holder);
-            Assert.Equal("ok", Worker(report, "webhooks").State);
+            Assert.Equal("ok", Worker(report, "sampler").State);
             Assert.Equal([Self, "b"], report.Replicas.Select(r => r.Name));
             Assert.All(report.Dependencies, d => Assert.Equal("up", d.State));
         }
@@ -133,10 +133,10 @@ namespace Juice.Observability.Tests
         public void One_replica_of_a_worker_without_a_lease_stopping_degrades_it()
         {
             var report = Evaluate([.. Base(),
-                Row("webhooks", Self, leased: false, interval: 2, endedAgo: TimeSpan.FromSeconds(1)),
-                Row("webhooks", "b", leased: false, interval: 2, endedAgo: TimeSpan.FromMinutes(2)),
+                Row("sampler", Self, leased: false, interval: 2, endedAgo: TimeSpan.FromSeconds(1)),
+                Row("sampler", "b", leased: false, interval: 2, endedAgo: TimeSpan.FromMinutes(2)),
             ]);
-            Assert.Equal("stale", Worker(report, "webhooks").State);
+            Assert.Equal("stale", Worker(report, "sampler").State);
             Assert.Equal(PlatformStatus.Degraded, report.Status);
         }
 

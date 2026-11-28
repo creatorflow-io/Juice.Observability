@@ -45,9 +45,6 @@ namespace Juice.Observability.Tests
         private static readonly Lazy<bool> Up = new(() => Directory.Value is not null
             && new[] { 5433, 8123, 14318, 8080 }.All(Listening));
 
-        /// <summary>The pipeline the host-based tests run against (<c>JUICE_TEST_NOTIFICATIONS_PIPELINE</c>: legacy, shadow or new); null for the default.</summary>
-        public static string? NotificationsPipeline => Environment.GetEnvironmentVariable("JUICE_TEST_NOTIFICATIONS_PIPELINE") is { Length: > 0 } pipeline ? pipeline : null;
-
         public static void RequireAvailable()
             => Assert.SkipUnless(Up.Value, "deploy/local stack is not running (scripts/init.sh; docker compose --profile test up -d --wait)");
 

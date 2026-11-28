@@ -24,6 +24,11 @@ namespace Juice.Observability.Rules.Notifications
             return SilenceMatcher.Find(silences, context, now);
         }
 
+        /// <summary>Silences active now, across tenants; one in its off week is filtered here, since the rule isn't one SQL can say simply.</summary>
+        public static async Task<List<Silence>> ActiveAsync(PlatformDbContext db, DateTimeOffset now, CancellationToken cancellationToken)
+            => (await db.Silences.AsNoTracking().Where(s => s.CancelledAt == null && s.StartsAt <= now && (s.RepeatWeekly || s.EndsAt > now)).ToListAsync(cancellationToken))
+                .Where(s => SilenceMatcher.IsActive(s, now)).ToList();
+
         public static string Payload(Guid id, string type, string tenant, Rule rule, Alert alert, AlertTransition transition, (string Policy, int Step)? escalation)
             => JsonSerializer.Serialize(new
             {

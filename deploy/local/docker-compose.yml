@@ -216,7 +216,7 @@ services:
       timeout: 3s
       retries: 30
 
-  # The platform API and its workers (discovery, health, rules, webhooks), built from this repository.
+  # The platform API and its workers (discovery, health, rules, notifications), built from this repository.
   # Started with: docker compose --profile platform up -d --wait   (the default profile is the telemetry stack alone)
   platform-api:
     profiles: ["platform"]
@@ -251,7 +251,8 @@ services:
       Auth__RequireHttpsMetadata: "false"
       Database__Migrate: "true"
       Rules__File: /config/rules.json
-      Webhooks__File: /config/webhooks.json
+      # Endpoints, routes and the allowlist of the notification pipeline: a file keyed by this deployment's tenant Id (docs/deployment.md).
+      Notifications__Provisioning__Path: /config/notifications-provisioning.json
       Slos__File: /config/slos.json
       # A new SLO counts its 30 days in a few passes here; production counts 12 hours a pass.
       Slos__MaxMinutesPerPass: "10080"
@@ -268,7 +269,7 @@ services:
       Agents__ReleaseKeyFiles__0: /secrets/release.pub
     volumes:
       - ./rules.json:/config/rules.json:ro
-      - ./webhooks.json:/config/webhooks.json:ro
+      - ./notifications-provisioning.json:/config/notifications-provisioning.json:ro
       - ./slos.json:/config/slos.json:ro
       - ./capacity:/config/capacity:ro
       - ./secrets/agents:/secrets/agents:ro

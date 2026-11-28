@@ -1,6 +1,6 @@
 # The ingest ceiling (docs/phase-11-plan.md R19), over scale/compose.scale.yml: every worker that reads ClickHouse is off, so the
 # steps measure the Collector and ClickHouse's inserts alone. run.sh skips the query mix and the breach runs with CEILING=ingest.
-# Notifications, webhooks and action requests stay on: they read PostgreSQL only, and have nothing to do with no alerts.
+# Notifications and action requests stay on: they read PostgreSQL only, and have nothing to do with no alerts.
 services:
   platform-api:
     environment:

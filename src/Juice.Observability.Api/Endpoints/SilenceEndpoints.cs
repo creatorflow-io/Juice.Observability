@@ -1,7 +1,9 @@
 using System.Text.RegularExpressions;
 using Juice.Observability.Data;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using Juice.Observability.Notifications;
 using Juice.Observability.Rules.Notifications;
-using Juice.Observability.Webhooks;
 using Microsoft.EntityFrameworkCore;
 
 namespace Juice.Observability.Api.Endpoints
@@ -12,17 +14,22 @@ namespace Juice.Observability.Api.Endpoints
     public sealed record SilenceRequest(string? Kind, string? Comment, List<string>? RuleKeys, string? Service, string? Environment, string? Host, string? MaximumSeverity, bool? AllAlerts,
         DateTimeOffset? StartsAt, DateTimeOffset? EndsAt, bool? RepeatWeekly);
 
+    /// <summary>
+    /// The selection of an escalation policy: which alerts escalate by the policy of this key in the notification pipeline, which keeps what it does.
+    /// <see cref="PipelinePolicyExists"/> is false when the pipeline has no such policy (deleted since): such an alert is still notified, and doesn't escalate.
+    /// </summary>
     public sealed record EscalationPolicyDto(Guid Id, string Key, string Name, bool Enabled, IReadOnlyList<string> RuleKeys, IReadOnlyList<string> Environments, string MinimumSeverity,
-        bool StopOnAcknowledge, IReadOnlyList<EscalationStep> Steps, DateTimeOffset UpdatedAt);
+        bool PipelinePolicyExists, DateTimeOffset UpdatedAt);
 
-    public sealed record EscalationPolicyRequest(string? Key, string? Name, bool? Enabled, List<string>? RuleKeys, List<string>? Environments, string? MinimumSeverity, bool? StopOnAcknowledge, List<EscalationStep>? Steps);
+    public sealed record EscalationPolicyRequest(string? Key, string? Name, bool? Enabled, List<string>? RuleKeys, List<string>? Environments, string? MinimumSeverity)
+    {
+        /// <summary>Whatever else the body carried: a <c>steps</c> or <c>stopOnAcknowledge</c> is refused (they are the pipeline's now).</summary>
+        [JsonExtensionData]
+        public Dictionary<string, JsonElement>? Extra { get; set; }
+    }
 
-    public sealed record AlertEscalationDto(string Policy, string Name, string State, int StepsSent, int Steps, DateTimeOffset? NextAt, string? StopReason, DateTimeOffset? EndedAt);
-
-    public sealed record AlertNotificationDto(string EndpointKey, string Kind, WebhookDeliveryDto Delivery);
-
-    /// <summary>Everything notification has done or will do about one alert.</summary>
-    public sealed record AlertNotificationsDto(IReadOnlyList<AlertNotificationDto> Deliveries, IReadOnlyList<AlertEscalationDto> Escalations, IReadOnlyList<SilenceDto> Silences, IReadOnlyList<IncidentSummaryDto> Incidents);
+    /// <summary>One alert's notifications: its correlation in the notification pipeline (<c>alert:{id}</c>, whose deliveries and escalation its admin page shows), and what holds or groups it here.</summary>
+    public sealed record AlertNotificationsDto(string CorrelationKey, IReadOnlyList<SilenceDto> Silences, IReadOnlyList<IncidentSummaryDto> Incidents);
 
     /// <summary>
     /// Silences and maintenance windows (operator or admin: stopping noise during an outage shouldn't need an admin), escalation policies (admin, since they say who
@@ -65,9 +72,10 @@ namespace Juice.Observability.Api.Endpoints
             if (after is not null) query = query.Where(s => s.Id < after.After);
             var rows = await query.OrderByDescending(s => s.Id).Take(take + 1).ToListAsync(ct);
             var page = rows.Take(take).ToList();
-            var ids = page.Select(s => (Guid?)s.Id).ToList();
-            var held = await db.WebhookDeliveries.AsNoTracking().Where(d => d.Status == DeliveryStatus.Suppressed && ids.Contains(d.SuppressedBy))
-                .GroupBy(d => d.SuppressedBy).Select(g => new { g.Key, Count = g.Count() }).ToDictionaryAsync(x => x.Key!.Value, x => x.Count, ct);
+            var ids = page.Select(s => s.Id).ToList();
+            // What a silence holds: the notifications kept for it and not yet decided.
+            var held = await db.NotificationHolds.AsNoTracking().Where(h => h.DecidedAt == null && ids.Contains(h.SilenceId))
+                .GroupBy(h => h.SilenceId).Select(g => new { g.Key, Count = g.Count() }).ToDictionaryAsync(x => x.Key, x => x.Count, ct);
             return Results.Ok(new Page<SilenceDto>(page.Select(s => ToDto(s, now, held.GetValueOrDefault(s.Id))).ToList(), rows.Count > take ? new Cursor("si", page[^1].Id).Encode() : null));
         }
 
@@ -128,16 +136,12 @@ namespace Juice.Observability.Api.Endpoints
         }
 
         /// <summary>
-        /// Saves the silence's change and, when the notification pipeline sends (shadow, new), the holds it makes or ends in it, in one transaction:
-        /// an escalation step falling due right after the silence starts waits, as legacy holds it (p5-d3).
+        /// Saves the silence's change and the holds it makes or ends in the notification pipeline, in one transaction:
+        /// an escalation step falling due right after the silence starts waits (p5-d3).
         /// </summary>
         private static async Task SaveWithHoldsAsync(PlatformDbContext db, HttpContext http, Guid tenantId, CancellationToken ct)
         {
-            if (http.RequestServices.GetService<Juice.Observability.Notifications.SilenceHolds>() is not { Enabled: true } holds)
-            {
-                await db.SaveChangesAsync(ct);
-                return;
-            }
+            var holds = http.RequestServices.GetRequiredService<SilenceHolds>();
             await using var transaction = db.Database.CurrentTransaction is null ? await db.Database.BeginTransactionAsync(ct) : null;
             await db.SaveChangesAsync(ct);
             using (PlatformMessageContext.Begin("api", CorrelationId.Get(http)))
@@ -172,111 +176,100 @@ namespace Juice.Observability.Api.Endpoints
             return Results.NoContent();
         }
 
-        private static EscalationPolicyDto ToDto(EscalationPolicy p) => new(p.Id, p.Key, p.Name, p.Enabled, p.RuleKeys, p.Environments, p.MinimumSeverity.ToString(), p.StopOnAcknowledge, p.Steps, p.UpdatedAt);
+        private static EscalationPolicyDto ToDto(EscalationPolicy p, bool pipelinePolicyExists) => new(p.Id, p.Key, p.Name, p.Enabled, p.RuleKeys, p.Environments,
+            p.MinimumSeverity.ToString(), pipelinePolicyExists, p.UpdatedAt);
 
-        private static async Task<IResult> ListPoliciesAsync(Guid tenantId, PlatformDbContext db, CancellationToken ct)
+        /// <summary>A refusal the caller can act on: 422, with the code the Console and scripts tell it by.</summary>
+        private static IResult Unprocessable(string code, string title, string detail)
+            => Results.Problem(statusCode: StatusCodes.Status422UnprocessableEntity, title: title, detail: detail, extensions: new Dictionary<string, object?> { ["code"] = code });
+
+        private static async Task<IResult> ListPoliciesAsync(Guid tenantId, PlatformDbContext db, PipelinePolicies pipeline, CancellationToken ct)
         {
             var rows = await db.EscalationPolicies.AsNoTracking().Where(p => p.TenantId == tenantId).OrderBy(p => p.Key).ToListAsync(ct);
-            return Results.Ok(new Page<EscalationPolicyDto>(rows.Select(ToDto).ToList(), null));
+            var items = new List<EscalationPolicyDto>();
+            foreach (var row in rows)
+            {
+                items.Add(ToDto(row, await pipeline.ExistsAsync(row.Key, ct)));
+            }
+            return Results.Ok(new Page<EscalationPolicyDto>(items, null));
         }
 
-        private static async Task<(AlertSeverity Severity, IResult? Problem)> ValidateAsync(Guid tenantId, EscalationPolicyRequest? request, PlatformDbContext db,
-            Juice.Observability.Notifications.Migration.WebhookAlias alias, CancellationToken ct)
+        /// <summary>
+        /// The selection's fields, checked. What a policy does (steps, whether acknowledging stops it) is the notification pipeline's: a body that
+        /// still carries those is refused, naming where they are edited.
+        /// </summary>
+        private static (AlertSeverity Severity, IResult? Problem) Validate(EscalationPolicyRequest? request)
         {
             var errors = new List<string>();
             if (request is null) return (default, Mutation.Invalid(["A body is required."]));
+            if (request.Extra is { } extra && extra.Keys.Any(k => k.Equals("steps", StringComparison.OrdinalIgnoreCase) || k.Equals("stopOnAcknowledge", StringComparison.OrdinalIgnoreCase)))
+            {
+                return (default, Unprocessable("steps_moved", "Steps are the notification pipeline's",
+                    "An escalation policy's steps and its stop on acknowledge are edited on the Notifications Escalation Policies page, not here: this takes only which alerts select the policy."));
+            }
             if (request.Name is not { Length: > 0 and <= 200 }) errors.Add("name is required (at most 200 characters).");
             var severity = AlertSeverity.Info;
             if (request.MinimumSeverity is { Length: > 0 } && (!Enum.TryParse(request.MinimumSeverity, ignoreCase: true, out severity) || !Enum.IsDefined(severity))) errors.Add("minimumSeverity is info, warning or critical.");
-            var steps = request.Steps ?? [];
-            if (steps.Count is 0 or > 10) errors.Add("A policy has 1 to 10 steps.");
-            var previous = -1;
-            foreach (var step in steps)
-            {
-                if (step.AfterMinutes is < 0 or > 10_080) errors.Add("afterMinutes is 0 to 10080.");
-                if (step.AfterMinutes <= previous) errors.Add("Each step comes later than the one before.");
-                previous = step.AfterMinutes;
-                if (step.EndpointKeys.Count is 0 or > 10) errors.Add("A step notifies 1 to 10 endpoints.");
-            }
-            var named = steps.SelectMany(s => s.EndpointKeys).Distinct().ToList();
-            // The endpoints a step may name (waves §6.4 C): legacy's while it sends; in new, the alias's (an endpoint's key is its integration's).
-            var known = alias.WritesLegacy
-                ? await db.WebhookEndpoints.AsNoTracking().Where(e => e.TenantId == tenantId && named.Contains(e.Key)).Select(e => e.Key).ToListAsync(ct)
-                : [.. (await alias.EndpointKeysAsync(ct)).Intersect(named)];
-            errors.AddRange(named.Except(known).Select(k => $"No endpoint '{k}'."));
             if ((request.Environments ?? []).Any(e => e != e.ToLowerInvariant())) errors.Add("environments are lowercase keys.");
             return (severity, errors.Count > 0 ? Mutation.Invalid(errors) : null);
         }
 
-        private static async Task<IResult> CreatePolicyAsync(Guid tenantId, EscalationPolicyRequest? request, HttpContext http, PlatformDbContext db,
-            Juice.Observability.Notifications.Migration.WebhookAlias alias, TimeProvider clock, CancellationToken ct)
+        /// <summary>The selection needs the policy it selects: the embedded tenant's policy of that key in the pipeline (a read in the same process).</summary>
+        private static async Task<IResult?> RequirePipelinePolicyAsync(string key, PipelinePolicies pipeline, CancellationToken ct)
+            => await pipeline.ExistsAsync(key, ct) ? null
+                : Unprocessable("no_pipeline_policy", "No such pipeline policy", $"The notification pipeline has no escalation policy '{key}': create it on the Notifications Escalation Policies page first, then select it here.");
+
+        private static async Task<IResult> CreatePolicyAsync(Guid tenantId, EscalationPolicyRequest? request, HttpContext http, PlatformDbContext db, PipelinePolicies pipeline,
+            TimeProvider clock, CancellationToken ct)
         {
             var mutation = new Mutation(http, db, tenantId, "escalation.create", "escalation_policy");
             if (await mutation.RequireAsync(null, ct, Roles.Admin) is { } denied) return denied;
-            var (severity, problem) = await ValidateAsync(tenantId, request, db, alias, ct);
+            var (severity, problem) = Validate(request);
             if (problem is not null) return problem;
             // Also notifications' key rule (Q14): a leading digit has no notifications policy.
             if (request!.Key is not { } key || !PolicyKey().IsMatch(key) || !char.IsAsciiLetterLower(key[0]))
             {
                 return Mutation.Invalid(["key is lowercase letters, digits and dashes, 2 to 63 long, starting with a letter."]);
             }
+            if (await RequirePipelinePolicyAsync(key, pipeline, ct) is { } missing) return missing;
             if (await db.EscalationPolicies.AnyAsync(p => p.TenantId == tenantId && p.Key == key, ct)) return Mutation.Problem(StatusCodes.Status409Conflict, "Policy exists", $"A policy with the key '{key}' exists.");
             if (await db.EscalationPolicies.CountAsync(p => p.TenantId == tenantId, ct) >= MaxPolicies) return Mutation.Problem(StatusCodes.Status409Conflict, "Too many policies", $"A tenant has at most {MaxPolicies} policies.");
             var policy = new EscalationPolicy
             {
                 TenantId = tenantId, Key = key, Name = request.Name!, Enabled = request.Enabled ?? true, RuleKeys = [.. request.RuleKeys ?? []], Environments = [.. request.Environments ?? []],
-                MinimumSeverity = severity, StopOnAcknowledge = request.StopOnAcknowledge ?? true, Steps = request.Steps!, UpdatedAt = clock.GetUtcNow(),
+                MinimumSeverity = severity, UpdatedAt = clock.GetUtcNow(),
             };
             db.EscalationPolicies.Add(policy);
-            mutation.Audit(AuditOutcome.Succeeded, key, new() { ["steps"] = policy.Steps.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) });
-            if (await SaveWithPipelineAsync(db, alias, http, policy, held: false, ct) is { } refused) return refused;
-            return Results.Created($"{http.Request.Path}/{key}", ToDto(policy));
+            mutation.Audit(AuditOutcome.Succeeded, key);
+            await db.SaveChangesAsync(ct);
+            return Results.Created($"{http.Request.Path}/{key}", ToDto(policy, true));
         }
 
-        private static async Task<IResult> UpdatePolicyAsync(Guid tenantId, string key, EscalationPolicyRequest? request, HttpContext http, PlatformDbContext db,
-            Juice.Observability.Notifications.Migration.WebhookAlias alias, TimeProvider clock, CancellationToken ct)
+        private static async Task<IResult> UpdatePolicyAsync(Guid tenantId, string key, EscalationPolicyRequest? request, HttpContext http, PlatformDbContext db, PipelinePolicies pipeline,
+            TimeProvider clock, CancellationToken ct)
         {
             var mutation = new Mutation(http, db, tenantId, "escalation.update", "escalation_policy");
             if (await mutation.RequireAsync(key, ct, Roles.Admin) is { } denied) return denied;
             var policy = await db.EscalationPolicies.SingleOrDefaultAsync(p => p.TenantId == tenantId && p.Key == key, ct);
             if (policy is null) return Mutation.Problem(StatusCodes.Status404NotFound, "Policy not found", $"No policy '{key}'.");
-            var (severity, problem) = await ValidateAsync(tenantId, request, db, alias, ct);
+            var (severity, problem) = Validate(request);
             if (problem is not null) return problem;
+            if (await RequirePipelinePolicyAsync(key, pipeline, ct) is { } missing) return missing;
             policy.Name = request!.Name!;
             policy.Enabled = request.Enabled ?? true;
             policy.RuleKeys = [.. request.RuleKeys ?? []];
             policy.Environments = [.. request.Environments ?? []];
             policy.MinimumSeverity = severity;
-            policy.StopOnAcknowledge = request.StopOnAcknowledge ?? true;
-            policy.Steps = request.Steps!;
             policy.UpdatedAt = clock.GetUtcNow();
-            mutation.Audit(AuditOutcome.Succeeded, key, new() { ["steps"] = policy.Steps.Count.ToString(System.Globalization.CultureInfo.InvariantCulture), ["enabled"] = policy.Enabled ? "true" : "false" });
-            if (await SaveWithPipelineAsync(db, alias, http, policy, held: true, ct) is { } refused) return refused;
-            return Results.Ok(ToDto(policy));
+            mutation.Audit(AuditOutcome.Succeeded, key, new() { ["enabled"] = policy.Enabled ? "true" : "false" });
+            await db.SaveChangesAsync(ct);
+            return Results.Ok(ToDto(policy, true));
         }
 
         /// <summary>
-        /// Saves a policy's legacy row and its notifications policy in one platform transaction (waves §6.4 C), through the host scope. The legacy
-        /// row holds what selects it (severity, rules, environments, enabled), read by the producer adapter in every mode; in new, the notifications
-        /// policy's steps are the ones that run. In new, a refusal leaves neither. While legacy sends, its change never fails on the pipeline's
-        /// account (as for endpoints): only a policy the alias already holds is refused with it.
+        /// One alert's notifications: the silences that cover it now, the incidents it's in, and the correlation the notification pipeline keeps
+        /// its deliveries and escalation under (read on the admin page <c>/notifications/.../correlations/{key}</c>).
         /// </summary>
-        private static async Task<IResult?> SaveWithPipelineAsync(PlatformDbContext db, Juice.Observability.Notifications.Migration.WebhookAlias alias, HttpContext http,
-            EscalationPolicy policy, bool held, CancellationToken ct)
-        {
-            await using var transaction = await db.Database.BeginTransactionAsync(ct);
-            await db.SaveChangesAsync(ct);
-            if (await WebhookEndpoints.AliasWriteAsync(transaction, alias, http.RequestServices, $"escalation policy {policy.Key}",
-                    held ? () => alias.HoldsPolicyAsync(policy.Key, ct) : () => Task.FromResult(false), () => alias.PutPolicyAsync(policy, ct), ct) is { Count: > 0 } problems)
-            {
-                await transaction.RollbackAsync(ct);
-                return Mutation.Invalid(problems.Select(p => p.Message));
-            }
-            await transaction.CommitAsync(ct);
-            return null;
-        }
-
-        /// <summary>What was sent about an alert, what is held or still to come, and which incidents it's in.</summary>
         private static async Task<IResult> ForAlertAsync(Guid tenantId, Guid alertId, PlatformDbContext db, TimeProvider clock, CancellationToken ct)
         {
             var alert = await db.Alerts.AsNoTracking().SingleOrDefaultAsync(a => a.TenantId == tenantId && a.Id == alertId, ct);
@@ -285,15 +278,6 @@ namespace Juice.Observability.Api.Endpoints
                 return Mutation.Problem(StatusCodes.Status404NotFound, "Alert not found", "No such alert.");
             }
             var now = clock.GetUtcNow();
-            var deliveries = await db.WebhookDeliveries.AsNoTracking().Where(d => d.TenantId == tenantId && d.AlertId == alertId).OrderByDescending(d => d.Id).Take(200).ToListAsync(ct);
-            var dtos = await WebhookEndpoints.ToDeliveryDtosAsync(db, deliveries, ct);
-            var endpointIds = deliveries.Select(d => d.EndpointId).Distinct().ToList();
-            var endpoints = await db.WebhookEndpoints.AsNoTracking().Where(e => endpointIds.Contains(e.Id)).ToDictionaryAsync(e => e.Id, ct);
-
-            var escalations = await db.AlertEscalations.AsNoTracking().Where(e => e.TenantId == tenantId && e.AlertId == alertId).ToListAsync(ct);
-            var policyIds = escalations.Select(e => e.PolicyId).ToList();
-            var policies = await db.EscalationPolicies.AsNoTracking().Where(p => policyIds.Contains(p.Id)).ToDictionaryAsync(p => p.Id, ct);
-
             var rule = await db.Rules.AsNoTracking().Where(r => r.Id == alert.RuleId).Select(r => r.Key).SingleAsync(ct);
             var context = new AlertContext(rule, alert.SubjectKey, alert.Severity);
             var silences = (await db.Silences.AsNoTracking().Where(s => s.TenantId == tenantId && s.CancelledAt == null && s.StartsAt <= now && (s.RepeatWeekly || s.EndsAt > now)).ToListAsync(ct))
@@ -301,11 +285,7 @@ namespace Juice.Observability.Api.Endpoints
 
             var incidents = await db.IncidentAlerts.AsNoTracking().Where(l => l.TenantId == tenantId && l.AlertId == alertId)
                 .Join(db.Incidents.AsNoTracking(), l => l.IncidentId, i => i.Id, (l, i) => i).OrderByDescending(i => i.Id).ToListAsync(ct);
-            return Results.Ok(new AlertNotificationsDto(
-                dtos.Select((d, i) => new AlertNotificationDto(endpoints[deliveries[i].EndpointId].Key, endpoints[deliveries[i].EndpointId].Kind.ToString(), d)).ToList(),
-                escalations.Select(e => new AlertEscalationDto(policies[e.PolicyId].Key, policies[e.PolicyId].Name, e.State.ToString(), e.NextStep, policies[e.PolicyId].Steps.Count,
-                    e.State == EscalationState.Active ? e.NextAt : null, e.StopReason, e.EndedAt)).ToList(),
-                silences, incidents.Select(IncidentEndpoints.ToSummary).ToList()));
+            return Results.Ok(new AlertNotificationsDto(ProducerAdapter.AlertCorrelation(alertId), silences, incidents.Select(IncidentEndpoints.ToSummary).ToList()));
         }
 
         [GeneratedRegex("^[a-z0-9][a-z0-9-]{1,62}$")]

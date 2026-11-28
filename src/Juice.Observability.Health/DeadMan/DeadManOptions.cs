@@ -103,16 +103,6 @@ namespace Juice.Observability.Health.DeadMan
         public string Destination { get; set; } = "";
         public List<int> Ports { get; set; } = [];
     }
-
-    /// <summary>
-    /// What the shadow comparison says (M47): whether the new pipeline, in shadow, keeps failing to match what legacy sent. A stub until M47
-    /// registers one; without one, <c>shadow</c> is never a cause.
-    /// </summary>
-    public interface IShadowReport
-    {
-        /// <summary>Null while there is nothing to say; otherwise why the shadow comparison is failing.</summary>
-        ValueTask<string?> FailingAsync(CancellationToken cancellationToken);
-    }
 }
 
 namespace Juice.Observability.Health.DeadMan

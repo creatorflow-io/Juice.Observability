@@ -204,7 +204,6 @@ namespace Juice.Observability.Api
             var backlogs = new List<BacklogStatus>
             {
                 Backlog("outbox", postgres is null ? null : postgres.OutboxOldest ?? 0, BacklogLine),
-                Backlog("webhooks", postgres is null ? null : postgres.WebhookOldest ?? 0, BacklogLine),
                 // Discovery reads Discovery:Lag behind now on purpose, a pass every Discovery:Interval: behind is a minute past both.
                 heartbeats is null ? new BacklogStatus("discovery", "unknown", null, (discovery.Lag + discovery.Interval + BacklogLine).TotalSeconds)
                     : discoveryOff ? new BacklogStatus("discovery", "off", postgres?.WatermarkLag, (discovery.Lag + discovery.Interval + BacklogLine).TotalSeconds)

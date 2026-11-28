@@ -23,9 +23,9 @@ namespace Juice.Observability.Tests
             LocalStack.RequireAvailable();
             Environment.SetEnvironmentVariable(SecretVariable, "dead-man-drill");
             await using var database = await LocalStack.CreateDatabaseAsync();
-            await using var alarm = await WebhookTests.Receiver.StartAsync();
+            await using var alarm = await TestReceiver.StartAsync();
             // The first attempt fails, so the delivery comes due again for its retry.
-            await using var target = await WebhookTests.Receiver.StartAsync(500);
+            await using var target = await TestReceiver.StartAsync(500);
             var provisioning = Path.Combine(Path.GetTempPath(), $"deadman-drill-{Guid.NewGuid():N}.json");
             await File.WriteAllTextAsync(provisioning, $$"""
                 { "tenants": { "{{LocalStack.TenantKey}}": {
@@ -41,7 +41,7 @@ namespace Juice.Observability.Tests
             {
                 await using var factory = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string>
                 {
-                    ["Notifications:Pipeline"] = "new", ["Notifications:Provisioning:Path"] = provisioning,
+                    ["Notifications:Provisioning:Path"] = provisioning,
                     ["Notifications:Delivery:AllowHttpToAllowlisted"] = "true", ["Notifications:Delivery:RetryBase"] = "00:00:02",
                     ["Notifications:Stages:Planner:Poll"] = "00:00:00.2", ["Notifications:Stages:DeliveryPlanner:Poll"] = "00:00:00.2",
                     ["Notifications:Stages:Dispatcher:Poll"] = "00:00:00.2",

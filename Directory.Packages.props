@@ -17,7 +17,6 @@
     <PackageVersion Include="Juice.Notifications.Admin" Version="0.1.0-alpha.58" />
     <PackageVersion Include="Juice.Notifications.Providers.Chat" Version="0.1.0-alpha.58" />
     <!-- Email channels: reports a refused login and the server's codes, which System.Net.Mail loses (Gmail closes after a 535). -->
-    <PackageVersion Include="MailKit" Version="4.18.2" />
     <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.15" />
     <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.15" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.15" />

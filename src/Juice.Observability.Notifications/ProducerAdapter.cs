@@ -6,7 +6,6 @@ using Juice.Observability.Agents;
 using Juice.Observability.Data;
 using Juice.Observability.Rules.Notifications;
 using Juice.Observability.Discovery;
-using Juice.Observability.Webhooks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -25,8 +24,8 @@ namespace Juice.Observability.Notifications
     /// A refusal (the request is invalid) is logged and counted, and never fails the platform's change: nothing was written, and the transaction
     /// is intact. A database error is not caught.
     /// </summary>
-    public sealed class ProducerAdapter(INotificationClient client, PlatformDbContext db, IOptions<PlatformOptions> platform, IOptions<WebhookOptions> webhooks,
-        TimeProvider clock, ILogger<ProducerAdapter> logger, IOptions<PlatformNotificationsOptions> pipeline, PipelineStart? start = null)
+    public sealed class ProducerAdapter(INotificationClient client, PlatformDbContext db, IOptions<PlatformOptions> platform, PipelinePolicies policies,
+        TimeProvider clock, ILogger<ProducerAdapter> logger, IOptions<PlatformNotificationsOptions> console, PipelineStart? start = null)
     {
         /// <summary>
         /// The silence of a hold kept because the pipeline didn't start (<see cref="PipelineStart.Failure"/>): none. Once a restart brings the
@@ -40,8 +39,6 @@ namespace Juice.Observability.Notifications
         private static readonly Meter Meter = new("Juice.Observability");
         private static readonly Counter<long> Refused = Meter.CreateCounter<long>("juice.observability.notifications.refused", "{request}",
             "Requests the notification pipeline refused, by call and code");
-        private static readonly Counter<long> DryDuplicates = Meter.CreateCounter<long>("juice.observability.notifications.dry_duplicates", "{request}",
-            "Sends in new mode that the pipeline took as a duplicate of a dry original (shadow-era), so nothing was sent: an invariant breach, to stay 0");
 
         /// <summary>The longest label value the pipeline takes.</summary>
         internal const int MaxLabel = 500;
@@ -71,7 +68,7 @@ namespace Juice.Observability.Notifications
                     logger.LogInformation("Alert {Alert} resolved before its firing was planned; no firing request", alert.Id);
                     return;
                 }
-                request = Firing(rule, alert, transition, context, Policy(alert, context));
+                request = Firing(rule, alert, transition, context, await PolicyAsync(alert, context, cancellationToken));
             }
             else
             {
@@ -140,12 +137,6 @@ namespace Juice.Observability.Notifications
                 await TolerateAsync("resolve", () => client.ResolveAsync(resolve, null, null, cancellationToken), conflictThrows: true);
             }
             var request = JsonSerializer.Deserialize<NotificationToSend>(call.Request!, JsonSerializerOptions.Web)!;
-            // Kept while in shadow (architecture §6.4): legacy sent it then, so its own recipients are dry; its escalation's later steps are real.
-            // Not dropped: without the request nobody would page for an alert still open across the switch.
-            if (call.Pipeline == ShadowMode)
-            {
-                request = request with { DryRun = true };
-            }
             await SendAsync(request, cancellationToken, conflictThrows: true);
         }
 
@@ -249,10 +240,7 @@ namespace Juice.Observability.Notifications
         internal Task<bool> SendHeldAsync(NotificationHold hold, CancellationToken cancellationToken)
         {
             var request = JsonSerializer.Deserialize<NotificationToSend>(hold.Request, JsonSerializerOptions.Web)!;
-            // Kept in shadow because the pipeline was down: legacy sent it then (architecture §6.4 A), so its own recipients are dry. A silence's
-            // hold is real in any mode: legacy held it too.
-            var dry = hold.Reason == NotificationHoldReasons.PipelineUnavailable && hold.Pipeline == ShadowMode;
-            return SendAsync(dry ? request with { DryRun = true } : request, cancellationToken, conflictThrows: true);
+            return SendAsync(request, cancellationToken, conflictThrows: true);
         }
 
         internal NotificationToSend Firing(Rule rule, Alert alert, AlertTransition transition, AlertContext context, string? policy)
@@ -283,18 +271,30 @@ namespace Juice.Observability.Notifications
         }
 
         /// <summary>
-        /// The policy the pipeline escalates by: the pipeline runs one escalation per notification, so of the policies the platform's own match
-        /// finds, the first by key (Q1: overlapping policies are refused by the migration report). More than one is logged.
+        /// The policy the pipeline escalates by: the pipeline runs one escalation per notification, so of the policies the platform's own selection
+        /// matches (<see cref="EscalationSelection"/>), the first by key (ordinal). More than one is logged. A selected policy the pipeline no longer
+        /// has (deleted since) is logged too, and the notification goes out without escalating.
         /// </summary>
-        private string? Policy(Alert alert, AlertContext context)
+        private async Task<string?> PolicyAsync(Alert alert, AlertContext context, CancellationToken cancellationToken)
         {
-            var matching = LegacyPlan.MatchingPolicies(db, alert, context).OrderBy(p => p.Key, StringComparer.Ordinal).ToList();
+            var enabled = await db.EscalationPolicies.AsNoTracking().Where(p => p.TenantId == alert.TenantId && p.Enabled).ToListAsync(cancellationToken);
+            var matching = EscalationSelection.Match(enabled, context, alert.Severity);
+            if (matching.Count == 0)
+            {
+                return null;
+            }
             if (matching.Count > 1)
             {
                 logger.LogWarning("Alert {Alert} matches {Count} escalation policies ({Policies}); the notification pipeline escalates by {Policy} only",
                     alert.Id, matching.Count, string.Join(", ", matching.Select(p => p.Key)), matching[0].Key);
             }
-            return matching.FirstOrDefault()?.Key;
+            var key = matching[0].Key;
+            if (!await policies.ExistsAsync(key, cancellationToken))
+            {
+                logger.LogWarning("Alert {Alert} is selected for escalation policy {Policy}, which the notification pipeline doesn't have; it is sent without escalating", alert.Id, key);
+                return null;
+            }
+            return key;
         }
 
         private static Dictionary<string, string> Labels(Rule rule, Alert alert, AlertContext context, string @event)
@@ -307,11 +307,9 @@ namespace Juice.Observability.Notifications
             return labels;
         }
 
-        /// <summary>The Console's page as <c>self</c>, when the Console's address is set and absolute (<c>Webhooks:ConsoleUrl</c>).</summary>
+        /// <summary>The Console's page as <c>self</c>, when the Console's address is set (<c>Notifications:ConsoleUrl</c>, checked at start).</summary>
         private Dictionary<string, string>? Link(string page)
-            => Uri.TryCreate(webhooks.Value.ConsoleUrl, UriKind.Absolute, out var console) && console.Scheme is "https" or "http"
-                ? new() { ["self"] = $"{webhooks.Value.ConsoleUrl!.TrimEnd('/')}/{page}" }
-                : null;
+            => console.Value.Link(page) is { } link ? new() { ["self"] = link } : null;
 
         /// <summary>Today's payload, less its id (each delivery's own in the webhooks; the pipeline gives its own).</summary>
         internal static JsonElement WithoutId(string payload)
@@ -324,28 +322,10 @@ namespace Juice.Observability.Notifications
         private static string? Bounded(string? value, int max) => value is { Length: > 0 } ? value.Length > max ? value[..max] : value : null;
 
         private Task<bool> SendAsync(NotificationToSend request, CancellationToken cancellationToken, bool conflictThrows = false, Action? onConflict = null)
-            => TolerateAsync("send", async () => Checked(request, await client.SendAsync(request, cancellationToken)), conflictThrows, request.IdempotencyKey, onConflict);
+            => TolerateAsync("send", () => client.SendAsync(request, cancellationToken), conflictThrows, request.IdempotencyKey, onConflict);
 
-        private const string ShadowMode = "shadow";
-
-        /// <summary>The pipeline mode, as a kept call or hold records it.</summary>
-        private string Mode => pipeline.Value.Pipeline.ToString().ToLowerInvariant();
-
-        /// <summary>
-        /// The adapter's guarantee (architecture, intake keeps its duplicate rule): in <c>new</c> it never sends again what shadow planned dry. A
-        /// request that isn't dry itself, taken as a duplicate of a dry original, was sent to nobody: logged and counted
-        /// (<c>juice.observability.notifications.dry_duplicates</c>, which stays 0; M50 checks it).
-        /// </summary>
-        private NotificationAccepted Checked(NotificationToSend request, NotificationAccepted accepted)
-        {
-            if (accepted is { Duplicate: true, DryRun: true } && !request.DryRun && pipeline.Value.Pipeline == NotificationsPipeline.New)
-            {
-                DryDuplicates.Add(1, new KeyValuePair<string, object?>("type", request.Type));
-                logger.LogWarning("Notifications: {Key} ({Type}) is a duplicate of a request planned dry, so nothing was sent: the adapter sent again what shadow planned",
-                    request.IdempotencyKey, request.Type);
-            }
-            return accepted;
-        }
+        /// <summary>The pipeline mode, as a kept call or hold records it: the pipeline is the only one since 2.0.</summary>
+        private const string Mode = "new";
 
         /// <summary>
         /// A refusal is the pipeline's answer, not a failure of the platform's change: a correlation it doesn't have (its firing was never sent) or

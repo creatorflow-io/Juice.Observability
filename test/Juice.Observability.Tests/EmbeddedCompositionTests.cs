@@ -48,27 +48,6 @@ namespace Juice.Observability.Tests
                 || n.StartsWith("Juice.EventBus.RabbitMQ", StringComparison.Ordinal) || n.StartsWith("Juice.Audit", StringComparison.Ordinal));
         }
 
-        [Fact]
-        public async Task In_legacy_the_pipeline_is_migrated_and_provisioned_and_runs_no_stage_Async()
-        {
-            LocalStack.RequireAvailable();
-            await using var database = await LocalStack.CreateDatabaseAsync();
-            await using var factory = Factory(database);
-            _ = factory.Server;
-
-            var workers = factory.Services.GetServices<IHostedService>().Select(PipelineStart.NameOf).ToList();
-            Assert.DoesNotContain(workers, w => w.StartsWith("StageWorker", StringComparison.Ordinal) || w is "RetentionWorker" or "ProducerEventRelay" or "FailureEvents");
-            // Nor any poller of the pipeline: legacy costs its schema and nothing else (no connection of its own between requests).
-            Assert.DoesNotContain("CompositeDeliveryHostedService<NotificationsDbContext>", workers);
-            Assert.DoesNotContain("BacklogMonitor", workers);
-            Assert.DoesNotContain(nameof(NotificationsReleasePass), workers);
-            Assert.DoesNotContain(nameof(SilenceHoldPass), workers);
-            // Its start ran: the schema and the provisioning.
-            Assert.Contains("DatabaseMigrator", workers);
-            Assert.Contains("EmbeddedApplicationProvisioner", workers);
-            Assert.Equal(1, await CountAsync(database, $"SELECT count(*) FROM notifications.applications WHERE key = '{NotificationsRegistration.ApplicationKey}'"));
-            Assert.Equal(1, await CountAsync(database, $"SELECT count(*) FROM notifications.application_tenants WHERE tenant_id = '{LocalStack.TenantKey}'"));
-        }
 
         [Fact]
         public async Task A_platform_command_opens_no_pipeline_transaction_and_its_event_is_delivered_once_Async()
@@ -280,8 +259,8 @@ namespace Juice.Observability.Tests
             => new() { TenantId = tenant, Actor = "test", Operation = "composition.test", TargetType = "test", TargetId = marker.ToString() };
 
         private static WebApplicationFactory<Program> Factory(ScratchDatabase database)
-            // Legacy: what these check is how the pipeline keeps out of the platform when it runs nothing (the switch's other modes run its stages).
-            => new ApiTests.ApiFactory(database, settings: new Dictionary<string, string> { ["Notifications:Pipeline"] = "legacy" }).WithWebHostBuilder(builder => builder.ConfigureServices(services =>
+            // What these check is how the pipeline keeps out of the platform's commands and transactions: it runs no stage.
+            => new ApiTests.ApiFactory(database, settings: ProducerAdapterTests.Quiet()).WithWebHostBuilder(builder => builder.ConfigureServices(services =>
             {
                 services.AddTransient<IRequestHandler<Record, bool>, RecordHandler>();
                 services.AddTransient<IRequestHandler<SendInCommand, bool>, SendInCommandHandler>();

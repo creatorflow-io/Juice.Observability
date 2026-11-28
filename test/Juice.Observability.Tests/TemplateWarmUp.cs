@@ -2,7 +2,6 @@ using System.Text.Json;
 using Juice.Notifications;
 using Juice.Notifications.Rendering;
 using Juice.Observability.Notifications;
-using Juice.Observability.Notifications.Migration;
 
 namespace Juice.Observability.Tests
 {
@@ -19,7 +18,7 @@ namespace Juice.Observability.Tests
 
         private static async Task WarmAsync()
         {
-            var model = new RenderModel(AliasVocabulary.FiringType, 1, "Alert firing", NotificationPriority.High,
+            var model = new RenderModel(ObservabilityTypes.AlertFiring, 1, "Alert firing", NotificationPriority.High,
                 JsonSerializer.SerializeToElement(new { type = "alert.firing", alert = new { id = "x", value = 0.5 } }), new Dictionary<string, string>(), new Dictionary<string, string>());
             foreach (var (_, body) in DefaultTemplates.ByChannel)
             {
