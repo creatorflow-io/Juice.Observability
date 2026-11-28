@@ -87,7 +87,7 @@ namespace Juice.Observability.Api.Modules
         }
     }
 
-    internal sealed class ModuleServicesBuilder(ModuleInfo module, IServiceCollection services, IConfiguration configuration, ModuleRegistry registry) : IModuleServicesBuilder
+    internal sealed class ModuleServicesBuilder(ModuleInfo module, IServiceCollection services, IConfiguration configuration, ModuleRegistry registry) : IModuleServicesBuilder, ICoreModuleBuilder
     {
         private readonly HashSet<string> _policies = new(StringComparer.Ordinal);
         private readonly List<Type> _migrations = [];

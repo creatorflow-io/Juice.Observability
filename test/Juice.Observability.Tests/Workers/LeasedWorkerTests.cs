@@ -178,6 +178,89 @@ namespace Juice.Observability.Tests.Workers
         }
 
         [Fact]
+        public void Worker_type_must_be_constructible_at_composition()
+            => Assert.Contains("public constructor", Assert.Throws<ModuleCompositionException>(() => Core().AddObservabilityModule<AbstractWorkerModule>()).Message);
+
+        [Fact]
+        public void The_core_side_of_workers_and_events_is_not_in_the_module_contract()
+        {
+            var contract = typeof(IModuleServicesBuilder).Assembly.GetExportedTypes().Select(t => t.Name).ToHashSet();
+            foreach (var name in new[] { "ILeasedWorkerHostFactory", "LeasedWorkerRegistration", "ModuleEventSubscription", "IPlatformEventPublisher" })
+            {
+                Assert.DoesNotContain(name, contract);
+            }
+        }
+
+        [Fact]
+        public async Task A_module_worker_named_like_a_core_lock_does_not_hold_it()
+        {
+            LocalStack.RequireAvailable();
+            WorkerProbe.Reset();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var host = await ModuleTestHost.StartAsync(b => b.AddObservabilityModule<RuleNamedWorkerModule>(), database, hostedServices: true);
+            await WaitForAsync(() => WorkerProbe.Passes.Count >= 2 ? "holding" : null);
+
+            // the worker holds its lease now, and the core's rule provisioning lock of the same name is still free
+            await using var other = new NpgsqlConnection(database.ConnectionString);
+            await other.OpenAsync(Ct);
+            await using var take = new NpgsqlCommand("SELECT pg_try_advisory_lock(@key)", other);
+            take.Parameters.AddWithValue("key", WorkerLease.KeyOf("rule-provisioning"));
+            Assert.True((bool)(await take.ExecuteScalarAsync(Ct))!);
+            Assert.True(await WorkerLease.IsHeldAsync(await ContextAsync(database), "module:rule-provisioning", Ct));
+        }
+
+        private static Task<PlatformDbContext> ContextAsync(ScratchDatabase database) => Task.FromResult(database.Context());
+
+        [Fact]
+        public async Task A_retake_cut_short_leaves_no_session_behind()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var name = "leak-" + Guid.NewGuid().ToString("N")[..8];
+            for (var i = 0; i < 60; i++)
+            {
+                await using var lease = new WorkerLease(database.ConnectionString, name, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
+                using var cut = new CancellationTokenSource();
+                cut.CancelAfter(TimeSpan.FromMilliseconds(i % 30));
+                try
+                {
+                    await lease.TryHoldAsync(cut.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+            }
+
+            await using var admin = new NpgsqlConnection(database.ConnectionString);
+            await admin.OpenAsync(Ct);
+            await using var count = new NpgsqlCommand($"SELECT count(*) FROM pg_stat_activity WHERE datname = '{database.Name}' AND application_name LIKE 'juice-worker:{name}:%'", admin);
+            Assert.Equal(0L, await count.ExecuteScalarAsync(Ct));
+        }
+
+        [Fact]
+        public async Task A_pass_that_errors_because_the_host_is_stopping_does_not_fault_the_worker()
+        {
+            LocalStack.RequireAvailable();
+            WorkerProbe.Reset();
+            var capture = new LogCapture();
+            var inPass = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            WorkerProbe.Behavior = async (_, ct) =>
+            {
+                inPass.TrySetResult();
+                await Task.Delay(Timeout.Infinite, ct).ContinueWith(_ => { });
+                throw new InvalidOperationException("the stop broke the pass");
+            };
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var host = await ModuleTestHost.StartAsync(b => { b.AddObservabilityModule<WorkerModule>(); b.Services.AddSingleton<ILoggerProvider>(capture); }, database, hostedServices: true);
+            await inPass.Task.WaitAsync(TimeSpan.FromSeconds(30), Ct);
+
+            await host.DisposeAsync();
+
+            Assert.Empty(capture.At(LogLevel.Critical));
+            Assert.DoesNotContain(capture.Entries, e => e.Message.Contains("BackgroundService failed"));
+        }
+
+        [Fact]
         public async Task Module_worker_starts_after_module_migrations()
         {
             LocalStack.RequireAvailable();

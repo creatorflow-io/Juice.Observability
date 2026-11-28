@@ -16,6 +16,9 @@ namespace Juice.Observability.Api.Modules
         {
         }
 
+        // Apart from every core lease and lock, whatever the name (W-23): no name a module takes can be one of theirs.
+        protected override string? LeaseKeyName => "module:" + Worker;
+
         protected override TimeSpan Interval => _interval ??= ReadInterval();
 
         private TimeSpan ReadInterval()

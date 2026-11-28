@@ -25,15 +25,20 @@ namespace Juice.Observability.Api.Modules.Events
     /// commits with the change, or never exists. With no handler anywhere nothing is written, so a core-only host's outbox load is what it was.
     /// </summary>
     internal sealed class PlatformEventPublisher(PlatformDbContext db, IOutboxService<PlatformDbContext> outbox, IMessageService<PlatformDbContext> messages,
-        IEnumerable<ModuleEventSubscription> subscriptions) : IPlatformEventPublisher
+        IEnumerable<ModuleEventSubscription> subscriptions, Microsoft.Extensions.Options.IOptions<Discovery.PlatformOptions> platform) : IPlatformEventPublisher
     {
+        private Guid? _tenant;
+
         public bool HasSubscribers<TEvent>() where TEvent : ObservabilityEvent => subscriptions.Any(s => s.EventType == typeof(TEvent));
 
         public async Task PublishAsync(IReadOnlyCollection<ObservabilityEvent> events, CancellationToken ct)
         {
             var envelopes = new List<ModuleEventEnvelope>();
-            foreach (var e in events)
+            // Always the deployment's tenant: what the caller set is not trusted (an event carries the platform tenant only, W-23).
+            var tenant = _tenant ??= await db.Tenants.AsNoTracking().Where(t => t.Key == platform.Value.TenantKey).Select(t => t.Id).SingleAsync(ct);
+            foreach (var original in events)
             {
+                var e = original with { TenantId = tenant };
                 var type = e.GetType();
                 var modules = subscriptions.Where(s => s.EventType == type).Select(s => s.Module).Distinct(StringComparer.Ordinal).ToList();
                 if (modules.Count == 0)
@@ -74,7 +79,7 @@ namespace Juice.Observability.Api.Modules.Events
     /// Hands an envelope to its module's handlers, in a scope of its own. A handler that throws fails the delivery for that module only: the
     /// outbox hands it over again, and the handlers that succeeded run again too, which is why they must be idempotent on the event's id.
     /// </summary>
-    internal sealed class ModuleEventEnvelopeConsumer(IServiceScopeFactory scopes, IEnumerable<ModuleEventSubscription> subscriptions,
+    internal sealed class ModuleEventEnvelopeConsumer(IServiceScopeFactory scopes, IEnumerable<ModuleEventSubscription> subscriptions, IHostApplicationLifetime lifetime,
         ILogger<ModuleEventEnvelopeConsumer> logger) : IIntegrationEventHandler<ModuleEventEnvelope>
     {
         public async Task HandleAsync(ModuleEventEnvelope envelope)
@@ -94,7 +99,7 @@ namespace Juice.Observability.Api.Modules.Events
                 {
                     var instance = scope.ServiceProvider.GetRequiredService(handler.HandlerType);
                     var method = typeof(IObservabilityEventHandler<>).MakeGenericType(handler.EventType).GetMethod(nameof(IObservabilityEventHandler<ObservabilityEvent>.HandleAsync))!;
-                    await (Task)method.Invoke(instance, [@event, CancellationToken.None])!;
+                    await (Task)method.Invoke(instance, [@event, lifetime.ApplicationStopping])!;
                 }
                 catch (Exception ex)
                 {

@@ -105,4 +105,24 @@ namespace Juice.Observability.Tests.Workers
             module.AddLeasedWorker<TableWorker>("sample");
         }
     }
+
+    /// <summary>A module named <c>rule</c> with a worker named like the core's rule provisioning lock.</summary>
+    public sealed class RuleNamedWorkerModule : WorkerModule
+    {
+        public override ModuleInfo Info { get; } = new("rule", "Rule", "1.0.0", "[2.0.0,3.0.0)");
+
+        public override void ConfigureServices(IModuleServicesBuilder module) => module.AddLeasedWorker<ProbeWorker>("rule-provisioning");
+    }
+
+    public abstract class AbstractWorker : ILeasedWorker
+    {
+        public abstract TimeSpan Interval { get; }
+
+        public abstract Task<LeasedPassOutcome> RunOnceAsync(LeasedPass pass, CancellationToken ct);
+    }
+
+    public sealed class AbstractWorkerModule : WorkerModule
+    {
+        public override void ConfigureServices(IModuleServicesBuilder module) => module.AddLeasedWorker<AbstractWorker>("wrk");
+    }
 }
