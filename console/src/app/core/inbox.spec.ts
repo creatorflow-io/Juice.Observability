@@ -1,6 +1,7 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
+import { MatSnackBar } from '@angular/material/snack-bar';
 import { LAYOUT_TOOLBAR_ITEMS } from '@juice-js/layout';
 import { InboxHubConnector, InboxHubHandlers, InboxPanelComponent, InboxService, NOTIFICATIONS_CONFIG, NotificationBellComponent, NotificationsConfig } from '@juice-js/notifications';
 import { OAuthService } from 'angular-oauth2-oidc';
@@ -70,7 +71,10 @@ describe('Console bell (M54)', () => {
     const API = '/notifications';
     const ME = `${API}/api/v1/tenants/${TENANT}/me`;
 
+    const snackBar = { open: vi.fn() };
+
     beforeEach(() => {
+      snackBar.open.mockClear();
       hub = new FakeHub();
       TestBed.configureTestingModule({
         providers: [
@@ -78,6 +82,7 @@ describe('Console bell (M54)', () => {
           ...inboxProviders({ apiBase: '', inbox: true }),
           { provide: OAuthService, useValue: { getAccessToken: () => jwt({ platform_tenant: TENANT, sub: 'ann' }) } },
           { provide: InboxHubConnector, useValue: hub },
+          { provide: MatSnackBar, useValue: snackBar },
         ],
       });
       http = TestBed.inject(HttpTestingController);
@@ -101,6 +106,8 @@ describe('Console bell (M54)', () => {
         http.expectOne((r) => r.url === `${ME}/inbox`).flush(null, { status, statusText: 'refused' });
         await new Promise((resolve) => setTimeout(resolve, 50));
         expect(inbox.error()).toBeTruthy();
+        // No toast: the failure stays in the panel's own error line, never a snackbar (let alone one per retry).
+        expect(snackBar.open).not.toHaveBeenCalled();
         expect(inbox.unread()).toBe(0);
         // Nothing asks again on its own; only the hub's own back-off reconnects.
         http.verify();
