@@ -40,6 +40,8 @@ export const PAGES: readonly { module: PageModule; route: Routes[number] }[] = [
   { module: 'slos', route: page('slos/:key', 'SLO', () => import('../pages/slo.page').then(m => m.SloPage)) },
   { module: 'core', route: page('timeline', 'Timeline', () => import('../pages/timeline.page').then(m => m.TimelinePage)) },
   { module: 'core', route: page('load-runs', 'Load runs', () => import('../pages/load-runs.page').then(m => m.LoadRunsPage)) },
+  { module: 'core', route: page('integrations', 'Integrations', () => import('../pages/integrations.page').then(m => m.IntegrationsPage)) },
+  { module: 'core', route: page('integrations/:id', 'Integration', () => import('../pages/integration.page').then(m => m.IntegrationPage)) },
 ];
 
 export const pagesOf = (module: PageModule): Routes => PAGES.filter(p => p.module === module).map(p => p.route);

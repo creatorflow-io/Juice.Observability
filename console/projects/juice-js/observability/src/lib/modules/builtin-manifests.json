@@ -82,6 +82,14 @@
           {
             "path": "load-runs",
             "policy": null
+          },
+          {
+            "path": "integrations",
+            "policy": null
+          },
+          {
+            "path": "integrations/:id",
+            "policy": null
           }
         ],
         "menu": [
@@ -202,6 +210,15 @@
             "icon": "campaign",
             "policy": null,
             "order": 320,
+            "group": "configure"
+          },
+          {
+            "key": "integrations",
+            "label": "Integrations",
+            "route": "integrations",
+            "icon": "extension",
+            "policy": null,
+            "order": 330,
             "group": "configure"
           }
         ]

@@ -230,6 +230,12 @@
           "label": "Escalation selection",
           "icon": "campaign",
           "routerLink": "/escalation"
+        },
+        {
+          "id": "integrations",
+          "label": "Integrations",
+          "icon": "extension",
+          "routerLink": "/integrations"
         }
       ],
       "order": 11
@@ -378,6 +384,12 @@
           "label": "Escalation selection",
           "icon": "campaign",
           "routerLink": "/escalation"
+        },
+        {
+          "id": "integrations",
+          "label": "Integrations",
+          "icon": "extension",
+          "routerLink": "/integrations"
         }
       ],
       "order": 10
@@ -526,6 +538,12 @@
           "label": "Escalation selection",
           "icon": "campaign",
           "routerLink": "/observability/escalation"
+        },
+        {
+          "id": "integrations",
+          "label": "Integrations",
+          "icon": "extension",
+          "routerLink": "/observability/integrations"
         }
       ],
       "order": 14

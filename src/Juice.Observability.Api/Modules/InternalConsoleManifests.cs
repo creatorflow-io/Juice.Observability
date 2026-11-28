@@ -24,6 +24,7 @@ namespace Juice.Observability.Api.Modules
             Route(""), Route("services"), Route("services/:id"), Route("traces"), Route("traces/:id"), Route("topology"), Route("logs"), Route("metrics"),
             Route("resources"), Route("resources/:id"), Route("alerts"), Route("alerts/:id"), Route("rules"), Route("escalation"), Route("silences"),
             Route("incidents"), Route("incidents/:id"), Route("timeline"), Route("load-runs"),
+            Route("integrations"), Route("integrations/:id"),
         ],
         [
             Entry("overview", "Overview", "", "dashboard", 10),
@@ -40,6 +41,7 @@ namespace Juice.Observability.Api.Modules
             Entry("rules", "Rules", "rules", "rule", 300, ConsoleMenuGroups.Configure),
             Entry("silences", "Silences", "silences", "notifications_paused", 310, ConsoleMenuGroups.Configure),
             Entry("escalation", "Escalation selection", "escalation", "campaign", 320, ConsoleMenuGroups.Configure),
+            Entry("integrations", "Integrations", "integrations", "extension", 330, ConsoleMenuGroups.Configure),
         ]);
 
         /// <summary>Service level objectives.</summary>
