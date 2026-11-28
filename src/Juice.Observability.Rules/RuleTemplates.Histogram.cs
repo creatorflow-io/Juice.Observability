@@ -14,7 +14,7 @@ namespace Juice.Observability.Rules
 
         private static readonly Meter HistogramMeter = new("Juice.Observability");
         private static readonly Counter<long> HistogramTruncated = HistogramMeter.CreateCounter<long>("juice.observability.rules.truncated", "{subject}",
-            "Subjects a rule's query left out because it reached the row limit, by template");
+            "Times a rule's query reached the row limit and left out its last subject, by template");
 
         private const string HistogramHost = "if(JuiceHostId != '', lower(JuiceHostId), lower(JuiceHostName))";
 
@@ -27,7 +27,8 @@ namespace Juice.Observability.Rules
         // of each subject, and fetches one row more than the limit so a cut is seen.
         // The metric, the scope and the filters are parameters ({m}, {svc}, {fk0}, {fv0}...); only their count shapes the text.
         private static string HistogramQuery(string innerKeys, string outerKeys, string scope, string filters) => $"""
-            SELECT {outerKeys}, bounds, sumForEach(inc) AS counts, sum(observed) AS obs, sumIf(observed, sum_ok) AS sum_obs, sumIf(series_sum, sum_ok) AS sum_total
+            SELECT {outerKeys}, bounds, sumForEach(inc) AS counts, sum(observed) AS obs, sumIf(observed, sum_ok) AS sum_obs, sumIf(series_sum, sum_ok) AS sum_total,
+                   count() OVER (PARTITION BY {outerKeys}) AS layouts
             FROM (
                 SELECT {innerKeys}, ExplicitBounds AS bounds,
                        argMaxIf(arraySum(BucketCounts), TimeUnix, TimeUnix >= {From}) AS last_n,
@@ -46,6 +47,7 @@ namespace Juice.Observability.Rules
                           argMaxIf(Sum, TimeUnix, TimeUnix >= {From}) - if(was_reset, 0, argMaxIf(Sum, TimeUnix, TimeUnix < {From}))) AS series_sum,
                        arrayExists((c, i) -> c > 0 AND NOT ((i = 1 OR ExplicitBounds[i - 1] < 0) AND (i > length(ExplicitBounds) OR ExplicitBounds[i] >= 0)),
                                    inc, arrayEnumerate(inc)) AS beyond_zero,
+                       -- blind spots: a sum of 0 over only first-bucket observations, and negative values that truly sum to 0, can't be told from a missing sum
                        NOT (series_sum = 0 AND beyond_zero) AS sum_ok
                 FROM otel.otel_metrics_histogram
                 WHERE {Tenant} AND TimeUnix >= {From} - INTERVAL 1 HOUR AND TimeUnix < {To} AND MetricName = {"{m:String}"}
@@ -71,7 +73,7 @@ namespace Juice.Observability.Rules
                 : $" AND Attributes[{{fk{i}:String}}] = {{fv{i}:String}}"));
 
         private sealed record HistogramRow(string SubjectKey, string Ns, string Svc, string Env, string Host, double[] Bounds, long[] Counts,
-            long Observed, long SumObserved, double SumTotal);
+            long Observed, long SumObserved, double SumTotal, long Layouts);
 
         private async partial Task<IReadOnlyList<RuleObservation>> ObserveHistogramAsync(RuleDefinition rule, TelemetryWindow window,
             Dictionary<string, object> scope, CancellationToken cancellationToken)
@@ -97,9 +99,9 @@ namespace Juice.Observability.Rules
             // One row more than the limit: only a result that exceeds it was cut.
             var rows = await clickHouse.QueryAsync(sql, window with { Limit = window.Limit + 1 }, r => host
                 ? new HistogramRow($"host:{r.GetString(0)}", "", "", "", r.GetString(0), Doubles(r.GetValue(1)), Longs(r.GetValue(2)),
-                    Convert.ToInt64(r.GetValue(3)), Convert.ToInt64(r.GetValue(4)), Convert.ToDouble(r.GetValue(5)))
+                    Convert.ToInt64(r.GetValue(3)), Convert.ToInt64(r.GetValue(4)), Convert.ToDouble(r.GetValue(5)), Convert.ToInt64(r.GetValue(6)))
                 : new HistogramRow(ServiceSubjectKey(r.GetString(0), r.GetString(1), r.GetString(2)), r.GetString(0), r.GetString(1), r.GetString(2), "",
-                    Doubles(r.GetValue(3)), Longs(r.GetValue(4)), Convert.ToInt64(r.GetValue(5)), Convert.ToInt64(r.GetValue(6)), Convert.ToDouble(r.GetValue(7))),
+                    Doubles(r.GetValue(3)), Longs(r.GetValue(4)), Convert.ToInt64(r.GetValue(5)), Convert.ToInt64(r.GetValue(6)), Convert.ToDouble(r.GetValue(7)), Convert.ToInt64(r.GetValue(8))),
                 cancellationToken, parameters);
 
             // The rows come ordered by subject: the last subject may have lost some of its layouts, so it's left out and counted.
@@ -144,7 +146,10 @@ namespace Juice.Observability.Rules
                                 ["bucketLower"] = Bound(percentile.Lower),
                                 ["bucketUpper"] = Bound(percentile.Upper),
                             };
-                            if (layouts.Count > 1) d["mixedBounds"] = "true";
+                            // Layouts the per-subject cap left out are still layouts the series disagree on.
+                            var omitted = (int)Math.Max(first.Layouts - layouts.Count, 0);
+                            if (layouts.Count > 1 || omitted > 0) d["mixedBounds"] = "true";
+                            if (omitted > 0) d["layoutsOmitted"] = omitted.ToString(CultureInfo.InvariantCulture);
                             detail = d;
                         }
                         break;
