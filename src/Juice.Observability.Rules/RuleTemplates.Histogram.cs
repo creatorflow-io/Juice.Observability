@@ -42,8 +42,9 @@ namespace Juice.Observability.Rules
                                    argMaxIf(BucketCounts, TimeUnix, TimeUnix >= {From}),
                                    arrayResize(if(was_reset, emptyArrayUInt64(), argMaxIf(BucketCounts, TimeUnix, TimeUnix < {From})), length(ExplicitBounds) + 1))) AS inc_last,
                        -- a restart under the same start time keeps the increase up to the window's peak (the point with most observations): the
-                       -- peak less the value before the window, per bucket, then the buckets now counted from zero
-                       if(is_delta OR NOT was_reset, inc_last,
+                       -- peak less the value before the window, per bucket, then the buckets now counted from zero; only when the peak holds more observations
+                       -- than before the window (else the window holds only the restarted counts)
+                       if(is_delta OR NOT was_reset OR peak_n <= before_n, inc_last,
                           arrayMap((a, b) -> a + b,
                                    inc_last,
                                    arrayMap((p, b) -> greatest(toInt64(p) - toInt64(b), 0),
@@ -53,7 +54,7 @@ namespace Juice.Observability.Rules
                        if(is_delta,
                           sumIf(Sum, TimeUnix >= {From}),
                           argMaxIf(Sum, TimeUnix, TimeUnix >= {From}) - if(was_reset, 0, argMaxIf(Sum, TimeUnix, TimeUnix < {From}))
-                          + if(was_reset, greatest(argMaxIf(Sum, arraySum(BucketCounts), TimeUnix >= {From}) - argMaxIf(Sum, TimeUnix, TimeUnix < {From}), 0), 0)) AS series_sum,
+                          + if(was_reset AND peak_n > before_n, greatest(argMaxIf(Sum, arraySum(BucketCounts), TimeUnix >= {From}) - argMaxIf(Sum, TimeUnix, TimeUnix < {From}), 0), 0)) AS series_sum,
                        arrayExists((c, i) -> c > 0 AND NOT ((i = 1 OR ExplicitBounds[i - 1] < 0) AND (i > length(ExplicitBounds) OR ExplicitBounds[i] >= 0)),
                                    inc, arrayEnumerate(inc)) AS beyond_zero,
                        -- blind spots: a sum of 0 over only first-bucket observations, and negative values that truly sum to 0, can't be told from a missing sum

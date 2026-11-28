@@ -336,6 +336,20 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
+        public async Task Cumulative_reset_with_a_smaller_peak_than_before_the_window_counts_only_the_restarted_counts_Async()
+        {
+            LocalStack.RequireAvailable();
+            var service = $"hist-{_run}-smallpeak";
+            // [100,0,0] before the window; after a same-start restart the only point in it is [0,50,0]. Clamping per bucket would read 100; it is 50.
+            await LocalStack.SendAsync("metrics", OtlpMetrics.BucketHistogram(Resource(service), Metric, OtlpMetrics.Cumulative, At(-30), [], Bounds,
+                (At(-5), [100, 0, 0], 50), (At(4), [0, 50, 0], 75)));
+            await WaitAsync("otel_metrics_histogram", service, 2);
+
+            Assert.Equal(50, (await ObserveAsync(Rule(service, MetricAggregation.P50))).Samples);
+            Assert.Equal(50d / 600, (await ObserveAsync(Rule(service, MetricAggregation.Rate))).Value!.Value, 9);
+        }
+
+        [Fact]
         public async Task Subject_host_groups_by_host_Async()
         {
             LocalStack.RequireAvailable();
