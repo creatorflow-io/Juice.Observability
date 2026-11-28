@@ -204,6 +204,9 @@ $_layout-tokens: (bg: bg, surface: surface, border: border, text: text, muted: m
     // touch target puts the 18px box 20px down, the field's input line (density -1) is 4px lower than that (e2e/forms-layout.mjs).
     > mat-checkbox, > mat-slide-toggle, > mat-radio-group { align-self: start; margin-top: 10px; }
     > .jc-field > mat-checkbox, > .jc-field > mat-slide-toggle, > .jc-field > mat-radio-group { display: block; padding-top: 10px; }
+    // A label that wraps keeps the box at the first line, not centred beside all of them.
+    > mat-checkbox .mdc-form-field, > .jc-field > mat-checkbox .mdc-form-field { align-items: flex-start; }
+    > mat-checkbox .mdc-form-field > label, > .jc-field > mat-checkbox .mdc-form-field > label { padding-top: 10px; }
     > .jc-form-actions { grid-column: 1 / -1; }
     @media (max-width: 520px) { > mat-form-field.jc-field-wide, > .jc-field.jc-field-wide { grid-column: auto; } } }
   // The same in a plain (flex) form, where the rest of the row stays centred: a checkbox starts at the top, level with the inputs.
