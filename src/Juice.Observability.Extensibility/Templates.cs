@@ -1,6 +1,7 @@
 using System.Data.Common;
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Juice.Observability.Extensibility;
 
@@ -65,12 +66,57 @@ public interface IRuleThresholdProvider
 
 public readonly record struct RuleThreshold(double Threshold, double Recovery);
 
+/// <summary>Host plumbing: records which module registered a template or threshold provider, so the host can check that its key carries the module's prefix.</summary>
+public sealed record ModuleRuleContribution(string Module, Type Type);
+
+public static class RuleTemplateKeys
+{
+    private static readonly System.Text.RegularExpressions.Regex Name = new(@"^[a-z0-9][a-z0-9-]{0,62}\z", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>Null when <paramref name="key"/> is <c>&lt;module&gt;.&lt;name&gt;</c> for this module; otherwise why not.</summary>
+    public static string? Error(string module, string? key)
+        => key is not null && key.StartsWith(module + ".", StringComparison.Ordinal) && Name.IsMatch(key[(module.Length + 1)..])
+            ? null
+            : $"the key '{key}' must be '{module}.<name>' (name: lower case letters, digits and '-', at most 63 characters)";
+}
+
 public static class RuleTemplateModuleExtensions
 {
-    /// <summary>Key <c>&lt;module&gt;.&lt;name&gt;</c>, unique, not a built-in.</summary>
+    /// <summary>Key <c>&lt;module&gt;.&lt;name&gt;</c>, unique, not a built-in. The host creates the type once, as a singleton.</summary>
     public static IModuleServicesBuilder AddRuleTemplate<T>(this IModuleServicesBuilder b) where T : class, IRuleTemplate
-        => throw new NotImplementedException();
+    {
+        Contribute<T>(b, "rule template");
+        b.Services.AddSingleton<IRuleTemplate, T>();
+        if (typeof(T).GetConstructor(Type.EmptyTypes) is not null && RuleTemplateKeys.Error(b.Module.Name, Activator.CreateInstance<T>().Info.Key) is { } error)
+        {
+            throw new ModuleCompositionException($"module '{b.Module.Name}': rule template {typeof(T).Name}: {error}");
+        }
+        return b;
+    }
 
+    /// <summary>Key <c>&lt;module&gt;.&lt;name&gt;</c>, unique. The host creates the type once, as a singleton.</summary>
     public static IModuleServicesBuilder AddThresholdProvider<T>(this IModuleServicesBuilder b) where T : class, IRuleThresholdProvider
-        => throw new NotImplementedException();
+    {
+        Contribute<T>(b, "threshold provider");
+        b.Services.AddSingleton<IRuleThresholdProvider, T>();
+        if (typeof(T).GetConstructor(Type.EmptyTypes) is not null && RuleTemplateKeys.Error(b.Module.Name, Activator.CreateInstance<T>().Key) is { } error)
+        {
+            throw new ModuleCompositionException($"module '{b.Module.Name}': threshold provider {typeof(T).Name}: {error}");
+        }
+        return b;
+    }
+
+    private static void Contribute<T>(IModuleServicesBuilder b, string what)
+    {
+        ArgumentNullException.ThrowIfNull(b);
+        if (typeof(T).IsAbstract)
+        {
+            throw new ModuleCompositionException($"module '{b.Module.Name}': {what} {typeof(T).Name} must be a concrete class");
+        }
+        if (b.Services.Any(d => d.ServiceType == typeof(ModuleRuleContribution) && d.ImplementationInstance is ModuleRuleContribution c && c.Type == typeof(T)))
+        {
+            throw new ModuleCompositionException($"module '{b.Module.Name}': {what} {typeof(T).Name} is registered more than once");
+        }
+        b.Services.AddSingleton(new ModuleRuleContribution(b.Module.Name, typeof(T)));
+    }
 }

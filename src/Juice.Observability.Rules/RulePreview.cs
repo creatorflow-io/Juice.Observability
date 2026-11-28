@@ -1,4 +1,5 @@
 using Juice.Observability.Data;
+using Juice.Observability.Extensibility;
 
 namespace Juice.Observability.Rules
 {
@@ -56,7 +57,7 @@ namespace Juice.Observability.Rules
         }
 
         /// <summary>
-        /// Replays the alert lifecycle over the points (oldest first), per subject, as the evaluator applies it: <see cref="AlertLifecycle.Classify"/>
+        /// Replays the alert lifecycle over the points (oldest first), per subject, as the evaluator applies it: <see cref="AlertLifecycle.Classify(RuleDefinition, RuleThreshold, double?, long)"/>
         /// then <see cref="AlertLifecycle.Next"/>, a subject missing from a point is no data, and a resolved alert starts a cooldown if it had fired.
         /// At most <paramref name="maxSubjects"/> are returned, those that would fire most first; <paramref name="truncated"/> says some were left out.
         /// </summary>
@@ -90,7 +91,7 @@ namespace Juice.Observability.Rules
 
         private static void Step(RuleDefinition rule, Tracker t, DateTimeOffset at, RuleObservation? observation)
         {
-            var condition = observation is null ? Condition.NoData : AlertLifecycle.Classify(rule, observation.Value, observation.Samples);
+            var condition = observation is null ? Condition.NoData : AlertLifecycle.Classify(rule, RuleThresholds.Fixed(rule), observation.Value, observation.Samples);
             var value = condition == Condition.NoData ? null : observation!.Value;
             t.Points.Add(new PreviewPoint(at, value, condition));
             if (condition == Condition.Breach) t.Breaches++;

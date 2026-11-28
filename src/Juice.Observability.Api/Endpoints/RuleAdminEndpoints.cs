@@ -114,7 +114,7 @@ namespace Juice.Observability.Api.Endpoints
                         // Accepted as given: the kind is checked against the aggregation, and the rule observes nothing if it is wrong.
                     }
                 }
-                var errors = definition.Validate(http.RequestServices.GetRequiredService<SignalPacks>()).ToList();
+                var errors = definition.Validate(http.RequestServices.GetRequiredService<SignalPacks>(), http.RequestServices.GetService<Extensibility.IRuleTemplateRegistry>()).ToList();
                 return errors.Count > 0 ? (null, Invalid(errors), null, null) : (definition, null, unseen, catalog);
             }
             catch (JsonException e)
