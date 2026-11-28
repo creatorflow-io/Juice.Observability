@@ -116,6 +116,40 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
+        public void Each_new_service_mounts_only_its_own_otlp_token()
+        {
+            var compose = ParseYaml(File.ReadAllText(Path.Combine(Repo(), "deploy", "local", "docker-compose.yml")));
+            var init = File.ReadAllText(Path.Combine(Repo(), "deploy", "local", "scripts", "init.sh"));
+
+            foreach (var (service, file) in new[] { ("host-collector", "host-collector-otlp-token"), ("sample-service", "sample-otlp-token") })
+            {
+                var volumes = Items(Child(compose, "services", service), "volumes");
+                Assert.DoesNotContain(volumes, v => v.Contains("otlp-tokens"));                // not the file of every token
+                Assert.Contains(volumes, v => v.StartsWith($"./secrets/{file}:") && v.EndsWith(":ro"));
+                Assert.Contains($"own_otlp_token {service.Replace("-service", "")}", init);   // init.sh writes it, and adds it to otlp-tokens
+            }
+        }
+
+        [Fact]
+        public void Host_collector_takes_the_host_name_from_JUICE_HOST_NAME()
+        {
+            var text = File.ReadAllText(Path.Combine(Repo(), "deploy", "host-collector", "config.yaml"));
+            var config = ParseYaml(text);
+
+            // host.name is set from the variable (only when it is set), after detection, and the pipeline runs the processor.
+            var statements = string.Join('\n', Items(config, "processors", "transform/host_name", "metric_statements", "statements"));
+            Assert.Contains("host.name", statements);
+            Assert.Contains("${env:JUICE_HOST_NAME", statements);
+            Assert.Contains("where", statements);
+            var processors = Items(config, "service", "pipelines", "metrics", "processors");
+            Assert.True(processors.IndexOf("transform/host_name") > processors.IndexOf("resource_detection"), "after resource_detection");
+
+            // The local stack passes the same variable.
+            var compose = File.ReadAllText(Path.Combine(Repo(), "deploy", "local", "docker-compose.yml"));
+            Assert.Contains("JUICE_HOST_NAME: ${JUICE_HOST_NAME", compose);
+        }
+
+        [Fact]
         public void Shipped_rules_json_validates()
         {
             var configuration = new ConfigurationBuilder().AddJsonFile(Path.Combine(Repo(), "deploy", "local", "rules.json")).Build();

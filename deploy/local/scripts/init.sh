@@ -113,6 +113,22 @@ if $force || [[ ! -f secrets/platform-otlp-token ]]; then
   secret > secrets/platform-otlp-token
   echo "wrote secrets/platform-otlp-token"
 fi
+# A token of its own for each service that sends through the Collector from this stack (Phase 12: the host Collector and the sample service),
+# each in a file of its own that only that service mounts, and a line in otlp-tokens so the Collector accepts it. Existing tokens and files are
+# kept; a missing file is written, and a token missing from otlp-tokens is added (restart the Collector after a change).
+own_otlp_token() {
+  local file=secrets/$1-otlp-token
+  if [[ ! -f $file ]]; then
+    secret > "$file"
+    echo "wrote $file"
+  fi
+  if ! grep -qF "$(cat "$file") " secrets/otlp-tokens; then
+    echo "$(cat "$file") $1" >> secrets/otlp-tokens
+    echo "added $1 to secrets/otlp-tokens"
+  fi
+}
+own_otlp_token host-collector
+own_otlp_token sample
 
 if $force || [[ ! -f secrets/tls/server.crt ]]; then
   openssl req -x509 -newkey rsa:2048 -nodes -days 825 -subj "/CN=Juice Observability local CA" \

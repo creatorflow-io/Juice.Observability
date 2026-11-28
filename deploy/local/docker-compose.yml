@@ -77,8 +77,9 @@ services:
         condition: service_healthy
 
   # The host Collector (Phase 12 R7), the shipped ../host-collector/config.yaml: scrapes this machine's CPU, memory and disks and sends them over OTLP
-  # to the Collector above, as a host elsewhere would. The host root is mounted read-only. It reuses the first token of secrets/otlp-tokens
-  # here; a real host gets a token of its own (../host-collector/README.md). The Collector above also scrapes host metrics itself (its
+  # to the Collector above, as a host elsewhere would. The host root is mounted read-only.
+  # It has a token of its own (secrets/host-collector-otlp-token, which scripts/init.sh adds to otlp-tokens) and mounts only that file,
+  # as a real host would (../host-collector/README.md). The Collector above also scrapes host metrics itself (its
   # host_metrics receiver); both name the host the same, and the rules take a ratio or the latest value per host, so the two sources agree.
   host-collector:
     image: otel/opentelemetry-collector-contrib:0.163.1
@@ -86,19 +87,19 @@ services:
     restart: unless-stopped
     environment:
       JUICE_OTLP_ENDPOINT: https://otel-collector:4317
-      JUICE_OTLP_TOKEN_FILE: /etc/otelcol/secrets/otlp-tokens
+      JUICE_OTLP_TOKEN_FILE: /etc/otelcol/secrets/otlp-token
       JUICE_OTLP_CA_FILE: /etc/otelcol/tls/ca.crt
-      OTEL_RESOURCE_ATTRIBUTES: host.name=${JUICE_HOST_NAME:-local-docker-host}
+      JUICE_HOST_NAME: ${JUICE_HOST_NAME:-local-docker-host}
     volumes:
       - ../host-collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
-      - ./secrets/otlp-tokens:/etc/otelcol/secrets/otlp-tokens:ro
+      - ./secrets/host-collector-otlp-token:/etc/otelcol/secrets/otlp-token:ro
       - ./secrets/tls/ca.crt:/etc/otelcol/tls/ca.crt:ro
       - /:/hostfs:ro
     depends_on:
       otel-collector:
         condition: service_started
 
-  # Only with --profile sample: a Python service with no Juice code (tests/sample-service), sending its traces and four metrics
+  # Only with --profile sample: a Python service with no Juice code (tests/sample-service), with its own token (secrets/sample-otlp-token), sending its traces and four metrics
   # to the Collector. docker compose --profile sample up -d --build sample-service
   sample-service:
     profiles: ["sample"]
@@ -115,9 +116,9 @@ services:
       OTEL_METRICS_EXPORTER: otlp
       OTEL_LOGS_EXPORTER: none
       OTEL_METRIC_EXPORT_INTERVAL: "10000"
-      SAMPLE_OTLP_TOKEN_FILE: /run/otlp-tokens
+      SAMPLE_OTLP_TOKEN_FILE: /run/otlp-token
     volumes:
-      - ./secrets/otlp-tokens:/run/otlp-tokens:ro
+      - ./secrets/sample-otlp-token:/run/otlp-token:ro
       - ./secrets/tls/ca.crt:/etc/otelcol/tls/ca.crt:ro
     depends_on:
       otel-collector:

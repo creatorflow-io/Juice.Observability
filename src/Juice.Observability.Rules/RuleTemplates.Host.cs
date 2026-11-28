@@ -35,7 +35,9 @@ namespace Juice.Observability.Rules
         // CPU time is a cumulative counter per (cpu, state), counted as the other counters are (CounterIncrease) with one difference. The increase
         // is measured from the series' last value before the window; failing that, from zero for a series that started in the window (a restart),
         // but from the series' first point in the window for an older one: a hostmetrics series starts at boot, so counting it from zero would
-        // read the lifetime average. A series without a point in the window is left out. Busy is every state but idle and iowait ('wait', which
+        // read the lifetime average. (This differs on purpose from MetricThreshold counters and histograms, where a new attribute set carries the
+        // instrument's start time and so counts from zero; the rule is HostCpu's alone, because its start time is the boot time and a CPU share
+        // is a rate over elapsed time, so an old series with a single point in the window has none to measure over and is left out.) A series without a point in the window is left out. Busy is every state but idle and iowait ('wait', which
         // top doesn't count as use); the share is busy / total over all states.
         private static readonly string HostCpuTime = $"""
             SELECT host, sumIf(increase, state NOT IN ('idle', 'wait')) AS busy, sum(increase) AS total

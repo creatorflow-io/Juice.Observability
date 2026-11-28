@@ -11,7 +11,7 @@
 #   JUICE_OTLP_ENDPOINT   the platform Collector's OTLP/gRPC address, for example https://otel-collector:4317
 #   JUICE_OTLP_TOKEN_FILE a file holding this Collector's bearer token (its own: a token line in the platform Collector's otlp-tokens)
 #   JUICE_OTLP_CA_FILE    the CA that signed the platform Collector's certificate
-#   JUICE_HOST_NAME       optional: names the host when the operating system's name is not the one to show (host.name)
+#   JUICE_HOST_NAME       the host.name to report; in a container set it (the OS name there is the container id) or use --uts=host
 #   JUICE_HOST_ROOT       the host's root filesystem as the Collector sees it, mounted read-only (default /hostfs)
 
 extensions:
@@ -77,11 +77,18 @@ processors:
     check_interval: 1s
     limit_percentage: 80
     spike_limit_percentage: 20
-  # Names the host as the operating system does, unless JUICE_HOST_NAME (host.name, read by the env detector) says otherwise.
+  # Names the host as the operating system does (in a container that is the container id: set JUICE_HOST_NAME, or run with --uts=host).
   resource_detection:
     detectors: [env, system]
     system:
       hostname_sources: [os]
+  # JUICE_HOST_NAME, when it is set, is the host.name, whatever was detected.
+  transform/host_name:
+    error_mode: ignore
+    metric_statements:
+      - context: resource
+        statements:
+          - set(attributes["host.name"], "${env:JUICE_HOST_NAME:-}") where "${env:JUICE_HOST_NAME:-}" != ""
   # Says where the data came from, so a host's two sources (this Collector and the platform Collector's own scrape, if the host has both) can be told apart.
   resource/source:
     attributes:
@@ -114,5 +121,5 @@ service:
   pipelines:
     metrics:
       receivers: [host_metrics]
-      processors: [memory_limiter, resource_detection, resource/source, batch]
+      processors: [memory_limiter, resource_detection, transform/host_name, resource/source, batch]
       exporters: [otlp_grpc]
