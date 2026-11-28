@@ -16,7 +16,7 @@ docker compose --profile test ps --status running --services 2>/dev/null | grep 
 
 DURATION=${1:-120s}
 IMAGE=ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.163.0
-TOKEN=$(cut -d' ' -f1 secrets/otlp-tokens)
+TOKEN=$(head -n1 secrets/otlp-tokens | cut -d' ' -f1)
 RUN=$(openssl rand -hex 4)
 SERVICE=load-$RUN
 NETWORK=${COMPOSE_PROJECT_NAME}_default

@@ -76,12 +76,15 @@ services:
       clickhouse-access:
         condition: service_healthy
 
-  # The host Collector (Phase 12 R7), the shipped ../host-collector/config.yaml: scrapes this machine's CPU, memory and disks and sends them over OTLP
-  # to the Collector above, as a host elsewhere would. The host root is mounted read-only.
+  # Only with --profile host: the host Collector (Phase 12 R7), the shipped ../host-collector/config.yaml. It scrapes this machine's CPU, memory and disks
+  # and sends them over OTLP to the Collector above, as a host elsewhere would. The host root is mounted read-only.
+  # One scraper per host: the Collector above already scrapes this machine (its host_metrics receiver) under the same host.name, so running both
+  # makes MetricThreshold with Subject=Host sum two series and double the value. Start this only for a host the Collector above does not cover.
+  # docker compose --profile host up -d host-collector
   # It has a token of its own (secrets/host-collector-otlp-token, which scripts/init.sh adds to otlp-tokens) and mounts only that file,
-  # as a real host would (../host-collector/README.md). The Collector above also scrapes host metrics itself (its
-  # host_metrics receiver); both name the host the same, and the rules take a ratio or the latest value per host, so the two sources agree.
+  # as a real host would (../host-collector/README.md).
   host-collector:
+    profiles: ["host"]
     image: otel/opentelemetry-collector-contrib:0.163.1
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
     restart: unless-stopped
