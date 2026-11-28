@@ -219,6 +219,31 @@ namespace Juice.Observability.Tests
             Assert.Equal(Condition.NoData, AlertLifecycle.Classify(below, null, 0));
         }
 
+        private static RuleDefinition FromBody(string metricJson)
+            => RuleDefinition.FromJson("{\"Key\":\"queue-depth\",\"Name\":\"Q\",\"Template\":\"MetricThreshold\",\"Threshold\":1,\"Metric\":" + metricJson + "}");
+
+        [Fact]
+        public void Null_filters_are_read_and_stored_as_an_empty_list()
+        {
+            var rule = FromBody("{\"Name\":\"m.x\",\"Kind\":\"Gauge\",\"Aggregation\":\"Last\",\"Filters\":null}");
+            Assert.Empty(rule.Validate());
+            Assert.NotNull(rule.Metric!.Filters);
+            Assert.Contains("\"Filters\":[]", rule.ToJson());
+            // The query helpers don't throw on a list that was somehow null.
+            var parameters = new Dictionary<string, object>();
+            MetricFilters.AddParameters(null!, parameters);
+            Assert.Equal("", MetricFilters.Sql(null!));
+        }
+
+        [Fact]
+        public void An_undefined_op_with_null_values_is_an_error_not_an_exception()
+        {
+            var rule = FromBody("{\"Name\":\"m.x\",\"Kind\":\"Gauge\",\"Aggregation\":\"Last\",\"Filters\":[{\"Key\":\"k\",\"Op\":9,\"Values\":null}]}");
+            Assert.Contains("Op is Equals or In", Errors(rule));
+            var nullValues = FromBody("{\"Name\":\"m.x\",\"Kind\":\"Gauge\",\"Aggregation\":\"Last\",\"Filters\":[{\"Key\":\"k\",\"Op\":\"In\",\"Values\":null}]}");
+            Assert.Contains("In takes 1 to 20", Errors(nullValues));
+        }
+
         [Fact]
         public void Only_histogram_percentiles_and_average_use_the_minimum_samples()
         {

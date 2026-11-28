@@ -8,13 +8,14 @@ namespace Juice.Observability.Rules
     internal static class MetricFilters
     {
         /// <summary>One <c> AND ...</c> condition per filter, on the data point's <c>Attributes</c>.</summary>
-        public static string Sql(IReadOnlyList<MetricFilter> filters) => string.Concat(filters.Select((f, i) => f.Op == FilterOp.Equals
+        public static string Sql(IReadOnlyList<MetricFilter>? filters) => string.Concat((filters ?? []).Select((f, i) => f.Op == FilterOp.Equals
             ? $" AND Attributes[{{f{i}k:String}}] = {{f{i}v:String}}"
             : $" AND has({{f{i}v:Array(String)}}, Attributes[{{f{i}k:String}}])"));
 
         /// <summary>Adds <c>f{i}k</c> and <c>f{i}v</c> for each filter to <paramref name="parameters"/>.</summary>
-        public static void AddParameters(IReadOnlyList<MetricFilter> filters, IDictionary<string, object> parameters)
+        public static void AddParameters(IReadOnlyList<MetricFilter>? filters, IDictionary<string, object> parameters)
         {
+            filters ??= [];
             for (var i = 0; i < filters.Count; i++)
             {
                 parameters[$"f{i}k"] = filters[i].Key;

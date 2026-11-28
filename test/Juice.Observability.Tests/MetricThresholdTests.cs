@@ -81,13 +81,23 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
+        public async Task UpDownCounter_delta_temporality_sums_the_deltas_Async()
+        {
+            LocalStack.RequireAvailable();
+            var (service, metric) = ($"mt-{_run}-updowndelta", $"mt.{_run}.updowndelta");
+            // Changes of +4, then -1 and +4 again in the window: net 7, not the last delta (4).
+            await SendAsync(OtlpMetrics.Sum(Res(service), metric, OtlpMetrics.Delta, false, Ago(20), [], (Ago(4), 4), (Ago(3), -1), (Ago(1), 4)), "sum", metric, 3);
+            Assert.Equal(7, (await ObserveOneAsync(Rule(metric, MetricKind.UpDownCounter, MetricAggregation.Last, service))).Value);
+        }
+
+        [Fact]
         public async Task Counter_rate_and_increase_exact_Async()
         {
             LocalStack.RequireAvailable();
             var (service, metric) = ($"mt-{_run}-counter", $"mt.{_run}.counter");
             // 60 more than before the window; a second series whose first point (10) counts from zero.
             await SendAsync(OtlpMetrics.Sum(Res(service), metric, OtlpMetrics.Cumulative, true, Ago(20), [("w", "a")], (Ago(7), 100), (Ago(3), 130), (Ago(1), 160)), "sum", metric, 3);
-            await SendAsync(OtlpMetrics.Sum(Res(service), metric, OtlpMetrics.Cumulative, true, Ago(20), [("w", "b")], (Ago(1), 10)), "sum", metric, 1);
+            await SendAsync(OtlpMetrics.Sum(Res(service), metric, OtlpMetrics.Cumulative, true, Ago(2), [("w", "b")], (Ago(1), 10)), "sum", metric, 1);
 
             Assert.Equal(70, (await ObserveOneAsync(Rule(metric, MetricKind.Counter, MetricAggregation.Increase, service))).Value);
             var window = Window();
@@ -102,6 +112,26 @@ namespace Juice.Observability.Tests
             var (service, metric) = ($"mt-{_run}-first", $"mt.{_run}.first");
             await SendAsync(OtlpMetrics.Sum(Res(service), metric, OtlpMetrics.Cumulative, true, Ago(2), [], (Ago(1), 9)), "sum", metric, 1);
             Assert.Equal(9, (await ObserveOneAsync(Rule(metric, MetricKind.Counter, MetricAggregation.Increase, service))).Value);
+        }
+
+        /// <summary>A start time long before the window (a process or boot start) with no point before it: the increase is from its first point in the window, not the lifetime total.</summary>
+        [Fact]
+        public async Task Counter_started_long_before_the_window_with_no_earlier_point_counts_from_its_first_point_Async()
+        {
+            LocalStack.RequireAvailable();
+            var (service, metric) = ($"mt-{_run}-oldstart", $"mt.{_run}.oldstart");
+            await SendAsync(OtlpMetrics.Sum(Res(service), metric, OtlpMetrics.Cumulative, true, Ago(600), [], (Ago(3), 4000), (Ago(2), 4010), (Ago(1), 4015)), "sum", metric, 3);
+            Assert.Equal(15, (await ObserveOneAsync(Rule(metric, MetricKind.Counter, MetricAggregation.Increase, service))).Value);
+        }
+
+        /// <summary>One point in the window of a series that began before it, with none earlier, has nothing to measure from: no data, not an increase of 0.</summary>
+        [Fact]
+        public async Task Counter_old_series_with_a_single_point_in_the_window_is_no_data_Async()
+        {
+            LocalStack.RequireAvailable();
+            var (service, metric) = ($"mt-{_run}-single", $"mt.{_run}.single");
+            await SendAsync(OtlpMetrics.Sum(Res(service), metric, OtlpMetrics.Cumulative, true, Ago(600), [], (Ago(1), 4000)), "sum", metric, 1);
+            Assert.Empty(await Templates().ObserveAsync(Rule(metric, MetricKind.Counter, MetricAggregation.Increase, service), Window(), Ct));
         }
 
         [Fact]
