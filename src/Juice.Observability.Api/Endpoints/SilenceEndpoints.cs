@@ -52,6 +52,7 @@ namespace Juice.Observability.Api.Endpoints
             tenant.MapGet("/escalation-policies", ListPoliciesAsync);
             tenant.MapPost("/escalation-policies", CreatePolicyAsync);
             tenant.MapPut("/escalation-policies/{key}", UpdatePolicyAsync);
+            tenant.MapDelete("/escalation-policies/{key}", DeletePolicyAsync);
             tenant.MapGet("/alerts/{alertId:guid}/notifications", ForAlertAsync);
             return tenant;
         }
@@ -254,7 +255,9 @@ namespace Juice.Observability.Api.Endpoints
             if (policy is null) return Mutation.Problem(StatusCodes.Status404NotFound, "Policy not found", $"No policy '{key}'.");
             var (severity, problem) = Validate(request);
             if (problem is not null) return problem;
-            if (await RequirePipelinePolicyAsync(key, pipeline, ct) is { } missing) return missing;
+            // A selection of a pipeline policy that is gone can still be switched off (and deleted): only a change that keeps it on needs the policy.
+            var exists = await pipeline.ExistsAsync(key, ct);
+            if (!exists && request!.Enabled != false && await RequirePipelinePolicyAsync(key, pipeline, ct) is { } missing) return missing;
             policy.Name = request!.Name!;
             policy.Enabled = request.Enabled ?? true;
             policy.RuleKeys = [.. request.RuleKeys ?? []];
@@ -263,7 +266,20 @@ namespace Juice.Observability.Api.Endpoints
             policy.UpdatedAt = clock.GetUtcNow();
             mutation.Audit(AuditOutcome.Succeeded, key, new() { ["enabled"] = policy.Enabled ? "true" : "false" });
             await db.SaveChangesAsync(ct);
-            return Results.Ok(ToDto(policy, true));
+            return Results.Ok(ToDto(policy, exists));
+        }
+
+        /// <summary>Removes the selection (the pipeline's policy, whether it still exists or not, is untouched).</summary>
+        private static async Task<IResult> DeletePolicyAsync(Guid tenantId, string key, HttpContext http, PlatformDbContext db, CancellationToken ct)
+        {
+            var mutation = new Mutation(http, db, tenantId, "escalation.delete", "escalation_policy");
+            if (await mutation.RequireAsync(key, ct, Roles.Admin) is { } denied) return denied;
+            var policy = await db.EscalationPolicies.SingleOrDefaultAsync(p => p.TenantId == tenantId && p.Key == key, ct);
+            if (policy is null) return Mutation.Problem(StatusCodes.Status404NotFound, "Policy not found", $"No policy '{key}'.");
+            db.EscalationPolicies.Remove(policy);
+            mutation.Audit(AuditOutcome.Succeeded, key);
+            await db.SaveChangesAsync(ct);
+            return Results.NoContent();
         }
 
         /// <summary>

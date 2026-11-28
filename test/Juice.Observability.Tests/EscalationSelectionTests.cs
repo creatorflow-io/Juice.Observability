@@ -260,6 +260,31 @@ namespace Juice.Observability.Tests
             var refused = await admin.PutAsync($"{policies}/pager", new { name = "Pager" });
             Assert.Equal(HttpStatusCode.UnprocessableEntity, refused.StatusCode);
             Assert.Equal("no_pipeline_policy", (await ProblemAsync(refused)).Code);
+
+            // But it can still be switched off, and deleted, with its policy gone.
+            var off = await Caller.JsonAsync(await admin.PutAsync($"{policies}/pager", new { name = "Pager", enabled = false }));
+            Assert.Equal((false, false), (off.GetProperty("enabled").GetBoolean(), off.GetProperty("pipelinePolicyExists").GetBoolean()));
+            Assert.Equal(HttpStatusCode.NoContent, (await admin.SendAsync(HttpMethod.Delete, $"{policies}/pager")).StatusCode);
+            Assert.Equal(HttpStatusCode.NotFound, (await admin.SendAsync(HttpMethod.Delete, $"{policies}/pager")).StatusCode);
+            await using var after = database.Context();
+            Assert.Empty(await after.EscalationPolicies.AsNoTracking().ToListAsync(Ct));
+        }
+
+        [Fact]
+        public async Task EscalationApi_Delete_AdminOnly()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var factory = ProducerAdapterTests.Factory(database);
+            using var client = factory.CreateClient();
+            var (viewer, @operator, admin, tenant) = await Caller.AllAsync(client, database);
+            await ProducerAdapterTests.PipelinePolicyAsync(factory, "pager");
+            var policies = $"/api/v1/tenants/{tenant}/escalation-policies";
+            await Caller.JsonAsync(await admin.PostAsync(policies, new { key = "pager", name = "Pager" }));
+
+            Assert.Equal(HttpStatusCode.Forbidden, (await @operator.SendAsync(HttpMethod.Delete, $"{policies}/pager")).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await viewer.SendAsync(HttpMethod.Delete, $"{policies}/pager")).StatusCode);
+            Assert.Equal(HttpStatusCode.NoContent, (await admin.SendAsync(HttpMethod.Delete, $"{policies}/pager")).StatusCode);
         }
 
         [Fact]
