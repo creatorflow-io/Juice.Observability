@@ -38,8 +38,10 @@ namespace Juice.Observability.Tests
         private static async Task SendGaugeAsync(string service, string metric, params (DateTimeOffset At, double Value)[] points)
         {
             await LocalStack.SendAsync("metrics", OtlpMetrics.Gauge([("service.name", service)], metric, [], points));
-            for (var i = 0; i < 100 && int.Parse(await LocalStack.ClickHouseAsync($"SELECT count() FROM otel.otel_metrics_gauge WHERE MetricName = '{metric}' AND ServiceName = '{service}' AND JuiceTenant = '{LocalStack.TenantKey}'")) < points.Length; i++)
+            var seen = 0;
+            for (var i = 0; i < 100 && (seen = int.Parse(await LocalStack.ClickHouseAsync($"SELECT count() FROM otel.otel_metrics_gauge WHERE MetricName = '{metric}' AND ServiceName = '{service}' AND JuiceTenant = '{LocalStack.TenantKey}'"))) < points.Length; i++)
                 await Task.Delay(200, Ct);
+            Assert.True(seen >= points.Length, $"{metric} / {service}: {seen} of {points.Length} points arrived in 20 s");
         }
 
         private static async Task<(int Rules, int Alerts, int Audits, int Changes, int Idempotency)> CountsAsync(ScratchDatabase database)

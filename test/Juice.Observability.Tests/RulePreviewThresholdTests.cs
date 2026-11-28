@@ -77,6 +77,31 @@ namespace Juice.Observability.Tests
             }
         }
 
+        private sealed class FailsLate : IRuleThresholdProvider
+        {
+            public string Key => "demo.p95";
+
+            public async ValueTask<IReadOnlyDictionary<string, RuleThreshold>> ResolveAsync(RuleSpec rule, System.Text.Json.JsonElement? settings,
+                IReadOnlyCollection<string> subjectKeys, DateTimeOffset at, CancellationToken ct)
+            {
+                // Runs the budget out, then fails with something that is not a cancellation.
+                await Task.Delay(Timeout.Infinite, ct).ContinueWith(_ => { });
+                throw new InvalidOperationException("failed after the budget");
+            }
+        }
+
+        [Fact]
+        public async Task A_provider_that_fails_after_the_budget_ran_out_ends_the_preview_as_partial_Async()
+        {
+            var rule = Draft();
+            using var budget = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+            budget.CancelAfter(TimeSpan.FromMilliseconds(200));
+
+            var points = await RulePreview.WithThresholdsAsync(ThresholdsOf(new FailsLate()), rule, Points(0.5), budget.Token, Ct);
+
+            Assert.Empty(points);
+        }
+
         private static RuleThresholds ThresholdsOf(IRuleThresholdProvider provider)
             => new(new RuleTemplateRegistry(BuiltInTemplates.Create(null), null, [provider], [new ModuleRuleContribution("demo", provider.GetType())]));
 

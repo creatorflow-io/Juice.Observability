@@ -92,7 +92,12 @@ namespace Juice.Observability.Rules
                         // The budget ran out inside the provider: the instants so far are the result.
                         break;
                     }
-                    catch (Exception) when (!cancellationToken.IsCancellationRequested && !budget.IsCancellationRequested)
+                    catch (Exception) when (!cancellationToken.IsCancellationRequested && budget.IsCancellationRequested)
+                    {
+                        // It failed once the budget was gone (whatever it threw): the instants so far are the result.
+                        break;
+                    }
+                    catch (Exception) when (!cancellationToken.IsCancellationRequested)
                     {
                         // A provider that fails has no numbers for this instant: no data, as a subject it leaves out.
                     }
