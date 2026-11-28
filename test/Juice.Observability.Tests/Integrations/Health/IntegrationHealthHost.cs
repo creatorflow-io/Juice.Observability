@@ -32,7 +32,7 @@ namespace Juice.Observability.Tests.Integrations.Health
 
         public SampleJobsControl Control => Services.GetRequiredService<SampleJobsControl>();
 
-        public static async Task<IntegrationHealthHost> StartAsync(IReadOnlyDictionary<string, string?>? settings = null, bool sample = true, LogCapture? logs = null)
+        public static async Task<IntegrationHealthHost> StartAsync(IReadOnlyDictionary<string, string?>? settings = null, bool sample = true, LogCapture? logs = null, Action<Microsoft.AspNetCore.Builder.WebApplicationBuilder>? compose = null)
         {
             LocalStack.RequireAvailable();
             Environment.SetEnvironmentVariable("JUICE_INTEGRATION_B_TOKEN", Canary);
@@ -43,6 +43,7 @@ namespace Juice.Observability.Tests.Integrations.Health
                 {
                     b.Services.AddSingleton<Microsoft.Extensions.Logging.ILoggerProvider>(logs);
                 }
+                compose?.Invoke(b);
                 if (sample)
                 {
                     b.AddObservabilityModule<SampleModule>();
@@ -108,7 +109,22 @@ namespace Juice.Observability.Tests.Integrations.Health
             await db.SaveChangesAsync();
         }
 
+        public IntegrationHealthState State => Services.GetRequiredService<IntegrationHealthState>();
+
+        /// <summary>
+        /// A pass starts its runs and doesn't wait for them, so this waits for the runs it started and then makes one more pass, which reconciles the
+        /// alerts with what they left. Returns the first pass's outcome.
+        /// </summary>
         public async Task<LeasedPassOutcome> PassAsync(CancellationToken leaseLost = default, bool retaken = false)
+        {
+            var outcome = await OnePassAsync(leaseLost, retaken);
+            await State.WhenRunsDoneAsync();
+            await OnePassAsync(leaseLost, false);
+            return outcome;
+        }
+
+        /// <summary>One pass, and nothing waited for.</summary>
+        public async Task<LeasedPassOutcome> OnePassAsync(CancellationToken leaseLost = default, bool retaken = false)
         {
             await using var scope = Services.CreateAsyncScope();
             return await scope.ServiceProvider.GetRequiredService<IntegrationsWorker>().RunOnceAsync(new LeasedPass("integrations", 1, retaken, leaseLost), TestContext.Current.CancellationToken);

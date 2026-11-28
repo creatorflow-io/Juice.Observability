@@ -165,7 +165,7 @@ namespace Juice.Observability.Tests.Integrations.Health
         }
 
         [Fact]
-        public async Task Integration_alert_routes_notifies_and_silences_by_subject_key()
+        public async Task Integration_alert_routes_notifies_and_silences_by_rule_key()
         {
             await using var host = await IntegrationHealthHost.StartAsync();
             var id = await host.AddAsync();
@@ -185,7 +185,7 @@ namespace Juice.Observability.Tests.Integrations.Health
             Assert.Equal("integration:" + id.ToString("N"), alert.SubjectKey);
             Assert.True(SilenceMatcher.Matches(Make([IntegrationHealthRule.Key]), context));
             Assert.True(SilenceMatcher.Matches(Make([], all: true), context));
-            // A silence on a service or a host never holds an integration's alert.
+            // Silencing one instance isn't possible yet (a silence can't match a subject key): by rule key, or all alerts. A silence on a service or host never holds it.
             Assert.False(SilenceMatcher.Matches(Make([IntegrationHealthRule.Key], service: "orders"), context));
             Assert.False(SilenceMatcher.Matches(Make(["other-rule"]), context));
         }

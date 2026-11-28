@@ -90,12 +90,16 @@ namespace Juice.Observability.Api.Integrations.Health
                 CollectionOutcome outcome;
                 if (plugin is IIntegrationCollector collector)
                 {
-                    outcome = await collector.CollectAsync(context, new CollectionSinks(), timeout.Token).WaitAsync(timeout.Token);
+                    var call = collector.CollectAsync(context, new CollectionSinks(), timeout.Token);
+                    state.Attach(id, call);
+                    outcome = await call.WaitAsync(timeout.Token);
                 }
                 else
                 {
                     // A plugin with no collection is run as its health check.
-                    var report = await plugin.ValidateAsync(context, timeout.Token).WaitAsync(timeout.Token);
+                    var check = plugin.ValidateAsync(context, timeout.Token);
+                    state.Attach(id, check);
+                    var report = await check.WaitAsync(timeout.Token);
                     outcome = report.Passed ? new(CollectionResult.Succeeded)
                         : new(CollectionResult.Failed, IntegrationFailure.Remote, "Failed checks: " + string.Join(", ", report.Checks.Where(c => !c.Passed).Select(c => c.Name)));
                 }

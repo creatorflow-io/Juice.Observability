@@ -24,6 +24,65 @@ namespace Juice.Observability.Api.Integrations.Health
             _meter.CreateObservableGauge("juice.integration.freshness", Observe, "s", "Seconds since an instance last collected");
         }
 
+        private sealed class Entry
+        {
+            public volatile Task? Plugin;
+        }
+
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, Entry> _running = new();
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<Task, byte> _started = new();
+
+        /// <summary>
+        /// Takes the instance for a run on this replica, or says it is still taken: its previous run, or the plugin call of it, hasn't finished. A plugin that
+        /// ignores its cancellation token keeps its instance taken after the run timed out, so it is never called twice at once.
+        /// </summary>
+        public bool TryBegin(Guid id) => _running.TryAdd(id, new Entry());
+
+        /// <summary>The plugin call of a run that began: the instance stays taken until it ends, whatever the run did meanwhile.</summary>
+        public void Attach(Guid id, Task plugin)
+        {
+            if (_running.TryGetValue(id, out var entry))
+            {
+                entry.Plugin = plugin;
+            }
+        }
+
+        /// <summary>The run ended: the instance is free once its plugin call has ended too.</summary>
+        public void End(Guid id)
+        {
+            if (!_running.TryGetValue(id, out var entry))
+            {
+                return;
+            }
+            if (entry.Plugin is { IsCompleted: false } plugin)
+            {
+                _ = plugin.ContinueWith(t =>
+                {
+                    _ = t.Exception;
+                    _running.TryRemove(id, out _);
+                }, TaskScheduler.Default);
+            }
+            else
+            {
+                _running.TryRemove(id, out _);
+            }
+        }
+
+        /// <summary>Remembers a started run until it ends (what <see cref="WhenRunsDoneAsync"/> waits for).</summary>
+        public void Track(Task run)
+        {
+            _started.TryAdd(run, 0);
+            _ = run.ContinueWith(t => _started.TryRemove(t, out _), TaskScheduler.Default);
+        }
+
+        private SemaphoreSlim? _slots;
+
+        /// <summary>The runs at once across passes (<c>MaxConcurrentRuns</c>), shared by every pass of this replica.</summary>
+        public SemaphoreSlim Slots(int max) => _slots ?? Interlocked.CompareExchange(ref _slots, new SemaphoreSlim(Math.Max(1, max)), null) ?? _slots!;
+
+        /// <summary>The runs started so far have ended. For tests and a clean stop; a pass never waits for its runs.</summary>
+        public Task WhenRunsDoneAsync() => Task.WhenAll(_started.Keys.ToArray());
+
         /// <summary>True once the integration rule is known to exist as the platform's (cleared when the lease is retaken).</summary>
         public volatile bool RuleReady;
 
@@ -34,7 +93,8 @@ namespace Juice.Observability.Api.Integrations.Health
         {
             var id = instance.ToString("N");
             _runs.Add(1, new("plugin", plugin), new("instance", id), new("outcome", outcome));
-            if (failure != IntegrationFailure.None)
+            // The failures counter counts failed runs only: a partial run names what limited it, but isn't a failure.
+            if (failure != IntegrationFailure.None && outcome == "failed")
             {
                 _failures.Add(1, new("plugin", plugin), new("instance", id), new("reason", failure.ToString().ToLowerInvariant()));
             }

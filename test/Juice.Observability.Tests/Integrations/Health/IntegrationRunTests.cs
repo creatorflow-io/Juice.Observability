@@ -230,7 +230,7 @@ namespace Juice.Observability.Tests.Integrations.Health
             await WaitUntilAsync(async () => (await host.GetAsync(id)).RunToken is not null);
             await lost.CancelAsync();
 
-            Assert.Equal(LeasedPassOutcome.Partial, await pass);
+            await pass;
             var run = await host.GetAsync(id);
             Assert.Null(run.LastOutcome);
             Assert.Equal(IntegrationState.Enabled, run.State);
@@ -340,6 +340,50 @@ namespace Juice.Observability.Tests.Integrations.Health
             Assert.InRange(freshness.Value, 0, 60);
             // The name is nowhere in a label.
             Assert.DoesNotContain(measurements, m => m.Tags.Values.Any(v => v is string s && s.Contains(instance.Name, StringComparison.Ordinal)));
+        }
+
+        [Fact]
+        public async Task Failures_counter_counts_failed_runs_only_and_missing_plugin_emits_nothing()
+        {
+            await using var host = await IntegrationHealthHost.StartAsync();
+            var id = await host.AddAsync();
+            var gone = await host.AddAsync(plugin: "gone.plugin", name: "gone");
+            var measurements = new List<(string Name, double Value, Dictionary<string, object?> Tags)>();
+            using var listener = Listen(measurements);
+
+            // A partial run that names what limited it is a run, and not a failure.
+            host.Control.Result = CollectionResult.Partial;
+            host.Control.Failure = IntegrationFailure.RateLimited;
+            await host.PassAsync();
+
+            var mine = measurements.Where(m => (string?)m.Tags.GetValueOrDefault("instance") == id.ToString("N")).ToList();
+            Assert.Contains(mine, m => m.Name == "juice.integration.runs" && (string?)m.Tags["outcome"] == "partial");
+            Assert.DoesNotContain(mine, m => m.Name == "juice.integration.failures");
+            // Failing an instance whose plugin isn't installed is the core's doing, not a run.
+            Assert.DoesNotContain(measurements, m => (string?)m.Tags.GetValueOrDefault("instance") == gone.ToString("N"));
+        }
+
+        [Fact]
+        public async Task Freshness_reported_only_for_enabled_and_degraded_instances()
+        {
+            await using var host = await IntegrationHealthHost.StartAsync();
+            var id = await host.AddAsync();
+            var measurements = new List<(string Name, double Value, Dictionary<string, object?> Tags)>();
+            using var listener = Listen(measurements);
+            await host.PassAsync();
+            listener.RecordObservableInstruments();
+            Assert.Contains(measurements, m => m.Name == "juice.integration.freshness" && (string?)m.Tags["instance"] == id.ToString("N"));
+
+            // Failed: it has a last success, but isn't collecting, so it stops being reported as a fresh one.
+            host.Control.Result = CollectionResult.Failed;
+            host.Control.Failure = IntegrationFailure.Authentication;
+            await host.MakeDueAsync(id);
+            await host.PassAsync();
+            Assert.Equal(IntegrationState.Failed, (await host.GetAsync(id)).State);
+            measurements.Clear();
+            listener.RecordObservableInstruments();
+
+            Assert.DoesNotContain(measurements, m => m.Name == "juice.integration.freshness" && (string?)m.Tags["instance"] == id.ToString("N"));
         }
 
         [Fact]

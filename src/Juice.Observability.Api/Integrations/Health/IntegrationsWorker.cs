@@ -25,7 +25,6 @@ namespace Juice.Observability.Api.Integrations.Health
             }
             var now = clock.GetUtcNow();
             var active = await db.Instances.AsNoTracking().Where(i => Active.Contains(i.State)).ToListAsync(ct);
-            var partial = false;
             var work = new List<IntegrationInstance>();
             foreach (var instance in active)
             {
@@ -49,48 +48,58 @@ namespace Juice.Observability.Api.Integrations.Health
                     work.Add(instance);
                 }
             }
-            using var slots = new SemaphoreSlim(Math.Max(1, options.Value.MaxConcurrentRuns));
-            var runs = work.Select(async instance =>
+            // The runs are started, not waited for: one slow plugin holds back neither the other due instances (next pass) nor the alert reconcile. An instance
+            // whose previous run (or its plugin call, which may outlive the run's timeout) hasn't ended is not started again.
+            foreach (var instance in work)
             {
-                await slots.WaitAsync(ct);
-                try
+                if (state.TryBegin(instance.Id))
                 {
-                    if (await runner.ClaimAsync(instance, ct) is not { } token)
-                    {
-                        return;
-                    }
-                    await runner.RunAsync(instance, token, pass.LeaseLost);
+                    state.Track(StartRun(instance, pass.LeaseLost));
                 }
-                catch (OperationCanceledException) when (pass.LeaseLost.IsCancellationRequested || ct.IsCancellationRequested)
-                {
-                }
-                catch (Exception e) when (e is not OutOfMemoryException)
-                {
-                    partial = true;
-                    logger.LogError(e, "Integration run of {Plugin} instance {Instance} failed to record", instance.PluginKey, instance.Id.ToString("N"));
-                }
-                finally
-                {
-                    slots.Release();
-                }
-            }).ToList();
-            await Task.WhenAll(runs);
-            if (pass.LeaseLost.IsCancellationRequested)
-            {
-                return LeasedPassOutcome.Partial;
             }
             var reconciled = await ReconcileAsync(active.Count > 0, ct);
-            // Memory for the freshness gauge: replaced whole, so a deleted instance's series ends with this pass.
+            // Memory for the freshness gauge: replaced whole, so a deleted instance's series ends with this pass. Only instances that are running well report.
             if (active.Count > 0 || reconciled)
             {
-                var all = await db.Instances.AsNoTracking().Select(i => new { i.Id, i.PluginKey, i.LastSuccessAt }).ToListAsync(ct);
-                state.Replace(all.Select(i => (i.Id, i.PluginKey, i.LastSuccessAt)));
+                var all = await db.Instances.AsNoTracking().Select(i => new { i.Id, i.PluginKey, i.LastSuccessAt, i.State }).ToListAsync(ct);
+                state.Replace(all.Where(i => i.State is IntegrationState.Enabled or IntegrationState.Degraded).Select(i => (i.Id, i.PluginKey, i.LastSuccessAt)));
             }
             else
             {
                 state.Replace([]);
             }
-            return active.Count == 0 && !reconciled ? LeasedPassOutcome.Idle : partial ? LeasedPassOutcome.Partial : LeasedPassOutcome.Succeeded;
+            return active.Count == 0 && !reconciled ? LeasedPassOutcome.Idle : LeasedPassOutcome.Succeeded;
+        }
+
+        private async Task StartRun(IntegrationInstance instance, CancellationToken leaseLost)
+        {
+            var slots = state.Slots(options.Value.MaxConcurrentRuns);
+            var waited = false;
+            try
+            {
+                await slots.WaitAsync(leaseLost);
+                waited = true;
+                if (await runner.ClaimAsync(instance, leaseLost) is not { } token)
+                {
+                    return;
+                }
+                await runner.RunAsync(instance, token, leaseLost);
+            }
+            catch (OperationCanceledException) when (leaseLost.IsCancellationRequested)
+            {
+            }
+            catch (Exception e) when (e is not OutOfMemoryException)
+            {
+                logger.LogError(e, "Integration run of {Plugin} instance {Instance} failed to record", instance.PluginKey, instance.Id.ToString("N"));
+            }
+            finally
+            {
+                if (waited)
+                {
+                    slots.Release();
+                }
+                state.End(instance.Id);
+            }
         }
 
         /// <summary>A missing plugin or a config of another version: Failed, not run, and looked at again after the longest backoff.</summary>
