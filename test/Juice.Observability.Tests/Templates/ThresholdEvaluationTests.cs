@@ -20,7 +20,7 @@ namespace Juice.Observability.Tests.Templates
 
         private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-        private static RuleEvaluator Evaluator(ScratchDatabase database, ThresholdSeamTests.Provider provider, TimeProvider clock)
+        internal static RuleEvaluator Evaluator(ScratchDatabase database, ThresholdSeamTests.Provider provider, TimeProvider clock)
         {
             var clickHouse = new ClickHouseTelemetrySource(Options.Create(new ClickHouseOptions { ConnectionString = LocalStack.ClickHouseReader }));
             var registry = new RuleTemplateRegistry(BuiltInTemplates.Create(null), null, [provider], [new ModuleRuleContribution("demo", typeof(ThresholdSeamTests.Provider))]);

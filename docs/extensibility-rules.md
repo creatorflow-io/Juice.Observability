@@ -51,7 +51,7 @@ public sealed class SplitTemplate : IRuleTemplate
 
 A provider supplies numbers only: a threshold and a recovery threshold per subject. It never chooses the comparison, the template or the scope.
 
-- A rule opts in with `"ThresholdSource": { "Provider": "pro.percentile", "Settings": { ... } }`. `Settings` is at most 4096 characters of JSON.
+- A rule opts in with `"ThresholdSource": { "Provider": "pro.percentile", "Settings": { ... } }`. `Settings` is at most 4096 bytes of JSON as stored.
   A rule without one has its own numbers, its JSON and its hash are unchanged, and no provider is asked.
 - The provider is asked once per evaluation for the subjects observed and those with an open alert.
 - **A subject the provider leaves out, a non-finite number, or a pair on the wrong side (recovery above the threshold for a rule that fires above,

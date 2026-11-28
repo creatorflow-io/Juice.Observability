@@ -67,17 +67,28 @@ public interface IRuleThresholdProvider
 public readonly record struct RuleThreshold(double Threshold, double Recovery);
 
 /// <summary>Host plumbing: records which module registered a template or threshold provider, so the host can check that its key carries the module's prefix.</summary>
-public sealed record ModuleRuleContribution(string Module, Type Type);
+/// <remarks>Only the host's composition makes these (<c>AddRuleTemplate</c>, <c>AddThresholdProvider</c>): a module can't claim another module's key.</remarks>
+public sealed class ModuleRuleContribution
+{
+    internal ModuleRuleContribution(string module, Type type) => (Module, Type) = (module, type);
+
+    public string Module { get; }
+
+    public Type Type { get; }
+}
 
 public static class RuleTemplateKeys
 {
-    private static readonly System.Text.RegularExpressions.Regex Name = new(@"^[a-z0-9][a-z0-9-]{0,62}\z", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    /// <summary>The width of the <c>rules.template</c> column: a module template's key fits it, so a stored rule can name one without a migration.</summary>
+    public const int MaxLength = 40;
+
+    private static readonly System.Text.RegularExpressions.Regex Name = new(@"^[a-z0-9][a-z0-9-]*\z", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
     /// <summary>Null when <paramref name="key"/> is <c>&lt;module&gt;.&lt;name&gt;</c> for this module; otherwise why not.</summary>
     public static string? Error(string module, string? key)
-        => key is not null && key.StartsWith(module + ".", StringComparison.Ordinal) && Name.IsMatch(key[(module.Length + 1)..])
+        => key is not null && key.Length <= MaxLength && key.StartsWith(module + ".", StringComparison.Ordinal) && Name.IsMatch(key[(module.Length + 1)..])
             ? null
-            : $"the key '{key}' must be '{module}.<name>' (name: lower case letters, digits and '-', at most 63 characters)";
+            : $"the key '{key}' must be '{module}.<name>' (name: lower case letters, digits and '-'; at most {MaxLength} characters in all)";
 }
 
 public static class RuleTemplateModuleExtensions

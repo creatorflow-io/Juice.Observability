@@ -213,6 +213,52 @@ namespace Juice.Observability.Tests.Templates
         }
 
         [Fact]
+        public async Task A_template_query_with_a_top_level_OR_a_comment_or_a_placeholder_in_a_literal_is_refused_Async()
+        {
+            var telemetry = new TemplateTelemetry(ClickHouse(), new TelemetryWindow("tenant", DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow, 10));
+            var none = new Dictionary<string, object>();
+            var window = $"Timestamp >= {TemplateSql.From} AND Timestamp < {TemplateSql.To}";
+            var limit = $"LIMIT {TemplateSql.Limit}";
+            string[] refused =
+            [
+                $"SELECT 1 FROM t WHERE {TemplateSql.Tenant} OR 1 = 1 AND {window} {limit}",
+                $"SELECT 1 FROM t WHERE 1 = 1 or {TemplateSql.Tenant} AND {window} {limit}",
+                $"SELECT 1 FROM t WHERE {window} -- {TemplateSql.Tenant}\n {limit}",
+                $"SELECT 1 FROM t WHERE {window} /* {TemplateSql.Tenant} */ {limit}",
+                $"SELECT 1 FROM t WHERE x = '{TemplateSql.Tenant}' AND {window} {limit}",
+                $"SELECT 1 FROM t WHERE {TemplateSql.Tenant}\n/* hidden */ AND {window} {limit}",
+            ];
+            foreach (var sql in refused)
+            {
+                await Assert.ThrowsAsync<ArgumentException>(() => telemetry.QueryAsync(sql, none, r => 0, Ct));
+            }
+            // OR inside parentheses, in a function call or a string, is fine: it can't widen the tenant predicate.
+            string[] fine =
+            [
+                $"SELECT if(a OR b, 1, 0) FROM t WHERE {TemplateSql.Tenant} AND (x = 1 OR y = 2) AND {window} {limit}",
+                $"SELECT 1 FROM t WHERE {TemplateSql.Tenant} AND note = 'a OR b -- c' AND {window} {limit}",
+            ];
+            foreach (var sql in fine)
+            {
+                // Passes the check and reaches the (unreachable) server.
+                var e = await Record.ExceptionAsync(() => telemetry.QueryAsync(sql, none, r => 0, Ct));
+                Assert.IsNotType<ArgumentException>(e);
+            }
+        }
+
+        [Fact]
+        public void A_module_template_key_fits_the_rules_template_column_and_the_contribution_is_the_hosts_to_make()
+        {
+            Assert.Null(RuleTemplateKeys.Error("demo", "demo." + new string('a', 40 - "demo.".Length)));
+            Assert.Contains("at most 40", RuleTemplateKeys.Error("demo", "demo." + new string('a', 41 - "demo.".Length)));
+            var longest = new string('m', 32);
+            Assert.Contains("at most 40", RuleTemplateKeys.Error(longest, $"{longest}.{new string('x', 10)}"));
+            Assert.Null(RuleTemplateKeys.Error(longest, $"{longest}.{new string('x', 7)}"));
+
+            Assert.Empty(typeof(ModuleRuleContribution).GetConstructors());      // none public: the host's composition makes them
+        }
+
+        [Fact]
         public async Task The_host_only_runs_a_built_in_through_its_own_telemetry_Async()
         {
             var registry = new RuleTemplates(ClickHouse()).Registry;
