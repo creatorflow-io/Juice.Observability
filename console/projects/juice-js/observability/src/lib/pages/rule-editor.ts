@@ -167,12 +167,12 @@ function stepText(step: string): string {
         }
         @if (metric()) {
           @for (row of f.filters; track row; let i = $index) {
-            <div class="jc-field" [attr.data-testid]="'rule-filter-' + i" data-row><mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Attribute</mat-label><input matInput [name]="'filterKey-' + i" [ngModelOptions]="{ standalone: true }" [(ngModel)]="row.key" (ngModelChange)="touch('filters')" [disabled]="ro()" [attr.aria-invalid]="bad('filters')"></mat-form-field></div>
+            <div class="jc-field" [attr.data-testid]="'rule-filter-' + i" data-row><mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Attribute</mat-label><input matInput [name]="'filterKey-' + i" [ngModelOptions]="{ standalone: true }" [(ngModel)]="row.key" (ngModelChange)="touch('filters')" [disabled]="ro()" [attr.aria-invalid]="bad('filters')" [attr.aria-describedby]="bad('filters') ? 'err-filters' : null"></mat-form-field></div>
             <div class="jc-field"><mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Match</mat-label>
               <mat-select [attr.name]="'filterOp-' + i" [ngModelOptions]="{ standalone: true }" [(ngModel)]="row.op" (ngModelChange)="touch('filters')" [disabled]="ro()"><mat-option value="Equals">Equals</mat-option><mat-option value="In">In</mat-option></mat-select>
             </mat-form-field></div>
-            <div class="jc-field jc-field-wide"><mat-form-field subscriptSizing="dynamic" class="jc-field-wide"><mat-label>{{ row.op === 'In' ? 'Values, comma separated' : 'Value' }}</mat-label><input matInput [name]="'filterValues-' + i" [ngModelOptions]="{ standalone: true }" [(ngModel)]="row.values" (ngModelChange)="touch('filters')" [disabled]="ro()" [attr.aria-invalid]="bad('filters')"></mat-form-field>
-              @if (!ro()) { <button mat-button type="button" [attr.data-testid]="'rule-filter-remove-' + i" (click)="removeFilter(i)">Remove</button> }</div>
+            <div class="jc-field jc-field-wide"><mat-form-field subscriptSizing="dynamic" class="jc-field-wide"><mat-label>{{ row.op === 'In' ? 'Values, comma separated' : 'Value' }}</mat-label><input matInput [name]="'filterValues-' + i" [ngModelOptions]="{ standalone: true }" [(ngModel)]="row.values" (ngModelChange)="touch('filters')" [disabled]="ro()" [attr.aria-invalid]="bad('filters')" [attr.aria-describedby]="bad('filters') ? 'err-filters' : null"></mat-form-field>
+              @if (!ro()) { <button mat-button type="button" [attr.data-testid]="'rule-filter-remove-' + i" [attr.aria-label]="'Remove filter ' + (i + 1)" (click)="removeFilter(i)">Remove</button> }</div>
           }
           <div class="jc-form-actions jc-field-filters">
             @if (!ro()) { <button mat-button type="button" data-testid="rule-filter-add" (click)="addFilter()">Add attribute filter</button> }
@@ -253,7 +253,7 @@ export class RuleEditor {
   private readonly roles = signal({ admin: false, operate: false });
 
   /** Why the rule can't be changed by anyone: it comes from the deployment's file, or the platform made it. */
-  protected readonly lock = computed(() => { const m = this.rule()?.managedBy; return m && m !== 'api' ? m : null; });
+  protected readonly lock = computed(() => { const r = this.rule(); return r && r.managedBy !== 'api' ? (r.managedBy === 'platform' ? 'platform' : 'config') : null; });
   /** Whether this form only shows: a locked rule, or a person who is not an admin. */
   protected readonly ro = computed(() => this.lock() !== null || !this.roles().admin);
   protected readonly canPreview = computed(() => this.roles().operate && this.rule()?.template !== 'SloBurn');
@@ -264,7 +264,7 @@ export class RuleEditor {
   constructor() {
     this.refresh();
     this.api.metrics({ from: new Date(Date.now() - 86_400_000).toISOString(), to: new Date().toISOString() }).pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({ next: page => this.catalog.set(page.items ?? []), error: () => this.catalog.set([]) });
+      .subscribe({ next: page => { this.catalog.set(page.items ?? []); this.catalogArrived(); }, error: () => this.catalog.set([]) });
   }
 
   ngOnInit() { Object.assign(this.f, formFrom(this.rule())); this.edits.update(n => n + 1); }
@@ -291,6 +291,15 @@ export class RuleEditor {
     this.clear('metricKind');
   }
   private kindFromCatalog = false;
+  /** The catalog came after the form opened: a kind it gives is taken, and the aggregation is made to fit it. */
+  private catalogArrived() {
+    const kind = this.catalogKind();
+    if (!this.f.metricName.trim() || !kind || kind === this.f.metricKind) return;
+    this.f.metricKind = kind;
+    this.kindFromCatalog = true;
+    this.fitAggregation();
+    this.edits.update(n => n + 1);
+  }
   protected kindChanged() { this.kindFromCatalog = false; this.fitAggregation(); this.touch('metricKind'); }
   private fitAggregation() {
     const fits = AGGREGATIONS[this.kind()] ?? [];

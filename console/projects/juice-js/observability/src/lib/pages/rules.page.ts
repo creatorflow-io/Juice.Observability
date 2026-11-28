@@ -53,8 +53,8 @@ import { RuleEditor, TEMPLATES } from './rule-editor';
             </td>
             <td>{{ r.lastEvaluatedAt | ago }}</td>
             <td class="jc-row-actions">
-              @if (r.managedBy === 'api' && admin()) { <button mat-button type="button" [attr.data-testid]="'rule-edit-' + r.key" (click)="edit(r)">Change</button> }
-              @else { <button mat-button type="button" [attr.data-testid]="'rule-view-' + r.key" (click)="edit(r)">View</button> }
+              @if (r.managedBy === 'api' && admin()) { <button mat-button type="button" [attr.data-testid]="'rule-edit-' + r.key" [disabled]="data.isLoading()" (click)="edit(r)">Change</button> }
+              @else { <button mat-button type="button" [attr.data-testid]="'rule-view-' + r.key" [disabled]="data.isLoading()" (click)="edit(r)">View</button> }
             </td>
           </tr>
         }
