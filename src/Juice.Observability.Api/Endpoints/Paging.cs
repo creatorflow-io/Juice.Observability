@@ -1,10 +1,6 @@
-using System.Buffers.Text;
-using System.Text;
-
 namespace Juice.Observability.Api.Endpoints
 {
-    /// <summary>A page of results. <see cref="NextCursor"/> is null on the last page.</summary>
-    public sealed record Page<T>(IReadOnlyList<T> Items, string? NextCursor);
+    // Page<T> is Juice.Observability.Extensibility.Page<T> (global using in this project): one type for the platform and its modules, the same JSON.
 
     /// <summary>
     /// Opaque cursor pagination (requirements §6.1). Results are ordered by id, so paging never repeats a row or skips
@@ -13,54 +9,25 @@ namespace Juice.Observability.Api.Endpoints
     /// </summary>
     public sealed record Cursor(string Phase, Guid After)
     {
-        public const int DefaultLimit = 50;
-        public const int MaxLimit = 200;
+        public const int DefaultLimit = Extensibility.Paging.DefaultLimit;
+        public const int MaxLimit = Extensibility.Paging.MaxLimit;
 
-        public string Encode() => Base64Url.EncodeToString(Encoding.UTF8.GetBytes($"{Phase}:{After:N}"));
+        // One parser for the platform and its modules (Juice.Observability.Extensibility): the encoding and the 400 problems are the same.
+        public string Encode() => new Extensibility.PageCursor(Phase, After).Encode();
 
         public static bool TryDecode(string? value, out Cursor? cursor)
         {
-            cursor = null;
-            if (string.IsNullOrEmpty(value))
-            {
-                return true;
-            }
-            if (value.Length > 128)
-            {
-                return false;
-            }
-            try
-            {
-                var text = Encoding.UTF8.GetString(Base64Url.DecodeFromChars(value));
-                var parts = text.Split(':');
-                if (parts.Length == 2 && parts[0].Length is > 0 and <= 8 && Guid.TryParseExact(parts[1], "N", out var after))
-                {
-                    cursor = new Cursor(parts[0], after);
-                    return true;
-                }
-            }
-            catch (FormatException)
-            {
-            }
-            return false;
+            var ok = Extensibility.PageCursor.TryDecode(value, out var decoded);
+            cursor = decoded is null ? null : new Cursor(decoded.Phase, decoded.After);
+            return ok;
         }
 
         /// <summary>Validates <c>limit</c> and <c>cursor</c>; returns a 400 problem when either is invalid.</summary>
         public static IResult? Validate(int? limit, string? cursor, out int take, out Cursor? decoded)
         {
-            take = limit ?? DefaultLimit;
-            decoded = null;
-            if (take is < 1 or > MaxLimit)
-            {
-                return Results.Problem(statusCode: StatusCodes.Status400BadRequest, title: "Invalid limit",
-                    detail: $"limit must be between 1 and {MaxLimit}.");
-            }
-            if (!TryDecode(cursor, out decoded))
-            {
-                return Results.Problem(statusCode: StatusCodes.Status400BadRequest, title: "Invalid cursor",
-                    detail: "cursor must be a value returned as nextCursor.");
-            }
-            return null;
+            var problem = Extensibility.Paging.Validate(limit, cursor, out take, out var after);
+            decoded = after is null ? null : new Cursor(after.Phase, after.After);
+            return problem;
         }
     }
 }

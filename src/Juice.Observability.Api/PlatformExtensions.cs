@@ -4,6 +4,7 @@ using Juice.Messaging.Outbox.Delivery.Internal;
 using Juice.Messaging.Policies;
 using Juice.Observability.Agents;
 using Juice.Observability.Api.Endpoints;
+using Juice.Observability.Api.Modules;
 using Juice.Observability.Data;
 using Juice.Observability.Rules.Notifications;
 using Juice.Observability.Discovery;
@@ -65,8 +66,8 @@ namespace Juice.Observability.Api
             services.AddPlatformDiscovery(configuration);
             services.AddPlatformHealth(configuration);
             services.AddPlatformRules(configuration);
-            services.AddPlatformSlos(configuration);
-            services.AddPlatformAgents(configuration);
+            // The slos and agents modules, in the slot they always had: composed through the module contract (docs/extensibility.md), registering the same services.
+            services.AddInternalModules(configuration);
             services.Configure<IntegrationOptions>(configuration.GetSection(IntegrationOptions.Section));
             services.AddPlatformAuthentication(configuration);
             services.AddPlatformProblemDetails();
@@ -159,7 +160,10 @@ namespace Juice.Observability.Api
             app.MapPlatformNotificationsAdmin();
             app.MapPlatformNotificationsInbox();
             // Answers only on the agent listener, and only when agents are enabled (Agents:Enabled).
-            app.MapAgentApi();
+            // (the agents module's, with any other the internal modules own outside /api/v1)
+            Modules.ModuleEndpoints.MapRoot(app);
+            // Every route is mapped: a module route that lowers the floor refuses the host here, before it starts.
+            Modules.ModuleEndpoints.VerifyFloor(app);
             return app;
         }
     }

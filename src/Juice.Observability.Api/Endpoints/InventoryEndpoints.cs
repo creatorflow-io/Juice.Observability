@@ -96,10 +96,8 @@ namespace Juice.Observability.Api.Endpoints
             tenant.MapSilenceEndpoints();
             tenant.MapIncidentEndpoints();
             tenant.MapSuggestionEndpoints();
-            tenant.MapAgentEndpoints();
-            tenant.MapActionRequestEndpoints();
-            tenant.MapBundleEndpoints();
-            tenant.MapSloEndpoints();
+            // The slos and agents modules (tenant root), and every external module under {tenant}/{name}; /modules.
+            Modules.ModuleEndpoints.Map(api, tenant);
             tenant.MapTelemetryEndpoints();
             return app;
         }
