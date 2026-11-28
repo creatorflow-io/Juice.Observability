@@ -47,6 +47,7 @@ namespace Juice.Observability.Rules
                 WHERE {Tenant} AND TimeUnix >= {From} - INTERVAL 1 HOUR AND TimeUnix < {To} AND MetricName = '{CpuTime}' AND {HostFilter}
                 GROUP BY host, state, cityHash64(ResourceAttributes, Attributes), StartTimeUnix
                 HAVING countIf(TimeUnix >= {From}) > 0
+                   AND NOT (countIf(TimeUnix < {From}) = 0 AND StartTimeUnix < {From} AND countIf(TimeUnix >= {From}) < 2)
             )
             WHERE host != ''
             GROUP BY host
