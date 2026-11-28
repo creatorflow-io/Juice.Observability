@@ -44,6 +44,9 @@ namespace Juice.Observability.Data
         protected virtual void LogFailure(Exception exception)
             => Logger.LogError(exception, "{Worker} pass failed; retrying in {Interval}", Worker, Interval);
 
+        /// <summary>At a tick where another replica holds the lease (or this one could not take it): for a worker that has work of its own to give up.</summary>
+        protected virtual Task OnLeaseNotHeldAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             var interval = Interval;
@@ -75,6 +78,10 @@ namespace Juice.Observability.Data
                                 pass.Idle();
                                 break;
                         }
+                    }
+                    else
+                    {
+                        await OnLeaseNotHeldAsync(stoppingToken);
                     }
                 }
                 catch (Exception ex) when (!stoppingToken.IsCancellationRequested)

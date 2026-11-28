@@ -158,6 +158,80 @@ namespace Juice.Observability.Tests.Templates
             await b.StopAsync(Ct);
         }
 
+        /// <summary>The scheduler runs on the leased worker loop: a rule that waits for a worker gives up when the lease is lost, and the replica that takes it evaluates it.</summary>
+        [Fact]
+        public async Task Scheduler_on_leased_host_drops_queued_rules_on_lease_loss()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var release = new ManualResetEventSlim();
+            // The first evaluation holds the only worker inside its provider; the second waits behind it.
+            var provider = new ThresholdSeamTests.Provider(_ =>
+            {
+                entered.TrySetResult();
+                release.Wait(TimeSpan.FromSeconds(60));
+                return new Dictionary<string, RuleThreshold>();
+            });
+            foreach (var key in new[] { $"queue-{_run}-a", $"queue-{_run}-b" })
+            {
+                await AddRuleAsync(database, ThresholdSeamTests.Rule(r =>
+                {
+                    r.Key = key;
+                    r.ThresholdSource = new RuleThresholdSource { Provider = "demo.p95" };
+                }));
+            }
+            var options = new RulesOptions { Tick = TimeSpan.FromMilliseconds(200), MaxConcurrency = 1, EvaluationTimeout = TimeSpan.FromMinutes(2) };
+            var registry = new RuleTemplateRegistry(BuiltInTemplates.Create(null), null, [provider], [new ModuleRuleContribution("demo", typeof(ThresholdSeamTests.Provider))]);
+            var services = new ServiceCollection().AddDbContext<PlatformDbContext>(o => PlatformDbContext.Configure(o, database.ConnectionString)).BuildServiceProvider();
+            var released = 0;
+            var queued = 0;
+            using var listener = new MeterListener
+            {
+                InstrumentPublished = (instrument, l) =>
+                {
+                    if (instrument.Meter.Name == "Juice.Observability" && instrument.Name is "juice.observability.rules.skipped" or "juice.observability.rules.queued")
+                        l.EnableMeasurementEvents(instrument);
+                },
+            };
+            listener.SetMeasurementEventCallback<long>((i, _, tags, _) =>
+            {
+                if (i.Name.EndsWith("queued", StringComparison.Ordinal)) Interlocked.Increment(ref queued);
+                foreach (var tag in tags)
+                {
+                    if (i.Name.EndsWith("skipped", StringComparison.Ordinal) && tag is { Key: "reason", Value: "released" }) Interlocked.Increment(ref released);
+                }
+            });
+            listener.Start();
+            using var scheduler = new RuleScheduler(services.GetRequiredService<IServiceScopeFactory>(),
+                ThresholdEvaluationTests.Evaluator(database, provider, TimeProvider.System), Options.Create(options),
+                Options.Create(new PlatformOptions { TenantKey = LocalStack.TenantKey }), TimeProvider.System,
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<RuleScheduler>.Instance, registry);
+            try
+            {
+                await scheduler.StartAsync(Ct);
+                await entered.Task.WaitAsync(TimeSpan.FromSeconds(30), Ct);
+                await WaitAsync(() => Volatile.Read(ref queued) > 0);
+
+                // The lease's session ends: the scheduler takes it again as a new generation, and what it queued before gives up.
+                await using (var admin = new Npgsql.NpgsqlConnection(database.ConnectionString))
+                {
+                    await admin.OpenAsync(Ct);
+                    await using var kill = new Npgsql.NpgsqlCommand(
+                        $"SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity WHERE datname = '{database.Name}' AND application_name LIKE 'juice-worker:rules:%'", admin);
+                    Assert.Equal(1L, await kill.ExecuteScalarAsync(Ct));
+                }
+                await WaitAsync(() => Volatile.Read(ref released) > 0);
+
+                Assert.Equal(1, provider.Calls);   // the queued rule never ran under the lost lease
+            }
+            finally
+            {
+                release.Set();
+                await scheduler.StopAsync(Ct);
+            }
+        }
+
         private static async Task WaitAsync(Func<bool> condition)
         {
             for (var i = 0; i < 150 && !condition(); i++) await Task.Delay(200, Ct);
