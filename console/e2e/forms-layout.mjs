@@ -36,6 +36,26 @@ const forms = {
   escalation: { path: 'escalation', open: 'policy-new', form: null },
 };
 
+/**
+ * In the page: every field box in a row starts at the same top. The fill containers (not the hints or errors under them) of the fields that
+ * share a row (the same form, overlapping vertically) are compared; the result lists each row's spread.
+ */
+const rowSpread = ({ formId }) => {
+  const form = document.querySelector(`[data-testid="${formId}"]`) ?? document.querySelector('form.jc-form, form') ?? document;
+  const fills = [...form.querySelectorAll('mat-form-field')].filter(f => f.getClientRects().length > 0)
+    .map(f => ({ r: (f.querySelector('.mdc-text-field') ?? f).getBoundingClientRect(), label: f.querySelector('mat-label')?.textContent.trim() }))
+    .sort((a, b) => a.r.top - b.r.top);
+  const rows = [];
+  for (const x of fills) {
+    const row = rows.find(r => x.r.top < r[0].r.bottom && x.r.bottom > r[0].r.top);
+    if (row) row.push(x); else rows.push([x]);
+  }
+  return rows.filter(r => r.length > 1).map(r => ({
+    spread: Math.round((Math.max(...r.map(x => x.r.top)) - Math.min(...r.map(x => x.r.top))) * 10) / 10,
+    tops: r.map(x => `${x.label} ${Math.round(x.r.top)}`).join(', '),
+  }));
+};
+
 /** In the page: every checkbox in the form's page that shares a row with a field, and how far its box centre is from that field's input centre. */
 const measure = ({ withErrors, formId }) => {
   const root = formId ? document.querySelector(`[data-testid="${formId}"]`) ?? document : document;
@@ -80,6 +100,7 @@ try {
   // The served build has no hub behind it (the stack's host answers its page): those console errors say nothing about the layout.
   const page = await signIn(browser, 'alice', problems, e => { if (!/negotiation|start the connection|WebSocket/.test(e)) problems.push(e); });
   let compared = 0;
+  let rowsChecked = 0;
   for (const [name, f] of Object.entries(forms)) {
     for (const width of WIDTHS) {
       for (const theme of THEMES) {
@@ -112,6 +133,10 @@ try {
         for (const withErrors of [false, true]) {
           const rows = await page.evaluate(measure, { withErrors, formId: f.form });
           const at = `${name} at ${width}px, ${theme}${withErrors ? ', neighbours with errors' : ''}`;
+          const spreads = await page.evaluate(rowSpread, { formId: f.form });
+          const ragged = spreads.filter(s => s.spread > TOLERANCE);
+          rowsChecked += spreads.length;
+          check(ragged.length === 0, `${at}: ${spreads.length} row(s) of fields start at one top${ragged.length ? ` (ragged: ${ragged.map(s => s.tops).join(' | ')})` : ''}`);
           const bad = rows.filter(r => Math.abs(r.delta) > TOLERANCE);
           compared += rows.length;
           check(bad.length === 0, `${at}: ${rows.length} checkbox/field pair(s) on one row${bad.length ? `, off by ${bad.map(r => `${r.box} ${r.delta}px`).join(', ')}` : ''}`);
@@ -119,7 +144,8 @@ try {
       }
     }
   }
-  check(compared > 0, `at least one checkbox shared a row with a field (${compared} pairs)`);
+  check(rowsChecked > 0, `fields shared a row (${rowsChecked} rows)`);
+  check(compared > 0,`at least one checkbox shared a row with a field (${compared} pairs)`);
 } finally {
   await browser.close();
 }
