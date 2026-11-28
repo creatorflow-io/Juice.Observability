@@ -270,6 +270,132 @@ namespace Juice.Observability.Tests
             Assert.False(await db.ShadowComparisons.AnyAsync(c => c.TransitionId == transition, Ct));
         }
 
+        /// <summary>The new pipeline's "ops" integration, target and route, so a firing is planned for it in dry run.</summary>
+        private static async Task PipelineEndpointAsync(WebApplicationFactory<Program> factory, Receiver receiver)
+        {
+            var notifications = factory.Services.GetRequiredService<Juice.Notifications.Embedded.NotificationsEmbeddedOptions>().TenantId;
+            await SendAsync(factory, new PutAllowlistEntry(notifications, $"{receiver.Address}/32", [receiver.Port]));
+            await SendAsync(factory, new PutIntegration(notifications, "ops", "webhook", "webhook", JsonDocument.Parse("{}").RootElement, $"env:{PipelineSecret}", 0, true));
+            await SendAsync(factory, new PutTarget(notifications, "ops", "ops", receiver.Url, null, true));
+            await SendAsync(factory, new PutRoute(notifications, "ops", JsonDocument.Parse("{}").RootElement, ["ops"], true));
+        }
+
+        private static async Task<Guid> HoldAsync(ScratchDatabase database, Guid transition, Guid? tenant = null, bool decided = false)
+        {
+            await using var db = database.Context();
+            var t = await db.AlertTransitions.AsNoTracking().SingleAsync(x => x.Id == transition, Ct);
+            var hold = new NotificationHold
+            {
+                TenantId = tenant ?? t.TenantId, AlertId = t.AlertId, TransitionId = transition, Event = NotificationPlan.Firing, SilenceId = Guid.CreateVersion7(), Request = "{}",
+                CreatedAt = DateTimeOffset.UtcNow, Reason = NotificationHoldReasons.Silence,
+                DecidedAt = decided ? DateTimeOffset.UtcNow : null, Outcome = decided ? NotificationHoldOutcomes.Sent : null,
+            };
+            db.NotificationHolds.Add(hold);
+            await db.SaveChangesAsync(Ct);
+            return hold.Id;
+        }
+
+        private static ShadowComparer Comparer(WebApplicationFactory<Program> factory, ShadowOptions options)
+            => new(factory.Services.GetRequiredService<IServiceScopeFactory>(), Options.Create(options),
+                factory.Services.GetRequiredService<IOptions<WebhookOptions>>(), TimeProvider.System, NullLogger<ShadowComparer>.Instance);
+
+        /// <summary>The hold lookup is by transition and tenant: another tenant's hold of the same transition id marks nothing.</summary>
+        [Fact, Trait("Milestone", "M53")]
+        public async Task Comparer_HoldOfOtherTenantTransition_DoesNotMarkUnit()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var (_, transition) = await ProducerAdapterTests.FireAsync(database);
+            var tenant = await ProducerAdapterTests.TenantAsync(database);
+            Guid other;
+            await using (var db = database.Context())
+            {
+                var row = new PlatformTenant { Key = "other-tenant", DisplayName = "Other" };
+                db.Tenants.Add(row);
+                await db.SaveChangesAsync(Ct);
+                other = row.Id;
+            }
+            await HoldAsync(database, transition, tenant: other);
+
+            await using (var db = database.Context())
+            {
+                Assert.Equal((false, false), await ShadowComparer.HoldAsync(db, tenant, transition, Ct));
+            }
+            var own = await HoldAsync(database, transition);
+            await using (var db = database.Context())
+            {
+                Assert.Equal((true, true), await ShadowComparer.HoldAsync(db, tenant, transition, Ct));
+            }
+            await using (var db = database.Context())
+            {
+                await db.NotificationHolds.Where(h => h.Id == own).ExecuteUpdateAsync(s => s.SetProperty(h => h.DecidedAt, DateTimeOffset.UtcNow), Ct);
+                Assert.Equal((true, false), await ShadowComparer.HoldAsync(db, tenant, transition, Ct));
+            }
+        }
+
+        /// <summary>An undecided hold keeps the unit waiting (nothing recorded, however many passes); decided, the next pass compares it, explained.</summary>
+        [Fact, Trait("Milestone", "M53")]
+        public async Task Comparer_UndecidedHold_DecidedNextPass_LabelledFromOutcome()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var factory = Factory(database);
+            _ = factory.Server;
+            await using var receiver = await Receiver.StartAsync();
+            await PipelineEndpointAsync(factory, receiver);
+            var (_, transition) = await ProducerAdapterTests.FireAsync(database);
+            await ProducerAdapterTests.PlanAsync(factory, database, transition);
+            await WouldSendAsync(factory);
+            var hold = await HoldAsync(database, transition);
+            var comparer = Comparer(factory, new ShadowOptions { Grace = TimeSpan.Zero, Interval = TimeSpan.Zero });
+
+            Assert.Equal(0, await comparer.CompareOnceAsync(Ct));
+            Assert.Equal(0, await comparer.CompareOnceAsync(Ct));
+            Assert.False(await ComparedAsync(database, transition, 0));
+
+            await using (var db = database.Context())
+            {
+                await db.NotificationHolds.Where(h => h.Id == hold).ExecuteUpdateAsync(
+                    s => s.SetProperty(h => h.DecidedAt, DateTimeOffset.UtcNow).SetProperty(h => h.Outcome, NotificationHoldOutcomes.Sent), Ct);
+            }
+            // The wait it was given ends at the next look (Interval zero here).
+            var recorded = 0;
+            for (var i = 0; i < 20 && recorded == 0; i++)
+            {
+                recorded = await comparer.CompareOnceAsync(Ct);
+            }
+            Assert.Equal(1, recorded);
+            await using var check = database.Context();
+            var differences = await check.ShadowDifferences.AsNoTracking().Where(d => d.TransitionId == transition).ToListAsync(Ct);
+            Assert.DoesNotContain(differences, d => d.Kind == ShadowDifferenceKinds.Unsettled);
+            Assert.All(differences, d => Assert.NotNull(d.Rule));
+        }
+
+        /// <summary>A hold stuck undecided past MaxWait is recorded as unsettled with no rule: a release pass stuck that long is a real fault.</summary>
+        [Fact, Trait("Milestone", "M53")]
+        public async Task Comparer_HoldUndecidedPastMaxWait_RecordedUnsettledUnexplained()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var receiver = await Receiver.StartAsync();
+            await using var factory = Factory(database);
+            _ = factory.Server;
+            await PipelineEndpointAsync(factory, receiver);
+            var (_, transition) = await ProducerAdapterTests.FireAsync(database);
+            await ProducerAdapterTests.PlanAsync(factory, database, transition);
+            await WouldSendAsync(factory);
+            await HoldAsync(database, transition);
+            var comparer = Comparer(factory, new ShadowOptions { Grace = TimeSpan.Zero, MaxWait = TimeSpan.Zero });
+
+            Assert.Equal(1, await comparer.CompareOnceAsync(Ct));
+
+            await using var db = database.Context();
+            var unsettled = await db.ShadowDifferences.AsNoTracking().Where(d => d.TransitionId == transition && d.Kind == ShadowDifferenceKinds.Unsettled).ToListAsync(Ct);
+            Assert.NotEmpty(unsettled);
+            Assert.All(unsettled, d => Assert.Null(d.Rule));
+            Assert.True((await db.ShadowComparisons.AsNoTracking().SingleAsync(c => c.TransitionId == transition, Ct)).Unexplained >= 1);
+        }
+
         private static async Task WouldSendAsync(WebApplicationFactory<Program> factory)
         {
             for (var i = 0; i < 200; i++)

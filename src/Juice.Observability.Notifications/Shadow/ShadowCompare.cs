@@ -23,9 +23,11 @@ namespace Juice.Observability.Notifications.Shadow
     /// What is compared: a transition's own notifications (step 0), or one escalation step of its alert. <c>ResolvedSince</c>: the alert
     /// resolved after it (a firing a resolve may have cancelled, Q2); <c>Held</c>: a silence held it in the new pipeline ("told" per alert, Q4).
     /// <c>FiredSince</c>: for a resolved transition, the release pass dropped its hold because the alert fired again after it (outcome
-    /// <c>dropped_stale</c>, M46c), not for another reason.
+    /// <c>dropped_stale</c>, M46c), not for another reason. <c>HoldUndecided</c>: a hold of this transition has no decision yet (<c>decided_at</c> is
+    /// null; M53): the release pass hasn't said what became of it, so the unit isn't settled.
     /// </summary>
-    public sealed record ShadowUnit(Guid TenantId, Guid TransitionId, int EscalationStep, Guid AlertId, string Event, bool ResolvedSince, bool Held, bool FiredSince = false);
+    public sealed record ShadowUnit(Guid TenantId, Guid TransitionId, int EscalationStep, Guid AlertId, string Event, bool ResolvedSince, bool Held, bool FiredSince = false,
+        bool HoldUndecided = false);
 
     /// <summary>A difference found, and the rule that explains it (null: unexplained).</summary>
     public sealed record ShadowFinding(string EndpointKey, string Kind, string? Rule, string Detail);
@@ -41,7 +43,12 @@ namespace Juice.Observability.Notifications.Shadow
             ShadowCompareOptions options)
         {
             var findings = new List<ShadowFinding>();
-            var keys = legacy.Select(l => l.EndpointKey).Concat(@new.Select(n => n.IntegrationKey)).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal);
+            var keys = legacy.Select(l => l.EndpointKey).Concat(@new.Select(n => n.IntegrationKey)).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList();
+            if (keys.Count == 0 && UndecidedHold(unit))
+            {
+                // Nothing sent or planned yet, but the release pass will: the unit waits, and past the wait it is a stuck pass.
+                findings.Add(new("(hold)", ShadowDifferenceKinds.Unsettled, null, "a hold of the transition is not decided yet"));
+            }
             foreach (var key in keys)
             {
                 var l = legacy.Where(x => x.EndpointKey == key).ToList();
@@ -64,8 +71,16 @@ namespace Juice.Observability.Notifications.Shadow
 
         private static bool Unsettled(NewSent d) => d.Status is NewStatus.Pending or NewStatus.Sending or NewStatus.Retrying;
 
+        /// <summary>A hold of the transition the release pass hasn't decided: what the new side does with it isn't known yet.</summary>
+        private static bool UndecidedHold(ShadowUnit unit) => unit.Held && unit.HoldUndecided;
+
         private static IEnumerable<ShadowFinding> Endpoint(ShadowUnit unit, string key, List<LegacySent> legacy, List<NewSent> @new, ShadowCompareOptions options)
         {
+            if (UndecidedHold(unit))
+            {
+                yield return new(key, ShadowDifferenceKinds.Unsettled, null, "not settled when compared: a hold of the transition is not decided yet");
+                yield break;
+            }
             if (legacy.Any(Unsettled) || @new.Any(Unsettled))
             {
                 yield return new(key, ShadowDifferenceKinds.Unsettled, null,
@@ -384,7 +399,7 @@ namespace Juice.Observability.Notifications.Shadow
 
         /// <summary>Slack's inline links (<c>&lt;url|label&gt;</c>) as their label: what the Slack provider's text shows beside its button.</summary>
         private static string WithoutInlineLinks(string text)
-            => System.Text.RegularExpressions.Regex.Replace(text, @"<https?://[^|>]*\|([^>]*)>", "$1");
+            => System.Text.RegularExpressions.Regex.Replace(text, @"<https?://[^|>]*\|([^>]*)>", "$1", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
         private static string? Text(JsonElement content, string name) => Property(content, name) is { ValueKind: JsonValueKind.String } v ? v.GetString() : null;
 

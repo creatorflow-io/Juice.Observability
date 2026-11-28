@@ -282,6 +282,58 @@ namespace Juice.Observability.Tests
             Assert.Equal((ShadowDifferenceKinds.Body, ShadowRules.TemplatesNotPorted), (finding.Kind, finding.Rule));
         }
 
+        private static ShadowUnit HeldUnit(Guid alertId, string @event, bool undecided, bool firedSince = false)
+            => new(TenantId, Guid.CreateVersion7(), 0, alertId, @event, false, true, firedSince, undecided);
+
+        /// <summary>M53: a hold the release pass hasn't decided isn't told per alert (legacy sent, the new side has nothing yet): the unit waits.</summary>
+        [Fact, Trait("Milestone", "M53")]
+        public void Compare_ResolvedHoldUndecided_LegacySent_IsUnsettled_NotToldPerAlert()
+        {
+            var a = Alert();
+            var payload = Payload(a, NotificationPlan.Resolved);
+            var findings = ShadowCompare.Compare(HeldUnit(a.Alert.Id, NotificationPlan.Resolved, undecided: true), [Legacy(payload)], [], Options);
+
+            var finding = Single(findings, ShadowDifferenceKinds.Unsettled, null);
+            Assert.NotEqual(ShadowRules.ToldPerAlert, finding.Rule);
+            // Also when nothing is on either side yet.
+            Single(ShadowCompare.Compare(HeldUnit(a.Alert.Id, NotificationPlan.Resolved, undecided: true), [], [], Options), ShadowDifferenceKinds.Unsettled, null);
+        }
+
+        /// <summary>M53: decided, the same unit is labelled from the hold's outcome: dropped_stale is stale_resolve_dropped, released is a match.</summary>
+        [Fact, Trait("Milestone", "M53")]
+        public void Compare_UndecidedHold_ThenDecided_LabelledFromOutcome()
+        {
+            var a = Alert();
+            var payload = Payload(a, NotificationPlan.Resolved);
+
+            Single(ShadowCompare.Compare(HeldUnit(a.Alert.Id, NotificationPlan.Resolved, undecided: true, firedSince: true), [Legacy(payload)], [], Options),
+                ShadowDifferenceKinds.Unsettled, null);
+            Single(ShadowCompare.Compare(HeldUnit(a.Alert.Id, NotificationPlan.Resolved, undecided: false, firedSince: true), [Legacy(payload)], [], Options),
+                ShadowDifferenceKinds.MissingInNew, ShadowRules.StaleResolveDropped);
+            Assert.Empty(ShadowCompare.Compare(HeldUnit(a.Alert.Id, NotificationPlan.Resolved, undecided: false), [Legacy(payload)], [New(Webhook(payload))], Options));
+        }
+
+        /// <summary>No regression: a decided hold of a firing is still told per alert.</summary>
+        [Fact, Trait("Milestone", "M53")]
+        public void Compare_FiringHeld_Decided_StillToldPerAlert()
+        {
+            var a = Alert();
+            var payload = Payload(a);
+            Single(ShadowCompare.Compare(HeldUnit(a.Alert.Id, NotificationPlan.Firing, undecided: false), [], [New(Webhook(payload))], Options),
+                ShadowDifferenceKinds.MissingInLegacy, ShadowRules.ToldPerAlert);
+            Single(ShadowCompare.Compare(HeldUnit(a.Alert.Id, NotificationPlan.Firing, undecided: false), [Legacy(payload)], [], Options),
+                ShadowDifferenceKinds.MissingInNew, ShadowRules.ToldPerAlert);
+        }
+
+        /// <summary>Only a unit with a hold waits on it: HoldUndecided without Held (no hold read) changes nothing.</summary>
+        [Fact, Trait("Milestone", "M53")]
+        public void Compare_UndecidedFlagWithoutHold_DoesNotWait()
+        {
+            var a = Alert();
+            var unit = new ShadowUnit(TenantId, Guid.CreateVersion7(), 0, a.Alert.Id, NotificationPlan.Firing, false, false, false, true);
+            Assert.Empty(ShadowCompare.Compare(unit, [Legacy(Payload(a))], [New(Webhook(Payload(a)))], Options));
+        }
+
         [Fact]
         public void Every_rule_is_named_in_the_vocabulary()
             => Assert.Equal(7, ShadowRules.All.Distinct().Count());

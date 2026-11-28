@@ -133,11 +133,11 @@ namespace Juice.Observability.Notifications.Shadow
             foreach (var (platformTenant, transitionId, step, unitAt) in units)
             {
                 var transition = await db.AlertTransitions.AsNoTracking().SingleAsync(t => t.Id == transitionId, cancellationToken);
+                var (held, undecided) = await HoldAsync(db, platformTenant, transitionId, cancellationToken);
                 var unit = new ShadowUnit(platformTenant, transitionId, step, transition.AlertId,
                     step > 0 ? NotificationPlan.Escalated : transition.ToState == AlertState.Firing ? NotificationPlan.Firing : NotificationPlan.Resolved,
                     await db.AlertTransitions.AnyAsync(t => t.AlertId == transition.AlertId && t.ToState == AlertState.Resolved && t.At > transition.At, cancellationToken),
-                    await db.NotificationHolds.AnyAsync(h => h.TransitionId == transitionId, cancellationToken),
-                    transition.ToState == AlertState.Resolved && await StaleDroppedAsync(db, transitionId, cancellationToken));
+                    held, transition.ToState == AlertState.Resolved && await StaleDroppedAsync(db, transitionId, cancellationToken, platformTenant), undecided);
                 var legacy = await LegacyAsync(db, transitionId, step, cancellationToken);
                 var @new = await NewAsync(pipeline, tenant, application, transitionId, step, cancellationToken);
                 var findings = ShadowCompare.Compare(unit, legacy, @new, compare);
@@ -155,8 +155,16 @@ namespace Juice.Observability.Notifications.Shadow
         }
 
         /// <summary>The release pass dropped the transition's hold because the alert fired again (not merely: it fired again and the hold was dropped).</summary>
-        internal static Task<bool> StaleDroppedAsync(PlatformDbContext db, Guid transitionId, CancellationToken ct)
-            => db.NotificationHolds.AnyAsync(h => h.TransitionId == transitionId && h.Outcome == NotificationHoldOutcomes.DroppedStale, ct);
+        internal static Task<bool> StaleDroppedAsync(PlatformDbContext db, Guid transitionId, CancellationToken ct, Guid? tenant = null)
+            => db.NotificationHolds.AnyAsync(h => h.TransitionId == transitionId && (tenant == null || h.TenantId == tenant) && h.Outcome == NotificationHoldOutcomes.DroppedStale, ct);
+
+        /// <summary>Whether a hold kept the transition, and whether one of its holds is still undecided (<c>decided_at</c> null); by transition and tenant.</summary>
+        internal static async Task<(bool Held, bool Undecided)> HoldAsync(PlatformDbContext db, Guid tenant, Guid transitionId, CancellationToken ct)
+        {
+            var decided = await db.NotificationHolds.AsNoTracking().Where(h => h.TenantId == tenant && h.TransitionId == transitionId)
+                .Select(h => h.DecidedAt != null).ToListAsync(ct);
+            return (decided.Count > 0, decided.Contains(false));
+        }
 
         /// <summary>
         /// Units due: transitions the platform planned since the shadow run began and at least the grace ago, and escalation steps either
