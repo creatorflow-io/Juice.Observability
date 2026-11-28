@@ -212,6 +212,7 @@ namespace Juice.Observability.Notifications
             // No row locked: either none (the request is gone), or a decision holds it.
             if (locked.Count == 0 && await db.ActionRequests.AsNoTracking().AnyAsync(r => r.Id == id, cancellationToken))
             {
+                logger.LogDebug("Approval {Key} stays kept: a decision holds request {Request}; looked at again next pass", request.IdempotencyKey, id);
                 return null;
             }
             var now = clock.GetUtcNow();

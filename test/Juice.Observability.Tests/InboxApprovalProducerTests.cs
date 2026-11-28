@@ -368,7 +368,7 @@ namespace Juice.Observability.Tests
             Assert.All(await check.NotificationParkedCalls.ToListAsync(Ct), c => Assert.NotNull(c.ReplayedAt));
         }
 
-        [Fact]
+        [Fact(Timeout = 60_000)]
         public async Task ApprovalItem_KeptWhileDown_DecisionHoldsTheRequestRow_PassDoesNotWait_KeepsItParked_NextPassDrops()
         {
             LocalStack.RequireAvailable();
