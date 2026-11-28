@@ -81,7 +81,8 @@ namespace Juice.Observability.Api
     /// <summary>
     /// The embedded inbox in the platform's host (M54), opt-in (<c>Notifications:Inbox:Enabled</c>): the notifications' inbox API and hub under
     /// <c>/notifications</c> (as the admin API), for the people of the platform's own sign-in. Juice Console's bell reads them with
-    /// <c>apiUrl: apiBase + '/notifications'</c>. Interactions aren't mapped: nothing in this host hears an inbox item's action, so a button there would do nothing.
+    /// <c>apiUrl: apiBase + '/notifications'</c>. Interactions are mapped (M56): an approval's Approve and Reject and an alert's
+    /// Acknowledge are decided in-process by <see cref="ObservabilityInboxInteractions"/>, through the same methods as the Approvals and Alert pages.
     /// </summary>
     public static class NotificationsInboxExtensions
     {
@@ -112,6 +113,8 @@ namespace Juice.Observability.Api
         {
             services.AddJuiceNotificationsInbox();
             services.AddScoped<INotificationsInboxAccess, ObservabilityInboxAccess>();
+            // What the bell's Approve, Reject and Acknowledge do (M56): the pages' own methods, called in-process.
+            services.AddScoped<IInboxInteractionHandler, ObservabilityInboxInteractions>();
             // The hub's token is in the query string, and the host's request log writes the query: it would put every session's token in the log.
             // A provider's own rule (Logging:Console:LogLevel:…) outranks a global one, so the rule is added for every provider the configuration names too.
             services.PostConfigure<LoggerFilterOptions>(options =>
@@ -151,7 +154,7 @@ namespace Juice.Observability.Api
         }
 
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-        private static void Map(IEndpointRouteBuilder app) => app.MapJuiceNotificationsInbox(NotificationsAdminExtensions.Prefix, interactions: false);
+        private static void Map(IEndpointRouteBuilder app) => app.MapJuiceNotificationsInbox(NotificationsAdminExtensions.Prefix, interactions: true);
 
         /// <summary>
         /// The bearer token the hub's connection carries (<c>?access_token=</c>): only on the hub's path, and only when the query holds exactly one
