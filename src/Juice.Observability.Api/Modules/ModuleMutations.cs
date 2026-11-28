@@ -27,11 +27,13 @@ namespace Juice.Observability.Api.Modules
             {
                 throw new InvalidOperationException("A module mutation is for the tenant the core authorized for this route.");
             }
-            return new ModuleMutation(new Mutation(http, db, tenantId, operation, targetType), db, services.GetService<ModuleDataSession>());
+            return new ModuleMutation(new Mutation(http, db, tenantId, operation, targetType), db, services.GetService<ModuleDataSession>(), http);
         }
 
-        private sealed class ModuleMutation(Mutation mutation, PlatformDbContext db, ModuleDataSession? modules) : IModuleMutation
+        private sealed class ModuleMutation(Mutation mutation, PlatformDbContext db, ModuleDataSession? modules, HttpContext http) : IModuleMutation
         {
+            private const string Begun = "module_begin";
+
             private IDbContextTransaction? _transaction;
 
             public string Actor => mutation.Actor;
@@ -43,6 +45,8 @@ namespace Juice.Observability.Api.Modules
                     throw new InvalidOperationException("A transaction is already open.");
                 }
                 _transaction = await db.Database.BeginTransactionAsync(ct);
+                // What the module saved after this point is undone, and the transaction goes on, if the caller turns out not to be allowed (RequireAsync).
+                await _transaction.CreateSavepointAsync(Begun, ct);
                 // The module's contexts, those created already and any created later, run in it: one commit for the module's rows, the audit and the idempotency record.
                 if (modules is not null)
                 {
@@ -82,6 +86,11 @@ namespace Juice.Observability.Api.Modules
                 if (roles.Length == 0 || roles.Any(r => !CoreRoles.All.Contains(r)))
                 {
                     throw new ArgumentException("Roles are a non-empty subset of CoreRoles.All.", nameof(roles));
+                }
+                if (_transaction is not null && !roles.Any(http.User.IsInRole))
+                {
+                    // Denied after the module began writing: nothing of it commits with the denial's audit record.
+                    await _transaction.RollbackToSavepointAsync(Begun, ct);
                 }
                 var denied = await mutation.RequireAsync(target, ct, roles);
                 if (denied is not null)

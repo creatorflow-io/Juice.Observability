@@ -35,19 +35,15 @@ namespace Juice.Observability.Api.Modules.ModuleData
         [GeneratedRegex("^[A-Za-z_][A-Za-z0-9_]{0,62}$", RegexOptions.CultureInvariant)]
         private static partial Regex Identifier();
 
-        // The tables of the core's model: read once, from the model alone (no database).
-        private static readonly Lazy<HashSet<(string, string)>> CoreTables = new(() =>
-        {
-            var options = new DbContextOptionsBuilder<PlatformDbContext>();
-            PlatformDbContext.Configure(options, OfflineConnection);
-            using var db = new PlatformDbContext(options.Options);
-            return db.GetService<IDesignTimeModel>().Model.GetEntityTypes()
-                .Where(e => e.GetTableName() is not null)
-                .Select(e => (e.GetSchema() ?? CoreMovedTables.Schema, e.GetTableName()!)).ToHashSet();
-        });
+        private static HashSet<(string, string)> CoreTables => CoreSchemas.Tables;
 
         public static void Add<TContext>(IModuleServicesBuilder b, Action<ModuleDataOptions>? configure) where TContext : ModuleDbContext
         {
+            // Only the host's own builder: a stand-in could report another module's name, and the module is named by what the host composes.
+            if (b is not ModuleServicesBuilder)
+            {
+                throw new ModuleCompositionException("Module data is composed only through the host's own module builder.");
+            }
             var module = b.Module.Name;
             var options = new ModuleDataOptions();
             configure?.Invoke(options);
@@ -78,8 +74,12 @@ namespace Juice.Observability.Api.Modules.ModuleData
                 {
                     throw new ModuleCompositionException($"Module '{module}' adopts {table.Schema}.{table.Name} twice.");
                 }
+                if (CoreSchemas.IsCoreSchema(table.Schema!) && table.Schema != CoreMovedTables.Schema || table.Name == ModuleDataRegistration.HistoryTable)
+                {
+                    throw new ModuleCompositionException($"Module '{module}' can't adopt {table.Schema}.{table.Name}: that schema or table belongs to the core or the database.");
+                }
                 // The core's own tables are the core's; only what moved out of it is adoptable. Anything else is outside the core's model.
-                if (CoreTables.Value.Contains((table.Schema!, table.Name!)) && !CoreMovedTables.All.Contains(table))
+                if (CoreTables.Contains((table.Schema!, table.Name!)) && !CoreMovedTables.All.Contains(table))
                 {
                     throw new ModuleCompositionException($"Module '{module}' can't adopt {table.Schema}.{table.Name}: it is a table of the core, not one of a feature that moved to a module.");
                 }
@@ -109,17 +109,43 @@ namespace Juice.Observability.Api.Modules.ModuleData
                     throw new ModuleCompositionException($"Module '{module}': {typeof(TContext).Name}.Module is '{context.Module}', and must be the name of the module that registers it.");
                 }
                 var schema = context.Schema;
-                foreach (var entity in context.GetService<IDesignTimeModel>().Model.GetEntityTypes())
+                // The module's schema and history table are its own: a schema of the core, of the database or of an embedded product would put the module's
+                // history, and so its migrations, among theirs.
+                if (CoreSchemas.IsCoreSchema(schema))
                 {
-                    if (entity.GetTableName() is not { } table)
+                    throw new ModuleCompositionException($"Module '{module}': its schema '{schema}' belongs to the core or the database; a module's schema is its name.");
+                }
+                var model = context.GetService<IDesignTimeModel>().Model;
+                foreach (var entity in model.GetEntityTypes())
+                {
+                    // Tables, views, raw queries and functions are all ways to reach a table: each must be in the module's schema or adopted, or not be one.
+                    if (entity.GetSqlQuery() is not null || entity.GetFunctionName() is not null)
                     {
-                        continue;
+                        throw new ModuleCompositionException($"Module '{module}': {entity.DisplayName()} is mapped to a SQL query or function, which can reach any table; map it to a table or view of the module.");
                     }
-                    var own = entity.GetSchema() ?? entity.Model.GetDefaultSchema();
-                    if (own != schema && !adopts.Contains(new AdoptedTable(own ?? CoreMovedTables.Schema, table)))
+                    foreach (var (kind, name, mapped) in new[]
                     {
-                        throw new ModuleCompositionException(
-                            $"Module '{module}': {entity.DisplayName()} maps to {own ?? CoreMovedTables.Schema}.{table}, outside the module's schema '{schema}' and not one of its adopted tables.");
+                        ("table", entity.GetTableName(), entity.GetSchema()),
+                        ("view", entity.GetViewName(), entity.GetViewSchema()),
+                    })
+                    {
+                        if (name is null)
+                        {
+                            continue;
+                        }
+                        var own = mapped ?? model.GetDefaultSchema() ?? CoreMovedTables.Schema;
+                        if (own != schema && !adopts.Contains(new AdoptedTable(own, name)))
+                        {
+                            throw new ModuleCompositionException(
+                                $"Module '{module}': {entity.DisplayName()} maps to {kind} {own}.{name}, outside the module's schema '{schema}' and not one of its adopted tables.");
+                        }
+                    }
+                }
+                foreach (var sequence in model.GetSequences())
+                {
+                    if ((sequence.Schema ?? model.GetDefaultSchema() ?? CoreMovedTables.Schema) != schema)
+                    {
+                        throw new ModuleCompositionException($"Module '{module}': sequence {sequence.Name} is outside the module's schema '{schema}'.");
                     }
                 }
                 return schema;

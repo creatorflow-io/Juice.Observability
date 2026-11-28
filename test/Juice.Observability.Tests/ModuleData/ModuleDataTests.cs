@@ -98,6 +98,20 @@ namespace Juice.Observability.Tests.ModuleData
         }
 
         [Fact]
+        public async Task Denial_after_the_module_wrote_commits_only_the_denial()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var host = await HostAsync(database);
+            using var client = host.As("operator");
+
+            Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsync($"/api/v1/tenants/{host.TenantId}/data-sample/items-late-deny", Json("a"), Ct)).StatusCode);
+
+            Assert.Equal(0, await CountAsync(database, "SELECT count(*) FROM data_sample.items"));
+            Assert.Equal(1, await CountAsync(database, "SELECT count(*) FROM audit_records WHERE operation = 'data-sample.item.create' AND outcome = 'Denied'"));
+        }
+
+        [Fact]
         public async Task Denied_request_audits_the_denial_and_writes_nothing_of_the_module()
         {
             LocalStack.RequireAvailable();

@@ -29,7 +29,22 @@ namespace Juice.Observability.Tests.ModuleData
         public void ConfigureServices(IModuleServicesBuilder module) => module.AddModuleData<DataSampleContext>();
 
         public void MapEndpoints(IModuleEndpointsBuilder endpoints)
-            => endpoints.Tenant.MapPost("/items", async (Guid tenantId, string? mode, DataItemRequest request, HttpContext http, IModuleMutations mutations, DataSampleContext db, CancellationToken ct) =>
+        {
+            // Writes in the transaction, and only then finds the caller isn't an admin: the denial must not commit the write.
+            endpoints.Tenant.MapPost("/items-late-deny", async (Guid tenantId, DataItemRequest request, HttpContext http, IModuleMutations mutations, DataSampleContext db, CancellationToken ct) =>
+            {
+                var mutation = mutations.Begin(http, tenantId, "data-sample.item.create", "data-sample-item");
+                await mutation.BeginTransactionAsync(ct);
+                db.Items.Add(new DataItem { Id = Guid.CreateVersion7(), TenantId = tenantId, Name = request.Name });
+                await db.SaveChangesAsync(ct);
+                if (await mutation.RequireAsync(null, ct, CoreRoles.Admin) is { } denied)
+                {
+                    return denied;
+                }
+                await mutation.SaveAsync(ct);
+                return Results.Ok();
+            });
+            endpoints.Tenant.MapPost("/items",async (Guid tenantId, string? mode, DataItemRequest request, HttpContext http, IModuleMutations mutations, DataSampleContext db, CancellationToken ct) =>
             {
                 var mutation = mutations.Begin(http, tenantId, "data-sample.item.create", "data-sample-item");
                 if (await mutation.RequireAsync(null, ct, CoreRoles.Operator, CoreRoles.Admin) is { } denied)
@@ -58,6 +73,7 @@ namespace Juice.Observability.Tests.ModuleData
                 await mutation.SaveAsync(ct);
                 return result;
             });
+        }
     }
 
     public sealed class DataSampleContext(DbContextOptions<DataSampleContext> options) : ModuleDbContext(options)

@@ -188,6 +188,32 @@ namespace Juice.Observability.Tests.ModuleData
         }
 
         [Fact]
+        public async Task Later_migration_dropping_an_adopted_table_refused_before_any_runs()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+
+            var e = await Assert.ThrowsAnyAsync<Exception>(async () => await HostAsync<DropAdoptedModule>(database));
+
+            Assert.Contains("DropTableOperation", e.ToString());
+            // The first migration, which was fine, was not run either: every pending migration is judged before the first applies.
+            Assert.Equal(0, await CountAsync(database, "SELECT count(*) FROM information_schema.tables WHERE table_name = 'adopt_drop_a'"));
+            Assert.Equal(0, await CountAsync(database, "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'adopt_drop' AND table_name = '__ef_migrations_history'"));
+        }
+
+        [Fact]
+        public async Task Migration_touching_a_core_table_refused()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+
+            var e = await Assert.ThrowsAnyAsync<Exception>(async () => await HostAsync<CoreTouchModule>(database));
+
+            Assert.Contains("AddColumnOperation on public.audit_records", e.ToString());
+            Assert.Equal(0, await CountAsync(database, "SELECT count(*) FROM information_schema.columns WHERE table_name = 'audit_records' AND column_name = 'injected'"));
+        }
+
+        [Fact]
         public async Task Migrate_false_pending_module_migration_stops_host()
         {
             LocalStack.RequireAvailable();

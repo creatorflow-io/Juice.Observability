@@ -56,16 +56,80 @@ namespace Juice.Observability.Api.Modules.ModuleData
             await locked.AcquireAsync(ct);
             await using var db = registration.Create(services, connection);
             var module = registration.Module;
-            if (registration.Adopts.Count > 0 && !(await db.Database.GetAppliedMigrationsAsync(ct)).Any())
+            var pending = (await db.Database.GetPendingMigrationsAsync(ct)).ToList();
+            // Before any runs: a module's migrations touch its own schema, and create (never drop or alter) the tables it adopts.
+            foreach (var id in pending)
             {
-                var pending = (await db.Database.GetPendingMigrationsAsync(ct)).ToList();
-                if (pending.Count > 0)
-                {
-                    await AdoptAsync(registration, db, connection, pending[0], logger, ct);
-                }
+                Guard(registration, FirstMigration(db, id), id);
+            }
+            if (registration.Adopts.Count > 0 && pending.Count > 0 && !(await db.Database.GetAppliedMigrationsAsync(ct)).Any())
+            {
+                await AdoptAsync(registration, db, connection, pending[0], logger, ct);
             }
             await db.Database.MigrateAsync(ct);
         }
+
+        /// <summary>
+        /// Refuses a migration with an operation outside the module's own schema, other than creating an adopted table (its indexes and constraints), or one
+        /// that can't be checked (raw SQL, anything this version doesn't know). A core table is in no case the module's.
+        /// </summary>
+        private static void Guard(ModuleDataRegistration registration, Migration migration, string id)
+        {
+            var own = registration.Schema;
+            var adopted = registration.Adopts.ToHashSet();
+            foreach (var operation in migration.UpOperations)
+            {
+                // The schema and table an operation acts on; additive when it only creates.
+                var (known, schema, table, additive) = Target(operation);
+                var unknown = !known;
+                var target = schema ?? own;
+                // A rename may not carry a table out of its schema either.
+                var moved = operation is RenameTableOperation rename && (rename.NewSchema ?? rename.Schema ?? own) != own;
+                var allowed = known && !moved && (target == own || (table is not null && additive && adopted.Contains(new AdoptedTable(target, table))));
+                if (!allowed)
+                {
+                    throw new ModuleMigrationException(
+                        $"Module '{registration.Module}' migration {id} is refused: {operation.GetType().Name}"
+                        + (table is null ? "" : $" on {target}.{table}") + $" is outside its schema '{own}'"
+                        + (unknown ? ", or is not an operation a module's migration may hold" : ", and only creating an adopted table is allowed there")
+                        + ". A module's migrations change its own schema, and never drop or alter a table of the core or one it adopts.");
+                }
+            }
+        }
+
+        /// <summary>The schema and table an operation acts on, and whether it only creates; not known for an operation this guard can't judge (raw SQL, extensions, databases).</summary>
+        private static (bool Known, string? Schema, string? Table, bool Additive) Target(MigrationOperation operation) => operation switch
+        {
+            EnsureSchemaOperation o => (true, o.Name, null, false),
+            CreateTableOperation o => (true, o.Schema, o.Name, true),
+            CreateIndexOperation o => (true, o.Schema, o.Table, true),
+            AddForeignKeyOperation o => (true, o.Schema, o.Table, true),
+            AddPrimaryKeyOperation o => (true, o.Schema, o.Table, true),
+            AddUniqueConstraintOperation o => (true, o.Schema, o.Table, true),
+            AddCheckConstraintOperation o => (true, o.Schema, o.Table, true),
+            DropTableOperation o => (true, o.Schema, o.Name, false),
+            AlterTableOperation o => (true, o.Schema, o.Name, false),
+            RenameTableOperation o => (true, o.Schema, o.Name, false),
+            AddColumnOperation o => (true, o.Schema, o.Table, false),
+            AlterColumnOperation o => (true, o.Schema, o.Table, false),
+            DropColumnOperation o => (true, o.Schema, o.Table, false),
+            RenameColumnOperation o => (true, o.Schema, o.Table, false),
+            DropIndexOperation o => (true, o.Schema, o.Table, false),
+            RenameIndexOperation o => (true, o.Schema, o.Table, false),
+            DropForeignKeyOperation o => (true, o.Schema, o.Table, false),
+            DropPrimaryKeyOperation o => (true, o.Schema, o.Table, false),
+            DropUniqueConstraintOperation o => (true, o.Schema, o.Table, false),
+            DropCheckConstraintOperation o => (true, o.Schema, o.Table, false),
+            InsertDataOperation o => (true, o.Schema, o.Table, false),
+            UpdateDataOperation o => (true, o.Schema, o.Table, false),
+            DeleteDataOperation o => (true, o.Schema, o.Table, false),
+            CreateSequenceOperation o => (true, o.Schema, null, false),
+            AlterSequenceOperation o => (true, o.Schema, null, false),
+            DropSequenceOperation o => (true, o.Schema, null, false),
+            RenameSequenceOperation o => (true, o.Schema, null, false),
+            RestartSequenceOperation o => (true, o.Schema, null, false),
+            _ => (false, null, null, false),
+        };
 
         /// <summary>Records the first migration as applied when the tables are all there, leaves it to run when none is, and throws when refused.</summary>
         private static async Task AdoptAsync(ModuleDataRegistration registration, DbContext db, NpgsqlConnection connection, string first, ILogger logger, CancellationToken ct)

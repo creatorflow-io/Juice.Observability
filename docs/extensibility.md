@@ -76,7 +76,7 @@ domain events are in [extensibility-workers-events.md](extensibility-workers-eve
 
 - A source acts only on the platform-managed rules of its template, in the platform tenant. A signal naming another rule, a subject or environment of
   another tenant, or a fire without a subject refuses the whole call with `ArgumentException`, and nothing is written.
-- `ApplyAsync` joins a transaction already open (a command's handler, which is how the SLO burn evaluation calls it). Outside one it commits the
+- `ApplyAsync` joins the command it is called in (the handler of a command, which is how the SLO burn evaluation calls it; call it last in the handler). In a transaction no command manages it throws, since the alert would commit without its notification. Outside any transaction it commits the
   alerts, their transitions and the outbox rows together, and takes `pg_advisory_xact_lock('alert-source:<template>')` either way.
 - A template is declared once per host and is never a registry template. The core's `SloBurn` is the slos module's. Storing a rule of a module's own
   template (and `IAlertSource.EnsureRules`) comes with the first module that moves a feature, so until then a module's source has no rules to act on.

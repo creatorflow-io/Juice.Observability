@@ -3,6 +3,7 @@ using Juice.Observability.Data;
 using Juice.Observability.Discovery;
 using Juice.Observability.Extensibility;
 using Juice.Observability.Slos;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 
 namespace Juice.Observability.Api.Modules.AlertSources
@@ -30,6 +31,10 @@ namespace Juice.Observability.Api.Modules.AlertSources
 
         public static void Add(IModuleServicesBuilder b, string template)
         {
+            if (b is not ModuleServicesBuilder)
+            {
+                throw new ModuleCompositionException("An alert source is declared only through the host's own module builder.");
+            }
             var module = b.Module.Name;
             if (string.IsNullOrEmpty(template) || template.Length > 40)
             {
@@ -49,6 +54,8 @@ namespace Juice.Observability.Api.Modules.AlertSources
             {
                 throw new ModuleCompositionException($"Module '{module}' can't declare an alert source for '{template}': it is already declared.");
             }
+            // The command an alert source sends outside a transaction: internal, so the mediator's assembly scan doesn't find it.
+            b.Services.TryAddTransient<Juice.MediatR.IRequestHandler<ApplyAlertSignals, AlertSourceResult>, ApplyAlertSignalsHandler>();
             b.Services.AddKeyedScoped<IAlertSource>(template, (services, key) => new PlatformAlertSource((string)key!, services.GetRequiredService<PlatformDbContext>(), services,
                 services.GetRequiredService<IOptions<PlatformOptions>>(), services.GetRequiredService<TimeProvider>()));
         }

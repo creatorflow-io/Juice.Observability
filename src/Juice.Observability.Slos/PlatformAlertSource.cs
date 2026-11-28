@@ -19,7 +19,7 @@ namespace Juice.Observability.Slos
     /// and the outbox row commit together. Either way it serializes per template with <c>pg_advisory_xact_lock('alert-source:&lt;template&gt;')</c>.
     /// </para>
     /// </summary>
-    public sealed class PlatformAlertSource(string template, PlatformDbContext db, IServiceProvider services, IOptions<PlatformOptions> platform, TimeProvider clock) : IAlertSource
+    internal sealed class PlatformAlertSource(string template, PlatformDbContext db, IServiceProvider services, IOptions<PlatformOptions> platform, TimeProvider clock) : IAlertSource
     {
         public string Template { get; } = template;
 
@@ -48,8 +48,10 @@ namespace Juice.Observability.Slos
             var tenantId = await TenantAsync(ct);
             var keys = dedupKeys.ToList();
             // Fired and then resolved for the reason: only that kind of resolve says anything about the condition (a move or a retirement doesn't).
+            // Only alerts of this template's platform-managed rules: another rule's history isn't the source's to read.
+            var ruleIds = Rules(tenantId).AsNoTracking().Select(r => r.Id);
             var resolved = await db.AlertTransitions.AsNoTracking().Where(t => t.TenantId == tenantId && t.ToState == AlertState.Resolved && t.Reason == reason)
-                .Join(db.Alerts.AsNoTracking().Where(a => keys.Contains(a.DedupKey) && a.FiredAt != null), t => t.AlertId, a => a.Id, (t, a) => new { a.DedupKey, t.At })
+                .Join(db.Alerts.AsNoTracking().Where(a => keys.Contains(a.DedupKey) && a.FiredAt != null && ruleIds.Contains(a.RuleId)), t => t.AlertId, a => a.Id, (t, a) => new { a.DedupKey, t.At })
                 .GroupBy(x => x.DedupKey).Select(g => new { g.Key, ResolvedAt = g.Max(x => x.At) }).ToListAsync(ct);
             return resolved.ToDictionary(x => x.Key, x => x.ResolvedAt);
         }
@@ -61,10 +63,15 @@ namespace Juice.Observability.Slos
             {
                 return new(0, 0, 0);
             }
-            // Inside a command (its TransactionBehavior saves and commits after the handler) or in a transaction someone began: join it.
-            if (db.IsManaged || db.HasActiveTransaction)
+            // Inside a command: its TransactionBehavior saves, dispatches the domain events (AlertTransitioned) and commits after the handler, so join it.
+            if (db.IsManaged)
             {
                 return await ApplyInTransactionAsync(signals, ct);
+            }
+            // A transaction nobody manages would commit the alert without its domain events, and so without its notification: refused, never joined.
+            if (db.HasActiveTransaction)
+            {
+                throw new InvalidOperationException("ApplyAsync runs inside a command, or outside any transaction; it was called in a transaction that no command manages.");
             }
             using var context = PlatformMessageContext.Begin("alert-source");
             return await services.GetRequiredService<IMediator>().Send(new ApplyAlertSignals(Template, signals), ct);
@@ -222,9 +229,9 @@ namespace Juice.Observability.Slos
     }
 
     /// <summary>The signals of an alert source applied in a transaction of their own: the alerts, their transitions and the outbox commit together.</summary>
-    public sealed record ApplyAlertSignals(string Template, IReadOnlyList<AlertSignal> Signals) : MessageBase, IRequest<AlertSourceResult>;
+    internal sealed record ApplyAlertSignals(string Template, IReadOnlyList<AlertSignal> Signals) : MessageBase, IRequest<AlertSourceResult>;
 
-    public sealed class ApplyAlertSignalsHandler(PlatformDbContext db, IServiceProvider services, IOptions<PlatformOptions> platform, TimeProvider clock)
+    internal sealed class ApplyAlertSignalsHandler(PlatformDbContext db, IServiceProvider services, IOptions<PlatformOptions> platform, TimeProvider clock)
         : IRequestHandler<ApplyAlertSignals, AlertSourceResult>
     {
         public async ValueTask<AlertSourceResult> Handle(ApplyAlertSignals request, CancellationToken cancellationToken)

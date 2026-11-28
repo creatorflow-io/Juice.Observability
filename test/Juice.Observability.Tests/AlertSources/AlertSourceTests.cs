@@ -172,21 +172,82 @@ namespace Juice.Observability.Tests.AlertSources
             await using var scope = host.App.Services.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
 
-            await using (var transaction = await db.Database.BeginTransactionAsync(Ct))
-            {
-                Assert.Equal(new AlertSourceResult(1, 0, 0), await Source(scope).ApplyAsync([Fire()], Ct));
+            // As a command's handler calls it: managed by the TransactionBehavior, which saves, dispatches the domain events and commits afterwards.
+            db.BeginManage();
+            Assert.Equal(new AlertSourceResult(1, 0, 0), await Source(scope).ApplyAsync([Fire()], Ct));
 
-                // It changed entities and nothing else: no save, no commit, no command of its own.
-                Assert.Single(db.ChangeTracker.Entries<Alert>(), e => e.State == EntityState.Added);
-                Assert.Equal(before, await CountsAsync(database));
-                await db.SaveChangesAsync(Ct);
-                Assert.Equal(before, await CountsAsync(database));
-
-                await transaction.CommitAsync(Ct);
-            }
+            // It changed entities and nothing else: no save, no commit, no command of its own, and the domain event is on the alert for the behavior.
+            var alert = Assert.Single(db.ChangeTracker.Entries<Alert>(), e => e.State == EntityState.Added).Entity;
+            Assert.Single(alert.DomainEvents);
+            Assert.Equal(before, await CountsAsync(database));
+            await db.SaveChangesAsync(Ct);
+            Assert.Equal(before, await CountsAsync(database));
+            await db.Database.CurrentTransaction!.CommitAsync(Ct);
+            db.EndManage();
 
             var after = await CountsAsync(database);
             Assert.Equal((1, 2), (after.Alerts - before.Alerts, after.Transitions - before.Transitions));
+        }
+
+        [Fact]
+        public async Task Apply_in_a_transaction_no_command_manages_refused_never_committed_without_its_event()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await SeedAsync(database);
+            await using var host = await HostAsync(database);
+            var before = await CountsAsync(database);
+            await using var scope = host.App.Services.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+
+            await using (var transaction = await db.Database.BeginTransactionAsync(Ct))
+            {
+                await Assert.ThrowsAsync<InvalidOperationException>(() => Source(scope).ApplyAsync([Fire()], Ct));
+                Assert.Empty(db.ChangeTracker.Entries<Alert>());
+            }
+
+            Assert.Equal(before, await CountsAsync(database));
+        }
+
+        [Fact]
+        public async Task Refused_apply_in_a_command_leaves_no_transaction_on_the_context()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await SeedAsync(database);
+            await using var host = await HostAsync(database);
+            await using var scope = host.App.Services.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+
+            db.BeginManage();
+            await Assert.ThrowsAsync<ArgumentException>(() => Source(scope).ApplyAsync([Fire(rule: "no-such-rule", dedup: "x|y")], Ct));
+
+            // The transaction the source began for its lock is gone with the failure: the next command in the scope isn't taken for a nested one.
+            Assert.Null(db.Database.CurrentTransaction);
+            db.EndManage();
+        }
+
+        [Fact]
+        public async Task Last_resolved_reads_only_the_templates_platform_rules()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await SeedAsync(database);
+            var tenant = await TenantAsync(database);
+            // An alert of a user's rule, fired and then resolved for the same reason, under a dedup key the source is asked about.
+            await using (var db = database.Context())
+            {
+                var rule = new Rule { TenantId = tenant, Key = "user-burn", Name = "u", Template = RuleTemplate.SloBurn, Definition = "{}", DefinitionHash = "h", ManagedBy = ManagedBy.Api };
+                db.Rules.Add(rule);
+                var alert = new Alert { TenantId = tenant, RuleId = rule.Id, DedupKey = "user-burn|x", SubjectKey = "s", State = AlertState.Resolved, BreachStartedAt = At, FiredAt = At, LastEvaluatedAt = At };
+                db.Alerts.Add(alert);
+                db.AlertTransitions.Add(new AlertTransition { TenantId = tenant, AlertId = alert.Id, FromState = AlertState.Firing, ToState = AlertState.Resolved, At = At, Reason = "burn_rate_under" });
+                await db.SaveChangesAsync(Ct);
+            }
+            await using var host = await HostAsync(database);
+            await using var scope = host.App.Services.CreateAsyncScope();
+
+            Assert.Empty(await Source(scope).LastResolvedAsync(["user-burn|x"], "burn_rate_under", Ct));
         }
 
         [Fact]
