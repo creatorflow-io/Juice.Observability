@@ -5,6 +5,8 @@
 export interface ConsoleSettings {
   /** The Juice API origin; empty when the Console is served by the API itself (same origin). */
   apiBase: string;
+  /** Whether the host has the embedded inbox (`Notifications:Inbox:Enabled`): the header then shows the notification bell. Default off. */
+  inbox?: boolean;
   auth: {
     issuer: string;
     clientId: string;

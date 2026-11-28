@@ -15,6 +15,7 @@ import { authOptions, settings } from './core/settings';
 import { ShowKeyHandler } from './core/show-key.handler';
 import { signedIn } from './core/signed-in';
 import { canAdmin } from './core/can-admin';
+import { inboxProviders } from './core/inbox';
 import { NOTIFICATIONS_BASE_PATH } from './app-routing.module';
 
 @Component({
@@ -48,6 +49,8 @@ export class AppComponent { }
     // The notification pages: the host maps their API under /notifications (Juice.Notifications.Admin), on the API's origin.
     { provide: OBSERVABILITY_CAN_ADMIN, useFactory: canAdmin },
     provideNotificationsAdmin({ apiBase: `${settings.apiBase}/notifications`, basePath: NOTIFICATIONS_BASE_PATH, signedIn }),
+    // The header bell, when config.json says the host has the embedded inbox.
+    ...inboxProviders(settings),
     provideTranslateService({ missingTranslationHandler: { provide: MissingTranslationHandler, useClass: ShowKeyHandler } }),
   ],
   bootstrap: [AppComponent],
