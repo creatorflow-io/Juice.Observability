@@ -79,9 +79,12 @@ namespace Juice.Observability.Tests
             var text = full.GetProperty("Text").GetString()!;
             Assert.Contains("Orders errors", text);
             Assert.Contains("orders-errors", text);
-            await using var scope = factory.Services.CreateAsyncScope();
-            var delivery = await scope.ServiceProvider.GetRequiredService<NotificationsDbContext>().Deliveries.AsNoTracking().SingleAsync(Ct);
-            Assert.Equal(Juice.Notifications.DeliveryStatus.Delivered, delivery.Status is Juice.Notifications.DeliveryStatus.Accepted ? Juice.Notifications.DeliveryStatus.Delivered : delivery.Status);
+            await ProvisionedHost.WaitAsync(() =>
+            {
+                using var scope = factory.Services.CreateScope();
+                return scope.ServiceProvider.GetRequiredService<NotificationsDbContext>().Deliveries.AsNoTracking()
+                    .Any(d => d.Channel == "email" && (d.Status == Juice.Notifications.DeliveryStatus.Delivered || d.Status == Juice.Notifications.DeliveryStatus.Accepted));
+            }, "the email delivery to be marked delivered");
         }
 
         // ─── Slack ─────────────────────────────────────────────────────────────

@@ -338,7 +338,7 @@ The local profile cuts these corners on purpose. Each one changes for a producti
 | the agent CA and command key as files from `init.sh` | kept in the secret store, the CA key offline where the deployment allows it |
 | the platform receiver (4319) published on loopback for `tests/verify.sh` | not published: the API reaches it on the internal network |
 
-The pinned versions, the rules and the webhook configuration stay the same.
+The pinned versions, the rules and the provisioning file (`Notifications:Provisioning:Path`) stay the same.
 
 ## Juice Agents
 
@@ -484,7 +484,7 @@ with the Collector's ClickHouse pool at 32 connections, on a ClickHouse already 
 ### What scales out, and what doesn't
 
 - **More API replicas** carry more of the Console and the API: searches (each replica runs at most `ClickHouse:Api:MaxConcurrent`
-  at once), reads and the webhook and outbox delivery, which every replica runs, claiming each delivery so none is sent twice.
+  at once), reads and the notification pipeline's stages and the outbox delivery, which every replica runs, claiming each delivery so none is sent twice.
 - **Six workers run in one replica at a time:** discovery, health, rules, SLOs, notification planning and agent action requests.
   The replica that holds a worker's PostgreSQL advisory lock runs it; the others skip their passes. When it stops or loses its
   database connection, another takes over within a pass (30 s for discovery, health, SLOs and action requests; seconds for rules and
