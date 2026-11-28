@@ -55,7 +55,7 @@ namespace Juice.Observability.Tests
         public void Template_values_are_appended_so_stored_names_still_read()
         {
             Assert.Equal(["ErrorRate", "LatencyP95", "ThroughputAbsent", "DeliveryFailureRate", "HostMemory", "MediatorErrors", "ConsumerFailures", "SloBurn",
-                "MetricThreshold", "HostCpu", "HostDisk"], Enum.GetNames<RuleTemplate>());
+                "MetricThreshold", "HostCpu", "HostDisk", "IntegrationHealth"], Enum.GetNames<RuleTemplate>());
             Assert.Equal(8, (int)RuleTemplate.MetricThreshold);
         }
 

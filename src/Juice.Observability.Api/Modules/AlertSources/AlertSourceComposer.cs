@@ -25,7 +25,9 @@ namespace Juice.Observability.Api.Modules.AlertSources
         private static partial Regex ModuleTemplate();
 
         // The ten templates the registry evaluates: every RuleTemplate but SloBurn.
-        private static readonly HashSet<string> Registry = Enum.GetNames<RuleTemplate>().Where(n => n != SloBurnTemplate).ToHashSet(StringComparer.Ordinal);
+        private static readonly HashSet<string> Registry = Enum.GetNames<RuleTemplate>().Where(n => n != SloBurnTemplate && n != IntegrationHealthTemplate).ToHashSet(StringComparer.Ordinal);
+
+        private const string IntegrationHealthTemplate = IntegrationHealthRule.Template;
 
         private const string SloBurnTemplate = EvaluateSloBurnsHandler.Template;
 
@@ -42,7 +44,7 @@ namespace Juice.Observability.Api.Modules.AlertSources
                 throw new ModuleCompositionException($"Module '{module}' can't declare an alert source for '{template}': it is a template of the rule registry, evaluated by the rule scheduler.");
             }
             // The core's own burn template belongs to the slos module; any other is the declaring module's, by its prefix.
-            var valid = template == SloBurnTemplate ? module == "slos" : ModuleTemplate().IsMatch(template) && template.StartsWith(module + ".", StringComparison.Ordinal);
+            var valid = template == SloBurnTemplate ? module == "slos" : template == IntegrationHealthTemplate ? module == "integrations" : ModuleTemplate().IsMatch(template) && template.StartsWith(module + ".", StringComparison.Ordinal);
             if (!valid)
             {
                 throw new ModuleCompositionException($"Module '{module}' can't declare an alert source for '{template}': a module's template is '{module}.<name>'.");

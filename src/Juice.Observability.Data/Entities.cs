@@ -183,7 +183,7 @@ namespace Juice.Observability.Data
     /// <summary>The six health states. Severity order for rollups: Critical > Unhealthy > Degraded > Healthy.</summary>
     public enum HealthState { Healthy, Degraded, Unhealthy, Critical, Offline, Unknown }
 
-    public enum HealthSubject { Instance, Service, Application, Host }
+    public enum HealthSubject { Instance, Service, Application, Host, Integration }
 
     /// <summary>
     /// The current health of one subject: an instance, a service or application in one environment, or a host. One row
