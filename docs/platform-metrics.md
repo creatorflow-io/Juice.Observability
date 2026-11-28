@@ -82,7 +82,6 @@ Requirements line 254 asks for these. "Platform" is meter `Juice.Observability`;
 | PostgreSQL health | `juice.observability.postgres.up`, `juice.observability.postgres.sample.duration`, `juice.observability.postgres.size`; Npgsql's `db.client.*` | Sampler; Npgsql |
 | Evaluation lag | `juice.observability.rules.lag`; `juice.observability.slos.burn_lag`; `juice.observability.discovery.watermark_lag`; `juice.observability.health.evidence_age`; each worker's `juice.observability.worker.since_last_pass` and `juice.observability.worker.pass.age` | Platform; sampler |
 | Alert transitions | `juice.observability.alerts.transitions` {template, state} | Platform |
-| Webhook retries | `juice.observability.webhooks.attempts` {outcome}; `juice.observability.webhooks.backlog` {state = pending, retrying} and `juice.observability.webhooks.oldest_age` | Platform; sampler |
 | API latency | `http.server.request.duration` {http.route, http.request.method, http.response.status_code} | ASP.NET Core |
 | Availability (§9, measured) | `juice.observability.process.uptime`; `/health/ready` | Platform |
 
@@ -93,7 +92,7 @@ exporter.
 
 ### Workers
 
-Each pass of discovery, health, SLO counting, notifications, action requests, webhook dispatch and the sampler is reported. Its outcome is
+Each pass of discovery, health, SLO counting, notifications, action requests and the sampler is reported. Its outcome is
 one of:
 - `success`;
 - `partial`: done, but part failed, such as some SLOs of many, or one store of the sampler's two;
@@ -131,16 +130,11 @@ The rule scheduler has no single pass: it shows as busy slots instead.
 | `juice.observability.slos.counted` | counter | outcome (`counted`, `idle`, `failed`) | `failed` rising |
 | `juice.observability.slos.duration` | histogram, s | – | Near `Slos:Interval` (30 s) |
 | `juice.observability.slos.burn_lag` | histogram, s | – | Past a minute: passes take longer than the minute they have |
-| `juice.observability.webhooks.attempts` | counter | outcome | `failed` or `retry` rising |
-| `juice.observability.webhooks.dispatch_delay` | histogram, s | – | Past 30 s (§9 webhook dispatch) |
 | `juice.observability.notifications.held` | counter | outcome | `dropped` rising |
 | `juice.observability.notifications.escalations` | counter | outcome | `unreachable` rising |
-| `juice.observability.notifications.released` | counter | outcome | `dropped` rising: what the notification pipeline held under a silence and dropped after it (`shadow`, `new`) |
-| `juice.observability.notifications.refused` | counter | call, code | any: the notification pipeline refused a request the platform made (`shadow`, `new`); the log names it |
-| `juice.observability.notifications.dry_duplicates` | counter | type | any: in `new`, the pipeline took a send as a duplicate of one planned dry in shadow, so nothing was sent; the adapter must never send again what shadow planned (stays 0; M50 checks it), and the log names the request |
-| `juice.observability.notifications.deadman` | counter | cause, event, outcome | any `firing` sent: the notification pipeline stopped keeping up (`stalled`, `failing`, `no-success`, `stuck-in-retry`, `shadow`, `unreadable`); `failed`: the alarm itself couldn't be posted |
-| `juice.observability.notifications.shadow.differences` | counter | kind, rule, explained | `explained=false` (rule `unexplained`) at any rate: the new pipeline's dry run differed from what legacy sent and no known rule accounts for it; the stored `shadow_differences` row says how. Only in `shadow`, from the comparer |
-| `juice.observability.notifications.shadow.compared` | counter | event | Flat while alerts fire: the comparer is not matching anything (it runs once the leased worker has settled a transition). The denominator for `shadow.differences`: each transition or escalation step is counted once. Only in `shadow` |
+| `juice.observability.notifications.released` | counter | outcome | `dropped` rising: what the notification pipeline held under a silence and dropped after it |
+| `juice.observability.notifications.refused` | counter | call, code | any: the notification pipeline refused a request the platform made; the log names it |
+| `juice.observability.notifications.deadman` | counter | cause, event, outcome | any `firing` sent: the notification pipeline stopped keeping up (`stalled`, `failing`, `no-success`, `stuck-in-retry`, `unreadable`); `failed`: the alarm itself couldn't be posted |
 | `juice.observability.process.uptime` | gauge, s | – | Resets: the process restarted |
 
 ### ClickHouse queries the platform makes
@@ -175,8 +169,6 @@ Every 15 s, every replica samples the platform database and ClickHouse. Pages an
 | `juice.observability.postgres.size` | gauge, By | – | Growth per day |
 | `juice.observability.outbox.backlog` | gauge | state (`pending`, `retrying`) | `pending` growing: delivery is behind; `retrying`: a consumer keeps failing |
 | `juice.observability.outbox.oldest_age` | gauge, s | – | Past a minute: notifications are late |
-| `juice.observability.webhooks.backlog` | gauge | state (`pending`, `retrying`) | Pending growing: dispatch is behind |
-| `juice.observability.webhooks.oldest_age` | gauge, s | – | Past a minute: dispatch is behind |
 | `juice.observability.clickhouse.up` | gauge | – | 0: ClickHouse didn't answer the sampler |
 | `juice.observability.collector.up` | gauge | – | 0: the Collector's health check (`Telemetry:CollectorHealthUrl`) didn't answer; absent when it isn't checked |
 | `juice.observability.clickhouse.cpu` | gauge, cores | – | Near the cores it has: ClickHouse is the limit (Phase 10 scale tests) |
@@ -212,7 +204,7 @@ Every 15 s, every replica samples the platform database and ClickHouse. Pages an
 Milestone 2 (plan R6, R7) builds the status from PostgreSQL, so it never waits on ClickHouse.
 
 **Heartbeats.** Every 5 s each replica writes, in one statement, a row for every worker the platform has to `worker_heartbeats`. The
-workers are action-requests, discovery, health, notifications, rules, sampler, slos and webhooks. A row says:
+workers are action-requests, discovery, health, notifications, rules, sampler, slos. A row says:
 - whether the worker is enabled in that replica (`*:Enabled`), and its interval;
 - whether it runs under a lease, holds it, and since when;
 - when the pass in progress started;
@@ -225,7 +217,6 @@ workers are action-requests, discovery, health, notifications, rules, sampler, s
 - **Pruning:** rows of a replica not seen for an hour are pruned.
 - **Workers without a single pass:**
   - The rule scheduler counts its 5 s tick. Its evaluations each have `Rules:EvaluationTimeout` (20 s), so a wedged one frees its slot.
-  - The webhook dispatcher counts each batch as a pass, so a long backlog isn't read as a stuck pass.
 - **A stop:** once the host starts stopping, the replica writes no more, so its last rows leave its workers enabled. A worker no other
   live replica runs then reads as `gone`, whatever order the host stops its services in. A worker whose loop dies without the host
   stopping stays enabled in a live row, and goes stale.
@@ -258,7 +249,6 @@ never under 60 s.
 - **Backlogs** are `behind` when past their line:
   - **Outbox:** the most overdue message, 60 s. A new message counts from when it was written (a deferred one from when it falls due), a
     failed one from when its retry fell due, and a retry in progress from when it started.
-  - **Webhooks:** the most overdue pending delivery, 60 s. A grouped delivery waits for its window on purpose.
   - **Discovery:** its watermark, at `Discovery:Lag` plus `Discovery:Interval` plus 60 s. It is `off` when discovery runs nowhere.
 
 **The status** is `degraded` when any worker is stale, stuck, unheld or gone, any dependency is down, or any backlog is behind;
@@ -284,7 +274,7 @@ replica's last sample, never a query of its own, and the Console reads it again 
 | Figure | From | Amber | Red |
 |---|---|---|---|
 | Each worker: state, last pass, how busy | the heartbeats; how busy is its recent passes (a moving mean, each pass weighing a fifth) against its interval | 80 % busy | a bad state (stale, stuck, unheld, gone), or 100 % busy |
-| Each backlog (outbox, webhooks, discovery) | the status | – | `behind` |
+| Each backlog (outbox, discovery) | the status | – | `behind` |
 | Each signal: received, refused, dropped a second | the Collector's metrics page (`Telemetry:CollectorMetricsUrl`), the tenant's receivers only; dropped by any exporter | – | anything refused or dropped since the last sample |
 | Each export queue against its bound | the same page | 50 % | 90 % |
 | ClickHouse CPU | the sampler's CPU, against `max_threads` (its cores) | 50 % of them (calibrated: the mean where every line held) | 80 % (calibrated: where one crossed) |
