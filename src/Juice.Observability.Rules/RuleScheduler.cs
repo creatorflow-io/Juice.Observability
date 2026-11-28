@@ -4,6 +4,7 @@ using System.Diagnostics.Metrics;
 using Juice.MediatR;
 using Juice.Observability.Data;
 using Juice.Observability.Discovery;
+using Juice.Observability.Extensibility;
 using Juice.Observability.Signals;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -22,8 +23,16 @@ namespace Juice.Observability.Rules
     /// (<see cref="WorkerLease"/>).
     /// </summary>
     public sealed class RuleScheduler(IServiceScopeFactory scopes, RuleEvaluator evaluator, IOptions<RulesOptions> options,
-        IOptions<PlatformOptions> platform, TimeProvider clock, ILogger<RuleScheduler> logger) : BackgroundService
+        IOptions<PlatformOptions> platform, TimeProvider clock, ILogger<RuleScheduler> logger, IRuleTemplateRegistry? registry = null) : BackgroundService
     {
+        /// <summary>
+        /// The stored templates the registry runs a query for. SloBurn isn't on it: those alerts come from the SLO counter's burn rates. A module's
+        /// template key is not a <see cref="RuleTemplate"/>, so no stored rule names one yet.
+        /// </summary>
+        private readonly RuleTemplate[] _scheduled = [.. (registry ?? RuleTemplateRegistry.BuiltInOnly).All
+            .Select(i => Enum.TryParse<RuleTemplate>(i.Key, out var template) && Enum.IsDefined(template) ? (RuleTemplate?)template : null)
+            .OfType<RuleTemplate>().Distinct()];
+
         private static readonly Counter<long> Evaluations = RuleEvaluator.Meter.CreateCounter<long>("juice.observability.rules.evaluations",
             "{evaluation}", "Rule evaluations, by template and outcome (success, failure, timeout)");
         private static readonly Histogram<double> Duration = RuleEvaluator.Meter.CreateHistogram<double>("juice.observability.rules.duration",
@@ -126,8 +135,9 @@ namespace Juice.Observability.Rules
             await using var scope = scopes.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
             var tenantId = await db.Tenants.Where(t => t.Key == platform.Value.TenantKey).Select(t => t.Id).SingleAsync(cancellationToken);
-            // SLO burn rules have no query to run: their alerts come from the SLO counter's burn rates.
-            var rules = await db.Rules.AsNoTracking().Where(r => r.TenantId == tenantId && r.Enabled && r.Template != RuleTemplate.SloBurn).ToListAsync(cancellationToken);
+            // Only templates on the registry have a query to run; SLO burn rules don't: their alerts come from the SLO counter's burn rates.
+            var scheduled = _scheduled;
+            var rules = await db.Rules.AsNoTracking().Where(r => r.TenantId == tenantId && r.Enabled && scheduled.Contains(r.Template)).ToListAsync(cancellationToken);
             var now = clock.GetUtcNow();
             var hold = _holding.Token;
             // Rules gone, disabled or turned into something else: forgotten, and due on the grid again if they come back.
@@ -286,7 +296,8 @@ namespace Juice.Observability.Rules
             {
                 await using var scope = scopes.CreateAsyncScope();
                 var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
-                return await db.Rules.AsNoTracking().Where(r => r.Enabled && r.Template != RuleTemplate.SloBurn).ToDictionaryAsync(r => r.Id, ct);
+                var scheduled = _scheduled;
+                return await db.Rules.AsNoTracking().Where(r => r.Enabled && scheduled.Contains(r.Template)).ToDictionaryAsync(r => r.Id, ct);
             }
         }
 
@@ -329,7 +340,8 @@ namespace Juice.Observability.Rules
     /// rule). Each change writes an <see cref="AuditRecord"/> in the same transaction. The file owns what it lists, taking over a key the API
     /// created; a rule it no longer lists is disabled and handed to the API; a rule the API created and the file never listed is left alone.
     /// </summary>
-    public sealed class RuleProvisioner(IServiceScopeFactory scopes, IOptions<RulesOptions> options, ILogger<RuleProvisioner> logger, SignalPacks? packs = null) : IHostedService
+    public sealed class RuleProvisioner(IServiceScopeFactory scopes, IOptions<RulesOptions> options, ILogger<RuleProvisioner> logger, SignalPacks? packs = null,
+        IRuleTemplateRegistry? registry = null) : IHostedService
     {
         public const string Actor = "deployment-config";
         public const string ClosedRuleDisabled = "rule_disabled";
@@ -343,7 +355,7 @@ namespace Juice.Observability.Rules
         public async Task StartAsync(CancellationToken cancellationToken)
         {
             var definitions = options.Value.Definitions;
-            var errors = definitions.SelectMany(d => d.Validate(packs ?? SignalPacks.All)).ToList();
+            var errors = definitions.SelectMany(d => d.Validate(packs ?? SignalPacks.All, registry)).ToList();
             errors.AddRange(definitions.GroupBy(d => d.Key).Where(g => g.Count() > 1).Select(g => $"rule '{g.Key}': defined more than once"));
             if (errors.Count > 0)
             {
@@ -485,6 +497,10 @@ namespace Juice.Observability.Rules
             services.Configure<RulesOptions>(configuration.GetSection(RulesOptions.Section));
             services.AddSignalPacks(configuration);
             services.AddSingleton<RuleTemplates>();
+            // The core's templates and the modules', and the threshold providers; the evaluator reads thresholds only through RuleThresholds.
+            services.AddSingleton(sp => sp.GetRequiredService<RuleTemplates>().Registry);
+            services.AddSingleton<IRuleTemplateRegistry>(sp => sp.GetRequiredService<RuleTemplateRegistry>());
+            services.AddSingleton<RuleThresholds>();
             services.AddSingleton<RuleEvaluator>();
             services.AddHostedService<RuleProvisioner>();
             if (configuration.GetSection(RulesOptions.Section).GetValue(nameof(RulesOptions.Enabled), true))

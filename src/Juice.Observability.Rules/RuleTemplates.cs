@@ -1,5 +1,6 @@
 using Juice.Observability.Data;
 using Juice.Observability.Discovery;
+using Juice.Observability.Extensibility;
 using Juice.Observability.Signals;
 using static Juice.Observability.Discovery.ClickHouseTelemetrySource;
 
@@ -20,8 +21,17 @@ namespace Juice.Observability.Rules
     /// The platform-owned ClickHouse query of each template (requirements §8). Every query filters on the Collector-stamped
     /// tenant, is bounded by the evidence window and row limit, and takes the rule's scope only as parameters.
     /// </summary>
-    public sealed partial class RuleTemplates(ClickHouseTelemetrySource clickHouse, SignalPacks? packs = null)
+    public sealed partial class RuleTemplates(ClickHouseTelemetrySource clickHouse, SignalPacks? packs = null, IEnumerable<IRuleTemplate>? moduleTemplates = null,
+        IEnumerable<IRuleThresholdProvider>? thresholdProviders = null, IEnumerable<ModuleRuleContribution>? contributions = null)
     {
+        private RuleTemplateRegistry? _registry;
+
+        /// <summary>
+        /// The templates and threshold providers this host knows: the core's, whose queries are in this class, and the modules' (core 2.0 M2).
+        /// </summary>
+        public RuleTemplateRegistry Registry => LazyInitializer.EnsureInitialized(ref _registry, () =>
+            new RuleTemplateRegistry(BuiltInTemplates.Create(this), moduleTemplates, thresholdProviders, contributions))!;
+
         private const string Svc = "{svc:String}", Ns = "{ns:String}", EnvParam = "{env:String}", HostParam = "{host:String}";
 
         // Service scope: the rule's service (namespace and name) and environment, empty for all.
@@ -120,30 +130,60 @@ namespace Juice.Observability.Rules
         public async Task<IReadOnlyList<RuleObservation>> ObserveAsync(RuleDefinition rule, TelemetryWindow window, CancellationToken cancellationToken)
         {
             if (!(packs ?? SignalPacks.All).Provides(rule.Template)) return [];
-            var (ns, svc) = SplitService(rule.Service);
-            var scope = new Dictionary<string, object> { ["svc"] = svc, ["ns"] = ns, ["env"] = rule.Environment, ["host"] = rule.Host.ToLowerInvariant() };
-            return rule.Template switch
-            {
-                RuleTemplate.ErrorRate => await clickHouse.QueryAsync(ErrorRate, window, r => Service(r.GetString(0), r.GetString(1), r.GetString(2),
-                    Ratio(r.GetValue(3), r.GetValue(4)), Convert.ToInt64(r.GetValue(4))), cancellationToken, scope),
-                RuleTemplate.LatencyP95 => await clickHouse.QueryAsync(LatencyP95, window, r => Service(r.GetString(0), r.GetString(1), r.GetString(2),
-                    Convert.ToDouble(r.GetValue(3)), Convert.ToInt64(r.GetValue(4))), cancellationToken, scope),
-                RuleTemplate.ThroughputAbsent => await clickHouse.QueryAsync(ThroughputAbsent, window, r => Service(r.GetString(0), r.GetString(1), r.GetString(2),
-                    Convert.ToDouble(r.GetValue(3)), Convert.ToInt64(r.GetValue(4))), cancellationToken, scope),
-                RuleTemplate.DeliveryFailureRate => await clickHouse.QueryAsync(DeliveryFailureRate, window, r => Service(r.GetString(0), r.GetString(1), r.GetString(2),
-                    Ratio(r.GetValue(3), r.GetValue(4)), Convert.ToInt64(Convert.ToDouble(r.GetValue(4)))), cancellationToken, scope),
-                RuleTemplate.HostMemory => await QueryBoundedAsync(RuleTemplate.HostMemory, HostMemory, window, r => new RuleObservation($"host:{r.GetString(0)}",
-                    HealthSubject.Host, "", "", "", r.GetString(0), Convert.ToDouble(r.GetValue(1)), 1), cancellationToken, scope),
-                RuleTemplate.MediatorErrors => await ObserveCountAsync(MediatorErrors, window, scope, cancellationToken),
-                RuleTemplate.ConsumerFailures => await ObserveCountAsync(ConsumerFailures, window, scope, cancellationToken),
-                RuleTemplate.MetricThreshold => rule.Metric is { Kind: MetricKind.Histogram }
-                    ? await ObserveHistogramAsync(rule, window, scope, cancellationToken)
-                    : await ObserveMetricAsync(rule, window, scope, cancellationToken),
-                RuleTemplate.HostCpu => await ObserveHostCpuAsync(window, scope, cancellationToken),
-                RuleTemplate.HostDisk => await ObserveHostDiskAsync(window, scope, cancellationToken),
-                _ => throw new ArgumentOutOfRangeException(nameof(rule), rule.Template, "Unknown template"),
-            };
+            if (!Registry.TryGet(rule.Template.ToString(), out var template)) throw new ArgumentOutOfRangeException(nameof(rule), rule.Template, "Unknown template");
+            var telemetry = new TemplateTelemetry(clickHouse, window);
+            var observed = await template.ObserveAsync(rule.ToSpec(), telemetry, new TemplateWindow(window.From, window.To, window.Limit), cancellationToken);
+            // A template, a module's too, can't return more subjects than the window's row limit.
+            return [.. observed.Take(window.Limit).Select(o => new RuleObservation(o.SubjectKey, o.SubjectKind == AlertSubjectKind.Host ? HealthSubject.Host : HealthSubject.Service,
+                o.ServiceNamespace, o.ServiceName, o.Environment, o.Host, o.Value, o.Samples) { Detail = o.Detail })];
         }
+
+        /// <summary>The rule's scope as the parameters of every built-in query: values only, never text.</summary>
+        internal static Dictionary<string, object> Scope(RuleDefinition rule)
+        {
+            var (ns, svc) = SplitService(rule.Service);
+            return new Dictionary<string, object> { ["svc"] = svc, ["ns"] = ns, ["env"] = rule.Environment, ["host"] = rule.Host.ToLowerInvariant() };
+        }
+
+        // The built-in templates' queries, each called by its adapter (BuiltInTemplates).
+        internal Task<IReadOnlyList<RuleObservation>> ObserveErrorRateAsync(TelemetryWindow window, Dictionary<string, object> scope, CancellationToken cancellationToken)
+            => clickHouse.QueryAsync(ErrorRate, window, r => Service(r.GetString(0), r.GetString(1), r.GetString(2),
+                Ratio(r.GetValue(3), r.GetValue(4)), Convert.ToInt64(r.GetValue(4))), cancellationToken, scope);
+
+        internal Task<IReadOnlyList<RuleObservation>> ObserveLatencyP95Async(TelemetryWindow window, Dictionary<string, object> scope, CancellationToken cancellationToken)
+            => clickHouse.QueryAsync(LatencyP95, window, r => Service(r.GetString(0), r.GetString(1), r.GetString(2),
+                Convert.ToDouble(r.GetValue(3)), Convert.ToInt64(r.GetValue(4))), cancellationToken, scope);
+
+        internal Task<IReadOnlyList<RuleObservation>> ObserveThroughputAbsentAsync(TelemetryWindow window, Dictionary<string, object> scope, CancellationToken cancellationToken)
+            => clickHouse.QueryAsync(ThroughputAbsent, window, r => Service(r.GetString(0), r.GetString(1), r.GetString(2),
+                Convert.ToDouble(r.GetValue(3)), Convert.ToInt64(r.GetValue(4))), cancellationToken, scope);
+
+        internal Task<IReadOnlyList<RuleObservation>> ObserveDeliveryFailureRateAsync(TelemetryWindow window, Dictionary<string, object> scope, CancellationToken cancellationToken)
+            => clickHouse.QueryAsync(DeliveryFailureRate, window, r => Service(r.GetString(0), r.GetString(1), r.GetString(2),
+                Ratio(r.GetValue(3), r.GetValue(4)), Convert.ToInt64(Convert.ToDouble(r.GetValue(4)))), cancellationToken, scope);
+
+        internal Task<IReadOnlyList<RuleObservation>> ObserveHostMemoryAsync(TelemetryWindow window, Dictionary<string, object> scope, CancellationToken cancellationToken)
+            => QueryBoundedAsync(RuleTemplate.HostMemory, HostMemory, window, r => new RuleObservation($"host:{r.GetString(0)}",
+                HealthSubject.Host, "", "", "", r.GetString(0), Convert.ToDouble(r.GetValue(1)), 1), cancellationToken, scope);
+
+        internal Task<IReadOnlyList<RuleObservation>> ObserveMediatorErrorsAsync(TelemetryWindow window, Dictionary<string, object> scope, CancellationToken cancellationToken)
+            => ObserveCountAsync(MediatorErrors, window, scope, cancellationToken);
+
+        internal Task<IReadOnlyList<RuleObservation>> ObserveConsumerFailuresAsync(TelemetryWindow window, Dictionary<string, object> scope, CancellationToken cancellationToken)
+            => ObserveCountAsync(ConsumerFailures, window, scope, cancellationToken);
+
+        // The host templates' bodies are private to RuleTemplates.Host.cs.
+        internal Task<IReadOnlyList<RuleObservation>> ObserveCpuAsync(TelemetryWindow window, Dictionary<string, object> scope, CancellationToken cancellationToken)
+            => ObserveHostCpuAsync(window, scope, cancellationToken);
+
+        internal Task<IReadOnlyList<RuleObservation>> ObserveDiskAsync(TelemetryWindow window, Dictionary<string, object> scope, CancellationToken cancellationToken)
+            => ObserveHostDiskAsync(window, scope, cancellationToken);
+
+        internal Task<IReadOnlyList<RuleObservation>> ObserveMetricThresholdAsync(RuleDefinition rule, TelemetryWindow window, Dictionary<string, object> scope,
+            CancellationToken cancellationToken)
+            => rule.Metric is { Kind: MetricKind.Histogram }
+                ? ObserveHistogramAsync(rule, window, scope, cancellationToken)
+                : ObserveMetricAsync(rule, window, scope, cancellationToken);
 
         private Task<IReadOnlyList<RuleObservation>> ObserveCountAsync(string query, TelemetryWindow window,
             Dictionary<string, object> scope, CancellationToken cancellationToken)

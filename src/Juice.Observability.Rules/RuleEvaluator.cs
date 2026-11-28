@@ -4,6 +4,7 @@ using Juice.Domain;
 using Juice.MediatR;
 using Juice.Observability.Data;
 using Juice.Observability.Discovery;
+using Juice.Observability.Extensibility;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -94,7 +95,7 @@ namespace Juice.Observability.Rules
     /// <see cref="AlertTransitioned"/>; nothing here saves, begins or commits, or knows who is notified.
     /// </summary>
     public sealed class EvaluateRuleHandler(PlatformDbContext db, RuleTemplates templates, IOptions<RulesOptions> options,
-        IOptions<PlatformOptions> platform, TimeProvider clock) : IRequestHandler<EvaluateRule, RuleEvaluation>
+        IOptions<PlatformOptions> platform, TimeProvider clock, RuleThresholds? thresholds = null) : IRequestHandler<EvaluateRule, RuleEvaluation>
     {
         public async ValueTask<RuleEvaluation> Handle(EvaluateRule request, CancellationToken cancellationToken)
         {
@@ -118,13 +119,19 @@ namespace Juice.Observability.Rules
                 .GroupBy(a => a.DedupKey).Select(g => new { g.Key, ResolvedAt = g.Max(a => a.ResolvedAt) })
                 .ToDictionaryAsync(x => x.Key, x => x.ResolvedAt, cancellationToken);
             var subjects = await SubjectsAsync(db, rule.TenantId, observations.Values, cancellationToken);
+            // The thresholds, only through RuleThresholds. A rule with its own numbers asks no one. A provider that throws fails the evaluation here,
+            // before anything changed: its alerts stay as they are.
+            var provided = definition.ThresholdSource is null ? null : await (thresholds ?? RuleThresholds.Default).ResolveAsync(definition, keys, at, cancellationToken);
 
             int opened = 0, fired = 0, resolved = 0;
             foreach (var key in keys)
             {
                 observations.TryGetValue(key, out var observation);
                 open.TryGetValue(key, out var alert);
-                var condition = observation is null ? Condition.NoData : AlertLifecycle.Classify(definition, observation.Value, observation.Samples);
+                // No threshold for the subject (the provider left it out, or gave numbers that can't be used) is no data.
+                RuleThreshold? threshold = provided is null ? RuleThresholds.Fixed(definition) : provided.TryGetValue(key, out var supplied) ? supplied : null;
+                var condition = observation is null || threshold is not { } used ? Condition.NoData
+                    : AlertLifecycle.Classify(definition, used, observation.Value, observation.Samples);
                 var cooldownUntil = lastFiredResolved.GetValueOrDefault(DedupKey(rule.Key, key)) is { } resolvedAt ? resolvedAt + definition.Cooldown : (DateTimeOffset?)null;
                 var decision = AlertLifecycle.Next(definition, alert?.State, alert?.BreachStartedAt ?? at, alert?.RecoveringSince, condition, at, cooldownUntil);
 
@@ -164,7 +171,7 @@ namespace Juice.Observability.Rules
                 alert.LastValue = observation?.Value;
                 alert.LastSamples = observation?.Samples ?? 0;
                 alert.NoData = condition == Condition.NoData;
-                alert.Evidence = Evidence(definition, from, at, observation, condition);
+                alert.Evidence = Evidence(definition, from, at, observation, condition, threshold);
             }
             return new RuleEvaluation(rule.Key, at, keys.Count, opened, fired, resolved);
         }
@@ -193,18 +200,23 @@ namespace Juice.Observability.Rules
 
         /// <summary>The evidence reference (requirements §8): enough to repeat the query and see the same numbers.</summary>
         private static Dictionary<string, string> Evidence(RuleDefinition rule, DateTimeOffset from, DateTimeOffset to,
-            RuleObservation? observation, Condition condition)
+            RuleObservation? observation, Condition condition, RuleThreshold? threshold)
         {
             var evidence = new Dictionary<string, string>
             {
                 ["template"] = rule.Template.ToString(),
                 ["from"] = from.ToString("O"),
                 ["to"] = to.ToString("O"),
-                ["threshold"] = rule.Threshold.ToString(CultureInfo.InvariantCulture),
-                ["recoveryThreshold"] = rule.Recovery.ToString(CultureInfo.InvariantCulture),
                 ["condition"] = condition.ToString(),
                 ["samples"] = (observation?.Samples ?? 0).ToString(CultureInfo.InvariantCulture),
             };
+            // The numbers this evaluation used, and where they came from when not the rule itself. None when the provider gave none for the subject.
+            if (threshold is { } used)
+            {
+                evidence["threshold"] = used.Threshold.ToString(CultureInfo.InvariantCulture);
+                evidence["recoveryThreshold"] = used.Recovery.ToString(CultureInfo.InvariantCulture);
+            }
+            if (rule.ThresholdSource is { } source && source.Provider != FixedThresholdProvider.Key) evidence["thresholdSource"] = source.Provider;
             if (observation?.Value is { } value) evidence["value"] = value.ToString("G6", CultureInfo.InvariantCulture);
             if (rule.Metric is { } metric)
             {

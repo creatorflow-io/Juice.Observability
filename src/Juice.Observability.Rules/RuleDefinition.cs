@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using Juice.Observability.Data;
+using Juice.Observability.Extensibility;
 using Juice.Observability.Signals;
 
 namespace Juice.Observability.Rules
@@ -53,6 +54,14 @@ namespace Juice.Observability.Rules
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public MetricSpec? Metric { get; set; }
 
+        /// <summary>
+        /// Where the thresholds come from when not from <see cref="Threshold"/> and <see cref="RecoveryThreshold"/>; null means those, fixed. Never written
+        /// when null, so a rule without one has the same JSON and <see cref="Hash"/> as before the seam. The evaluator reads thresholds only through
+        /// <see cref="RuleThresholds"/>.
+        /// </summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public RuleThresholdSource? ThresholdSource { get; set; }
+
         /// <summary>True when a higher value is worse (every template but ThroughputAbsent).</summary>
         [JsonIgnore]
         public bool FiresAbove => Template == RuleTemplate.MetricThreshold ? Metric?.Comparison != Comparison.Below : Template != RuleTemplate.ThroughputAbsent;
@@ -74,7 +83,7 @@ namespace Juice.Observability.Rules
         /// What is wrong with the definition. With <paramref name="packs"/>, an enabled rule whose template's signal pack is off is wrong too; a
         /// disabled one isn't, so a rule made before the pack was switched off can still be disabled.
         /// </summary>
-        public IEnumerable<string> Validate(SignalPacks? packs = null)
+        public IEnumerable<string> Validate(SignalPacks? packs = null, IRuleTemplateRegistry? registry = null)
         {
             var at = string.IsNullOrEmpty(Key) ? "rule" : $"rule '{Key}'";
             if (Enabled && Enum.IsDefined(Template) && packs?.Refusal(Template) is { } refusal) yield return $"{at}: {refusal}";
@@ -82,33 +91,20 @@ namespace Juice.Observability.Rules
             if (Name.Length is 0 or > 200) yield return $"{at}: Name is required (at most 200 characters)";
             if (!Enum.IsDefined(Template)) yield return $"{at}: unknown Template";
             if (Template == RuleTemplate.SloBurn) yield return $"{at}: SloBurn rules are the platform's own; define an SLO instead";
+            if (Enum.IsDefined(Template) && Template != RuleTemplate.SloBurn)
+            {
+                // The template's own checks live with the template, on the registry.
+                if (!(registry ?? RuleTemplateRegistry.BuiltInOnly).TryGet(Template.ToString(), out var template)) yield return $"{at}: unknown Template";
+                else foreach (var error in template is IBuiltInRuleTemplate builtIn ? builtIn.ValidateDefinition(this) : template.Validate(ToSpec())) yield return $"{at}: {error}";
+            }
+            foreach (var error in ValidateThresholdSource(registry)) yield return $"{at}: {error}";
             if (Schedule < TimeSpan.FromSeconds(5) || Schedule > TimeSpan.FromHours(1)) yield return $"{at}: Schedule must be 5 s to 1 h";
             if (Window < Schedule || Window > TimeSpan.FromHours(6)) yield return $"{at}: Window must be at least Schedule and at most 6 h";
             if (ForDuration < TimeSpan.Zero || ForDuration > TimeSpan.FromDays(1)) yield return $"{at}: ForDuration must be 0 to 24 h";
             if (RecoveryDuration < TimeSpan.Zero || RecoveryDuration > TimeSpan.FromDays(1)) yield return $"{at}: RecoveryDuration must be 0 to 24 h";
             if (Cooldown < TimeSpan.Zero || Cooldown > TimeSpan.FromDays(1)) yield return $"{at}: Cooldown must be 0 to 24 h";
             if (MinimumSamples is < 1 or > 1_000_000) yield return $"{at}: MinimumSamples must be 1 to 1,000,000";
-            if (Template is RuleTemplate.ErrorRate or RuleTemplate.DeliveryFailureRate or RuleTemplate.HostMemory or RuleTemplate.HostCpu or RuleTemplate.HostDisk
-                && (Threshold is < 0 or > 1 || Recovery is < 0 or > 1))
-                yield return $"{at}: Threshold and RecoveryThreshold are ratios from 0 to 1";
-            if (Template == RuleTemplate.LatencyP95 && (Threshold <= 0 || Recovery <= 0)) yield return $"{at}: latency thresholds are positive milliseconds";
-            if (Template is RuleTemplate.MediatorErrors or RuleTemplate.ConsumerFailures && (Threshold < 0 || Recovery < 0)) yield return $"{at}: error thresholds are counts, not negative";
-            if (Template == RuleTemplate.ThroughputAbsent && (Threshold < 0 || Recovery < Threshold)) yield return $"{at}: throughput thresholds are request counts, recovery at least the threshold";
             if (FiresAbove && Recovery > Threshold) yield return $"{at}: RecoveryThreshold must not be above Threshold";
-            if (Template == RuleTemplate.MetricThreshold)
-            {
-                if (!double.IsFinite(Threshold) || !double.IsFinite(Recovery)) yield return $"{at}: Threshold and RecoveryThreshold are finite numbers";
-                if (!FiresAbove && Recovery < Threshold) yield return $"{at}: RecoveryThreshold must not be below Threshold when Comparison is Below";
-                if (Metric is null) yield return $"{at}: Metric is required for a MetricThreshold rule";
-            }
-            else if (Metric is not null)
-            {
-                yield return $"{at}: only MetricThreshold rules take Metric";
-            }
-            if (Metric is not null && Template == RuleTemplate.MetricThreshold)
-            {
-                foreach (var error in ValidateMetric(Metric)) yield return $"{at}: {error}";
-            }
             if (IsHostRule && (Service.Length > 0|| Environment.Length > 0)) yield return $"{at}: host rules take Host, not Service or Environment";
             if (!IsHostRule && Host.Length > 0) yield return $"{at}: only host rules take Host";
             if (Service.Length > 256 || Host.Length > 256 || Environment.Length > 256) yield return $"{at}: scope values are at most 256 characters";
@@ -128,7 +124,7 @@ namespace Juice.Observability.Rules
         private static bool Matches(string pattern, string text) => !text.EndsWith('\n') && Regex.IsMatch(text, pattern, RegexOptions.None, TimeSpan.FromSeconds(1));
 
         /// <summary>What is wrong with the metric. Names, keys and values reach ClickHouse only as typed parameters; these limits keep them small and plain.</summary>
-        private static IEnumerable<string> ValidateMetric(MetricSpec metric)
+        internal static IEnumerable<string> ValidateMetric(MetricSpec metric)
         {
             if (!Matches(MetricSpec.NamePattern, metric.Name ?? "")) yield return $"Metric.Name must match {MetricSpec.NamePattern}";
             if (metric.Kind is not { } kind || !Enum.IsDefined(kind)) yield return "Metric.Kind is required (Gauge, Counter, UpDownCounter or Histogram)";
@@ -171,6 +167,49 @@ namespace Juice.Observability.Rules
 
         [GeneratedRegex("^[a-z0-9][a-z0-9-]{1,62}$")]
         private static partial Regex KeyPattern();
+
+        /// <summary>The most a threshold source's settings may be, as JSON text.</summary>
+        public const int MaxThresholdSettingsLength = 4096;
+
+        [GeneratedRegex(@"^(fixed|[a-z][a-z0-9-]{0,30}[a-z0-9]\.[a-z0-9][a-z0-9-]{0,62})\z")]
+        private static partial Regex ProviderPattern();
+
+        private IEnumerable<string> ValidateThresholdSource(IRuleTemplateRegistry? registry)
+        {
+            if (ThresholdSource is not { } source) yield break;
+            if (source.Provider is null || !ProviderPattern().IsMatch(source.Provider))
+            {
+                yield return "ThresholdSource.Provider must be 'fixed' or '<module>.<name>'";
+                yield break;
+            }
+            if (source.Settings is { ValueKind: not JsonValueKind.Undefined } settings && settings.GetRawText().Length > MaxThresholdSettingsLength)
+            {
+                yield return $"ThresholdSource.Settings is at most {MaxThresholdSettingsLength} characters";
+            }
+            if (!(registry as RuleTemplateRegistry ?? RuleTemplateRegistry.BuiltInOnly).TryGetProvider(source.Provider, out var provider))
+            {
+                yield return $"ThresholdSource.Provider '{source.Provider}' is not a known provider";
+                yield break;
+            }
+            foreach (var error in provider.Validate(ToSpec(), source.Settings)) yield return $"ThresholdSource: {error}";
+        }
+
+        /// <summary>The rule as the template and provider contracts see it: the scope, the window and the numbers, and the whole definition as JSON.</summary>
+        internal RuleSpec ToSpec()
+        {
+            using var document = JsonDocument.Parse(ToJson());
+            return new RuleSpec(Key, Template.ToString(), Service, Environment, Host, Window, Threshold, Recovery, MinimumSamples, document.RootElement.Clone());
+        }
+    }
+
+    /// <summary>Where a rule's thresholds come from instead of its own numbers: a provider's key (<c>&lt;module&gt;.&lt;name&gt;</c>) and its settings.</summary>
+    public sealed class RuleThresholdSource
+    {
+        /// <summary><c>fixed</c> (the rule's own numbers) or a module's provider key.</summary>
+        public string Provider { get; set; } = "";
+
+        /// <summary>The provider's own settings, at most <see cref="RuleDefinition.MaxThresholdSettingsLength"/> characters of JSON.</summary>
+        public JsonElement? Settings { get; set; }
     }
 
     /// <summary>Configuration section <c>Rules</c>.</summary>
@@ -210,7 +249,12 @@ namespace Juice.Observability.Rules
     /// <summary>The alert state machine (requirements §8), pure so every path is unit-tested.</summary>
     public static class AlertLifecycle
     {
+        /// <summary>Against the rule's own thresholds.</summary>
         public static Condition Classify(RuleDefinition rule, double? value, long samples)
+            => Classify(rule, RuleThresholds.Fixed(rule), value, samples);
+
+        /// <summary>Against <paramref name="threshold"/>, which the evaluator got from <see cref="RuleThresholds"/>.</summary>
+        public static Condition Classify(RuleDefinition rule, RuleThreshold threshold, double? value, long samples)
         {
             if (value is not { } v || double.IsNaN(v) || (rule.UsesSamples && samples < rule.MinimumSamples))
             {
@@ -218,9 +262,9 @@ namespace Juice.Observability.Rules
             }
             if (rule.FiresAbove)
             {
-                return v > rule.Threshold ? Condition.Breach : v <= rule.Recovery ? Condition.Recovered : Condition.Band;
+                return v > threshold.Threshold ? Condition.Breach : v <= threshold.Recovery ? Condition.Recovered : Condition.Band;
             }
-            return v <= rule.Threshold ? Condition.Breach : v > rule.Recovery ? Condition.Recovered : Condition.Band;
+            return v <= threshold.Threshold ? Condition.Breach : v > threshold.Recovery ? Condition.Recovered : Condition.Band;
         }
 
         /// <summary>
