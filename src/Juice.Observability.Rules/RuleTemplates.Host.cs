@@ -1,16 +1,133 @@
+using Juice.Observability.Data;
 using Juice.Observability.Discovery;
+using static Juice.Observability.Discovery.ClickHouseTelemetrySource;
 
 namespace Juice.Observability.Rules
 {
+    /// <summary>
+    /// HostCpu and HostDisk (Phase 12 R7): one observation per host, subject <c>host:{h}</c> as HostMemory. The scope reaches the query only as the
+    /// <c>{host}</c> parameter; every constant below is built from platform constants.
+    /// </summary>
     public sealed partial class RuleTemplates
     {
-        // Stubs: slice C replaces these bodies (HostCpu, HostDisk).
-        private partial Task<IReadOnlyList<RuleObservation>> ObserveHostCpuAsync(TelemetryWindow window,
-            Dictionary<string, object> scope, CancellationToken cancellationToken)
-            => Task.FromResult<IReadOnlyList<RuleObservation>>([]);
+        public const string CpuTime = "system.cpu.time", CpuUtilization = "system.cpu.utilization";
+        public const string FilesystemUsage = "system.filesystem.usage", FilesystemUtilization = "system.filesystem.utilization";
 
-        private partial Task<IReadOnlyList<RuleObservation>> ObserveHostDiskAsync(TelemetryWindow window,
+        // The same host key as HostMemory: the host id when there is one, else the host name, lower-cased; the rule's Host matches either.
+        private const string HostExpr = "if(JuiceHostId != '', lower(JuiceHostId), lower(JuiceHostName))";
+        private const string HostFilter = $"({HostParam} = '' OR lower(JuiceHostName) = {HostParam} OR lower(JuiceHostId) = {HostParam})";
+
+        // Filesystems that say nothing about capacity: the pseudo and virtual types, and the kernel's and the container runtime's mounts. The host
+        // Collector's config leaves them out; the query does too, so a Collector that doesn't can't make a disk look full.
+        private static readonly string[] PseudoFileSystems =
+        [
+            "autofs", "binfmt_misc", "bpf", "cgroup", "cgroup2", "configfs", "debugfs", "devpts", "devtmpfs", "fusectl", "hugetlbfs", "iso9660",
+            "mqueue", "nsfs", "overlay", "proc", "procfs", "pstore", "ramfs", "rpc_pipefs", "securityfs", "selinuxfs", "squashfs", "sysfs", "tmpfs", "tracefs",
+        ];
+
+        private static readonly string MountFilter = $"""
+            Attributes['mode'] != 'ro'
+            AND Attributes['type'] NOT IN ({string.Join(", ", PseudoFileSystems.Select(t => $"'{t}'"))})
+            AND NOT match(Attributes['mountpoint'], '^/(proc|sys|dev|run|snap)(/|$)')
+            AND NOT match(Attributes['mountpoint'], '^/var/lib/docker(/|$)')
+            """;
+
+        // CPU time is a cumulative counter per (cpu, state): its increase is measured as the other counters' are (CounterIncrease): from the series'
+        // last value before the window, from zero for a series that starts in it, and a series without a point in the window is left out. The
+        // non-idle share is busy / total over all of them.
+        private static readonly string HostCpuTime = $"""
+            SELECT host, sumIf(increase, state != 'idle') AS busy, sum(increase) AS total
+            FROM (
+                SELECT {HostExpr} AS host, Attributes['state'] AS state,
+                       greatest(maxIf(Value, TimeUnix >= {From}) - maxIf(Value, TimeUnix < {From}), 0) AS increase
+                FROM otel.otel_metrics_sum
+                WHERE {Tenant} AND TimeUnix >= {From} - INTERVAL 1 HOUR AND TimeUnix < {To} AND MetricName = '{CpuTime}' AND {HostFilter}
+                GROUP BY host, state, cityHash64(ResourceAttributes, Attributes), StartTimeUnix
+                HAVING countIf(TimeUnix >= {From}) > 0
+            )
+            WHERE host != ''
+            GROUP BY host
+            HAVING total > 0
+            LIMIT {Limit}
+            """;
+
+        // The fallback, for a Collector without the cpu.time metric: one minus the mean idle share over the window.
+        private static readonly string HostCpuUtilization = $"""
+            SELECT {HostExpr} AS host, 1 - avgIf(Value, Attributes['state'] = 'idle') AS busy
+            FROM otel.otel_metrics_gauge
+            WHERE {Tenant} AND TimeUnix >= {From} AND TimeUnix < {To} AND MetricName = '{CpuUtilization}' AND {HostFilter}
+            GROUP BY host
+            HAVING host != '' AND countIf(Attributes['state'] = 'idle') > 0
+            LIMIT {Limit}
+            """;
+
+        // The fullest read-write real mount of each host, used / (used + free) as df has it (the reserved blocks count as neither).
+        private static readonly string HostDiskUsage = $"""
+            SELECT host, mount, used / (used + free) AS ratio
+            FROM (
+                SELECT {HostExpr} AS host, Attributes['mountpoint'] AS mount, Attributes['device'] AS device,
+                       argMaxIf(Value, TimeUnix, Attributes['state'] = 'used') AS used,
+                       argMaxIf(Value, TimeUnix, Attributes['state'] = 'free') AS free,
+                       countIf(Attributes['state'] = 'used') AS used_points, countIf(Attributes['state'] = 'free') AS free_points
+                FROM otel.otel_metrics_sum
+                WHERE {Tenant} AND TimeUnix >= {From} AND TimeUnix < {To} AND MetricName = '{FilesystemUsage}' AND {HostFilter}
+                  AND {MountFilter}
+                GROUP BY host, mount, device
+                HAVING used_points > 0 AND free_points > 0 AND used + free > 0
+            )
+            WHERE host != ''
+            ORDER BY ratio DESC, mount
+            LIMIT 1 BY host
+            LIMIT {Limit}
+            """;
+
+        private static readonly string HostDiskUtilization = $"""
+            SELECT host, mount, ratio
+            FROM (
+                SELECT {HostExpr} AS host, Attributes['mountpoint'] AS mount, Attributes['device'] AS device, argMax(Value, TimeUnix) AS ratio
+                FROM otel.otel_metrics_gauge
+                WHERE {Tenant} AND TimeUnix >= {From} AND TimeUnix < {To} AND MetricName = '{FilesystemUtilization}' AND {HostFilter}
+                  AND {MountFilter}
+                GROUP BY host, mount, device
+            )
+            WHERE host != ''
+            ORDER BY ratio DESC, mount
+            LIMIT 1 BY host
+            LIMIT {Limit}
+            """;
+
+        private static RuleObservation Host(string host, double value, string source, string? mount = null)
+        {
+            var detail = new Dictionary<string, string> { ["source"] = source };
+            if (mount is not null) detail["mount"] = mount;
+            return new RuleObservation($"host:{host}", HealthSubject.Host, "", "", "", host, value, 1) { Detail = detail };
+        }
+
+        // The two sources of one metric, a host once: from the first that has it. Bounded by the window's row limit, as each query is.
+        private static IReadOnlyList<RuleObservation> PreferFirst(IReadOnlyList<RuleObservation> preferred, IReadOnlyList<RuleObservation> fallback, int limit)
+        {
+            var seen = preferred.Select(o => o.SubjectKey).ToHashSet();
+            return [.. preferred.Concat(fallback.Where(o => !seen.Contains(o.SubjectKey))).Take(limit)];
+        }
+
+        private async partial Task<IReadOnlyList<RuleObservation>> ObserveHostCpuAsync(TelemetryWindow window,
             Dictionary<string, object> scope, CancellationToken cancellationToken)
-            => Task.FromResult<IReadOnlyList<RuleObservation>>([]);
+        {
+            var fromTime = await clickHouse.QueryAsync(HostCpuTime, window, r => Host(r.GetString(0),
+                Math.Clamp(Convert.ToDouble(r.GetValue(1)) / Convert.ToDouble(r.GetValue(2)), 0, 1), CpuTime), cancellationToken, scope);
+            var fromUtilization = await clickHouse.QueryAsync(HostCpuUtilization, window, r => Host(r.GetString(0),
+                Math.Clamp(Convert.ToDouble(r.GetValue(1)), 0, 1), CpuUtilization), cancellationToken, scope);
+            return PreferFirst(fromTime, fromUtilization, window.Limit);
+        }
+
+        private async partial Task<IReadOnlyList<RuleObservation>> ObserveHostDiskAsync(TelemetryWindow window,
+            Dictionary<string, object> scope, CancellationToken cancellationToken)
+        {
+            var fromUsage = await clickHouse.QueryAsync(HostDiskUsage, window, r => Host(r.GetString(0),
+                Math.Clamp(Convert.ToDouble(r.GetValue(2)), 0, 1), FilesystemUsage, r.GetString(1)), cancellationToken, scope);
+            var fromUtilization = await clickHouse.QueryAsync(HostDiskUtilization, window, r => Host(r.GetString(0),
+                Math.Clamp(Convert.ToDouble(r.GetValue(2)), 0, 1), FilesystemUtilization, r.GetString(1)), cancellationToken, scope);
+            return PreferFirst(fromUsage, fromUtilization, window.Limit);
+        }
     }
 }
