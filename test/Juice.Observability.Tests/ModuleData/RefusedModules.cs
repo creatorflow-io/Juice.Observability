@@ -153,6 +153,93 @@ namespace Juice.Observability.Tests.ModuleData
         }
     }
 
+    /// <summary>A table of its own with a foreign key to the core's alerts.</summary>
+    public sealed class ForeignKeyModule : IObservabilityModule
+    {
+        public ModuleInfo Info { get; } = new("data-fk", "Foreign key", "1.0.0", "[2.0.0,3.0.0)");
+
+        public void ConfigureServices(IModuleServicesBuilder module) => module.AddModuleData<ForeignKeyContext>();
+    }
+
+    public sealed class ForeignKeyContext(DbContextOptions<ForeignKeyContext> options) : ModuleDbContext(options)
+    {
+        public override string Module => "data-fk";
+    }
+
+    [DbContext(typeof(ForeignKeyContext))]
+    [Migration("20261129000050_ForeignKey")]
+    public sealed class ForeignKeyToCore : Migration
+    {
+        protected override void Up(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.EnsureSchema("data_fk");
+            migrationBuilder.CreateTable(name: "refs", schema: "data_fk", columns: t => new { Id = t.Column<Guid>(nullable: false), alert_id = t.Column<Guid>(nullable: false) },
+                constraints: t =>
+                {
+                    t.PrimaryKey("pk_refs", x => x.Id);
+                    t.ForeignKey("fk_refs_alerts", x => x.alert_id, principalSchema: "public", principalTable: "alerts", principalColumn: "id");
+                });
+        }
+
+        protected override void Down(MigrationBuilder migrationBuilder)
+        {
+        }
+    }
+
+    /// <summary>A later migration with a foreign key added to a table of the module's own.</summary>
+    public sealed class AddForeignKeyModule : IObservabilityModule
+    {
+        public ModuleInfo Info { get; } = new("data-fk2", "Add foreign key", "1.0.0", "[2.0.0,3.0.0)");
+
+        public void ConfigureServices(IModuleServicesBuilder module) => module.AddModuleData<AddForeignKeyContext>();
+    }
+
+    public sealed class AddForeignKeyContext(DbContextOptions<AddForeignKeyContext> options) : ModuleDbContext(options)
+    {
+        public override string Module => "data-fk2";
+    }
+
+    [DbContext(typeof(AddForeignKeyContext))]
+    [Migration("20261129000060_AddForeignKey")]
+    public sealed class AddForeignKeyToCore : Migration
+    {
+        protected override void Up(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.EnsureSchema("data_fk2");
+            migrationBuilder.CreateTable(name: "refs", schema: "data_fk2", columns: t => new { Id = t.Column<Guid>(nullable: false), alert_id = t.Column<Guid>(nullable: false) },
+                constraints: t => t.PrimaryKey("pk_refs", x => x.Id));
+            migrationBuilder.AddForeignKey("fk_refs_alerts", table: "refs", column: "alert_id", schema: "data_fk2", principalSchema: "public", principalTable: "alerts", principalColumn: "id");
+        }
+
+        protected override void Down(MigrationBuilder migrationBuilder)
+        {
+        }
+    }
+
+    /// <summary>A migration with raw SQL, which can't be checked.</summary>
+    public sealed class RawSqlModule : IObservabilityModule
+    {
+        public ModuleInfo Info { get; } = new("data-sql", "Raw SQL", "1.0.0", "[2.0.0,3.0.0)");
+
+        public void ConfigureServices(IModuleServicesBuilder module) => module.AddModuleData<RawSqlContext>();
+    }
+
+    public sealed class RawSqlContext(DbContextOptions<RawSqlContext> options) : ModuleDbContext(options)
+    {
+        public override string Module => "data-sql";
+    }
+
+    [DbContext(typeof(RawSqlContext))]
+    [Migration("20261129000070_RawSql")]
+    public sealed class RawSql : Migration
+    {
+        protected override void Up(MigrationBuilder migrationBuilder) => migrationBuilder.Sql("CREATE TABLE public.sneaked (id int)");
+
+        protected override void Down(MigrationBuilder migrationBuilder)
+        {
+        }
+    }
+
     /// <summary>A stand-in for the host's builder that reports another module's name.</summary>
     public sealed class FakeBuilder(IServiceCollection services, string name) : IModuleServicesBuilder
     {

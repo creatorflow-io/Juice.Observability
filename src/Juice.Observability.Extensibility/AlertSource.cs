@@ -1,6 +1,14 @@
 namespace Juice.Observability.Extensibility;
 
-/// <summary>A keyed scoped service: <c>GetRequiredKeyedService&lt;IAlertSource&gt;(template)</c>.</summary>
+/// <summary>
+/// A keyed scoped service, keyed by the module that declared it and the template (<see cref="AlertSourceKeys.Key"/>):
+/// <c>GetRequiredKeyedService&lt;IAlertSource&gt;(AlertSourceKeys.Key(module, template))</c>. The template alone names none, so a module can't pick up another
+/// module's source (the core's <c>SloBurn</c> is the <c>slos</c> module's).
+/// <para>
+/// <see cref="ApplyAsync"/> joins the command it is called in, and then it must be the handler's last step: it may open the transaction the command's
+/// behavior goes on to commit, and a handler that throws after it leaves that transaction open on the scope.
+/// </para>
+/// </summary>
 public interface IAlertSource
 {
     string Template { get; }
@@ -24,6 +32,12 @@ public sealed record AlertSignal(string RuleKey, string DedupKey, AlertSignalKin
     double? Value = null, long? Samples = null, bool NoData = false, IReadOnlyDictionary<string, string>? Evidence = null);
 
 public sealed record AlertSourceResult(int Fired, int Resolved, int Observed);
+
+public static class AlertSourceKeys
+{
+    /// <summary>The service key of the source a module declared for a template.</summary>
+    public static string Key(string module, string template) => $"{module}:{template}";
+}
 
 public static class AlertSourceModuleExtensions
 {

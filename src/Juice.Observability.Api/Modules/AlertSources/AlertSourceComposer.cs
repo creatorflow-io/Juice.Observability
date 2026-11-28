@@ -50,13 +50,13 @@ namespace Juice.Observability.Api.Modules.AlertSources
             {
                 throw new ModuleCompositionException($"Module '{module}' can't declare an alert source for '{template}': a module's template is '{module}.<name>'.");
             }
-            if (b.Services.Any(d => d.ServiceType == typeof(IAlertSource) && d.IsKeyedService && Equals(d.ServiceKey, template)))
+            if (b.Services.Any(d => d.ServiceType == typeof(IAlertSource) && d.IsKeyedService && d.ServiceKey is string declared && declared.EndsWith(":" + template, StringComparison.Ordinal)))
             {
                 throw new ModuleCompositionException($"Module '{module}' can't declare an alert source for '{template}': it is already declared.");
             }
             // The command an alert source sends outside a transaction: internal, so the mediator's assembly scan doesn't find it.
             b.Services.TryAddTransient<Juice.MediatR.IRequestHandler<ApplyAlertSignals, AlertSourceResult>, ApplyAlertSignalsHandler>();
-            b.Services.AddKeyedScoped<IAlertSource>(template, (services, key) => new PlatformAlertSource((string)key!, services.GetRequiredService<PlatformDbContext>(), services,
+            b.Services.AddKeyedScoped<IAlertSource>(AlertSourceKeys.Key(module, template), (services, key) => new PlatformAlertSource(template, services.GetRequiredService<PlatformDbContext>(), services,
                 services.GetRequiredService<IOptions<PlatformOptions>>(), services.GetRequiredService<TimeProvider>()));
         }
     }

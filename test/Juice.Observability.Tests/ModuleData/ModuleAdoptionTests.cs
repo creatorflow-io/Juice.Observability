@@ -213,6 +213,23 @@ namespace Juice.Observability.Tests.ModuleData
             Assert.Equal(0, await CountAsync(database, "SELECT count(*) FROM information_schema.columns WHERE table_name = 'audit_records' AND column_name = 'injected'"));
         }
 
+        [Theory]
+        [InlineData(typeof(ForeignKeyModule), "refs", "foreign key to public.alerts")]
+        [InlineData(typeof(AddForeignKeyModule), "refs", "foreign key to public.alerts")]
+        [InlineData(typeof(RawSqlModule), "sneaked", "SqlOperation")]
+        public async Task Foreign_key_to_a_core_table_and_raw_SQL_refused(Type module, string table, string operation)
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+
+            var e = await Assert.ThrowsAnyAsync<Exception>(async () => await ModuleTestHost.StartAsync(
+                b => typeof(ObservabilityModuleExtensions).GetMethod(nameof(ObservabilityModuleExtensions.AddObservabilityModule))!.MakeGenericMethod(module).Invoke(null, [b]),
+                database, hostedServices: true));
+
+            Assert.Contains(operation, e.ToString());
+            Assert.Equal(0, await CountAsync(database, $"SELECT count(*) FROM information_schema.tables WHERE table_name = '{table}'"));
+        }
+
         [Fact]
         public async Task Migrate_false_pending_module_migration_stops_host()
         {

@@ -1,4 +1,6 @@
+using Juice.Observability.Api;
 using Juice.Observability.Data;
+using Juice.Observability.Tests.ModuleData;
 using Juice.Observability.Extensibility;
 using Juice.Observability.Slos;
 using Juice.Observability.Tests.Modules;
@@ -45,7 +47,7 @@ namespace Juice.Observability.Tests.AlertSources
 
         private static Task<ModuleTestHost> HostAsync(ScratchDatabase database) => ModuleTestHost.StartAsync(null, database, hostedServices: false);
 
-        private static IAlertSource Source(IServiceScope scope) => scope.ServiceProvider.GetRequiredKeyedService<IAlertSource>(Template);
+        private static IAlertSource Source(IServiceScope scope) => scope.ServiceProvider.GetRequiredKeyedService<IAlertSource>(AlertSourceKeys.Key("slos", Template));
 
         private sealed record Counts(int Alerts, int Transitions, int Outbox);
 
@@ -54,6 +56,25 @@ namespace Juice.Observability.Tests.AlertSources
             await using var db = database.Context();
             return new(await db.Alerts.CountAsync(Ct), await db.AlertTransitions.CountAsync(Ct), await db.Outbox.CountAsync(Ct));
         }
+
+        [Fact]
+        public async Task Another_module_cannot_resolve_the_slos_source_by_its_template()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var host = await ModuleTestHost.StartAsync(b => b.AddObservabilityModule<SourceModule>(), database, hostedServices: false);
+            await using var scope = host.App.Services.CreateAsyncScope();
+
+            // Sources are keyed by the module that declared them: the template alone names none, whoever asks.
+            Assert.Null(scope.ServiceProvider.GetKeyedService<IAlertSource>(Template));
+            Assert.Null(scope.ServiceProvider.GetKeyedService<IAlertSource>("source-ok.burn"));
+            Assert.NotNull(scope.ServiceProvider.GetKeyedService<IAlertSource>(AlertSourceKeys.Key("source-ok", "source-ok.burn")));
+            Assert.NotNull(scope.ServiceProvider.GetKeyedService<IAlertSource>(AlertSourceKeys.Key("slos", Template)));
+        }
+
+        [Fact]
+        public void Schema_denylist_covers_the_embedded_notifications_schema()
+            => Assert.True(Api.Modules.ModuleData.CoreSchemas.IsCoreSchema(Juice.Notifications.Data.NotificationsDbContext.Schema));
 
         [Fact]
         public async Task Apply_foreign_rule_or_template_refused_nothing_written()
