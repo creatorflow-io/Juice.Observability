@@ -344,8 +344,7 @@ namespace Juice.Observability.Api.Integrations
 
             // What this validation vouches for, taken before the plugin runs; no transaction is open while it does.
             var hash = IntegrationHash.Of(instance);
-            var secrets = new List<string>();
-            var report = await RunValidationAsync(instance, descriptor, http, db, options.Value, secrets, ct);
+            var report = await RunValidationAsync(instance, descriptor, http, options.Value, ct);
             var now = clock.GetUtcNow();
             var validation = new ValidationDto(report.Passed, report.Checks, now);
 
@@ -372,25 +371,31 @@ namespace Juice.Observability.Api.Integrations
             return Results.Ok(new IntegrationValidateResponse(IntegrationMapping.ToDto(instance, plugins, now, detail: true), validation));
         }
 
-        private static async Task<ValidationReport> RunValidationAsync(IntegrationInstance instance, IntegrationDescriptor descriptor, HttpContext http, IntegrationsDbContext db,
-            IntegrationsOptions options, List<string> secrets, CancellationToken ct)
+        private static async Task<ValidationReport> RunValidationAsync(IntegrationInstance instance, IntegrationDescriptor descriptor, HttpContext http,
+            IntegrationsOptions options, CancellationToken ct)
         {
             IntegrationContext? context = null;
             ValidationReport? report = null;
             ValidationCheck? failure = null;
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(options.ValidateTimeout);
+            // The plugin gets a scope, and so a database context, of its own: one that ignores cancellation and runs on after the request moved on
+            // never shares the request's context (EF allows one operation at a time on it).
+            var scope = http.RequestServices.GetRequiredService<IServiceScopeFactory>().CreateAsyncScope();
+            Task<ValidationReport>? call = null;
             try
             {
+                var db = scope.ServiceProvider.GetRequiredService<IntegrationsDbContext>();
                 var checkpoints = new RunCheckpoints(async (stream, token) =>
                 {
                     var row = await db.Checkpoints.AsNoTracking().SingleOrDefaultAsync(c => c.InstanceId == instance.Id && c.Stream == stream, token);
                     return row is null ? null : new IntegrationCheckpoint(row.Stream, row.Watermark, row.Cursor);
                 }, readOnly: true);
-                context = IntegrationContextFactory.Create(instance, http.RequestServices, checkpoints);
-                var plugin = http.RequestServices.GetRequiredService<IIntegrationPluginRegistry>().Resolve(http.RequestServices, descriptor.Key);
+                context = IntegrationContextFactory.Create(instance, scope.ServiceProvider, checkpoints);
+                var plugin = scope.ServiceProvider.GetRequiredService<IIntegrationPluginRegistry>().Resolve(scope.ServiceProvider, descriptor.Key);
+                call = plugin.ValidateAsync(context, timeout.Token);
                 // A plugin that ignores its token is stopped waiting for all the same.
-                report = await plugin.ValidateAsync(context, timeout.Token).WaitAsync(options.ValidateTimeout, ct);
+                report = await call.WaitAsync(options.ValidateTimeout, ct);
             }
             catch (Exception e) when ((e is OperationCanceledException && !ct.IsCancellationRequested) || e is TimeoutException)
             {
@@ -403,6 +408,18 @@ namespace Juice.Observability.Api.Integrations
             catch (Exception e) when (e is not OperationCanceledException)
             {
                 failure = new ValidationCheck("plugin", false, $"The plugin failed: {e.GetType().Name}: {e.Message}");
+            }
+            finally
+            {
+                // The scope lives as long as the plugin's call does, which may be past this request.
+                if (call is { IsCompleted: false })
+                {
+                    _ = call.ContinueWith(_ => scope.DisposeAsync().AsTask(), TaskScheduler.Default);
+                }
+                else
+                {
+                    await scope.DisposeAsync();
+                }
             }
             // Whatever the plugin said, and whatever it failed with, is cleaned of the secrets it resolved and capped.
             var values = context is null ? [] : IntegrationContextFactory.ResolvedValues(context);

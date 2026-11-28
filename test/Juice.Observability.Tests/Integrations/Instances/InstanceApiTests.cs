@@ -500,6 +500,20 @@ namespace Juice.Observability.Tests.Integrations.Instances
             Assert.Equal("timeout", body.GetProperty("report").GetProperty("checks")[0].GetProperty("name").GetString());
         }
 
+        [Fact]
+        public async Task A_plugin_running_on_after_the_timeout_never_shares_the_requests_context()
+        {
+            await using var rig = await StartAsync(new Dictionary<string, string?> { ["Modules:integrations:ValidateTimeout"] = "00:00:01" });
+            var id = IdOf(await rig.CreateAsync());
+            rig.Control.LateReads = true;
+            var (response, body) = await rig.Post($"/instances/{id}/validate");
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal("timeout", body.GetProperty("report").GetProperty("checks")[0].GetProperty("name").GetString());
+            // The plugin kept reading through its own context, while the request saved with its.
+            await rig.Control.LateReadsDone.Task.WaitAsync(TimeSpan.FromSeconds(15), Ct);
+            Assert.Empty(rig.Control.LateErrors);
+        }
+
         [Theory]
         [InlineData("W/\"{0}\"")]
         [InlineData("\"999\", \"{0}\"")]

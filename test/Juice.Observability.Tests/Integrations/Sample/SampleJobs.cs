@@ -27,6 +27,13 @@ namespace Juice.Observability.Tests.Integrations.Sample
         /// <summary>The delay ignores the cancellation token: a plugin that does not stop when asked.</summary>
         public bool IgnoreCancellation { get; set; }
 
+        /// <summary>Reads a checkpoint every few milliseconds for three seconds, ignoring cancellation: a plugin still running after the request moved on.</summary>
+        public bool LateReads { get; set; }
+
+        public System.Collections.Concurrent.ConcurrentQueue<Exception> LateErrors { get; } = new();
+
+        public TaskCompletionSource LateReadsDone { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         /// <summary>Called inside the plugin before it answers: a hook to change the instance while a validation runs.</summary>
         public Func<Task>? OnValidate { get; set; }
 
@@ -62,6 +69,24 @@ namespace Juice.Observability.Tests.Integrations.Sample
         public async Task<ValidationReport> ValidateAsync(IntegrationContext context, CancellationToken ct)
         {
             control.Validations++;
+            if (control.LateReads)
+            {
+                var until = DateTime.UtcNow.AddSeconds(3);
+                while (DateTime.UtcNow < until)
+                {
+                    try
+                    {
+                        await context.Checkpoints.GetAsync("jobs", CancellationToken.None);
+                    }
+                    catch (Exception e)
+                    {
+                        control.LateErrors.Enqueue(e);
+                    }
+                    await Task.Delay(3, CancellationToken.None);
+                }
+                control.LateReadsDone.TrySetResult();
+                return new ValidationReport(true, [new("connectivity", true)]);
+            }
             if (control.OnValidate is { } hook)
             {
                 await hook();
