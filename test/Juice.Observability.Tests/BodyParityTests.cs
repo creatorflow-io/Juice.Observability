@@ -79,7 +79,7 @@ namespace Juice.Observability.Tests
 
         [Theory]
         [MemberData(nameof(Variants))]
-        public async Task BodyParity_SlackTeamsEmailWebhook_FrozenFormatter_ByteEqual(string @event, string subject, string ruleName, double? value, string reason)
+        public async Task BodyParity_SlackTeamsEmailWebhook_FrozenFormatter_BytesOrContentEqual(string @event, string subject, string ruleName, double? value, string reason)
         {
             var (payload, id, escalation) = Frozen(@event, subject, ruleName, value, reason);
             var type = @event == NotificationPlan.Resolved ? ObservabilityTypes.AlertResolved : ObservabilityTypes.AlertFiring;

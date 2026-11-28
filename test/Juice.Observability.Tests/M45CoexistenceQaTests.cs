@@ -15,6 +15,7 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
+using TransactionsBegun = Juice.Observability.Tests.EmbeddedCompositionTests.TransactionsBegun;
 
 namespace Juice.Observability.Tests
 {
@@ -307,50 +308,6 @@ namespace Juice.Observability.Tests
             await connection.OpenAsync(Ct);
             await using var command = new NpgsqlCommand(sql, connection);
             return (long)(await command.ExecuteScalarAsync(Ct))!;
-        }
-
-        /// <summary>Transactions begun on one database, per context type (EF's diagnostics).</summary>
-        private sealed class TransactionsBegun : IObserver<DiagnosticListener>, IObserver<KeyValuePair<string, object?>>, IDisposable
-        {
-            private readonly string _database;
-            private readonly IDisposable _subscription;
-            private readonly List<IDisposable> _listeners = [];
-            private readonly ConcurrentDictionary<Type, int> _begun = new();
-
-            public TransactionsBegun(string database)
-            {
-                _database = database;
-                _subscription = DiagnosticListener.AllListeners.Subscribe(this);
-            }
-
-            public int Of<TContext>() => _begun.GetValueOrDefault(typeof(TContext));
-
-            public void OnNext(DiagnosticListener value)
-            {
-                if (value.Name == DbLoggerCategory.Name)
-                {
-                    lock (_listeners) _listeners.Add(value.Subscribe(this));
-                }
-            }
-
-            public void OnNext(KeyValuePair<string, object?> value)
-            {
-                if (value.Key == RelationalEventId.TransactionStarted.Name && value.Value is TransactionEndEventData { Context: { } context }
-                    && context.Database.GetDbConnection().Database == _database)
-                {
-                    _begun.AddOrUpdate(context.GetType(), 1, (_, n) => n + 1);
-                }
-            }
-
-            public void OnCompleted() { }
-
-            public void OnError(Exception error) { }
-
-            public void Dispose()
-            {
-                _subscription.Dispose();
-                lock (_listeners) _listeners.ForEach(l => l.Dispose());
-            }
         }
     }
 }
