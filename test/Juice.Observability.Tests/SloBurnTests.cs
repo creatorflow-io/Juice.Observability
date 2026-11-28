@@ -244,6 +244,29 @@ namespace Juice.Observability.Tests
             Assert.Equal(6, (await PlatformServices.OutboxAsync(database, Ct)).Count(o => o.Type.Contains("AlertTransitioned", StringComparison.Ordinal)));
         }
 
+        /// <summary>Closing the alerts goes through the slos alert source, so it waits for the source's advisory lock like any other write to them.</summary>
+        [Fact]
+        public async Task Closing_burn_alerts_takes_the_alert_source_lock_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var clock = new MovableClock(DateTimeOffset.UtcNow);
+            var slo = await ProvisionAsync(database, clock.Now);
+            var end = End(clock);
+            await FillAsync(database, slo, end - TimeSpan.FromDays(3), end, good: 50);
+            Assert.Equal(3, (await SendAsync(database, clock, new EvaluateSloBurns())).Fired);
+
+            await using var held = database.Context();
+            await using var transaction = await held.Database.BeginTransactionAsync(Ct);
+            await held.Database.ExecuteSqlAsync($"SELECT pg_advisory_xact_lock({WorkerLease.KeyOf("alert-source:SloBurn")})", Ct);
+            var closing = SendAsync(database, clock, new CloseSloBurnAlerts(CloseSloBurnAlertsHandler.CountingDisabled));
+            await Task.Delay(1000, Ct);
+            Assert.False(closing.IsCompleted, "closing should wait for the alert source's lock");
+            await transaction.CommitAsync(Ct);
+
+            Assert.Equal(3, await closing);
+        }
+
         /// <summary>
         /// The whole life of the three burn alerts on one SLO, with minute buckets written directly and a fixed clock: they fire through the alert
         /// lifecycle and the outbox; hold, not resolve, while a window is unread; resolve when both windows cool; and resolve when the SLO is retired.

@@ -151,7 +151,8 @@ namespace Juice.Observability.Slos
     /// </summary>
     public sealed record CloseSloBurnAlerts(string Reason) : MessageBase, IRequest<int>;
 
-    public sealed class CloseSloBurnAlertsHandler(PlatformDbContext db, IOptions<PlatformOptions> platform, TimeProvider clock) : IRequestHandler<CloseSloBurnAlerts, int>
+    public sealed class CloseSloBurnAlertsHandler(PlatformDbContext db, IOptions<PlatformOptions> platform, TimeProvider clock, IServiceProvider services)
+        : IRequestHandler<CloseSloBurnAlerts, int>
     {
         public const string CountingDisabled = "slo_counting_disabled";
 
@@ -165,16 +166,14 @@ namespace Juice.Observability.Slos
             {
                 return 0;
             }
-            var tenantId = await db.Tenants.Where(t => t.Key == platform.Value.TenantKey).Select(t => t.Id).SingleAsync(cancellationToken);
-            // By owner, not template: rules set aside for a rollback (see deployment.md) still own their alerts.
-            var ruleIds = await db.Rules.Where(r => r.TenantId == tenantId && r.ManagedBy == ManagedBy.Platform).Select(r => r.Id).ToListAsync(cancellationToken);
-            var open = await db.Alerts.Where(a => a.TenantId == tenantId && ruleIds.Contains(a.RuleId) && a.State != AlertState.Resolved).ToListAsync(cancellationToken);
+            // Through the slos alert source, as the evaluation applies its changes: the same advisory lock, so a close never interleaves with one.
+            // (Provisioning has put the burn rules back as the platform's, template and all, before it asks.)
+            var source = services.GetKeyedService<IAlertSource>(AlertSourceKeys.Key("slos", EvaluateSloBurnsHandler.Template))
+                ?? new PlatformAlertSource(EvaluateSloBurnsHandler.Template, db, services, platform, clock);
             var now = clock.GetUtcNow();
-            foreach (var alert in open)
-            {
-                AlertChanges.Resolve(db, alert, request.Reason, now, RuleTemplate.SloBurn);
-            }
-            return open.Count;
+            var signals = (await source.OpenAlertsAsync(cancellationToken))
+                .Select(a => new AlertSignal(a.RuleKey, a.DedupKey, AlertSignalKind.Resolve, now, request.Reason)).ToList();
+            return (await source.ApplyAsync(signals, cancellationToken)).Resolved;
         }
     }
 
