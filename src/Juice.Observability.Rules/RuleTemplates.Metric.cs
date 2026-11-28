@@ -40,10 +40,6 @@ namespace Juice.Observability.Rules
             return parameters;
         }
 
-        // A gauge's or cumulative up-down counter's level is its last value; a delta up-down counter reports changes, so its net change in the window is the sum.
-        private static string LastValue(MetricKind kind)
-            => kind == MetricKind.UpDownCounter ? "if(any(AggregationTemporality) = 1, sum(Value), argMax(Value, TimeUnix))" : "argMax(Value, TimeUnix)";
-
         private const string SeriesKey = "cityHash64(ResourceAttributes, Attributes)";
         private const string HostKey = "if(JuiceHostId != '', lower(JuiceHostId), lower(JuiceHostName)) AS host";
         private const string HostScope = $"(JuiceHostId != '' OR JuiceHostName != '') AND ({HostParam} = '' OR lower(JuiceHostName) = {HostParam} OR lower(JuiceHostId) = {HostParam})";
@@ -76,11 +72,12 @@ namespace Juice.Observability.Rules
                 case MetricKind.Gauge or MetricKind.UpDownCounter:
                     // The last value of each series; series of one subject are averaged (a gauge) or summed (an up-down counter).
                     var table = kind == MetricKind.Gauge ? "otel.otel_metrics_gauge" : "otel.otel_metrics_sum";
-                    var mono = kind == MetricKind.UpDownCounter ? " AND IsMonotonic = false" : "";
+                    // Only cumulative series: a delta up-down counter reports changes, not a level, so its last point is not a value to compare (left out).
+                    var mono = kind == MetricKind.UpDownCounter ? " AND IsMonotonic = false AND AggregationTemporality != 1" : "";
                     return $"""
                         SELECT {group}, {(kind == MetricKind.Gauge ? "avg" : "sum")}(last) AS v, sum(n) AS n, any(unit) AS unit
                         FROM (
-                            SELECT {keys}, {SeriesKey} AS series, {LastValue(kind)} AS last, count() AS n, any(MetricUnit) AS unit
+                            SELECT {keys}, {SeriesKey} AS series, argMax(Value, TimeUnix) AS last, count() AS n, any(MetricUnit) AS unit
                             FROM {table}
                             WHERE {inWindow}{mono}
                             GROUP BY {group}, series
@@ -90,22 +87,21 @@ namespace Juice.Observability.Rules
                         """;
                 default:
                     // A counter's series is (resource, attributes, start time): a new start time is a restart. Cumulative series count from their last value
-                    // before the window; with none, from zero only when the series itself began in the window (StartTimeUnix >= From, so its first
-                    // point is a first increment), else from its first point in the window, and with only that one point it is left out, no data (a process or boot start long before it says nothing about
-                    // this window, and counting from zero would read the lifetime total). After a Collector outage over the lookback hour such a
-                    // series' increase between its first point and the window's start is missed, never over-counted. Delta series are summed. A series without a point in the window is left out.
+                    // before the window, or from zero when it has none (as CounterIncrease does): SDKs stamp every attribute set with the instrument's start
+                    // time, so a new attribute set (errors{type=timeout}) on a long-running service is a first increment, not a lifetime total. After a
+                    // Collector outage of more than 1 h the first window can over-count; that is accepted, as in CounterIncrease.
+                    // Delta series are summed. A series without a point in the window is left out.
                     return $"""
                         SELECT {group}, sum(increase) AS v, sum(n) AS n, any(unit) AS unit
                         FROM (
                             SELECT {keys}, {SeriesKey} AS series, StartTimeUnix,
                                    if(any(AggregationTemporality) = 1, sumIf(Value, TimeUnix >= {From}),
-                                      greatest(maxIf(Value, TimeUnix >= {From}) - if(countIf(TimeUnix < {From}) > 0, maxIf(Value, TimeUnix < {From}),
-                                          if(StartTimeUnix >= {From}, 0, argMinIf(Value, TimeUnix, TimeUnix >= {From}))), 0)) AS increase,
+                                      greatest(maxIf(Value, TimeUnix >= {From}) - maxIf(Value, TimeUnix < {From}), 0)) AS increase,
                                    countIf(TimeUnix >= {From}) AS n, any(MetricUnit) AS unit
                             FROM otel.otel_metrics_sum
                             WHERE {Tenant} AND TimeUnix >= {From} - INTERVAL 1 HOUR AND TimeUnix < {To} AND {match} AND IsMonotonic = true
                             GROUP BY {group}, series, StartTimeUnix
-                            HAVING n > 0 AND NOT (n = 1 AND countIf(TimeUnix < {From}) = 0 AND StartTimeUnix < {From} AND any(AggregationTemporality) != 1)
+                            HAVING n > 0
                         )
                         GROUP BY {group}
                         LIMIT {Limit}

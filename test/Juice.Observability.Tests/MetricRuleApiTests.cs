@@ -172,6 +172,27 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
+        public async Task Put_same_definition_is_noop_no_audit_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var factory = new ApiFactory(database);
+            using var client = factory.CreateClient();
+            var (_, _, admin, tenant) = await Caller.AllAsync(client, database);
+            var rules = $"/api/v1/tenants/{tenant}/rules";
+            var created = await Caller.JsonAsync(await admin.PostAsync(rules, Body("m.same", "Gauge")));
+            var etag = created.GetProperty("etag").GetString()!;
+            await using var count = database.Context();
+            var audits = await count.AuditRecords.CountAsync(Ct);
+
+            var put = await Caller.JsonAsync(await admin.PutAsync($"{rules}/metric-rule", Body("m.same", "Gauge"), etag));
+
+            Assert.Equal(etag, put.GetProperty("etag").GetString());
+            await using var after = database.Context();
+            Assert.Equal(audits, await after.AuditRecords.CountAsync(Ct));
+        }
+
+        [Fact]
         public async Task Rules_json_metric_rule_provisioned_and_restart_idempotent_Async()
         {
             LocalStack.RequireAvailable();
