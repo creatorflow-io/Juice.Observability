@@ -1,0 +1,282 @@
+{
+  "items": [
+    {
+      "name": "core",
+      "displayName": "Juice Observability",
+      "kind": "core",
+      "console": {
+        "package": "@juice-js/observability",
+        "routes": [
+          {
+            "path": "",
+            "policy": null
+          },
+          {
+            "path": "services",
+            "policy": null
+          },
+          {
+            "path": "services/:id",
+            "policy": null
+          },
+          {
+            "path": "traces",
+            "policy": null
+          },
+          {
+            "path": "traces/:id",
+            "policy": null
+          },
+          {
+            "path": "topology",
+            "policy": null
+          },
+          {
+            "path": "logs",
+            "policy": null
+          },
+          {
+            "path": "metrics",
+            "policy": null
+          },
+          {
+            "path": "resources",
+            "policy": null
+          },
+          {
+            "path": "resources/:id",
+            "policy": null
+          },
+          {
+            "path": "alerts",
+            "policy": null
+          },
+          {
+            "path": "alerts/:id",
+            "policy": null
+          },
+          {
+            "path": "rules",
+            "policy": null
+          },
+          {
+            "path": "escalation",
+            "policy": null
+          },
+          {
+            "path": "silences",
+            "policy": null
+          },
+          {
+            "path": "incidents",
+            "policy": null
+          },
+          {
+            "path": "incidents/:id",
+            "policy": null
+          },
+          {
+            "path": "timeline",
+            "policy": null
+          },
+          {
+            "path": "load-runs",
+            "policy": null
+          }
+        ],
+        "menu": [
+          {
+            "key": "overview",
+            "label": "Overview",
+            "route": "",
+            "icon": "dashboard",
+            "policy": null,
+            "order": 10
+          },
+          {
+            "key": "services",
+            "label": "Services",
+            "route": "services",
+            "icon": "hub",
+            "policy": null,
+            "order": 20
+          },
+          {
+            "key": "traces",
+            "label": "Traces",
+            "route": "traces",
+            "icon": "timeline",
+            "policy": null,
+            "order": 30
+          },
+          {
+            "key": "logs",
+            "label": "Logs",
+            "route": "logs",
+            "icon": "notes",
+            "policy": null,
+            "order": 40
+          },
+          {
+            "key": "metrics",
+            "label": "Metrics",
+            "route": "metrics",
+            "icon": "show_chart",
+            "policy": null,
+            "order": 50
+          },
+          {
+            "key": "alerts",
+            "label": "Alerts",
+            "route": "alerts",
+            "icon": "notifications",
+            "policy": null,
+            "order": 60
+          },
+          {
+            "key": "incidents",
+            "label": "Incidents",
+            "route": "incidents",
+            "icon": "emergency",
+            "policy": null,
+            "order": 70
+          },
+          {
+            "key": "topology",
+            "label": "Dependencies",
+            "route": "topology",
+            "icon": "account_tree",
+            "policy": null,
+            "order": 100,
+            "group": "explore"
+          },
+          {
+            "key": "resources",
+            "label": "Resources",
+            "route": "resources",
+            "icon": "dns",
+            "policy": null,
+            "order": 110,
+            "group": "explore"
+          },
+          {
+            "key": "timeline",
+            "label": "Timeline",
+            "route": "timeline",
+            "icon": "history",
+            "policy": null,
+            "order": 130,
+            "group": "explore"
+          },
+          {
+            "key": "load-runs",
+            "label": "Load runs",
+            "route": "load-runs",
+            "icon": "speed",
+            "policy": null,
+            "order": 140,
+            "group": "explore"
+          },
+          {
+            "key": "rules",
+            "label": "Rules",
+            "route": "rules",
+            "icon": "rule",
+            "policy": null,
+            "order": 300,
+            "group": "configure"
+          },
+          {
+            "key": "silences",
+            "label": "Silences",
+            "route": "silences",
+            "icon": "notifications_paused",
+            "policy": null,
+            "order": 310,
+            "group": "configure"
+          },
+          {
+            "key": "escalation",
+            "label": "Escalation selection",
+            "route": "escalation",
+            "icon": "campaign",
+            "policy": null,
+            "order": 320,
+            "group": "configure"
+          }
+        ]
+      }
+    },
+    {
+      "name": "slos",
+      "displayName": "Service level objectives",
+      "kind": "module",
+      "console": {
+        "package": "@juice-js/observability",
+        "routes": [
+          {
+            "path": "slos",
+            "policy": null
+          },
+          {
+            "path": "slos/:key",
+            "policy": null
+          }
+        ],
+        "menu": [
+          {
+            "key": "slos",
+            "label": "SLOs",
+            "route": "slos",
+            "icon": "track_changes",
+            "policy": null,
+            "order": 120,
+            "group": "explore"
+          }
+        ]
+      }
+    },
+    {
+      "name": "agents",
+      "displayName": "Agents",
+      "kind": "module",
+      "console": {
+        "package": "@juice-js/observability",
+        "routes": [
+          {
+            "path": "agents",
+            "policy": null
+          },
+          {
+            "path": "agents/:id",
+            "policy": null
+          },
+          {
+            "path": "approvals",
+            "policy": null
+          }
+        ],
+        "menu": [
+          {
+            "key": "agents",
+            "label": "Agents",
+            "route": "agents",
+            "icon": "smart_toy",
+            "policy": null,
+            "order": 200,
+            "group": "automation"
+          },
+          {
+            "key": "approvals",
+            "label": "Approvals",
+            "route": "approvals",
+            "icon": "approval",
+            "policy": null,
+            "order": 210,
+            "group": "automation"
+          }
+        ]
+      }
+    }
+  ]
+}
