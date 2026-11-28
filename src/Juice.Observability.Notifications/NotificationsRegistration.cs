@@ -49,7 +49,8 @@ namespace Juice.Observability.Notifications
                 embedded.TenantId = tenantId;
                 embedded.ApplicationKey = ApplicationKey;
                 embedded.ApplicationName = ApplicationName;
-                embedded.Types.AddRange(ObservabilityTypes.All());
+                // The core's own types; the action requests' are the agents module's (it declares them as it composes, after these, so the order is All()'s).
+                embedded.Types.AddRange(ObservabilityTypes.Core());
                 // The inbox, when opted in (M54): the three Console roles are recorded from people's sign-ins, and the alerts name the configured ones.
                 // Off, nothing is recorded and the host is what it was.
                 if (section.GetValue<bool>($"Inbox:{nameof(InboxNotificationsOptions.Enabled)}"))

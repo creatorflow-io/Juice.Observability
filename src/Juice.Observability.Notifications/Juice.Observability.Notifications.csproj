@@ -19,6 +19,8 @@
     <!-- The platform's own rules for what a transition sends (silences, held notifications, the escalation selection) and its alert transitions. -->
     <ProjectReference Include="..\Juice.Observability.Rules\Juice.Observability.Rules.csproj" />
     <ProjectReference Include="..\Juice.Observability.Agents\Juice.Observability.Agents.csproj" />
+    <!-- The module contract: modules declare notification types and channels through its builder (core 2.0 M3). -->
+    <ProjectReference Include="..\Juice.Observability.Extensibility\Juice.Observability.Extensibility.csproj" />
     <!-- The dead-man alarm's options and sender (M49), registered with the pipeline. -->
     <ProjectReference Include="..\Juice.Observability.Health\Juice.Observability.Health.csproj" />
   </ItemGroup>
