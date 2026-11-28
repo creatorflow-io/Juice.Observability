@@ -131,7 +131,7 @@ namespace Juice.Observability.Slos
                             alert = new Alert
                             {
                                 TenantId = tenantId, RuleId = rule.Id, DedupKey = signal.DedupKey, SubjectKey = subject.Key,
-                                SubjectType = subject.Kind == AlertSubjectKind.Host ? HealthSubject.Host : HealthSubject.Service,
+                                SubjectType = subject.Kind switch { AlertSubjectKind.Host => HealthSubject.Host, AlertSubjectKind.Integration => HealthSubject.Integration, _ => HealthSubject.Service },
                                 SubjectId = subject.SubjectId, EnvironmentId = subject.EnvironmentId, Severity = rule.Severity, State = AlertState.Pending,
                                 BreachStartedAt = signal.At,
                             };
@@ -199,6 +199,15 @@ namespace Juice.Observability.Slos
                 if (signal.Kind == AlertSignalKind.Fire && (signal.Subject is not { Key.Length: > 0 and <= 512 } || !Enum.IsDefined(signal.Subject.Kind)))
                 {
                     throw new ArgumentException("A fire signal needs a subject with a key of up to 512 characters.", nameof(signals));
+                }
+                // An integration is no service or host: its alert names it by key only, and only the integration template raises one (W-24).
+                if (signal.Kind == AlertSignalKind.Fire && signal.Subject is { } integration && (integration.Kind == AlertSubjectKind.Integration) != (Template == nameof(RuleTemplate.IntegrationHealth)))
+                {
+                    throw new ArgumentException("An Integration subject belongs to the IntegrationHealth template, and that template raises only those.", nameof(signals));
+                }
+                if (signal.Subject is { Kind: AlertSubjectKind.Integration, SubjectId: not null } or { Kind: AlertSubjectKind.Integration, EnvironmentId: not null })
+                {
+                    throw new ArgumentException("An Integration subject has no SubjectId or EnvironmentId.", nameof(signals));
                 }
             }
             // Ids of another tenant, or of none: the tenant is the core's, and so is every row an alert names.

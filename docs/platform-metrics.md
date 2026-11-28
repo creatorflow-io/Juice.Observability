@@ -111,6 +111,9 @@ The rule scheduler has no single pass: it shows as busy slots instead.
 | `juice.observability.rules.busy` | gauge | – | At `rules.slots` with `rules.waiting` growing: raise `Rules:MaxConcurrency`, or find the slow template (`rules.duration`) |
 | `juice.observability.rules.waiting` | gauge | – | Due evaluations waiting for a slot |
 | `juice.observability.rules.slots` | gauge | – | `Rules:MaxConcurrency` |
+| `juice.integration.runs` (`juice_integration_runs_total`) | counter | plugin, instance, outcome (`succeeded`, `partial`, `failed`) | `failed` rising for an instance: its state and last failure say why. `instance` is the instance id (N format), never its name |
+| `juice.integration.failures` (`juice_integration_failures_total`) | counter | plugin, instance, reason (the failure kind: `connectivity`, `authentication`, `permission`, `ratelimited`, `configuration`, `remote`, `timeout`, `internal`) | `authentication`, `permission` or `configuration` means the instance is Failed and needs an admin; `timeout` rising: raise `Modules:integrations:RunTimeout` or fix the plugin |
+| `juice.integration.freshness` (`juice_integration_freshness_seconds`) | gauge, s | plugin, instance | Past three times the instance's interval: it hasn't collected for a while (the Console shows it as stale). Kept in memory by the leased `integrations` worker, so it is reported by the replica that holds the lease, and a deleted instance's series ends with the next pass. At most `MaxInstances` (100) series per tenant |
 | `juice.observability.discovery.runs` | counter | outcome | `failure` rising |
 | `juice.observability.discovery.duration` | histogram, s | – | Near `Discovery:Interval` (30 s) |
 | `juice.observability.discovery.created` | counter | kind | – |
