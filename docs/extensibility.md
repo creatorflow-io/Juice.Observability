@@ -79,6 +79,7 @@ domain events are in [extensibility-workers-events.md](extensibility-workers-eve
   alerts, their transitions and the outbox rows together, and takes `pg_advisory_xact_lock('alert-source:<template>')` either way.
 - A template is declared once per host and is never a registry template. The core's `SloBurn` is the slos module's. Storing a rule of a module's own
   template (and `IAlertSource.EnsureRules`) comes with the first module that moves a feature, so until then a module's source has no rules to act on.
+- A module's alert source key follows the same rules as a module's rule template key (`RuleTemplateKeys`): `<module>.<name>`, at most 40 characters in all, and the name part is lower case letters, digits and `-`. Uppercase, `.` and `_` in the name part, which earlier builds accepted, are now refused. The built-in names, such as `SloBurn`, keep their casing. A key a rule template of the registry has (a module's too) is refused, whichever is declared first and however the template is built: at composition when it can be read, and when the registry is built at startup when it needs the container.
 - The composition calls (`AddModuleData`, `AddAlertSource`) reach the host's implementation through internal interfaces that only the host registers, so they work only in a Juice Observability host and no module assembly can name them.
 
 ## Limits in 2.0 M3
