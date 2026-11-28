@@ -53,15 +53,38 @@ namespace Juice.Observability.Tests.Templates
             });
 
         [Fact]
-        public void A_rule_without_a_threshold_source_is_written_as_before_and_keeps_its_hash()
+        public void A_stored_1_4_definition_reads_and_hashes_as_stored()
         {
-            var rule = new RuleDefinition { Key = "k", Name = "n", Template = RuleTemplate.ErrorRate };
+            // As the 1.4 release wrote them to the rules table, before ThresholdSource existed.
+            string[] stored =
+            [
+                """{"Key":"k-rule","Name":"n","Template":"ErrorRate","Severity":"Warning","Service":"","Environment":"","Host":"","Schedule":"00:01:00","Window":"00:05:00","Threshold":0,"RecoveryThreshold":null,"MinimumSamples":10,"ForDuration":"00:02:00","RecoveryDuration":"00:02:00","Cooldown":"00:10:00","Enabled":true}""",
+                """{"Key":"m-rule","Name":"M","Template":"MetricThreshold","Severity":"Critical","Service":"shop/orders","Environment":"prod","Host":"","Schedule":"00:00:30","Window":"00:05:00","Threshold":10,"RecoveryThreshold":8,"MinimumSamples":10,"ForDuration":"00:02:00","RecoveryDuration":"00:02:00","Cooldown":"00:10:00","Enabled":true,"Metric":{"Name":"queue.depth","Kind":"Gauge","Aggregation":"Max","Filters":[{"Key":"q","Op":"Equals","Values":["a"]}],"Subject":"Service","Comparison":"Above"}}""",
+            ];
 
-            var json = rule.ToJson();
+            foreach (var json in stored)
+            {
+                var rule = RuleDefinition.FromJson(json);
 
-            Assert.Equal("""{"Key":"k","Name":"n","Template":"ErrorRate","Severity":"Warning","Service":"","Environment":"","Host":"","Schedule":"00:01:00","Window":"00:05:00","Threshold":0,"RecoveryThreshold":null,"MinimumSamples":10,"ForDuration":"00:02:00","RecoveryDuration":"00:02:00","Cooldown":"00:10:00","Enabled":true}""", json);
-            Assert.Equal(json, RuleDefinition.FromJson(json).ToJson());
-            Assert.Equal(rule.Hash(), RuleDefinition.FromJson(json).Hash());
+                Assert.Null(rule.ThresholdSource);
+                Assert.Equal(json, rule.ToJson());
+                Assert.Equal(Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(json))), rule.Hash());
+                Assert.Empty(rule.Validate());
+            }
+        }
+
+        [Fact]
+        public void The_settings_limit_is_in_utf8_bytes_of_the_stored_json()
+        {
+            var known = new RuleTemplateRegistry(BuiltInTemplates.Create(null), null, [new Provider(_ => new Dictionary<string, RuleThreshold>())],
+                [new ModuleRuleContribution("demo", typeof(Provider))]);
+            // stored, an accented letter is escaped to 6 bytes: 600 are 3,600 bytes, and 2,100 are over the limit with far fewer than 4,096 characters.
+            var fits = $$"""{"x":"{{new string('é', 600)}}"}""";
+            var over = $$"""{"x":"{{new string('é', 2100)}}"}""";
+            Assert.True(over.Length < RuleDefinition.MaxThresholdSettingsLength);
+
+            Assert.Empty(WithSource(json: fits).Validate(null, known));
+            Assert.Contains(WithSource(json: over).Validate(null, known), e => e.Contains("Settings is at most 4096 bytes", StringComparison.Ordinal));
         }
 
         [Fact]
@@ -193,7 +216,7 @@ namespace Juice.Observability.Tests.Templates
             var big = $$"""{"x":"{{new string('a', RuleDefinition.MaxThresholdSettingsLength)}}"}""";
             Assert.Contains(WithSource(json: big).Validate(null, known), e => e.Contains("Settings is at most 4096", StringComparison.Ordinal));
             var edge = $$"""{"x":"{{new string('a', RuleDefinition.MaxThresholdSettingsLength - 8)}}"}""";
-            Assert.Equal(RuleDefinition.MaxThresholdSettingsLength, JsonDocument.Parse(edge).RootElement.GetRawText().Length);
+            Assert.Equal(RuleDefinition.MaxThresholdSettingsLength, System.Text.Encoding.UTF8.GetByteCount(JsonDocument.Parse(edge).RootElement.GetRawText()));
             Assert.Empty(WithSource(json: edge).Validate(null, known));
         }
 

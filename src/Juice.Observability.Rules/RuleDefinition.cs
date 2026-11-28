@@ -168,7 +168,7 @@ namespace Juice.Observability.Rules
         [GeneratedRegex("^[a-z0-9][a-z0-9-]{1,62}$")]
         private static partial Regex KeyPattern();
 
-        /// <summary>The most a threshold source's settings may be, as JSON text.</summary>
+        /// <summary>The most a threshold source's settings may be, in UTF-8 bytes of the JSON as it is stored (non-ASCII text is escaped there, so it counts for more).</summary>
         public const int MaxThresholdSettingsLength = 4096;
 
         [GeneratedRegex(@"^(fixed|[a-z][a-z0-9-]{0,30}[a-z0-9]\.[a-z0-9][a-z0-9-]{0,62})\z")]
@@ -182,9 +182,9 @@ namespace Juice.Observability.Rules
                 yield return "ThresholdSource.Provider must be 'fixed' or '<module>.<name>'";
                 yield break;
             }
-            if (source.Settings is { ValueKind: not JsonValueKind.Undefined } settings && settings.GetRawText().Length > MaxThresholdSettingsLength)
+            if (source.Settings is { ValueKind: not JsonValueKind.Undefined } settings && JsonSerializer.SerializeToUtf8Bytes(settings, Json).Length > MaxThresholdSettingsLength)
             {
-                yield return $"ThresholdSource.Settings is at most {MaxThresholdSettingsLength} characters";
+                yield return $"ThresholdSource.Settings is at most {MaxThresholdSettingsLength} bytes";
             }
             if (!(registry as RuleTemplateRegistry ?? RuleTemplateRegistry.BuiltInOnly).TryGetProvider(source.Provider, out var provider))
             {
@@ -208,7 +208,7 @@ namespace Juice.Observability.Rules
         /// <summary><c>fixed</c> (the rule's own numbers) or a module's provider key.</summary>
         public string Provider { get; set; } = "";
 
-        /// <summary>The provider's own settings, at most <see cref="RuleDefinition.MaxThresholdSettingsLength"/> characters of JSON.</summary>
+        /// <summary>The provider's own settings, at most <see cref="RuleDefinition.MaxThresholdSettingsLength"/> bytes of JSON as stored.</summary>
         public JsonElement? Settings { get; set; }
     }
 

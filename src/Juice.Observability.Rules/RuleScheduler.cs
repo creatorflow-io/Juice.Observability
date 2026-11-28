@@ -40,7 +40,7 @@ namespace Juice.Observability.Rules
         private static readonly Histogram<double> Lag = RuleEvaluator.Meter.CreateHistogram<double>("juice.observability.rules.lag",
             "s", "Delay between a rule's due time and the start of its evaluation");
         private static readonly Counter<long> Skipped = RuleEvaluator.Meter.CreateCounter<long>("juice.observability.rules.skipped",
-            "{evaluation}", "Due evaluations not run, by reason (overrun: still running or waiting when due again, or late enough that the point it would be read as of was already evaluated; released: the lease went to another replica while it waited; disabled: turned off while it waited)");
+            "{evaluation}", "Due evaluations not run, by reason (overrun: still running or waiting when due again, or late enough that the point it would be read as of was already evaluated; released: the lease went to another replica while it waited; disabled: turned off while it waited; provider_missing: its threshold provider is not installed)");
         private static readonly Counter<long> Queued = RuleEvaluator.Meter.CreateCounter<long>("juice.observability.rules.queued",
             "{evaluation}", "Due evaluations that waited for a free worker before running; the wait is in rules.lag");
 
@@ -57,6 +57,11 @@ namespace Juice.Observability.Rules
             RuleEvaluator.Meter.CreateObservableGauge("juice.observability.rules.slots", () => s_live is { } live ? [new Measurement<int>(live._slots)] : Array.Empty<Measurement<int>>(),
                 "{evaluation}", "Rule evaluations that may run at once (Rules:MaxConcurrency)");
         }
+
+        /// <summary>The (rule, provider) pairs already reported as not installed.</summary>
+        private readonly ConcurrentDictionary<(string Rule, string Provider), byte> _unavailable = new();
+
+        private static string? RuleThresholdSourceOf(Rule rule) => RuleDefinition.FromJson(rule.Definition).ThresholdSource?.Provider;
 
         private readonly ConcurrentDictionary<Guid, DateTimeOffset> _due = new();
         private readonly ConcurrentDictionary<Guid, Task> _running = new();
@@ -222,6 +227,18 @@ namespace Juice.Observability.Rules
                         return;
                     }
                     rule = current;
+                }
+                // A rule whose threshold provider isn't installed (its module was removed) holds: nothing is evaluated, so its alerts stay as they are,
+                // and it is said once, not at every run with a stack trace.
+                if (RuleThresholdSourceOf(rule) is { } provider && !(registry as RuleTemplateRegistry ?? RuleTemplateRegistry.BuiltInOnly).TryGetProvider(provider, out _))
+                {
+                    counted = false;
+                    Skipped.Add(1, new KeyValuePair<string, object?>("reason", "provider_missing"));
+                    if (_unavailable.TryAdd((rule.Key, provider), 0))
+                    {
+                        logger.LogWarning("Rule {Rule} holds: its threshold provider {Provider} is not installed. Its alerts stay as they are until the provider is installed or the rule is changed", rule.Key, provider);
+                    }
+                    return;
                 }
                 var now = clock.GetUtcNow();
                 // As of a point of its grid, so its evaluations are whole schedules apart: as of when each started, one that started sooner after
