@@ -127,8 +127,14 @@ namespace Juice.Observability.Rules
         /// What the rule's template measures now. A template whose signal pack is off observes nothing, so a rule made before the pack was
         /// switched off holds its open alerts as no data.
         /// </summary>
-        public async Task<IReadOnlyList<RuleObservation>> ObserveAsync(RuleDefinition rule, TelemetryWindow window, CancellationToken cancellationToken)
+        public async Task<IReadOnlyList<RuleObservation>> ObserveAsync(RuleDefinition rule, TelemetryWindow window, CancellationToken cancellationToken, bool preview = false)
         {
+            if (preview)
+            {
+                IReadOnlyList<RuleObservation> result = [];
+                await AsPreviewAsync(async () => result = await ObserveAsync(rule, window, cancellationToken));
+                return result;
+            }
             if (!(packs ?? SignalPacks.All).Provides(rule.Template)) return [];
             if (!Registry.TryGet(rule.Template.ToString(), out var template)) throw new ArgumentOutOfRangeException(nameof(rule), rule.Template, "Unknown template");
             var telemetry = new TemplateTelemetry(clickHouse, window);
@@ -208,15 +214,38 @@ namespace Juice.Observability.Rules
             Func<System.Data.Common.DbDataReader, RuleObservation> map, CancellationToken cancellationToken, Dictionary<string, object> parameters, bool cut = true)
         {
             var rows = await clickHouse.QueryAsync(sql, window with { Limit = window.Limit + 1 }, map, cancellationToken, parameters);
-            return cut ? CutLast(rows, window.Limit, template) : rows;   // cut: false when the caller merges sources and cuts once
+            return cut ? CutLast(rows, window.Limit, template.ToString()) : rows;   // cut: false when the caller merges sources and cuts once
         }
 
-        private static IReadOnlyList<RuleObservation> CutLast(IReadOnlyList<RuleObservation> rows, int limit, RuleTemplate template)
+        internal static IReadOnlyList<RuleObservation> CutLast(IReadOnlyList<RuleObservation> rows, int limit, string template)
         {
             if (rows.Count <= limit) return rows;
             var last = rows[^1].SubjectKey;
-            RulesTruncated.Add(1, new KeyValuePair<string, object?>("template", template.ToString()));
+            CountCut(template);
             return [.. rows.Where(r => r.SubjectKey != last)];
+        }
+
+        private static readonly AsyncLocal<bool> Previewing = new();
+
+        /// <summary>Counts a cut (<c>rules.truncated</c>), except in a preview: only the scheduler's evaluations are counted.</summary>
+        private static void CountCut(string template)
+        {
+            if (!Previewing.Value) RulesTruncated.Add(1, new KeyValuePair<string, object?>("template", template));
+        }
+
+        /// <summary>Runs <paramref name="observe"/> as a preview: what it cuts is not counted. The flag ends with the call.</summary>
+        internal static async Task AsPreviewAsync(Func<Task> observe)
+        {
+            var before = Previewing.Value;
+            Previewing.Value = true;
+            try
+            {
+                await observe();
+            }
+            finally
+            {
+                Previewing.Value = before;
+            }
         }
 
         public static string ServiceSubjectKey(string ns, string name, string environment)

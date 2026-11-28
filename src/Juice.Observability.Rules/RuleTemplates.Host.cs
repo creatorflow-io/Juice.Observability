@@ -123,7 +123,7 @@ namespace Juice.Observability.Rules
             var seen = preferred.Select(o => o.SubjectKey).ToHashSet();
             // Each source is cut on its own; the two together are ordered by subject and cut the same way.
             var merged = preferred.Concat(fallback.Where(o => !seen.Contains(o.SubjectKey))).OrderBy(o => o.SubjectKey, StringComparer.Ordinal).ToList();
-            return CutLast(merged.Take(limit + 1).ToList(), limit, template);
+            return CutLast(merged.Take(limit + 1).ToList(), limit, template.ToString());
         }
 
         private async partial Task<IReadOnlyList<RuleObservation>> ObserveHostCpuAsync(TelemetryWindow window,
