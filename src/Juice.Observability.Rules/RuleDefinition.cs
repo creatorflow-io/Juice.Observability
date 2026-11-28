@@ -95,10 +95,62 @@ namespace Juice.Observability.Rules
             if (Template is RuleTemplate.MediatorErrors or RuleTemplate.ConsumerFailures && (Threshold < 0 || Recovery < 0)) yield return $"{at}: error thresholds are counts, not negative";
             if (Template == RuleTemplate.ThroughputAbsent && (Threshold < 0 || Recovery < Threshold)) yield return $"{at}: throughput thresholds are request counts, recovery at least the threshold";
             if (FiresAbove && Recovery > Threshold) yield return $"{at}: RecoveryThreshold must not be above Threshold";
-            if (IsHostRule && (Service.Length > 0 || Environment.Length > 0)) yield return $"{at}: host rules take Host, not Service or Environment";
+            if (Template == RuleTemplate.MetricThreshold)
+            {
+                if (!double.IsFinite(Threshold) || !double.IsFinite(Recovery)) yield return $"{at}: Threshold and RecoveryThreshold are finite numbers";
+                if (!FiresAbove && Recovery < Threshold) yield return $"{at}: RecoveryThreshold must not be below Threshold when Comparison is Below";
+                if (Metric is null) yield return $"{at}: Metric is required for a MetricThreshold rule";
+            }
+            else if (Metric is not null)
+            {
+                yield return $"{at}: only MetricThreshold rules take Metric";
+            }
+            if (Metric is not null && Template == RuleTemplate.MetricThreshold)
+            {
+                foreach (var error in ValidateMetric(Metric)) yield return $"{at}: {error}";
+            }
+            if (IsHostRule && (Service.Length > 0|| Environment.Length > 0)) yield return $"{at}: host rules take Host, not Service or Environment";
             if (!IsHostRule && Host.Length > 0) yield return $"{at}: only host rules take Host";
             if (Service.Length > 256 || Host.Length > 256 || Environment.Length > 256) yield return $"{at}: scope values are at most 256 characters";
             if (Environment != Environment.ToLowerInvariant()) yield return $"{at}: Environment is a lowercase key";
+        }
+
+        /// <summary>The aggregations each kind of metric can take (R3); Counter's Rate is per second.</summary>
+        public static IReadOnlyList<MetricAggregation> AggregationsOf(MetricKind kind) => kind switch
+        {
+            MetricKind.Gauge => [MetricAggregation.Last, MetricAggregation.Avg, MetricAggregation.Max, MetricAggregation.Min],
+            MetricKind.Counter => [MetricAggregation.Rate, MetricAggregation.Increase],
+            MetricKind.UpDownCounter => [MetricAggregation.Last],
+            _ => [MetricAggregation.P50, MetricAggregation.P90, MetricAggregation.P95, MetricAggregation.P99, MetricAggregation.Avg, MetricAggregation.Rate],
+        };
+
+        // .NET's $ also matches before a final newline; a name, key or value never ends in one.
+        private static bool Matches(string pattern, string text) => !text.EndsWith('\n') && Regex.IsMatch(text, pattern, RegexOptions.None, TimeSpan.FromSeconds(1));
+
+        /// <summary>What is wrong with the metric. Names, keys and values reach ClickHouse only as typed parameters; these limits keep them small and plain.</summary>
+        private static IEnumerable<string> ValidateMetric(MetricSpec metric)
+        {
+            if (!Matches(MetricSpec.NamePattern, metric.Name ?? "")) yield return $"Metric.Name must match {MetricSpec.NamePattern}";
+            if (metric.Kind is not { } kind || !Enum.IsDefined(kind)) yield return "Metric.Kind is required (Gauge, Counter, UpDownCounter or Histogram)";
+            else if (!Enum.IsDefined(metric.Aggregation) || !AggregationsOf(kind).Contains(metric.Aggregation))
+                yield return $"Metric.Aggregation {metric.Aggregation} doesn't fit a {kind} (use {string.Join(", ", AggregationsOf(kind))})";
+            if (!Enum.IsDefined(metric.Subject)) yield return "Metric.Subject is Service or Host";
+            if (!Enum.IsDefined(metric.Comparison)) yield return "Metric.Comparison is Above or Below";
+            if (metric.Filters is null) yield break;
+            if (metric.Filters.Count > MetricSpec.MaxFilters) yield return $"Metric.Filters has at most {MetricSpec.MaxFilters} filters";
+            foreach (var filter in metric.Filters.Take(MetricSpec.MaxFilters * 4))
+            {
+                if (filter is null) { yield return "Metric.Filters has an empty filter"; continue; }
+                var key = filter.Key ?? "";
+                var named = $"Metric.Filters {(key.Length > 40 ? key[..40] : key)}";
+                if (!Matches(MetricSpec.KeyPattern, key)) yield return $"{named}: Key must match {MetricSpec.KeyPattern}";
+                if (!Enum.IsDefined(filter.Op)) yield return $"{named}: Op is Equals or In";
+                else if (filter.Op == FilterOp.Equals && (filter.Values ??= []).Count != 1) yield return $"{named}: Equals takes exactly one value";
+                else if (filter.Op == FilterOp.In && (filter.Values ??= []).Count is < 1 or > MetricSpec.MaxValues) yield return $"{named}: In takes 1 to {MetricSpec.MaxValues} values";
+                if (filter.Values.Any(v => v is null || v.Length is < 1 or > MetricSpec.MaxValueLength))
+                    yield return $"{named}: each value is 1 to {MetricSpec.MaxValueLength} characters";
+            }
+            if (metric.Filters.Where(f => f is not null).GroupBy(f => f.Key).Any(g => g.Count() > 1)) yield return "Metric.Filters has a key more than once";
         }
 
         /// <summary>

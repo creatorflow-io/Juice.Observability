@@ -29,29 +29,62 @@ namespace Juice.Observability.Api.Endpoints
         internal static RuleDto ToDto(Rule r) => new(r.Key, r.Name, r.Template.ToString(), r.Severity.ToString(), r.Enabled, RuleDefinition.FromJson(r.Definition), r.LoadedAt, r.ManagedBy, r.DefinitionHash);
 
         /// <summary>The definition from the body; a missing template or threshold is an error, since their defaults would fire on everything.</summary>
-        private static (RuleDefinition? Definition, IResult? Problem) Read(JsonElement body, string? key, SignalPacks packs)
+        /// <summary>
+        /// The definition from the body, and for a MetricThreshold rule its metric's kind from the route tenant's catalog (the last 24 h). A kind that
+        /// conflicts with the catalog is refused; a metric not yet reported needs its kind and is accepted (<c>Unseen</c> says so, for the response's Quiet).
+        /// When the catalog can't be read, a rule that gives its kind is accepted as it is, and one that doesn't is a 503.
+        /// </summary>
+        private static async Task<(RuleDefinition? Definition, IResult? Problem, string? Unseen)> ReadAsync(JsonElement body, string? key, HttpContext http,
+            TimeProvider clock, CancellationToken ct)
         {
             try
             {
                 if (body.ValueKind != JsonValueKind.Object || !body.TryGetProperty("template", out _) || !body.TryGetProperty("threshold", out _))
                 {
-                    return (null, Mutation.Invalid(["template and threshold are required."]));
+                    return (null, Mutation.Invalid(["template and threshold are required."]), null);
                 }
                 var definition = body.Deserialize<RuleDefinition>(Json)!;
                 if (key is not null)
                 {
                     if (definition.Key.Length > 0 && definition.Key != key)
                     {
-                        return (null, Mutation.Invalid(["A rule's key can't change."]));
+                        return (null, Mutation.Invalid(["A rule's key can't change."]), null);
                     }
                     definition.Key = key;
                 }
-                var errors = definition.Validate(packs).ToList();
-                return errors.Count > 0 ? (null, Mutation.Invalid(errors)) : (definition, null);
+                string? unseen = null;
+                if (definition is { Template: RuleTemplate.MetricThreshold, Metric: { } metric } && !string.IsNullOrEmpty(metric.Name)
+                    && System.Text.RegularExpressions.Regex.IsMatch(metric.Name, MetricSpec.NamePattern) && !metric.Name.EndsWith('\n'))
+                {
+                    var tenantKey = (string)http.Items[TelemetryEndpoints.TenantKeyItem]!;
+                    try
+                    {
+                        var entry = await MetricCatalog.FindAsync(http.RequestServices.GetRequiredService<Discovery.ClickHouseTelemetrySource>(), tenantKey,
+                            metric.Name, clock.GetUtcNow(), ct);
+                        if (entry is null)
+                        {
+                            if (metric.Kind is not null) unseen = $"metric {metric.Name} has not been reported in the last 24 h";
+                        }
+                        else if (metric.Kind is { } given && given != entry.Kind)
+                        {
+                            return (null, Mutation.Invalid([$"rule '{definition.Key}': Metric.Kind {given} conflicts with the catalog: {metric.Name} is a {entry.Kind}."]), null);
+                        }
+                        else
+                        {
+                            metric.Kind = entry.Kind;
+                        }
+                    }
+                    catch (Exception e) when (e is Discovery.TelemetryBusyException or Discovery.TelemetryUnavailableException && metric.Kind is not null)
+                    {
+                        // Accepted as given: the kind is checked against the aggregation, and the rule observes nothing if it is wrong.
+                    }
+                }
+                var errors = definition.Validate(http.RequestServices.GetRequiredService<SignalPacks>()).ToList();
+                return errors.Count > 0 ? (null, Mutation.Invalid(errors), null) : (definition, null, unseen);
             }
             catch (JsonException e)
             {
-                return (null, Mutation.Invalid([$"Unreadable definition at {e.Path}."]));
+                return (null, Mutation.Invalid([$"Unreadable definition at {e.Path}."]), null);
             }
         }
 
@@ -59,7 +92,7 @@ namespace Juice.Observability.Api.Endpoints
         {
             var mutation = new Mutation(http, db, tenantId, "rule.create", "rule");
             if (await mutation.RequireAsync(null, ct, Roles.Admin) is { } denied) return denied;
-            var (definition, problem) = Read(body, null, http.RequestServices.GetRequiredService<SignalPacks>());
+            var (definition, problem, unseen) = await ReadAsync(body, null, http, clock, ct);
             if (problem is not null) return problem;
             if (await QuietAsync(db, tenantId, definition!, ct) is { } quiet) return quiet;
             if (RuleDefinition.IsReservedKey(definition!.Key)) return Mutation.Invalid([RuleDefinition.ReservedKeyError(definition.Key)]);
@@ -82,11 +115,11 @@ namespace Juice.Observability.Api.Endpoints
             mutation.Audit(AuditOutcome.Succeeded, rule.Key, Metadata(rule));
             mutation.RecordChange($"Rule {rule.Key}: create", now, new() { [ChangeEvent.RuleAttribute] = rule.Key });
             await db.SaveChangesAsync(ct);
-            return Results.Created($"{http.Request.Path}/{rule.Key}", ToDto(rule));
+            return Results.Created($"{http.Request.Path}/{rule.Key}", ToDto(rule) with { Quiet = unseen });
         }
 
         private static async Task<IResult> UpdateAsync(Guid tenantId, string key, JsonElement body, HttpContext http, PlatformDbContext db, IMediator mediator,
-            CancellationToken ct)
+            TimeProvider clock, CancellationToken ct)
         {
             var mutation = new Mutation(http, db, tenantId, "rule.update", "rule");
             if (await mutation.RequireAsync(key, ct, Roles.Admin) is { } denied) return denied;
@@ -104,16 +137,16 @@ namespace Juice.Observability.Api.Endpoints
             {
                 return Mutation.Problem(StatusCodes.Status412PreconditionFailed, "Rule changed", "Someone changed this rule since you read it. Read it again.");
             }
-            var (definition, problem) = Read(body, key, http.RequestServices.GetRequiredService<SignalPacks>());
+            var (definition, problem, unseen) = await ReadAsync(body, key, http, clock, ct);
             if (problem is not null) return problem;
             if (await QuietAsync(db, tenantId, definition!, ct) is { } quiet) return quiet;
 
             if (definition!.Hash() == rule.DefinitionHash)
             {
-                return Results.Ok(ToDto(rule));
+                return Results.Ok(ToDto(rule) with { Quiet = unseen });
             }
             using var context = PlatformMessageContext.Begin("api", CorrelationId.Get(http));
-            return Results.Ok(await mediator.Send(new ChangeRule(tenantId, rule.Id, definition, mutation.Actor, CorrelationId.Get(http)), ct));
+            return Results.Ok((await mediator.Send(new ChangeRule(tenantId, rule.Id, definition, mutation.Actor, CorrelationId.Get(http)), ct)) with { Quiet = unseen });
         }
 
         /// <summary>An enabled rule that could never observe its service is refused (<see cref="SignalCoverage"/>); a disabled one isn't watching anything.</summary>
