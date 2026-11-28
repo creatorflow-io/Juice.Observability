@@ -191,16 +191,18 @@ $_layout-tokens: (bg: bg, surface: surface, border: border, text: text, muted: m
   .jc-capacity-notes { margin: 12px 0 0; padding-left: 18px; font-size: 13px; }
   .jc-capacity-measured th { width: 240px; }
   .jc-timeline-change { font-weight: 500; }
-  // A form is a grid that wraps and fills: a field is one column (sm, md), a wide one is two, and a row of actions or notes takes all of them.
-  // The top edges line up whatever a neighbour shows below it, and a label has the width of its column, so none is clipped.
-  .jc-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr)); gap: 8px 12px; align-items: start; margin-bottom: 8px; @include mat.form-field-density(-1);
+  .jc-form { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-bottom: 8px; @include mat.form-field-density(-1); }
+  // A form of fields only (`jc-form jc-form-grid`) wraps and fills: a field is one column (sm, md), a wide one is two, and a row of actions or
+  // notes takes all of them. The top edges line up whatever a neighbour shows below it, and a label has the width of its column, so none is
+  // clipped. A form with buttons or messages among its children stays a flex row.
+  .jc-form.jc-form-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr)); align-items: start;
     > mat-form-field, > .jc-field > mat-form-field { width: 100%; min-width: 0; }
     > .jc-field { min-width: 0; }
     > mat-form-field.jc-field-wide, > .jc-field.jc-field-wide { grid-column: span 2; }
     > mat-checkbox { align-self: center; }
+    > .jc-form-actions { grid-column: 1 / -1; }
     @media (max-width: 520px) { > mat-form-field.jc-field-wide, > .jc-field.jc-field-wide { grid-column: auto; } } }
   .jc-form-actions { display: flex; align-items: center; gap: 8px; width: 100%; }
-  .jc-form > .jc-form-actions { grid-column: 1 / -1; }
   .jc-field-error { color: var(--jc-bad); font-size: 12px; line-height: 16px; padding: 2px 16px 0; overflow-wrap: anywhere; }
   .jc-row-actions { white-space: nowrap; text-align: right; }
   .jc-load-steps { margin-top: 12px; }

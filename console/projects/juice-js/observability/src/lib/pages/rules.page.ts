@@ -42,6 +42,10 @@ function span(total: number): string {
   return `${days ? `${days}.` : ''}${pad(Math.floor(s / 3600) % 24)}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}`;
 }
 
+const FIELD_ORDER = ['key', 'name', 'template', 'severity', 'host', 'service', 'environment', 'threshold', 'recoveryThreshold', 'minimumSamples', 'schedule', 'window', 'forDuration', 'recoveryDuration', 'cooldown', 'enabled'];
+/** The form's input name where it differs from the API's field name. */
+const INPUT_NAME: Record<string, string> = { forDuration: 'for', recoveryDuration: 'recovery' };
+
 interface RuleForm {
   key: string; name: string; template: string; severity: string; service: string; environment: string; host: string; threshold: number | null; recoveryThreshold: number | null;
   minimumSamples: number; scheduleSeconds: number; windowSeconds: number; forSeconds: number; recoverySeconds: number; cooldownSeconds: number; enabled: boolean;
@@ -70,22 +74,22 @@ const NEW_RULE: RuleForm = {
     @if (form(); as f) {
       <section class="jc-card" data-testid="rule-form">
         <h2>{{ editing() ? 'Change ' + editing()!.key : 'New rule' }}</h2>
-        <form class="jc-form" (ngSubmit)="save(f)">
+        <form class="jc-form jc-form-grid" (ngSubmit)="save(f)">
           @if (!editing()) {
             <div class="jc-field"><mat-form-field subscriptSizing="dynamic"><mat-label>Key</mat-label><input matInput name="key" [(ngModel)]="f.key" (ngModelChange)="clear('key')" required [attr.aria-invalid]="bad('key')" [attr.aria-describedby]="bad('key') ? 'err-key' : null"></mat-form-field><jc-field-error field="key" [messages]="msgs('key')" /></div>
           }
           <div class="jc-field jc-field-wide"><mat-form-field subscriptSizing="dynamic" class="jc-field-wide"><mat-label>Name</mat-label><input matInput name="name" [(ngModel)]="f.name" (ngModelChange)="clear('name')" required [attr.aria-invalid]="bad('name')" [attr.aria-describedby]="bad('name') ? 'err-name' : null"></mat-form-field><jc-field-error field="name" [messages]="msgs('name')" /></div>
           <div class="jc-field"><mat-form-field subscriptSizing="dynamic"><mat-label>Template</mat-label>
-            <mat-select name="template" [(ngModel)]="f.template">@for (t of templates(); track t) { <mat-option [value]="t">{{ t }}</mat-option> }</mat-select>
-          </mat-form-field></div>
+            <mat-select name="template" [(ngModel)]="f.template" (ngModelChange)="clear('template')" [attr.aria-describedby]="bad('template') ? 'err-template' : null">@for (t of templates(); track t) { <mat-option [value]="t">{{ t }}</mat-option> }</mat-select>
+          </mat-form-field><jc-field-error field="template" [messages]="msgs('template')" /></div>
           <div class="jc-field"><mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Severity</mat-label>
-            <mat-select name="severity" [(ngModel)]="f.severity"><mat-option value="Info">Info</mat-option><mat-option value="Warning">Warning</mat-option><mat-option value="Critical">Critical</mat-option></mat-select>
-          </mat-form-field></div>
+            <mat-select name="severity" [(ngModel)]="f.severity" (ngModelChange)="clear('severity')" [attr.aria-describedby]="bad('severity') ? 'err-severity' : null"><mat-option value="Info">Info</mat-option><mat-option value="Warning">Warning</mat-option><mat-option value="Critical">Critical</mat-option></mat-select>
+          </mat-form-field><jc-field-error field="severity" [messages]="msgs('severity')" /></div>
           @if (f.template === 'HostMemory') {
-            <div class="jc-field jc-field-wide"><mat-form-field subscriptSizing="dynamic" class="jc-field-wide"><mat-label>Host (all if empty)</mat-label><input matInput name="host" [(ngModel)]="f.host"></mat-form-field></div>
+            <div class="jc-field jc-field-wide"><mat-form-field subscriptSizing="dynamic" class="jc-field-wide"><mat-label>Host (all if empty)</mat-label><input matInput name="host" [(ngModel)]="f.host" (ngModelChange)="clear('host')" [attr.aria-invalid]="bad('host')" [attr.aria-describedby]="bad('host') ? 'err-host' : null"></mat-form-field><jc-field-error field="host" [messages]="msgs('host')" /></div>
           } @else {
-            <div class="jc-field jc-field-wide"><mat-form-field subscriptSizing="dynamic" class="jc-field-wide"><mat-label>Service (all if empty)</mat-label><input matInput name="service" [(ngModel)]="f.service"></mat-form-field></div>
-            <div class="jc-field jc-field-wide"><mat-form-field subscriptSizing="dynamic" class="jc-field-wide"><mat-label>Environment (all if empty)</mat-label><input matInput name="environment" [(ngModel)]="f.environment"></mat-form-field></div>
+            <div class="jc-field jc-field-wide"><mat-form-field subscriptSizing="dynamic" class="jc-field-wide"><mat-label>Service (all if empty)</mat-label><input matInput name="service" [(ngModel)]="f.service" (ngModelChange)="clear('service')" [attr.aria-invalid]="bad('service')" [attr.aria-describedby]="bad('service') ? 'err-service' : null"></mat-form-field><jc-field-error field="service" [messages]="msgs('service')" /></div>
+            <div class="jc-field jc-field-wide"><mat-form-field subscriptSizing="dynamic" class="jc-field-wide"><mat-label>Environment (all if empty)</mat-label><input matInput name="environment" [(ngModel)]="f.environment" (ngModelChange)="clear('environment')" [attr.aria-invalid]="bad('environment')" [attr.aria-describedby]="bad('environment') ? 'err-environment' : null"></mat-form-field><jc-field-error field="environment" [messages]="msgs('environment')" /></div>
           }
           <p class="jc-muted jc-small jc-form-actions">{{ hint(f.template) }}</p>
           @if (offPack(f.template); as pack) { <p class="jc-muted jc-small jc-form-actions" data-testid="rule-pack-off">{{ f.template }} reads the {{ pack }} signal pack, which this deployment has switched off: the rule can only be saved disabled.</p> }
@@ -97,7 +101,7 @@ const NEW_RULE: RuleForm = {
           <div class="jc-field"><mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Fire after (s)</mat-label><input matInput type="number" name="for" [(ngModel)]="f.forSeconds" (ngModelChange)="clear('forDuration')" [attr.aria-invalid]="bad('forDuration')" [attr.aria-describedby]="bad('forDuration') ? 'err-forDuration' : null"></mat-form-field><jc-field-error field="forDuration" [messages]="msgs('forDuration')" /></div>
           <div class="jc-field"><mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Recover after (s)</mat-label><input matInput type="number" name="recovery" [(ngModel)]="f.recoverySeconds" (ngModelChange)="clear('recoveryDuration')" [attr.aria-invalid]="bad('recoveryDuration')" [attr.aria-describedby]="bad('recoveryDuration') ? 'err-recoveryDuration' : null"></mat-form-field><jc-field-error field="recoveryDuration" [messages]="msgs('recoveryDuration')" /></div>
           <div class="jc-field"><mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Cooldown (s)</mat-label><input matInput type="number" name="cooldown" [(ngModel)]="f.cooldownSeconds" (ngModelChange)="clear('cooldown')" [attr.aria-invalid]="bad('cooldown')" [attr.aria-describedby]="bad('cooldown') ? 'err-cooldown' : null"></mat-form-field><jc-field-error field="cooldown" [messages]="msgs('cooldown')" /></div>
-          <mat-checkbox name="enabled" [(ngModel)]="f.enabled">Enabled</mat-checkbox>
+          <div class="jc-field"><mat-checkbox name="enabled" [(ngModel)]="f.enabled" (ngModelChange)="clear('enabled')" [attr.aria-describedby]="bad('enabled') ? 'err-enabled' : null">Enabled</mat-checkbox><jc-field-error field="enabled" [messages]="msgs('enabled')" /></div>
           @if (editing()) { <p class="jc-muted jc-small jc-form-actions">Disabling this rule, or changing its template or scope, resolves its open alerts: nothing would be watching them any more.</p> }
           @if (summary()) { <p class="jc-error jc-small jc-form-actions" role="alert" data-testid="rule-error">{{ summary() }}</p> }
           <div class="jc-form-actions">
@@ -186,10 +190,23 @@ export class RulesPage {
     this.fieldMessages.set(rest);
   }
   private reset() { this.summary.set(''); this.fieldMessages.set({}); }
+  /** The fields the open form shows: a message for any other never reaches the person unless it goes to the sentence. */
+  private shown(): Set<string> {
+    const s = new Set(['name', 'template', 'severity', 'threshold', 'recoveryThreshold', 'minimumSamples', 'schedule', 'window', 'forDuration', 'recoveryDuration', 'cooldown', 'enabled']);
+    if (!this.editing()) s.add('key');
+    for (const k of this.form()?.template === 'HostMemory' ? ['host'] : ['service', 'environment']) s.add(k);
+    return s;
+  }
   private mark(fields: Record<string, string[]>, summary: string) {
-    this.fieldMessages.set(fields);
-    this.summary.set(summary);
-    setTimeout(() => (this.host.nativeElement as HTMLElement).querySelector<HTMLElement>('[aria-invalid="true"]')?.focus());
+    const shown = this.shown();
+    const placed: Record<string, string[]> = {};
+    const lost: string[] = [];
+    for (const [k, v] of Object.entries(fields)) { if (shown.has(k)) placed[k] = v; else lost.push(...v); }
+    this.fieldMessages.set(placed);
+    this.summary.set([summary, ...lost].filter(Boolean).join(' '));
+    // In the order the form shows them, so a select is found as well as an input.
+    const first = FIELD_ORDER.find(k => placed[k]);
+    if (first) setTimeout(() => (this.host.nativeElement as HTMLElement).querySelector<HTMLElement>(`[name="${INPUT_NAME[first] ?? first}"]`)?.focus());
   }
 
   protected startNew() { this.editing.set(null); this.reset(); this.form.set({ ...NEW_RULE }); }

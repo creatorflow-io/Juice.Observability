@@ -120,6 +120,58 @@ describe('rules form', () => {
     expect(f.nativeElement.querySelector('[data-testid="rule-error"]')?.textContent).toContain('$.mystery');
   });
 
+  it('a 400 naming $.template and $.service shows both, each under its field', async () => {
+    setup({ ...base, createRule: () => throwError(() => problem(400, 'Invalid request', 'Unreadable definition at $.template and $.service.')) });
+    const f = TestBed.createComponent(RulesPage);
+    await flush(f);
+    click(f, 'rule-new');
+    await flush(f);
+    await fillValid(f);
+    click(f, 'rule-save');
+    await flush(f);
+    expect(marked(f)).toEqual(['service', 'template']);
+    expect(under(f, 'template')).toHaveLength(1);
+  });
+
+  it('a field this form is not showing (host on ErrorRate, key while editing) is never lost: it goes to the form sentence', async () => {
+    setup({ ...base, createRule: () => throwError(() => problem(400, 'Invalid request', 'Unreadable definition at $.host.')) });
+    const f = TestBed.createComponent(RulesPage);
+    await flush(f);
+    click(f, 'rule-new');
+    await flush(f);
+    await fillValid(f);
+    click(f, 'rule-save');
+    await flush(f);
+    expect(marked(f)).toEqual([]);
+    expect(f.nativeElement.querySelector('[data-testid="rule-error"]')?.textContent).toContain('Host');
+
+    const rule = { key: 'r1', name: 'R1', template: 'ErrorRate', severity: 'Warning', enabled: true, managedBy: 'api', etag: 'e', definition: { threshold: 1 } };
+    setup({ ...base, rules: () => of({ items: [rule], nextCursor: null }), updateRule: () => throwError(() => problem(400, 'Invalid request', 'Unreadable definition at $.key.')) });
+    const g = TestBed.createComponent(RulesPage);
+    await flush(g);
+    click(g, 'rule-edit-r1');
+    await flush(g);
+    click(g, 'rule-save');
+    await flush(g);
+    expect(marked(g)).toEqual([]);
+    expect(g.nativeElement.querySelector('[data-testid="rule-error"]')?.textContent).toContain('Key');
+  });
+
+  it('the first invalid control is focused, a select included', async () => {
+    setup({ ...base, createRule: () => throwError(() => problem(400, 'Invalid request', 'Unreadable definition at $.template and $.threshold.')) });
+    const f = TestBed.createComponent(RulesPage);
+    document.body.appendChild(f.nativeElement);
+    await flush(f);
+    click(f, 'rule-new');
+    await flush(f);
+    await fillValid(f);
+    click(f, 'rule-save');
+    await flush(f);
+    await new Promise(r => setTimeout(r, 10));
+    expect(document.activeElement?.closest('mat-select')?.getAttribute('name')).toBe('template');
+    f.nativeElement.remove();
+  });
+
   it('empty key, name and threshold are all marked in one submit, nothing is sent', async () => {
     const { fixture, calls } = await openNew();
     click(fixture, 'rule-save');
