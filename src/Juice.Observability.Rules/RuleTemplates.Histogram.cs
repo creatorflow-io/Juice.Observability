@@ -58,8 +58,6 @@ namespace Juice.Observability.Rules
                   AND length(BucketCounts) = length(ExplicitBounds) + 1 AND {scope}{filters}
                 GROUP BY {outerKeys}, cityHash64(ResourceAttributes, Attributes), StartTimeUnix, ExplicitBounds, AggregationTemporality
                 HAVING countIf(TimeUnix >= {From}) > 0
-                   -- an older cumulative series seen once has no base to measure from: left out, not a rate of 0
-                   AND NOT (NOT is_delta AND NOT has_before AND StartTimeUnix < {From} AND countIf(TimeUnix >= {From}) < 2)
             )
             GROUP BY {outerKeys}, bounds
             ORDER BY {outerKeys}, obs DESC, bounds
