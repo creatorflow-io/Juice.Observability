@@ -57,8 +57,9 @@ namespace Juice.Observability.Api.Endpoints
             var quiet = await SignalCoverage.QuietReasonsAsync(db, tenantId, page.Where(r => r.Enabled).Select(r => r.Definition).ToList(), ct);
             page = [.. page.Select(r => quiet.TryGetValue(r.Key, out var reason) ? r with { Quiet = reason } : r)];
 
-            page = await MarkNeverObservedAsync(page, (names, lookback) => MetricCatalog.SeenAsync(clickHouse,
-                (string)http.Items[TelemetryEndpoints.TenantKeyItem]!, names, clock.GetUtcNow(), ct, lookback),
+            var now = clock.GetUtcNow();
+            page = await MarkNeverObservedAsync(page, now, (names, lookback) => MetricCatalog.LastSeenAsync(clickHouse,
+                (string)http.Items[TelemetryEndpoints.TenantKeyItem]!, names, now, ct, lookback),
                 loggers.CreateLogger("Juice.Observability.Api.RuleList"), ct);
             return Results.Ok(new Page<RuleDto>(page, rows.Count > take ? new Cursor("r", rows[take - 1].Id).Encode() : null));
         }
@@ -68,8 +69,8 @@ namespace Juice.Observability.Api.Endpoints
         /// query for the page. The listing never depends on the catalog: whatever it throws, but the request's own cancellation, leaves the page
         /// without these marks, logged once.
         /// </summary>
-        internal static async Task<List<RuleDto>> MarkNeverObservedAsync(List<RuleDto> page,
-            Func<IReadOnlyCollection<string>, TimeSpan, Task<IReadOnlySet<string>>> seenOf, Microsoft.Extensions.Logging.ILogger log, CancellationToken ct)
+        internal static async Task<List<RuleDto>> MarkNeverObservedAsync(List<RuleDto> page, DateTimeOffset now,
+            Func<IReadOnlyCollection<string>, TimeSpan, Task<IReadOnlyDictionary<string, DateTimeOffset>>> lastSeenOf, Microsoft.Extensions.Logging.ILogger log, CancellationToken ct)
         {
             static bool Candidate(RuleDto r) => r.Quiet is null && r.Enabled && r.Definition is { Template: RuleTemplate.MetricThreshold, Metric.Name.Length: > 0 };
             var candidates = page.Where(Candidate).ToList();
@@ -77,8 +78,9 @@ namespace Juice.Observability.Api.Endpoints
             try
             {
                 var lookback = MetricCatalog.Lookback + candidates.Max(r => r.Definition.Window);
-                var seen = await seenOf(candidates.Select(r => r.Definition.Metric!.Name).Distinct().ToList(), lookback);
-                return [.. page.Select(r => Candidate(r) && !seen.Contains(r.Definition.Metric!.Name)
+                var last = await lastSeenOf(candidates.Select(r => r.Definition.Metric!.Name).Distinct().ToList(), lookback);
+                // Each rule against its own lookback: 24 h and its window, what a preview of it reads.
+                return [.. page.Select(r => Candidate(r) && !(last.TryGetValue(r.Definition.Metric!.Name, out var at) && at >= now - (MetricCatalog.Lookback + r.Definition.Window))
                     ? r with { Quiet = $"metric {r.Definition.Metric.Name} has not been reported in the last 24 h" } : r)];
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)

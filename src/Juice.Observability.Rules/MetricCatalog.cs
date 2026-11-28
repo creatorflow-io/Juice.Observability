@@ -31,28 +31,33 @@ namespace Juice.Observability.Rules
 
         // The names are one array parameter; the tenant, window and limit are in every part.
         internal const string SeenQuery = $"""
-            SELECT MetricName FROM (
-                SELECT MetricName FROM otel.otel_metrics_gauge WHERE {Tenant} AND TimeUnix >= {From} AND TimeUnix < {To} AND MetricName IN {NamesParam}
+            SELECT MetricName, max(t) FROM (
+                SELECT MetricName, max(TimeUnix) AS t FROM otel.otel_metrics_gauge WHERE {Tenant} AND TimeUnix >= {From} AND TimeUnix < {To} AND MetricName IN {NamesParam} GROUP BY MetricName
                 UNION ALL
-                SELECT MetricName FROM otel.otel_metrics_sum WHERE {Tenant} AND TimeUnix >= {From} AND TimeUnix < {To} AND MetricName IN {NamesParam}
+                SELECT MetricName, max(TimeUnix) AS t FROM otel.otel_metrics_sum WHERE {Tenant} AND TimeUnix >= {From} AND TimeUnix < {To} AND MetricName IN {NamesParam} GROUP BY MetricName
                 UNION ALL
-                SELECT MetricName FROM otel.otel_metrics_histogram WHERE {Tenant} AND TimeUnix >= {From} AND TimeUnix < {To} AND MetricName IN {NamesParam}
+                SELECT MetricName, max(TimeUnix) AS t FROM otel.otel_metrics_histogram WHERE {Tenant} AND TimeUnix >= {From} AND TimeUnix < {To} AND MetricName IN {NamesParam} GROUP BY MetricName
             ) GROUP BY MetricName LIMIT {Limit}
             """;
 
         /// <summary>
-        /// Which of <paramref name="names"/> the tenant reported in the last 24 h (or <c>lookback</c>), in one query for all of them (a rule list's page). The names are
-        /// a typed array parameter, never part of the SQL.
+        /// When the tenant last reported each of <paramref name="names"/> within the last 24 h (or <c>lookback</c>), in one query for all of them (a rule
+        /// list's page); a name not reported is left out. The names are a typed array parameter, never part of the SQL.
         /// </summary>
-        public static async Task<IReadOnlySet<string>> SeenAsync(ClickHouseTelemetrySource ch, string tenantKey, IReadOnlyCollection<string> names,
-            DateTimeOffset now, CancellationToken ct, TimeSpan? lookback = null)
+        public static async Task<IReadOnlyDictionary<string, DateTimeOffset>> LastSeenAsync(ClickHouseTelemetrySource ch, string tenantKey,
+            IReadOnlyCollection<string> names, DateTimeOffset now, CancellationToken ct, TimeSpan? lookback = null)
         {
             var distinct = names.Distinct(StringComparer.Ordinal).ToArray();
-            if (distinct.Length == 0) return new HashSet<string>();
+            if (distinct.Length == 0) return new Dictionary<string, DateTimeOffset>();
             var rows = await ch.QueryAsync(SeenQuery, new TelemetryWindow(tenantKey, now - (lookback ?? Lookback), now, distinct.Length),
-                r => r.GetString(0), ct, new Dictionary<string, object> { ["names"] = distinct });
-            return new HashSet<string>(rows, StringComparer.Ordinal);
+                r => (Name: r.GetString(0), At: ClickHouseTelemetrySource.Utc(r.GetValue(1))), ct, new Dictionary<string, object> { ["names"] = distinct });
+            return rows.ToDictionary(r => r.Name, r => r.At, StringComparer.Ordinal);
         }
+
+        /// <summary>Which of <paramref name="names"/> the tenant reported in the last 24 h (or <c>lookback</c>): <see cref="LastSeenAsync"/>'s names.</summary>
+        public static async Task<IReadOnlySet<string>> SeenAsync(ClickHouseTelemetrySource ch, string tenantKey, IReadOnlyCollection<string> names,
+            DateTimeOffset now, CancellationToken ct, TimeSpan? lookback = null)
+            => new HashSet<string>((await LastSeenAsync(ch, tenantKey, names, now, ct, lookback)).Keys, StringComparer.Ordinal);
 
         /// <summary>The metric's kind in the tenant's last 24 h (the commonest, should it be reported as more than one), or null when it has not been reported.</summary>
         public static async Task<MetricCatalogEntry?> FindAsync(ClickHouseTelemetrySource ch, string tenantKey, string metric, DateTimeOffset now, CancellationToken ct,
