@@ -24,6 +24,9 @@ namespace Juice.Observability.Tests.Integrations.Sample
 
         public TimeSpan ValidateDelay { get; set; }
 
+        /// <summary>The delay ignores the cancellation token: a plugin that does not stop when asked.</summary>
+        public bool IgnoreCancellation { get; set; }
+
         /// <summary>Called inside the plugin before it answers: a hook to change the instance while a validation runs.</summary>
         public Func<Task>? OnValidate { get; set; }
 
@@ -65,7 +68,7 @@ namespace Juice.Observability.Tests.Integrations.Sample
             }
             if (control.ValidateDelay > TimeSpan.Zero)
             {
-                await Task.Delay(control.ValidateDelay, ct);
+                await Task.Delay(control.ValidateDelay, control.IgnoreCancellation ? CancellationToken.None : ct);
             }
             var token = await context.Secrets.GetAsync("token", ct);
             context.Logger.LogInformation("Validating with {Token}", token);

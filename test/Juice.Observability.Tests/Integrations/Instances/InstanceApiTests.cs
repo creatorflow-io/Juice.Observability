@@ -486,6 +486,46 @@ namespace Juice.Observability.Tests.Integrations.Instances
             Assert.Equal(1, fixedUp.GetProperty("configVersion").GetInt32());
         }
 
+        [Fact]
+        public async Task Validate_of_a_plugin_that_ignores_cancellation_still_times_out()
+        {
+            await using var rig = await StartAsync(new Dictionary<string, string?> { ["Modules:integrations:ValidateTimeout"] = "00:00:01" });
+            var id = IdOf(await rig.CreateAsync());
+            rig.Control.ValidateDelay = TimeSpan.FromSeconds(25);
+            rig.Control.IgnoreCancellation = true;
+            var started = DateTime.UtcNow;
+            var (response, body) = await rig.Post($"/instances/{id}/validate");
+            Assert.True(DateTime.UtcNow - started < TimeSpan.FromSeconds(15), "the request waited for the plugin");
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal("timeout", body.GetProperty("report").GetProperty("checks")[0].GetProperty("name").GetString());
+        }
+
+        [Theory]
+        [InlineData("W/\"{0}\"")]
+        [InlineData("\"999\", \"{0}\"")]
+        [InlineData("*")]
+        public async Task If_match_accepts_weak_tags_lists_and_star(string template)
+        {
+            await using var rig = await StartAsync();
+            var created = await rig.CreateAsync();
+            var id = IdOf(created);
+            var version = created.GetProperty("etag").GetString()!.Trim('"');
+            var (response, _) = await rig.SendAsync(rig.Admin, HttpMethod.Put, $"{rig.Base}/instances/{id}", Body("renamed"), ifMatch: string.Format(template, version));
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            // a list with no current tag is stale
+            Assert.Equal(HttpStatusCode.PreconditionFailed, (await rig.SendAsync(rig.Admin, HttpMethod.Put, $"{rig.Base}/instances/{id}", Body("again"), ifMatch: "\"998\", W/\"999\"")).Response.StatusCode);
+        }
+
+        [Fact]
+        public async Task Max_instances_holds_under_concurrent_creates()
+        {
+            await using var rig = await StartAsync(new Dictionary<string, string?> { ["Modules:integrations:MaxInstances"] = "3" });
+            var results = await Task.WhenAll(Enumerable.Range(0, 10).Select(i => rig.Post("/instances", Body($"jobs-{i}"))));
+            Assert.Equal(3, results.Count(r => r.Response.StatusCode == HttpStatusCode.Created));
+            Assert.Equal(7, results.Count(r => r.Response.StatusCode == HttpStatusCode.Conflict));
+            Assert.Equal(3, await rig.CountAsync("SELECT count(*) FROM integrations.integration_instances"));
+        }
+
         private async Task<string> EverythingTextAsync(Rig rig)
         {
             // every table of the platform database and of the module, as text: the canary appears in none
