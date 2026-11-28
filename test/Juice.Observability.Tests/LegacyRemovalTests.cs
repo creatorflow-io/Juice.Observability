@@ -39,7 +39,7 @@ namespace Juice.Observability.Tests
         [InlineData("Webhooks:ApiSecretDirectory", "/run/secrets", "Notifications:Delivery:ApiSecretDirectory")]
         [InlineData("Webhooks:AdditionalChatHosts:0", "chat.example.com", "allowlist")]
         [InlineData("Webhooks:Enabled", "false", "Notifications:Stages")]
-        [InlineData("Webhooks:Interval", "00:00:02", "Notifications:Stages")]
+        [InlineData("Webhooks:Interval", "00:00:02", "Notifications:ReleasePassInterval")]
         [InlineData("Webhooks:MaxAttempts", "3", "Notifications:Delivery:Maxattempts")]
         [InlineData("Actions:NotifyEndpoints:0", "approvers", "Notifications:Provisioning:Path")]
         public void Start_AnyWebhooksKey_Refused_NamesReplacement(string key, string value, string replacement)
