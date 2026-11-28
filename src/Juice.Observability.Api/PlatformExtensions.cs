@@ -120,6 +120,10 @@ namespace Juice.Observability.Api
             services.PostConfigure<LocalChannelOptions>(options =>
                 options.MaxConcurrency = options.MaxConcurrency is > 0 ? options.MaxConcurrency : DefaultLocalConcurrency);
             messaging.AddLocalPublisher();
+            // What the modules hear (events, after commit, one envelope per module) and the loop their leased workers run on.
+            messaging.AddLocalConsumer(consumer => consumer.Subscribe<Modules.Events.ModuleEventEnvelope, Modules.Events.ModuleEventEnvelopeConsumer>());
+            services.AddScoped<IPlatformEventPublisher, Modules.Events.PlatformEventPublisher>();
+            services.AddSingleton<ILeasedWorkerHostFactory, Modules.LeasedWorkerHostFactory>();
             messaging.AddIdempotencyInMemory();
             messaging.AddMessageService<PlatformDbContext>();
             messaging.AddPublishingPolicies<LocalRoute>();
