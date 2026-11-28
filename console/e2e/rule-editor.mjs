@@ -6,6 +6,7 @@
 //   5. A preview for another tenant's route is refused (403). A burst of previews ends in 429, which the form says in one sentence.
 //   6. At 1440 and 390 px the form and the preview have no horizontal overflow.
 //   node e2e/rule-editor.mjs                 (BASE=http://localhost:5180 by default)
+// There is no rule DELETE API: each run leaves one disabled `e2e-mem-*` rule behind.
 // Needs the stack with the platform profile up, a build of the Console that has the editor, and system.memory.usage reported by the host Collector
 // (the `host` profile) in the last 24 hours. Exits 0 with "skipped" when the stack (or deploy/local/.env) isn't there.
 import { randomBytes } from 'node:crypto';
@@ -21,7 +22,8 @@ const key = `e2e-mem-${run}`;
 const METRIC = 'system.memory.usage';
 const problems = [];
 const expected = [];            // refusals the journeys cause on purpose (field errors, 403, 409, 429), so they aren't problems
-const onError = who => e => { if (!/http (400|403|409|412|429) /.test(e) && !/Failed to load resource/.test(e)) problems.push(e); else expected.push(e); };
+// Only the refusals the journeys cause on purpose (a field error, a viewer's or other tenant's preview, a config rule's PUT, a burst) are expected.
+const onError = who => e => { if (/http (400|403|409|429) \S*\/rules(\/preview)?$|Failed to load resource.*status of (400|403|409|429)/.test(e)) expected.push(e); else problems.push(e); };
 const step = steps('rule-editor', problems);
 
 // ─── The API beside the browser ─────────────────────────────────────────────
@@ -38,7 +40,15 @@ const api = async (user, method, path, body, headers = {}) => {
 const tenant = (await api('alice', 'GET', '/tenants')).body.items[0].id;
 const rules = `/tenants/${tenant}/rules`;
 /** The journey's rule as the API lists it (there is no read of one rule), or null. */
-const getRule = async () => ((await api('alice', 'GET', `${rules}?limit=200`)).body?.items ?? []).find(r => r.key === key) ?? null;
+const getRule = async () => {
+  for (let cursor = null, pages = 0; pages < 50; pages++) {
+    const page = (await api('alice', 'GET', `${rules}?limit=200${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`)).body;
+    const found = (page?.items ?? []).find(r => r.key === key);
+    if (found) return found;
+    if (!(cursor = page?.nextCursor)) return null;
+  }
+  return null;
+};
 
 // ─── Helpers for the form ───────────────────────────────────────────────────
 
@@ -101,7 +111,7 @@ const alice = await signIn(browser, 'alice', problems, onError('alice'));
     await alice.getByTestId('rule-preview-subject-0').waitFor();
     const text = (await alice.getByTestId('rule-preview-result').textContent()).replace(/\s+/g, ' ').trim();
     console.log(`  ${text.slice(0, 200)}`);
-    expect(/would have fired/i.test(text) || /fire/i.test(text), `the summary doesn't say what the rule would have done: ${text}`);
+    expect(/would have fired \d+ times? on \d+ subjects?, sampled every/i.test(text), `the summary doesn't say what the rule would have done: ${text}`);
     expect(await alice.getByTestId('rule-preview-stale').count() === 0, 'a fresh preview is stale');
     await noOverflow(alice, 'preview at 1500 px');
   });
@@ -125,6 +135,10 @@ const alice = await signIn(browser, 'alice', problems, onError('alice'));
     // The same refusal for Save.
     await alice.getByTestId('rule-save').click();
     await err.first().waitFor();
+    // A refused save saves nothing: the form stays open and no rule exists yet.
+    await alice.waitForTimeout(1500);
+    expect(await alice.getByTestId(`rule-edit-${key}`).count() === 0, 'the Window=1 save closed the form and listed the rule');
+    expect(await getRule() === null, 'the Window=1 save created the rule');
   });
   await s('save', async () => {
     await fill(alice, 'window', 300);
@@ -156,7 +170,11 @@ const alice = await signIn(browser, 'alice', problems, onError('alice'));
     const changes = (await api('alice', 'GET', `/tenants/${tenant}/changes?limit=100`)).body?.items ?? [];
     const mine = changes.filter(c => c.attributes?.rule === key || c.summary?.includes(key));
     console.log(`  changes for ${key}: ${mine.map(c => c.summary).join(' | ')}`);
-    expect(mine.length >= 3, `expected a change event for create, change and disable, saw ${mine.length}`);
+    for (const op of ['create', 'update', 'disable']) {
+      const n = mine.filter(c => c.summary === `Rule ${key}: ${op}`).length;
+      expect(n === 1, `expected one '${op}' change event for ${key}, saw ${n}`);
+    }
+    expect(mine.length === 3, `expected exactly three change events for ${key}, saw ${mine.length}`);
   });
 
   // ─── 4. A rule from the rules file ────────────────────────────────────────
@@ -170,6 +188,9 @@ const alice = await signIn(browser, 'alice', problems, onError('alice'));
     const live = await form(alice).locator('input:not([disabled]):not([type=hidden])').count();
     expect(live === 0, `${live} inputs are enabled on a config rule`);
     expect(await alice.getByTestId('rule-edit-host-cpu').count() === 0, 'a config rule has a Change button');
+    const live2 = await form(alice).locator('mat-select:not(.mat-mdc-select-disabled), button:not([disabled])')
+      .evaluateAll(els => els.map(e => (e.textContent ?? '').trim()).filter(t => !/^(Cancel|Close|Preview last 24 h)$/.test(t)));
+    expect(live2.length === 0, `enabled controls on a config rule: ${live2.join(', ')}`);
   });
   await s('config-rule-put-409', async () => {
     const r = await api('alice', 'PUT', `${rules}/host-cpu`, { template: 'HostCpu', name: 'x', severity: 'Warning', threshold: 0.5 });
