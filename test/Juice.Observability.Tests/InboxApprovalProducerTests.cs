@@ -310,6 +310,139 @@ namespace Juice.Observability.Tests
             Assert.All(await after.NotificationParkedCalls.ToListAsync(Ct), c => Assert.NotNull(c.ReplayedAt));
         }
 
+        // ─── A request decided before the kept item is sent ───────────────────
+
+        private static async Task SaveAsync(ScratchDatabase database, ActionRequest request)
+        {
+            await using var db = database.Context();
+            db.Agents.Add(new EnrolledAgent
+            {
+                Id = request.AgentId, TenantId = request.TenantId, Hostname = "web-1", CertificateSerial = "01", CertificateNotAfter = DateTimeOffset.UtcNow.AddYears(1),
+                EnrolledBy = "test", EnrolledAt = DateTimeOffset.UtcNow,
+            });
+            db.ActionRequests.Add(request);
+            await db.SaveChangesAsync(Ct);
+        }
+
+        /// <summary>The item made while the pipeline was down, and the request's state when the release pass sends it.</summary>
+        private static async Task<(ActionRequest Request, string Correlation)> KeptWhileDownAsync(ScratchDatabase database)
+        {
+            var request = await RequestAsync(database);
+            await SaveAsync(database, request);
+            var file = await BrokenProvisioningAsync();
+            try
+            {
+                await using var down = new ApiFactory(database, settings: On(new() { ["Notifications:Provisioning:Path"] = file }));
+                _ = down.Server;
+                await NotifyAsync(down, request, ActionRequestEvents.Created);
+            }
+            finally
+            {
+                File.Delete(file);
+            }
+            return (request, $"approval:{request.Id}");
+        }
+
+        [Fact]
+        public async Task ApprovalItem_KeptWhileDown_RequestDecidedBeforeTheReplay_NotSent_NoOpenItem()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var (request, correlation) = await KeptWhileDownAsync(database);
+
+            await using var up = new ApiFactory(database, settings: On());
+            _ = up.Server;
+            // Decided live after the restart and before the release pass: its resolve finds no item yet.
+            await using (var db = database.Context())
+            {
+                await db.ActionRequests.Where(r => r.Id == request.Id).ExecuteUpdateAsync(r => r.SetProperty(x => x.State, ActionRequestState.Rejected).SetProperty(x => x.DecidedBy, "sam"), Ct);
+            }
+            request.State = ActionRequestState.Rejected;
+            request.DecidedBy = "sam";
+            await NotifyAsync(up, request, ActionRequestEvents.Rejected);
+            await Pass(up).ReleaseOnceAsync(Ct);
+
+            Assert.Null(await CorrelationStateAsync(database, correlation));
+            Assert.DoesNotContain(await RequestsAsync(database), r => r.Type == ObservabilityTypes.ActionApproval);
+            await using var check = database.Context();
+            Assert.All(await check.NotificationParkedCalls.ToListAsync(Ct), c => Assert.NotNull(c.ReplayedAt));
+        }
+
+        [Fact]
+        public async Task ApprovalItem_KeptWhileDown_RequestStillWaitingAtTheReplay_Sent_OpenUntilDecided()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var (request, correlation) = await KeptWhileDownAsync(database);
+
+            await using var up = new ApiFactory(database, settings: On());
+            _ = up.Server;
+            await Pass(up).ReleaseOnceAsync(Ct);
+
+            Assert.Equal("Open", await CorrelationStateAsync(database, correlation));
+            Assert.Contains(await RequestsAsync(database), r => r.Type == ObservabilityTypes.ActionApproval && r.Correlation == correlation);
+            // And a decision after it resolves it.
+            request.State = ActionRequestState.Rejected;
+            request.DecidedBy = "sam";
+            await NotifyAsync(up, request, ActionRequestEvents.Rejected);
+            Assert.Equal("Resolved", await CorrelationStateAsync(database, correlation));
+        }
+
+        // ─── A route that matches every observability type ────────────────────
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task ApprovalItem_RouteMatchingEveryObservabilityType_NeverGetsTheApproval(bool inbox)
+        {
+            LocalStack.RequireAvailable();
+            await using var receiver = await TestReceiver.StartAsync();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            Environment.SetEnvironmentVariable(ProvisionedHost.SecretVariable, ProvisionedHost.Secret);
+            var path = Path.Combine(Path.GetTempPath(), $"juice-obs-m56-provisioning-{Guid.NewGuid():N}.json");
+            await File.WriteAllTextAsync(path, JsonSerializer.Serialize(new
+            {
+                tenants = new Dictionary<string, object>
+                {
+                    [LocalStack.TenantKey] = new
+                    {
+                        integrations = new Dictionary<string, object>
+                        {
+                            ["hooks"] = new { channel = "webhook", kind = "webhook", secretRef = $"env:{ProvisionedHost.SecretVariable}", targets = new Dictionary<string, object> { ["ops"] = new { address = receiver.Url } } },
+                        },
+                        routes = new Dictionary<string, object> { ["everything"] = new { match = new { type = "observability.*" }, targets = new[] { "ops" } } },
+                        allowlist = new object[] { new { destination = $"{receiver.Address}/32", ports = new[] { receiver.Port } } },
+                    },
+                },
+            }), Ct);
+            try
+            {
+                var settings = ProvisionedHost.Settings(path);
+                settings["Notifications:ConsoleUrl"] = "https://console.example.com";
+                settings["Notifications:Inbox:Enabled"] = inbox ? "true" : "false";
+                await using var factory = new ApiFactory(database, settings: settings);
+                _ = factory.Server;
+                var request = await RequestAsync(database);
+
+                await NotifyAsync(factory, request, ActionRequestEvents.Created);
+
+                // The request's own notice reaches the route (it is the one that is for routes); the approval is the pipeline's inbox item only.
+                await ProvisionedHost.WaitAsync(() => !receiver.Requests.IsEmpty, "the notice to reach the route");
+                await Task.Delay(TimeSpan.FromSeconds(3), Ct);
+                Assert.Single(receiver.Requests);
+                var approvals = (await RequestsAsync(database)).Where(r => r.Type == ObservabilityTypes.ActionApproval).ToList();
+                Assert.Equal(inbox ? 1 : 0, approvals.Count);
+                if (inbox)
+                {
+                    Assert.Equal(["role:admin"], Named((await RecipientsAsync(database))[0]));
+                }
+            }
+            finally
+            {
+                File.Delete(path);
+            }
+        }
+
         // ─── The type and its template ────────────────────────────────────────
 
         [Fact]
