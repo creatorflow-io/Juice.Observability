@@ -258,6 +258,12 @@ namespace Juice.Observability.Tests
             var observed = Assert.Single(await Templates.ObserveAsync(Rule(service, MetricAggregation.Rate),
                 Window() with { Limit = RuleTemplates.MaxHistogramLayoutsPerSubject }, Ct));
             Assert.Equal(Enumerable.Range(3, layouts - 2).Sum() / 600d, observed.Value!.Value, 9);
+
+            // A percentile says its layouts were cut.
+            var p50 = Assert.Single(await Templates.ObserveAsync(Rule(service, MetricAggregation.P50),
+                Window() with { Limit = RuleTemplates.MaxHistogramLayoutsPerSubject }, Ct));
+            Assert.Equal("true", p50.Detail!["mixedBounds"]);
+            Assert.Equal("2", p50.Detail["layoutsOmitted"]);
         }
 
         [Fact]
