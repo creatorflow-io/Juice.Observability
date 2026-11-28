@@ -7,7 +7,7 @@
 | Check | Result |
 |---|---|
 | Test suite | 361 of 361 |
-| Notifications journey (`console/e2e/notifications.mjs`) against a rebuilt image | No problems. It received 3 signed, 2 Slack, 2 Teams and 2 mail notifications, and a channel answering 503 showed its retries and reason |
+| Notifications journey (a 1.x script, removed in 2.0 with the 1.x webhooks) against a rebuilt image | No problems. It received 3 signed, 2 Slack, 2 Teams and 2 mail notifications, and a channel answering 503 showed its retries and reason |
 | Main journey (`console/e2e/journey.mjs`) on the same image | No problems |
 | Mutation checks: 21 deliberate breaks, one at a time, against the notification, incident and webhook tests | 21 of 21 caught |
 

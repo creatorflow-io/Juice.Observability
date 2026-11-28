@@ -15,7 +15,7 @@ The roadmap's Phase 10 Console workflows, the pages that serve them, and the bro
 |---|---|---|
 | **Topology** | Dependencies (`/topology`, an edge, a node) | `journey.mjs` (topology, topology-edge) |
 | **Health** | Overview, Services and a service (health per environment), Resources and a resource (health, instances on a host) | `journey.mjs` (overview, services, service-payments); `inventory.mjs` (every resource type, a host's page) **new** |
-| **Alerts and incidents** | Alerts and an alert (evidence, related changes, suggestions), Incidents and an incident, Rules, Silences, Notifications, Timeline | `journey.mjs` (alerts, rules, alert-related); `correlation.mjs`; `notifications.mjs`; `inventory.mjs` (Timeline, a service's timeline) **new** |
+| **Alerts and incidents** | Alerts and an alert (evidence, related changes, suggestions), Incidents and an incident, Rules, Silences, Notifications, Timeline | `journey.mjs` (alerts, rules, alert-related); `correlation.mjs`; `inventory.mjs` (Timeline, a service's timeline) **new** |
 | **Enrollment** | Agents and an agent (enrollment tokens, re-enrolling, revoking) | `agents-console.mjs`; `agent-reenroll.mjs` |
 | **Approvals** | Approvals; an agent's Requests | `approvals.mjs`; `remediation.mjs` |
 | **Action history** | An agent's Requests and Commands (state, result, who asked and who decided) | `remediation.mjs`; `approvals.mjs`; `bundle.mjs` |

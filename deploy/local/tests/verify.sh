@@ -231,7 +231,7 @@ if docker compose ps --status running --services 2>/dev/null | grep -qx platform
   check "/health/platform answers the status alone, ok" "$(curl -s -m 30 http://localhost:5180/health/platform)" '{"status":"ok"}'
   check "/api/v1/platform/status needs a sign-in" "$(curl -s -m 30 -o /dev/null -w '%{http_code}' http://localhost:5180/api/v1/platform/status)" "401"
   check "every worker is enabled on a live replica" \
-    "$(docker compose exec -T postgres psql -U juice -d juice_observability -tAc "SELECT string_agg(w, ' ' ORDER BY w) FROM unnest(ARRAY['action-requests','discovery','health','notifications','rules','sampler','slos']) w WHERE NOT EXISTS (SELECT 1 FROM worker_heartbeats h WHERE h.worker = w AND h.enabled AND h.seen_at > now() - interval '30 seconds')" </dev/null)" ""
+    "$(docker compose exec -T postgres psql -U juice -d juice_observability -tAc "SELECT string_agg(w, ' ' ORDER BY w) FROM unnest(ARRAY['action-requests','discovery','health','notifications-holds','notifications-release','rules','sampler','slos']) w WHERE NOT EXISTS (SELECT 1 FROM worker_heartbeats h WHERE h.worker = w AND h.enabled AND h.seen_at > now() - interval '30 seconds')" </dev/null)" ""
 fi
 check "grafana_reader sees none of the platform's telemetry" "$(gr "SELECT count() FROM otel.otel_metrics_gauge WHERE $platform AND $recent")" "0"
 

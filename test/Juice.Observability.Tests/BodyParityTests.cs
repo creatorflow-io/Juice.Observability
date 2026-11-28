@@ -10,8 +10,9 @@ using Juice.Observability.Tests.Legacy;
 namespace Juice.Observability.Tests
 {
     /// <summary>
-    /// The proof that the embedded pipeline's bodies are the 1.x webhooks' (M50): what the declared templates render is compared byte for byte
-    /// with <see cref="ChannelFormatter"/> (frozen in <c>Legacy/</c>) and <see cref="NotificationPlan.Payload"/>, and the Console's link is the
+    /// The proof that the embedded pipeline's bodies are the 1.x webhooks' (M50): what the declared templates render is compared with
+    /// <see cref="ChannelFormatter"/> (frozen in <c>Legacy/</c>) and <see cref="NotificationPlan.Payload"/>: the webhook and email bodies byte
+    /// for byte, Slack and Teams by content (title, text, link url; the provider frames them itself, the lead's decision). And the Console's link is the
     /// raw address, as the frozen formatter builds it. Replaces the three-mode parity run, which proved the same on the 1.x tip.
     /// </summary>
     [Trait("Milestone", "M50")]
@@ -44,6 +45,8 @@ namespace Juice.Observability.Tests
             { NotificationPlan.Firing, "s" + new string('y', 300), "Orders errors", 0.25, "301" },
             { NotificationPlan.Firing, "  " + new string('z', 305) + "  ", new string('n', 200), 0.25, new string('r', 301) },
             // A subject is telemetry: it must not become a link in Teams.
+            { NotificationPlan.Firing, "service:*bold*_it_ <b>&", new string('l', 255), 0.25, "255-character name" },
+            { NotificationPlan.Firing, "service:*bold*_it_ <b>&", new string('l', 256), 0.25, "256-character name" },
             { NotificationPlan.Firing, "service:[click](http://evil)", "Orders [errors]", 0.25, "[a](b)" },
             { NotificationPlan.Escalated, "service:[click](http://evil)", "Orders errors", 0.25, "x" },
         };
@@ -76,7 +79,7 @@ namespace Juice.Observability.Tests
 
         [Theory]
         [MemberData(nameof(Variants))]
-        public async Task BodyParity_Webhook_FrozenPayload_ByteEqual(string @event, string subject, string ruleName, double? value, string reason)
+        public async Task BodyParity_SlackTeamsEmailWebhook_FrozenFormatter_ByteEqual(string @event, string subject, string ruleName, double? value, string reason)
         {
             var (payload, id, escalation) = Frozen(@event, subject, ruleName, value, reason);
             var type = @event == NotificationPlan.Resolved ? ObservabilityTypes.AlertResolved : ObservabilityTypes.AlertFiring;
@@ -85,9 +88,17 @@ namespace Juice.Observability.Tests
 
             // The delivery's id is the one the legacy payload carries: the whole body is legacy's, byte for byte.
             Assert.Equal(payload, body);
+            await SlackTeamsContentAsync(@event, subject, ruleName, value, reason);
+            await EmailBytesAsync(@event, subject, ruleName, value, reason);
         }
 
-        private const string ConsoleUrl = "https://console.example/";
+        /// <summary>
+        /// A title or subject is bounded by the pipeline's content at <see cref="ChannelContent.MaxTitle"/> characters (1.x cut at 300): the one
+        /// explained difference, and why a rule name of 255 or 256 characters (title "Firing: " + name) is cut.
+        /// </summary>
+        private static string? Bound(string? legacy) => ChannelContent.Cut(legacy, ChannelContent.MaxTitle);
+
+        private const string ConsoleUrl ="https://console.example/";
 
         private static string LinkOf(string payload)
             => $"{ConsoleUrl}alerts/{JsonDocument.Parse(payload).RootElement.GetProperty("alert").GetProperty("id").GetString()}";
@@ -96,9 +107,7 @@ namespace Juice.Observability.Tests
         /// Content parity: the same title and text, and the alert's link (legacy's, from the ConsoleUrl's address) as the content's url. The
         /// provider presents the link as its own (Slack's button for legacy's inline link, a card action), so only the content is compared.
         /// </summary>
-        [Theory]
-        [MemberData(nameof(Variants))]
-        public async Task BodyParity_SlackTeams_FrozenFormatter_ByteEqual(string @event, string subject, string ruleName, double? value, string reason)
+        private static async Task SlackTeamsContentAsync(string @event, string subject, string ruleName, double? value, string reason)
         {
             var (payload, id, escalation) = Frozen(@event, subject, ruleName, value, reason);
             var type = @event == NotificationPlan.Resolved ? ObservabilityTypes.AlertResolved : ObservabilityTypes.AlertFiring;
@@ -111,14 +120,14 @@ namespace Juice.Observability.Tests
 
             var blocks = JsonDocument.Parse(ChannelFormatter.SlackBody(view, ConsoleUrl)).RootElement.GetProperty("blocks");
             var legacyLine = blocks[1].GetProperty("text").GetProperty("text").GetString()!;
-            Assert.Equal(blocks[0].GetProperty("text").GetProperty("text").GetString(), slack.Title);
+            Assert.Equal(Bound(blocks[0].GetProperty("text").GetProperty("text").GetString()), slack.Title);
             Assert.Contains($"<{link}|", legacyLine);
             Assert.Equal(System.Text.RegularExpressions.Regex.Replace(legacyLine, @"<https?://[^|>]*\|([^>]*)>", "$1"),
                 slack.Text.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;"));
             Assert.Equal(link, slack.Url);
 
             var card = JsonDocument.Parse(ChannelFormatter.TeamsBody(view, ConsoleUrl)).RootElement.GetProperty("attachments")[0].GetProperty("content");
-            Assert.Equal(card.GetProperty("body")[0].GetProperty("text").GetString(), teams.Title);
+            Assert.Equal(Bound(card.GetProperty("body")[0].GetProperty("text").GetString()), teams.Title);
             Assert.Equal(card.GetProperty("body")[1].GetProperty("text").GetString(), teams.Text);
             Assert.Equal(link, card.GetProperty("actions")[0].GetProperty("url").GetString());
             Assert.Equal(link, teams.Url);
@@ -126,9 +135,7 @@ namespace Juice.Observability.Tests
             Assert.DoesNotContain("](", teams.Text);
         }
 
-        [Theory]
-        [MemberData(nameof(Variants))]
-        public async Task BodyParity_Email_FrozenFormatter_ByteEqual(string @event, string subject, string ruleName, double? value, string reason)
+        private static async Task EmailBytesAsync(string @event, string subject, string ruleName, double? value, string reason)
         {
             var (payload, id, escalation) = Frozen(@event, subject, ruleName, value, reason);
             var type = @event == NotificationPlan.Resolved ? ObservabilityTypes.AlertResolved : ObservabilityTypes.AlertFiring;
@@ -138,9 +145,14 @@ namespace Juice.Observability.Tests
             var email = JsonSerializer.Deserialize<EmailContent>(ChannelContent.Email(
                 await RenderAsync(type, Channels.Email, payload, id, escalation, new Dictionary<string, string> { ["self"] = link }), "x"))!;
 
-            Assert.Equal(legacySubject, email.Subject);
+            Assert.Equal(Bound(legacySubject), email.Subject);
             Assert.Contains(link, legacyBody);
-            Assert.Equal(legacyBody.TrimEnd().ReplaceLineEndings("\n"), email.Text.TrimEnd().ReplaceLineEndings("\n"));
+            // Exact bytes, with the two differences that are explained rather than normalised away:
+            //  - the frozen formatter's AppendLine is Environment.NewLine: "\n" on the Linux containers 1.x ran in, "\r\n" on a Windows test host;
+            //  - the pipeline's email content ends at its last line (ChannelContent.Email trims the end), where 1.x's body ended with a blank line.
+            var legacyOnLinux = legacyBody.Replace(Environment.NewLine, "\n");
+            Assert.EndsWith("\n", legacyOnLinux);
+            Assert.Equal(legacyOnLinux.TrimEnd(), email.Text);
         }
 
     }

@@ -245,7 +245,7 @@ it. The agent's log says `The platform refused this agent's action report` when 
   - **A host's allowlist** can add `"RequireApproval": true` to an action. The host then refuses any command for it that didn't come from an
     approved request (`approval_required`).
   - **Finding out:** the **Approvals** menu entry shows how many requests wait for you (an admin's own second-person requests don't count;
-    operators see none). The endpoints in `Actions:NotifyEndpoints` get a message when a request waits, and when it's approved, rejected,
+    operators see none). The pipeline routes for the `observability.action.request.*` types (the provisioning file; `Actions:NotifyEndpoints` is refused since 2.0) get a message when a request waits, and when it's approved, rejected,
     cancelled or expires. A webhook delivery of a request has `actionRequestId` set instead of `alertId`, and shows in that channel's
     deliveries like any other.
   - **Expiry:** a request nobody decided is closed as `Expired` within `Actions:SweepInterval` (30 seconds) of its deadline, recorded as

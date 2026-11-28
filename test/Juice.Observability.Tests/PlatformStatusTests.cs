@@ -69,14 +69,14 @@ namespace Juice.Observability.Tests
             var report = Evaluate([.. Base(),
                 Row("health", Self, held: true, endedAgo: TimeSpan.FromSeconds(95)),         // 3 × 30 s = 90 s
                 Row("slos", Self, held: true, endedAgo: TimeSpan.FromMinutes(5), runningFor: TimeSpan.FromSeconds(120)),
-                Row("notifications", Self, held: true, interval: 2, endedAgo: TimeSpan.FromSeconds(50)),   // 3 × 2 s, but never under 60 s
+                Row("notifications-release", Self, held: true, interval: 2, endedAgo: TimeSpan.FromSeconds(50)),   // 3 × 2 s, but never under 60 s
             ]);
             Assert.Equal(PlatformStatus.Degraded, report.Status);
             Assert.Equal("stale", Worker(report, "health").State);
             Assert.Equal("stuck", Worker(report, "slos").State);
             Assert.Equal(120, Worker(report, "slos").RunningForSeconds);
-            Assert.Equal("ok", Worker(report, "notifications").State);
-            Assert.Equal(60, Worker(report, "notifications").ThresholdSeconds);
+            Assert.Equal("ok", Worker(report, "notifications-release").State);
+            Assert.Equal(60, Worker(report, "notifications-release").ThresholdSeconds);
         }
 
         /// <summary>Two replicas say they hold the lease (one lost it and hasn't noticed): the one that took it last is the holder.</summary>
@@ -338,6 +338,15 @@ namespace Juice.Observability.Tests
             Assert.All(WorkerPulse.KnownWorkers, known => Assert.Contains(WorkerPulse.Snapshot(), w => w.Worker == known));
         }
 
+        /// <summary>The known workers are exactly those the platform runs: the two notification passes are in, the deleted 1.x worker is not.</summary>
+        [Fact]
+        public void The_known_workers_are_exactly_the_running_ones()
+        {
+            string[] running = ["action-requests", "discovery", "health", Notifications.NotificationsReleasePass.Worker, Notifications.SilenceHoldPass.Worker, "rules", "sampler", "slos"];
+            Assert.Equal(running.Order(), WorkerPulse.KnownWorkers.Order());
+            Assert.DoesNotContain("notifications", WorkerPulse.KnownWorkers);
+        }
+
         /// <summary>The writer upserts one row per worker for its replica (enabled or not), in the database's time, and prunes replicas gone an hour.</summary>
         [Fact]
         public async Task The_heartbeat_writer_upserts_every_worker_and_prunes_gone_replicas_Async()
@@ -450,7 +459,7 @@ namespace Juice.Observability.Tests
             await using (var db = database.Context())
             {
                 var now = await db.Database.SqlQuery<DateTimeOffset>($"SELECT now() AS \"Value\"").SingleAsync(ct);
-                db.WorkerHeartbeats.Add(PlatformStatusTests.Row("notifications", "other", held: true, endedAgo: TimeSpan.FromMinutes(5), now: now));
+                db.WorkerHeartbeats.Add(PlatformStatusTests.Row("notifications-release", "other", held: true, endedAgo: TimeSpan.FromMinutes(5), now: now));
                 await db.SaveChangesAsync(ct);
             }
             await Task.Delay(PlatformStatusService.Cache + TimeSpan.FromSeconds(1), ct);
@@ -467,7 +476,7 @@ namespace Juice.Observability.Tests
             }
             var status = await ApiTests.JsonAsync(await ApiTests.Get(client, "/api/v1/platform/status", await LocalStack.TokenAsync("erin")));
             Assert.Equal("degraded", status.GetProperty("status").GetString());
-            var stale = status.GetProperty("workers").EnumerateArray().Single(w => w.GetProperty("name").GetString() == "notifications");
+            var stale = status.GetProperty("workers").EnumerateArray().Single(w => w.GetProperty("name").GetString() == "notifications-release");
             Assert.Equal("stale", stale.GetProperty("state").GetString());
             // Disabled in this host (ApiFactory turns discovery off): off, and its backlog isn't judged.
             Assert.Equal("off", status.GetProperty("workers").EnumerateArray().Single(w => w.GetProperty("name").GetString() == "discovery").GetProperty("state").GetString());
