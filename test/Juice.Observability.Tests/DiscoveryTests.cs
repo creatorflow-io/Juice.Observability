@@ -253,18 +253,28 @@ namespace Juice.Observability.Tests
             var ct = TestContext.Current.CancellationToken;
 
             await runner.RunOnceAsync(ct);
-            var counts = await CountsAsync(database);
-            var second = await runner.RunOnceAsync(ct);
-            Assert.Equal(0, second.Totals.Services + second.Totals.Instances + second.Totals.Resources);
+            var counts = await OwnCountsAsync(database, service, $"h-{_run}");
+            Assert.Equal((1, 1, 1), counts);
+            // The stack's one tenant is read whole: another test's telemetry (or a neighbour's, here) stored between two passes is new to the
+            // second pass. That is not a duplicate, so the pass's totals are not this test's to count: its own service, instance and host are.
+            var neighbour = $"disc-{_run}-neighbour";
+            await LocalStack.SendAsync("traces", Otlp.Traces([("service.name", neighbour), ("service.instance.id", "n1")],
+                Otlp.Span(Otlp.TraceId(), Otlp.SpanId(), null, "work", Otlp.Internal, DateTimeOffset.UtcNow.AddMinutes(-2))));
+            await LocalStack.WaitForSpansAsync(neighbour, 1);
+            await runner.RunOnceAsync(ct);
+            Assert.Equal(counts, await OwnCountsAsync(database, service, $"h-{_run}"));
+            await using (var db = database.Context())
+            {
+                Assert.True(await db.Services.AnyAsync(s => s.Name == neighbour, ct), "the neighbour's telemetry is found by the second pass");
+            }
 
             // Reading the same window again (checkpoint lost) upserts by natural key: same records.
             await using (var db = database.Context())
             {
                 await db.Checkpoints.ExecuteDeleteAsync(ct);
             }
-            var replay = await runner.RunOnceAsync(ct);
-            Assert.Equal(0, replay.Totals.Services + replay.Totals.Instances + replay.Totals.Resources + replay.Totals.Dependencies);
-            Assert.Equal(counts, await CountsAsync(database));
+            await runner.RunOnceAsync(ct);
+            Assert.Equal(counts, await OwnCountsAsync(database, service, $"h-{_run}"));
         }
 
         [Fact]
@@ -417,11 +427,13 @@ namespace Juice.Observability.Tests
             Assert.Contains(DiscoveryRunner.MetricsCheckpointSource, await db.Checkpoints.Select(c => c.Source).ToListAsync(ct));
         }
 
-        private static async Task<(int, int, int, int, int)> CountsAsync(ScratchDatabase database)
+        /// <summary>What one test's own telemetry made: its service, that service's instances, and its host.</summary>
+        private static async Task<(int Services, int Instances, int Hosts)> OwnCountsAsync(ScratchDatabase database, string service, string host)
         {
             await using var db = database.Context();
-            return (await db.Services.CountAsync(), await db.Instances.CountAsync(), await db.Resources.CountAsync(),
-                await db.Dependencies.CountAsync(), await db.Environments.CountAsync());
+            return (await db.Services.CountAsync(s => s.Name == service),
+                await db.Instances.CountAsync(i => db.Services.Any(s => s.Id == i.ServiceId && s.Name == service)),
+                await db.Resources.CountAsync(r => r.Type == ResourceType.Host && r.Key == host));
         }
 
         private static DiscoveryRunner Runner(ScratchDatabase database, Action<DiscoveryOptions>? configure = null)
