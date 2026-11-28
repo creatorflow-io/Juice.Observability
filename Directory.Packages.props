@@ -12,11 +12,11 @@
     <PackageVersion Include="Juice.Messaging.Outbox.Delivery" Version="10.13.1" />
     <PackageVersion Include="Juice.Messaging.Outbox.EF" Version="10.13.1" />
     <!-- The notification pipeline, embedded (phase 5, M45): published alphas of Juice.Notifications only, pinned exactly; one person bumps them. -->
-    <PackageVersion Include="Juice.Notifications.Abstractions" Version="0.1.0-alpha.62" />
-    <PackageVersion Include="Juice.Notifications.Embedded" Version="0.1.0-alpha.62" />
-    <PackageVersion Include="Juice.Notifications.Admin" Version="0.1.0-alpha.62" />
-    <PackageVersion Include="Juice.Notifications.Inbox" Version="0.1.0-alpha.62" />
-    <PackageVersion Include="Juice.Notifications.Providers.Chat" Version="0.1.0-alpha.62" />
+    <PackageVersion Include="Juice.Notifications.Abstractions" Version="0.1.0-alpha.64" />
+    <PackageVersion Include="Juice.Notifications.Embedded" Version="0.1.0-alpha.64" />
+    <PackageVersion Include="Juice.Notifications.Admin" Version="0.1.0-alpha.64" />
+    <PackageVersion Include="Juice.Notifications.Inbox" Version="0.1.0-alpha.64" />
+    <PackageVersion Include="Juice.Notifications.Providers.Chat" Version="0.1.0-alpha.64" />
     <!-- Email channels: reports a refused login and the server's codes, which System.Net.Mail loses (Gmail closes after a 535). -->
     <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.15" />
     <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.15" />
