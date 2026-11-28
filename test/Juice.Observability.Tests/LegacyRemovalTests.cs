@@ -235,6 +235,27 @@ namespace Juice.Observability.Tests
             await AssertLegacyGoneAsync(database);
         }
 
+        /// <summary>Down restores the schema, not the data: a policy kept through it has empty steps and 1.x's default of stopping on acknowledge.</summary>
+        [Fact]
+        public async Task Migration_Down_RestoresSchema_StopOnAcknowledgeDefaultsToTrue()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync(provisionTenant: true);
+            Guid tenant;
+            await using (var db = database.Context()) tenant = (await db.Tenants.SingleAsync(Ct)).Id;
+            await ExecuteAsync(database, $$"""
+                INSERT INTO escalation_policies (id, tenant_id, key, name, enabled, rule_keys, environments, minimum_severity, updated_at)
+                VALUES ('{{Guid.CreateVersion7()}}', '{{tenant}}', 'pager', 'Pager', true, '{}', '{}', 0, now());
+                """);
+
+            await using (var db = database.Context())
+            {
+                await db.GetService<IMigrator>().MigrateAsync(Previous, Ct);
+            }
+
+            Assert.Equal(1, await CountAsync(database, "SELECT count(*) FROM escalation_policies WHERE stop_on_acknowledge AND steps = '[]'::jsonb"));
+        }
+
         private static async Task<(ScratchDatabase Database, Guid Tenant, Guid Alert)> LegacyDatabaseAsync()
         {
             var database = await LocalStack.CreateDatabaseAsync(provisionTenant: false);
