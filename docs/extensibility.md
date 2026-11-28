@@ -40,8 +40,7 @@ makes no database access.
   must tolerate a retry (use the idempotency key) until E4 enlists the module context in the core transaction.
 - Modules are trusted compiled code. The contract bounds the honest path; code review bounds the rest.
 - **The core's Console manifest is null in M1.** The internal modules (`core`, `slos`, `agents`) declare none, because a manifest needs a
-  `@juice-js/observability-<name>` package and the core's own package has no such name. How the core and the internal modules appear in the
-  Console menu is a question for M3.
+  `@juice-js/observability-<name>` package and the core's own package has no such name. M3 answers this; see below.
 
 ## Limits in 2.0 M2
 
@@ -81,6 +80,24 @@ domain events are in [extensibility-workers-events.md](extensibility-workers-eve
 - A template is declared once per host and is never a registry template. The core's `SloBurn` is the slos module's. Storing a rule of a module's own
   template (and `IAlertSource.EnsureRules`) comes with the first module that moves a feature, so until then a module's source has no rules to act on.
 - The composition calls (`AddModuleData`, `AddAlertSource`) reach the host's implementation through internal interfaces that only the host registers, so they work only in a Juice Observability host and no module assembly can name them.
+
+## Limits in 2.0 M3
+
+M3 puts modules in the Console, in the embedded notifications and on the evidence of detail pages. This page covers the Console manifests; the rest
+is in [extensibility-console.md](extensibility-console.md) (Console slots, routes and the build), [extensibility-notifications.md](extensibility-notifications.md)
+(notification types and channels) and [extensibility-evidence.md](extensibility-evidence.md) (evidence contributors).
+
+- **The internal modules declare real manifests** (`core`, `slos`, `agents`), served by `GET /api/v1/modules` like any module's. They declare the package
+  `@juice-js/observability`, the library that holds their pages; an external module keeps `@juice-js/observability-<name>`, and the check that a
+  package belongs to one module applies to external modules only. Only an internal module may declare the empty route (the Overview).
+- **`ConsoleMenuEntry.Group`** is an init-only property: null (the top level of the menu) or a core group, `explore`, `automation` or `configure`
+  (`ConsoleMenuGroups`). It is left out of the JSON when null. A group with no visible entry is hidden.
+- **Route collisions.** The first segment of an external module's route or menu route can't be a segment the core's pages use (or `auth` and
+  `notifications`, which the Console keeps), another module's name, or the first segment of a route another module declared. The composition refuses
+  the module; the Console checks the same for the libraries in its build.
+- **Icons** may use underscores (`show_chart`), as material icon names do.
+- Module code enters the Console only at build time (W-11), and the manifest is data that shows, hides, labels and orders entries of compiled libraries.
+  Hiding an entry is cosmetic: the API enforces access.
 
 ## Breaking change for package consumers
 

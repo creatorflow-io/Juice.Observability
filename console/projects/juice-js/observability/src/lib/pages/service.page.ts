@@ -11,6 +11,8 @@ import { AgoPipe, DurationPipe, PercentPipe, ReasonPipe } from '../shared/format
 import { ConfidenceBadge, ContextBar, HealthBadge } from '../shared/ui';
 import { LogTable, MetricExplorer, ServiceStatsCharts, TraceTable, problemText } from '../shared/telemetry';
 import { ServiceCapacity } from '../shared/capacity';
+import { ModuleSlots } from '../modules/module-slots';
+import { EvidenceSections } from '../shared/evidence-sections';
 
 const TABS = ['overview', 'operations', 'dependencies', 'traces', 'logs', 'metrics', 'capacity'] as const;
 
@@ -22,7 +24,7 @@ const TABS = ['overview', 'operations', 'dependencies', 'traces', 'logs', 'metri
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [LinkPipe, RouterLink, MatTabsModule, MatProgressBarModule, MatButtonModule, ContextBar, HealthBadge, ConfidenceBadge,
-    TraceTable, LogTable, MetricExplorer, ServiceStatsCharts, ServiceCapacity, AgoPipe, DurationPipe, PercentPipe, ReasonPipe],
+    TraceTable, LogTable, MetricExplorer, ServiceStatsCharts, ServiceCapacity, AgoPipe, DurationPipe, PercentPipe, ReasonPipe, ModuleSlots, EvidenceSections],
   template: `
     <jc-context-bar>
       <a [routerLink]="['services'] | jcLink" [queryParams]="ctx.keep()" class="jc-crumb">Services</a>
@@ -183,7 +185,9 @@ const TABS = ['overview', 'operations', 'dependencies', 'traces', 'logs', 'metri
           @if (tabIndex() === 6) { <jc-service-capacity [serviceId]="id()" [environments]="environments()" /> }
         </mat-tab>
       </mat-tab-group>
-    }`,
+    }
+    <jc-module-slots kind="service" [subjectId]="id()" />
+    <jc-evidence-sections target="service" [subjectId]="id()" />`,
 })
 export class ServicePage {
   protected readonly ctx = inject(ContextService);

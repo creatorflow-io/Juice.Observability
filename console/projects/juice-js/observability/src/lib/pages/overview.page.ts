@@ -11,6 +11,7 @@ import { AgoPipe, ReasonPipe } from '../shared/format';
 import { ContextBar, HealthBadge } from '../shared/ui';
 import { problemText } from '../shared/telemetry';
 import { PlatformPanel } from '../shared/platform-panel';
+import { ModuleSlots } from '../modules/module-slots';
 
 const ORDER: HealthState[] = ['Critical', 'Unhealthy', 'Degraded', 'Offline', 'Unknown', 'Healthy'];
 
@@ -23,7 +24,7 @@ const SHOWN = 10;
  */
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [LinkPipe, RouterLink, MatProgressBarModule, ContextBar, HealthBadge, AgoPipe, PlatformPanel],
+  imports: [LinkPipe, RouterLink, MatProgressBarModule, ContextBar, HealthBadge, AgoPipe, PlatformPanel, ModuleSlots],
   template: `
     <jc-context-bar><h1>Overview</h1></jc-context-bar>
     @if (health.isLoading() || alerts.isLoading()) { <mat-progress-bar mode="indeterminate" /> }
@@ -75,7 +76,8 @@ const SHOWN = 10;
       }
     </section>
 
-    <jc-platform-panel />`,
+    <jc-platform-panel />
+    <jc-module-slots kind="overview" />`,
 })
 export class OverviewPage {
   protected readonly ctx = inject(ContextService);

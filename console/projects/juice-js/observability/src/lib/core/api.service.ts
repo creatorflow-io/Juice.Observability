@@ -5,7 +5,7 @@ import { OBSERVABILITY_OPTIONS } from './options';
 import {
   ActionRequest, ActionRequestsWaiting, ActionTarget, Agent, SloDetail, SloSummary, AgentActions, AgentCommand, AgentPackage, EnrollmentToken, AlertDetail, AlertNotifications, Alert, Application, EscalationPolicy, IncidentDetail, IncidentEvent, IncidentSummary, Silence, DependencyEvidence, DependencyStatsPage, DeploymentEnvironment, LoadRun, LoadRunResults, Related, Timeline, Health, LogRecord, MetricInfo, Operation,
   Page, PlatformOverview, ResourceDetail, ResourceSummary, Rule, RulePreview, SearchHit, Series, Capacity, ServiceStats, Tenant, TelemetryPage, Topology, Trace,
-  TraceSummary, Suggestions, CorrelationDecision, SignalPack
+  TraceSummary, Suggestions, CorrelationDecision, SignalPack, ModulesResponse, EvidenceSectionsDto
 } from './models';
 
 /**
@@ -156,6 +156,12 @@ export class ApiService {
   serviceStats(query: Query) { return this.get<ServiceStats>('/telemetry/service-stats', query); }
   capacity(query: Query) { return this.get<Capacity>('/telemetry/capacity', query); }
   timeline(query: Query) { return this.get<Timeline>('/timeline', query); }
+  /** The modules the deployment runs and their Console manifests (any platform role; not tenant-scoped). */
+  modules() { return this.http.get<ModulesResponse>(`${this.base}/modules`); }
+  /** What contributors add to an alert page (core 2.0 M3, E9). */
+  alertEvidence(id: string) { return this.get<EvidenceSectionsDto>(`/alerts/${id}/evidence-sections`); }
+  /** What contributors add to a service page, over the window; `environmentId` narrows it to one environment. */
+  serviceEvidence(id: string, query: Query = {}) { return this.get<EvidenceSectionsDto>(`/resources/${id}/evidence-sections`, query); }
   relatedToAlert(id: string) { return this.get<Related>(`/alerts/${id}/related`); }
   alertSuggestions(id: string) { return this.get<Suggestions>(`/alerts/${id}/suggestions`); }
   incidentSuggestions(id: string) { return this.get<Suggestions>(`/incidents/${id}/suggestions`); }

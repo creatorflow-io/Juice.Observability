@@ -3,8 +3,9 @@ import { RouterModule, Routes } from '@angular/router';
 import { PageComponent, PageNotfoundComponent } from '@juice-js/layout';
 import { MenuModule } from '@juice-js/core';
 import { AuthGuard } from '@juice-js/auth';
-import { OBSERVABILITY_ROUTES, observabilityMenus } from '@juice-js/observability';
-import { NOTIFICATIONS_ADMIN_PAGES, NOTIFICATIONS_ADMIN_ROUTES, notificationsAdminMenus } from '@juice-js/notifications-admin';
+import { observabilityModuleRoutes } from '@juice-js/observability';
+import { NOTIFICATIONS_ADMIN_ROUTES } from '@juice-js/notifications-admin';
+import { CONSOLE_MODULES } from './console-modules';
 
 /** Where the notification pages (`@juice-js/notifications-admin`, phase 5 M48) are mounted: Alerts › Notifications. */
 export const NOTIFICATIONS_BASE_PATH = '/alerts/notifications';
@@ -24,7 +25,8 @@ export const routes: Routes = [
         path: NOTIFICATIONS_BASE_PATH.slice(1),
         children: NOTIFICATIONS_ADMIN_ROUTES.map(route => ({ ...route, canActivate: [AuthGuard, ...(route.canActivate ?? [])] })),
       },
-      ...OBSERVABILITY_ROUTES.map(route => ({ ...route, canActivate: [AuthGuard] })),
+      // The libraries compiled into this build (console-modules.ts): the core's routes always, a module's only when the server says it is installed.
+      ...observabilityModuleRoutes(CONSOLE_MODULES).map(route => ({ ...route, canActivate: [AuthGuard] })),
       { path: 'auth', loadChildren: () => import('@juice-js/auth').then(m => m.AuthRoutingModule) },
       { path: '**', component: PageNotfoundComponent },
     ],
@@ -35,7 +37,8 @@ export const routes: Routes = [
   imports: [
     // The notification pages read the tenant id from their parent route (paramsInheritanceStrategy) as an input.
     RouterModule.forRoot(routes, { bindToComponentInputs: true, paramsInheritanceStrategy: 'always' }),
-    MenuModule.forRoot(observabilityMenus('/', 1, notificationsAdminMenus(NOTIFICATIONS_BASE_PATH, 1, NOTIFICATIONS_ADMIN_PAGES.embedded))),
+    // The side menu is made from the manifests (provideObservabilityModules in AppModule), so nothing static is registered here.
+    MenuModule.forRoot([]),
   ],
   exports: [RouterModule, MenuModule],
 })
