@@ -1,5 +1,6 @@
 using System.Net;
 using Juice.Observability.Webhooks;
+using Juice.Observability.Rules.Notifications;
 using Juice.Observability.Health.Delivery;
 
 namespace Juice.Observability.Tests

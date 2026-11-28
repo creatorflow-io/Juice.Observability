@@ -1,5 +1,6 @@
 using System.Diagnostics.Metrics;
 using Juice.Observability.Data;
+using Juice.Observability.Rules.Notifications;
 using Juice.Observability.Discovery;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;

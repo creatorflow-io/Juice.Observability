@@ -1,6 +1,6 @@
 using Juice.Observability.Data;
 
-namespace Juice.Observability.Webhooks
+namespace Juice.Observability.Rules.Notifications
 {
     /// <summary>What a silence or a route is matched against, read from an alert.</summary>
     public sealed record AlertContext(string RuleKey, string SubjectKey, AlertSeverity Severity)

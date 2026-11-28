@@ -15,6 +15,7 @@ using Juice.Observability.Data;
 using Juice.Observability.Health.Delivery;
 using Juice.Observability.Discovery;
 using Juice.Observability.Rules;
+using Juice.Observability.Rules.Notifications;
 using MailKit;
 using MailKit.Net.Smtp;
 using MailKit.Security;
@@ -204,7 +205,7 @@ namespace Juice.Observability.Webhooks
                 alert.DomainEvents.Add(new AlertNotificationsPlanned(alert.TenantId, alert.Id, transition.Id));
             }
             // From when the transition was committed, so the dispatch delay still counts the time it spent in the outbox.
-            return pipeline.Value.LegacySends ? NotificationPlan.Plan(db, platform.Value.TenantKey, rule, alert, transition, request.CommittedAt, now) : 0;
+            return pipeline.Value.LegacySends ? LegacyPlan.Plan(db, platform.Value.TenantKey, rule, alert, transition, request.CommittedAt, now) : 0;
         }
     }
 
@@ -212,21 +213,14 @@ namespace Juice.Observability.Webhooks
     /// What a transition sends: one delivery per matching endpoint, held if a silence covers it, and on firing the escalations that match. The payload is
     /// fixed here, so every attempt sends and signs the same bytes. Only adds entities: the command's TransactionBehavior saves them.
     /// </summary>
-    public static class NotificationPlan
+    public static class LegacyPlan
     {
-        public const string Firing = "alert.firing";
-        public const string Resolved = "alert.resolved";
-        /// <summary>Sent by an escalation policy, to the endpoints it names, whatever events they take otherwise.</summary>
-        public const string Escalated = "alert.escalated";
-        /// <summary>A test an admin sent to check a channel; never planned for an alert.</summary>
-        public const string Test = "webhook.test";
-
         /// <returns>How many deliveries it added.</returns>
         public static int Plan(PlatformDbContext db, string tenantKey, Rule rule, Alert alert, AlertTransition transition, DateTimeOffset createdAt, DateTimeOffset now)
         {
-            var type = transition.ToState == AlertState.Firing ? Firing : Resolved;
+            var type = transition.ToState == AlertState.Firing ? NotificationPlan.Firing : NotificationPlan.Resolved;
             var context = new AlertContext(rule.Key, alert.SubjectKey, alert.Severity);
-            var silence = CoveringSilence(db, alert, context, now);
+            var silence = NotificationPlan.CoveringSilence(db, alert, context, now);
             var endpoints = db.WebhookEndpoints.AsNoTracking().Where(e => e.TenantId == alert.TenantId && e.Enabled).ToList()
                 .Where(e => e.Events.Contains(type) && (e.RuleKeys.Length == 0 || e.RuleKeys.Contains(rule.Key)) && alert.Severity >= e.MinimumSeverity
                     && (e.Environments.Length == 0 || context.Environment is { } environment && e.Environments.Contains(environment)));
@@ -237,25 +231,18 @@ namespace Juice.Observability.Webhooks
                 db.WebhookDeliveries.Add(new WebhookDelivery
                 {
                     Id = id, TenantId = alert.TenantId, EndpointId = endpoint.Id, AlertId = alert.Id, TransitionId = transition.Id,
-                    Event = type, Payload = Payload(id, type, tenantKey, rule, alert, transition, null), CreatedAt = createdAt,
+                    Event = type, Payload = NotificationPlan.Payload(id, type, tenantKey, rule, alert, transition, null), CreatedAt = createdAt,
                     NextAttemptAt = now + TimeSpan.FromSeconds(endpoint.GroupWindowSeconds),
                     Status = silence is null ? DeliveryStatus.Pending : DeliveryStatus.Suppressed, SuppressedBy = silence?.Id,
                 });
                 added++;
             }
             // An alert that resolved before its firing was planned has nothing left to escalate.
-            if (type == Firing && alert.State == AlertState.Firing)
+            if (type == NotificationPlan.Firing && alert.State == AlertState.Firing)
             {
                 StartEscalations(db, alert, context, now);
             }
             return added;
-        }
-
-        /// <summary>The active silence that covers the alert now, or null.</summary>
-        public static Silence? CoveringSilence(PlatformDbContext db, Alert alert, AlertContext context, DateTimeOffset now)
-        {
-            var silences = db.Silences.AsNoTracking().Where(s => s.TenantId == alert.TenantId && s.CancelledAt == null && s.StartsAt <= now && (s.RepeatWeekly || s.EndsAt > now)).ToList();
-            return SilenceMatcher.Find(silences, context, now);
         }
 
         /// <summary>The enabled policies with steps that match the alert (severity, rule keys, environments).</summary>
@@ -278,33 +265,6 @@ namespace Juice.Observability.Webhooks
                 });
             }
         }
-
-        public static string Payload(Guid id, string type, string tenant, Rule rule, Alert alert, AlertTransition transition, (string Policy, int Step)? escalation)
-            => JsonSerializer.Serialize(new
-            {
-                id,
-                type,
-                occurredAt = transition.At,
-                tenant,
-                escalation = escalation is { } e ? new { policy = e.Policy, step = e.Step } : null,
-                alert = new
-                {
-                    id = alert.Id,
-                    rule = rule.Key,
-                    ruleName = rule.Name,
-                    severity = alert.Severity.ToString(),
-                    state = transition.ToState.ToString(),
-                    subject = alert.SubjectKey,
-                    value = transition.Value,
-                    breachStartedAt = alert.BreachStartedAt,
-                    firedAt = alert.FiredAt,
-                    resolvedAt = alert.ResolvedAt,
-                    reason = transition.Reason,
-                    // An SLO burn alert's objective: several SLOs can watch one service, and its subject alone doesn't say which is burning.
-                    slo = alert.Evidence.TryGetValue("slo", out var slo) ? new { key = slo, name = alert.Evidence.GetValueOrDefault("sloName") } : null,
-                },
-                links = new { alert = $"/api/v1/tenants/{alert.TenantId}/alerts/{alert.Id}" },
-            }, JsonSerializerOptions.Web);
     }
 
     /// <summary>

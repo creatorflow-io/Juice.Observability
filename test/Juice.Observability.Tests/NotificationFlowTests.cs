@@ -3,6 +3,7 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using Juice.Observability.Data;
+using Juice.Observability.Rules.Notifications;
 using Juice.Observability.Health.Delivery;
 using Juice.Observability.Discovery;
 using Juice.Observability.Webhooks;
@@ -85,7 +86,7 @@ namespace Juice.Observability.Tests
             var transition = new AlertTransition { TenantId = tenant, AlertId = alert.Id, FromState = AlertState.Pending, ToState = AlertState.Firing, At = now, Value = 0.4, Reason = "for_duration_met" };
             db.AlertTransitions.Add(transition);
             await db.SaveChangesAsync(Ct);
-            if (plan) NotificationPlan.Plan(db, LocalStack.TenantKey, rule, alert, transition, now, now);
+            if (plan) LegacyPlan.Plan(db, LocalStack.TenantKey, rule, alert, transition, now, now);
             await db.SaveChangesAsync(Ct);
             return alert.Id;
         }
@@ -100,7 +101,7 @@ namespace Juice.Observability.Tests
             db.AlertTransitions.Add(transition);
             alert.State = AlertState.Resolved;
             alert.ResolvedAt = now;
-            NotificationPlan.Plan(db, LocalStack.TenantKey, rule, alert, transition, now, now);
+            LegacyPlan.Plan(db, LocalStack.TenantKey, rule, alert, transition, now, now);
             await db.SaveChangesAsync(Ct);
         }
 

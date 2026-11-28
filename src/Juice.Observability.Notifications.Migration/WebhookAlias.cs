@@ -5,6 +5,7 @@ using Juice.Notifications.Data;
 using Juice.Notifications.Embedded;
 using Juice.Notifications.Providers;
 using Juice.Observability.Webhooks;
+using Juice.Observability.Rules.Notifications;
 using History = Juice.Notifications.History;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;

@@ -8,6 +8,7 @@ using Juice.Notifications.Data;
 using Juice.Notifications.Rendering;
 using Juice.Notifications.Types;
 using Juice.Observability.Data;
+using Juice.Observability.Rules.Notifications;
 using Juice.Observability.Notifications;
 using Juice.Observability.Notifications.Migration;
 using Juice.Observability.Webhooks;

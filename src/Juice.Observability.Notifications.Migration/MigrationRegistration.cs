@@ -1,4 +1,5 @@
 using Juice.Observability.Webhooks;
+using Juice.Observability.Rules.Notifications;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 

@@ -84,7 +84,7 @@ namespace Juice.Observability.Tests
                 State = AlertState.Firing, Evidence = new() { ["slo"] = "orders-latency", ["sloName"] = "Orders latency" },
             };
             var transition = new AlertTransition { AlertId = alert.Id, ToState = AlertState.Firing, Reason = EvaluateSloBurnsHandler.Fired, Value = 20 };
-            var payload = Webhooks.NotificationPlan.Payload(Guid.NewGuid(), Webhooks.NotificationPlan.Firing, "tenant", rule, alert, transition, null);
+            var payload = Rules.Notifications.NotificationPlan.Payload(Guid.NewGuid(), Rules.Notifications.NotificationPlan.Firing, "tenant", rule, alert, transition, null);
             using (var json = JsonDocument.Parse(payload))
             {
                 var slo = json.RootElement.GetProperty("alert").GetProperty("slo");
@@ -97,7 +97,7 @@ namespace Juice.Observability.Tests
             Assert.Contains("SLO: orders-latency", Webhooks.ChannelFormatter.Email(view, null).Body, StringComparison.Ordinal);
             // A rule's alert has none.
             var plain = new Alert { DedupKey = "error-rate|x", SubjectKey = "service:shop/orders@production", Severity = AlertSeverity.Warning, State = AlertState.Firing };
-            var ruleView = Webhooks.NotificationView.Parse(Webhooks.NotificationPlan.Payload(Guid.NewGuid(), Webhooks.NotificationPlan.Firing, "tenant", rule, plain, transition, null));
+            var ruleView = Webhooks.NotificationView.Parse(Rules.Notifications.NotificationPlan.Payload(Guid.NewGuid(), Rules.Notifications.NotificationPlan.Firing, "tenant", rule, plain, transition, null));
             Assert.Null(ruleView.Alerts[0].Slo);
         }
 
