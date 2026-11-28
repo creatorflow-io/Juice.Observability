@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using Juice.Notifications;
 using Juice.Notifications.Rendering;
 using Juice.Observability.Data;
+using Juice.Observability.Rules.Notifications;
 using Juice.Observability.Notifications;
 using Juice.Observability.Notifications.Migration;
 using Juice.Observability.Webhooks;

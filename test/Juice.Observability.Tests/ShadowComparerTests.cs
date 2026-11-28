@@ -3,6 +3,7 @@ using System.Text.Json;
 using Juice.Notifications.Configuration;
 using Juice.Notifications.Data;
 using Juice.Observability.Data;
+using Juice.Observability.Rules.Notifications;
 using Juice.Observability.Notifications.Shadow;
 using Juice.Observability.Webhooks;
 using Microsoft.AspNetCore.Mvc.Testing;

@@ -446,7 +446,7 @@ namespace Juice.Observability.Tests
                     var rule = await platform.Rules.SingleAsync(r => r.Id == alert.RuleId, Ct);
                     var transition = await platform.AlertTransitions.SingleAsync(t => t.Id == transitionId, Ct);
                     notice = scope.ServiceProvider.GetRequiredService<ProducerAdapter>().Firing(rule, alert, transition,
-                        new Webhooks.AlertContext(rule.Key, alert.SubjectKey, alert.Severity), null);
+                        new Rules.Notifications.AlertContext(rule.Key, alert.SubjectKey, alert.Severity), null);
                 }
                 await using (var db = database.Context())
                 {

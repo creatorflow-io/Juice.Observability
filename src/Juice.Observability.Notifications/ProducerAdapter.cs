@@ -4,6 +4,7 @@ using System.Text.Json.Nodes;
 using Juice.Notifications;
 using Juice.Observability.Agents;
 using Juice.Observability.Data;
+using Juice.Observability.Rules.Notifications;
 using Juice.Observability.Discovery;
 using Juice.Observability.Webhooks;
 using Microsoft.EntityFrameworkCore;
@@ -287,7 +288,7 @@ namespace Juice.Observability.Notifications
         /// </summary>
         private string? Policy(Alert alert, AlertContext context)
         {
-            var matching = NotificationPlan.MatchingPolicies(db, alert, context).OrderBy(p => p.Key, StringComparer.Ordinal).ToList();
+            var matching = LegacyPlan.MatchingPolicies(db, alert, context).OrderBy(p => p.Key, StringComparer.Ordinal).ToList();
             if (matching.Count > 1)
             {
                 logger.LogWarning("Alert {Alert} matches {Count} escalation policies ({Policies}); the notification pipeline escalates by {Policy} only",

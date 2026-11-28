@@ -5,6 +5,7 @@ using Juice.Messaging.Policies;
 using Juice.Observability.Agents;
 using Juice.Observability.Api.Endpoints;
 using Juice.Observability.Data;
+using Juice.Observability.Rules.Notifications;
 using Juice.Observability.Discovery;
 using Juice.Observability.Health;
 using Juice.Observability.Notifications;

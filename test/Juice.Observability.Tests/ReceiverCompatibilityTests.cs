@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Juice.Observability.Data;
+using Juice.Observability.Rules.Notifications;
 using Juice.Observability.Webhooks;
 using Microsoft.EntityFrameworkCore;
 using Flow = Juice.Observability.Tests.NotificationFlowTests;

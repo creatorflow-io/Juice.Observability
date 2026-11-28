@@ -1,5 +1,6 @@
 using Juice.Observability.Health.Delivery;
 using Juice.Observability.Webhooks;
+using Juice.Observability.Rules.Notifications;
 
 namespace Juice.Observability.Notifications.Migration
 {

@@ -2,6 +2,7 @@ using System.Text.Json;
 using Juice.Observability.Api.Endpoints;
 using Juice.Observability.Health.Delivery;
 using Juice.Observability.Data;
+using Juice.Observability.Rules.Notifications;
 using Juice.Observability.Webhooks;
 
 namespace Juice.Observability.Tests

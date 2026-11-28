@@ -1,4 +1,5 @@
 using Juice.Observability.Data;
+using Juice.Observability.Rules.Notifications;
 using Juice.Observability.Notifications.Migration;
 using Juice.Observability.Webhooks;
 

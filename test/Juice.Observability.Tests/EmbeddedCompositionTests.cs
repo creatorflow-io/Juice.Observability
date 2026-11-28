@@ -100,7 +100,7 @@ namespace Juice.Observability.Tests
         public void Every_platform_domain_event_runs_its_handlers_one_after_another()
         {
             // Juice's mediator runs a notification's handlers in parallel unless it is a sequence; they share the command's context.
-            var events = new[] { typeof(PlatformDbContext), typeof(Juice.Observability.Webhooks.NotificationPlan), typeof(ProducerAdapter) }
+            var events = new[] { typeof(PlatformDbContext), typeof(Juice.Observability.Rules.Notifications.NotificationPlan), typeof(ProducerAdapter) }
                 .Select(t => t.Assembly).Distinct().SelectMany(a => a.GetTypes())
                 .Where(t => typeof(INotification).IsAssignableFrom(t) && t is { IsClass: true, IsAbstract: false }).ToList();
             Assert.NotEmpty(events);

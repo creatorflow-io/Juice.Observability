@@ -4,6 +4,7 @@ using Juice.Notifications.Data;
 using Juice.Notifications.Embedded;
 using Juice.Notifications.Providers.Chat;
 using Juice.Observability.Data;
+using Juice.Observability.Rules.Notifications;
 using Juice.Observability.Notifications.Migration;
 using Juice.Observability.Webhooks;
 using Microsoft.EntityFrameworkCore;

@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using Juice.Observability.Data;
+using Juice.Observability.Rules.Notifications;
 using Juice.Observability.Webhooks;
 using Microsoft.EntityFrameworkCore;
 

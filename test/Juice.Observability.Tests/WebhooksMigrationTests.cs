@@ -79,7 +79,7 @@ namespace Juice.Observability.Tests
                 db.WebhookEndpoints.Add(new WebhookEndpoint
                 {
                     TenantId = tenant, Key = key, Kind = ChannelKind.Webhook, Url = "https://receiver.example/hooks/juice", SecretRef = "env:JUICE_WEBHOOK_HOOK",
-                    Events = [Juice.Observability.Webhooks.NotificationPlan.Firing, Juice.Observability.Webhooks.NotificationPlan.Resolved], RuleKeys = [], Recipients = [], MinimumSeverity = AlertSeverity.Info, DefinitionHash = "h",
+                    Events = [Juice.Observability.Rules.Notifications.NotificationPlan.Firing, Juice.Observability.Rules.Notifications.NotificationPlan.Resolved], RuleKeys = [], Recipients = [], MinimumSeverity = AlertSeverity.Info, DefinitionHash = "h",
                 });
                 await db.SaveChangesAsync(Ct);
             }
