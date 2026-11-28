@@ -2,7 +2,7 @@
 // under Alerts › Notifications works end to end. alice (admin) allows the receiver's private address, creates a signed webhook integration
 // with a target, and a route from her rule's firing alerts to it, with a digest window the page checks; an alert of the rule then arrives,
 // signed, at the receiver. On the way the API's field errors show on their fields, and a mute is made and cancelled; the setup is taken down
-// again in the browser (an integration that sent is disabled, not deleted). The Alerts › Notifications menu and the webhooks page's link lead in.
+// again in the browser (an integration that sent is disabled, not deleted). The Alerts › Notifications menu leads in, and the old Webhooks address opens Escalation selection.
 //   BASE=… node e2e/notifications-admin/configure.mjs      (see lib.mjs for the host it needs)
 import { createHmac } from 'node:crypto';
 import { launch, signIn, steps, expect, finish, base, pages, tenantPage, adminPath, must, until, receiver, fireAlert, hookSecret,
@@ -24,10 +24,11 @@ try {
     await alice.getByRole('option', { name: option, exact: true }).click();
   };
 
-  await step('reached-from-the-webhooks-page-and-the-menu', async () => {
-    // The old webhooks page (labelled Webhooks now) links to the new pages; the menu's group has the embedded pages.
-    await alice.getByTestId('notifications-moved').waitFor({ timeout: 15000 });
-    await alice.getByTestId('notifications-link').click();
+  await step('reached-from-the-escalation-page-and-the-menu', async () => {
+    // /notifications (the old webhooks address) redirects to Escalation selection; the menu's group has the embedded pages.
+    await alice.getByTestId('policy-new').waitFor({ timeout: 15000 });
+    expect(new URL(alice.url()).pathname.endsWith('/escalation'), 'the old webhooks address redirects to /escalation');
+    await alice.goto(`${base}${tenantPage('')}`);
     await alice.waitForURL(u => u.pathname.startsWith(`${pages}/tenants/`), { timeout: 15000 });
     // Its items, open or closed (a closed group's are in the page, hidden).
     const menu = await alice.locator('juice-expandable-menu', { hasText: 'Alert notifications' }).first().evaluate(e => e.textContent);
@@ -95,11 +96,15 @@ try {
   });
 
   await step('an-alert-arrives-signed', async () => {
-    await fireAlert(run);
+    const alertId = await fireAlert(run);
     const got = await until(async () => [...hook.received], rs => rs.length > 0, 60);
     const signed = got[0] && got[0].signature === 'v1,' + createHmac('sha256', hookSecret).update(`${got[0].id}.${got[0].timestamp}.${got[0].body}`).digest('base64');
     expect(got.length === 1 && signed, `the alert arrived once, signed with the integration's secret (${got.length}, ${signed ? 'valid' : 'invalid'} signature)`);
-    expect(JSON.parse(got[0].body).type === 'observability.alert.firing', 'it is the firing alert');
+    // The alert page links its deliveries and escalation to the admin correlation page.
+    await alice.goto(`${base}/alerts/${alertId}`);
+    await alice.getByTestId('alert-deliveries-link').click();
+    await alice.waitForURL(u => u.pathname.includes(`/tenants/`) && u.pathname.includes('/correlations/observability/alert'), { timeout: 15000 });
+    expect(JSON.parse(got[0].body).type === 'alert.firing', 'it is the firing alert (the 1.x body: type alert.firing)');
   });
 
   await step('mute-made-and-cancelled', async () => {

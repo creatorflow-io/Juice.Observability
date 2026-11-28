@@ -14,7 +14,7 @@ export interface ObservabilityOptions {
   auditLink?: ((traceId: string) => unknown[] | string | null) | null;
   /**
    * Where the host mounted the notification pages (`@juice-js/notifications-admin`, phase 5 M48), such as `/alerts/notifications`: the
-   * webhooks page links to them. Without it, no link.
+   * escalation page and the alert page link to them (an absolute URL is used as written). Without it, no link.
    */
   notificationsLink?: string | null;
   /** Show on the Approvals menu entry how many action requests wait for the signed-in user. On unless false. */
@@ -59,6 +59,22 @@ export class ObservabilityLinks {
 
   /** `to('services', id)` → `['/observability', 'services', id]`. */
   to(...segments: unknown[]): unknown[] { return [this.base, ...segments]; }
+
+  /**
+   * A Notifications admin page (`<notificationsLink>/go/<segments>`; `go` picks the tenant the signed-in user may use). Without
+   * `notificationsLink`, no link. A configured absolute URL is used as written, as text with its host case and port kept, never
+   * re-serialised; a path becomes a router link.
+   */
+  admin(...segments: string[]): { route: unknown[] } | { href: string } | null {
+    const base = this.options.notificationsLink;
+    if (!base) return null;
+    if (/^https?:\/\//i.test(base)) return { href: `${base.replace(/\/+$/, '')}/go/${segments.map(encodeURIComponent).join('/')}` };
+    return { route: [normalizeBasePath(base), 'go', ...segments] };
+  }
+
+  /** The admin page of a correlation of this platform's alerts (`alert:{id}`). */
+  correlation(key: string | null | undefined) { return key ? this.admin('correlations', 'observability', key) : null; }
+
 
   /** The host's link to the audit records of a trace, if it gave one. */
   audit(traceId: string | null | undefined): { route: unknown[] } | { href: string } | null {

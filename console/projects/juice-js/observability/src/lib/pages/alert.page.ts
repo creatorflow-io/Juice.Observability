@@ -1,7 +1,7 @@
-import { LinkPipe } from '../core/options';
+import { LinkPipe, ObservabilityLinks } from '../core/options';
 import { ChangeDetectionStrategy, Component, computed, inject, input, signal } from '@angular/core';
 import { apiResource } from '../shared/resource';
-import { DatePipe, LowerCasePipe } from '@angular/common';
+import { DatePipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatFormFieldModule } from '@angular/material/form-field';
@@ -22,7 +22,7 @@ import { CorrelationDecision } from '../core/models';
  */
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [LinkPipe, RouterLink, DatePipe, LowerCasePipe, FormsModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatProgressBarModule,
+  imports: [LinkPipe, RouterLink, DatePipe, FormsModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatProgressBarModule,
     ContextBar, HealthBadge, KeyValueTable, AgoPipe, ReasonPipe, SuggestionsCard],
   template: `
     <jc-context-bar>
@@ -95,24 +95,10 @@ import { CorrelationDecision } from '../core/models';
       <section class="jc-card" data-testid="alert-notifications">
         <h2>Notifications</h2>
         @if (notifications.value(); as n) {
-          @for (e of n.escalations; track e.policy) {
-            <p>Escalation <strong>{{ e.name }}</strong>: {{ e.stepsSent }} of {{ e.steps }} steps sent, {{ e.state | lowercase }}@if (e.stopReason) { ({{ e.stopReason | reason }}) }@if (e.nextAt) {, next at {{ e.nextAt | date: 'HH:mm:ss' }} }</p>
-          }
-          <table class="jc-table">
-            <thead><tr><th>To</th><th>Event</th><th>Status</th><th>Attempts</th><th>Detail</th><th>When</th></tr></thead>
-            <tbody>
-              @for (x of n.deliveries; track x.delivery.id) {
-                <tr>
-                  <td>{{ x.endpointKey }} <span class="jc-muted jc-small">{{ x.kind }}</span></td>
-                  <td>{{ x.delivery.event }}@if (x.delivery.escalationStep) { step {{ x.delivery.escalationStep }} }</td>
-                  <td [class.jc-bad]="x.delivery.status === 'Failed'">{{ x.delivery.status }}</td>
-                  <td>{{ x.delivery.attempts }}</td>
-                  <td class="jc-small">{{ x.delivery.lastError }}@if (x.delivery.nextAttemptAt && x.delivery.status === 'Retrying') { · next {{ x.delivery.nextAttemptAt | date: 'HH:mm:ss' }} }</td>
-                  <td class="jc-nowrap">{{ x.delivery.createdAt | date: 'MMM d, HH:mm:ss' }}</td>
-                </tr>
-              } @empty { <tr><td colspan="6" class="jc-muted">Nothing sent about this alert: no channel takes it.</td></tr> }
-            </tbody>
-          </table>
+          @if (correlation(n.correlationKey); as link) {
+            @if (link.href) { <p><a data-testid="alert-deliveries-link" [href]="link.href">Deliveries and escalation</a></p> }
+            @else { <p><a data-testid="alert-deliveries-link" [routerLink]="link.route">Deliveries and escalation</a></p> }
+          } @else { <p class="jc-muted jc-small">Deliveries and escalation are on the Notifications pages, which this host has not mounted.</p> }
         }
         @if (notifications.error()) { <p class="jc-error">{{ notificationsError() }}</p> }
       </section>
@@ -152,6 +138,9 @@ export class AlertPage {
   protected readonly relatedError = computed(() => problemText(this.related.error()));
   protected readonly notifications = apiResource({ params: () => this.id(), stream: ({ params }) => this.api.alertNotifications(params) });
   protected readonly notificationsError = computed(() => problemText(this.notifications.error()));
+  private readonly links = inject(ObservabilityLinks);
+  /** The admin page of the alert's correlation: an external link or a route, as the host mounted the pages. */
+  protected correlation(key: string) { const l = this.links.correlation(key); return l ? { href: 'href' in l ? l.href : null, route: 'route' in l ? l.route : [] } : null; }
   /** Only a firing alert is suggested with others, so only its page asks. */
   protected readonly suggestions = apiResource({
     params: () => (this.detail.value()?.alert.state === 'Firing' ? this.id() : undefined),

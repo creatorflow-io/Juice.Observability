@@ -200,7 +200,7 @@ const refusals = [];
 const noraPage = await signIn(browser, 'nora', problems, e => refusals.push(e));
 const r = step(noraPage, 'nora');
 const deepLinks = ['/', '/services', `/services/${controlId}`, `/traces?service=${controlId}`, `/logs?q=${run}`, `/metrics?service=${controlId}`, '/topology', '/resources',
-  '/alerts', '/incidents', '/rules', '/notifications', '/silences', '/slos', '/agents', '/approvals', '/timeline', '/load-runs'];
+  '/alerts', '/incidents', '/rules', '/escalation', '/silences', '/slos', '/agents', '/approvals', '/timeline', '/load-runs'];
 for (const link of deepLinks) {
   await r(link === '/' ? 'overview' : link.slice(1).split(/[?/]/)[0], async () => {
     const before = refusals.filter(e => e.includes(' http 403 ')).length;
