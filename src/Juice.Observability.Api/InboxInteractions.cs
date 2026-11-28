@@ -67,7 +67,7 @@ namespace Juice.Observability.Api
             }
             else if (interaction.TypeKey == ObservabilityTypes.AlertFiring && interaction.Kind == InteractionKinds.Acknowledged)
             {
-                result = await AlertEndpoints.AcknowledgeCoreAsync(tenant, id, null, Via, http, db, mediator, ct);
+                result = await AlertEndpoints.AcknowledgeCoreAsync(tenant, id, null, Via, "", http, db, mediator, ct);
             }
             else
             {

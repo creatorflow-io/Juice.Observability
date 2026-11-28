@@ -128,12 +128,20 @@ namespace Juice.Observability.Api.Endpoints
         /// attempt is audited too. With an <c>Idempotency-Key</c>, a retry returns the first response and the same key
         /// with a different request is refused (requirements §6.1).
         /// </summary>
-        private static Task<IResult> AcknowledgeAsync(Guid tenantId, Guid alertId, AcknowledgeRequest? request, HttpContext http,
+        private static async Task<IResult> AcknowledgeAsync(Guid tenantId, Guid alertId, AcknowledgeRequest? request, HttpContext http,
             PlatformDbContext db, IMediator mediator, CancellationToken ct)
-            => AcknowledgeCoreAsync(tenantId, alertId, request?.Comment, null, http, db, mediator, ct);
+        {
+            // The endpoint's own context and key: the Core takes the caller's, so another entry point's work is its own.
+            using var context = PlatformMessageContext.Begin("api", CorrelationId.Get(http));
+            return await AcknowledgeCoreAsync(tenantId, alertId, request?.Comment, null, http.Request.Headers["Idempotency-Key"].ToString(), http, db, mediator, ct);
+        }
 
-        /// <summary>The acknowledgement itself, for the HTTP endpoint and for any other entry point that acts in-process: the role is the caller's own token's.</summary>
-        internal static async Task<IResult> AcknowledgeCoreAsync(Guid tenantId, Guid alertId, string? rawComment, string? via, HttpContext http,
+        /// <summary>
+        /// The acknowledgement itself, for the HTTP endpoint and for any other entry point that acts in-process: the role is the caller's own token's,
+        /// and the message context is the caller's (begun before this is called). It reads no request header: <paramref name="key"/> is the
+        /// <c>Idempotency-Key</c> the caller passes, empty for none.
+        /// </summary>
+        internal static async Task<IResult> AcknowledgeCoreAsync(Guid tenantId, Guid alertId, string? rawComment, string? via, string key, HttpContext http,
             PlatformDbContext db, IMediator mediator, CancellationToken ct)
         {
             var actor = http.User.Actor();
@@ -157,7 +165,6 @@ namespace Juice.Observability.Api.Endpoints
                 return Results.Problem(statusCode: StatusCodes.Status400BadRequest, title: "Invalid comment", detail: "comment is at most 1000 characters.");
             }
 
-            var key = http.Request.Headers["Idempotency-Key"].ToString();
             var operation = $"POST alerts/{alertId}/acknowledgement";
             var requestHash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { alertId, comment }))));
             if (key.Length > 0)
@@ -181,7 +188,6 @@ namespace Juice.Observability.Api.Endpoints
                 }
             }
 
-            using var context = PlatformMessageContext.Begin("api", correlationId);
             var outcome = await mediator.Send(new AcknowledgeAlert(tenantId, alertId, comment, actor, correlationId, key, operation, requestHash, via), ct);
             return outcome.Status switch
             {
