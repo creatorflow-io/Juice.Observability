@@ -106,6 +106,24 @@ namespace Juice.Observability.Notifications
             {{ end }}Value: {{ value() }}
             """;
 
+        /// <summary>
+        /// The approval item (M56), inbox only: <c>Approve {action} on {hostname}?</c>, at most the 250 characters a title holds, and
+        /// <c>{risk} risk · asked by {requestedBy}: {reason}</c>, with what a second-person request needs. Every value is plain text, control characters
+        /// out as spaces; the Console shows it as text, never as markup.
+        /// </summary>
+        public static readonly string ApprovalInbox = Functions + """
+            {{~ func approval_title() ~}}
+            {{~ $t = clean("Approve " + data.request.action + " on " + data.request.agent.hostname + "?") ~}}
+            {{~ ret $t.size > 250 ? (($t | string.truncate 249 "") + "…") : $t ~}}
+            {{~ end ~}}
+            Title: {{ approval_title() }}
+            {{ clean(data.request.risk) }} risk · asked by {{ clean(data.request.requestedBy) }}: {{ clean(data.request.reason) }}{{ if data.request.policy == "SecondPerson" }}
+            needs an admin other than {{ clean(data.request.requestedBy) }}{{ end }}
+            """;
+
+        /// <summary>The approval type's templates: the inbox's only, since an approval is never sent to a route.</summary>
+        public static JsonElement ApprovalDeclaration() => JsonSerializer.SerializeToElement(new JsonObject { [Channels.Inbox] = ApprovalInbox });
+
         /// <summary>The templates by channel, as a <see cref="Juice.Notifications.Types.TypeDeclaration"/> takes them (the <c>en</c> locale).</summary>
         public static IReadOnlyDictionary<string, string> ByChannel { get; } = new Dictionary<string, string>
         {

@@ -136,10 +136,11 @@ namespace Juice.Observability.Tests
                     await db.SaveChangesAsync(Ct);
                     await transaction.CommitAsync(Ct);
                 }
-                // The pipeline heard nothing; both are kept, in order.
+                // The pipeline heard nothing; all are kept, in order. The one addition of M56: the tolerant resolve of the request's approval item
+                // (a no-op on replay when there never was one), kept before the notice that ends the request.
                 Assert.Equal("Open", await ProducerAdapterTests.CorrelationStateAsync(database, $"alert:{alert}"));
                 await using var check = database.Context();
-                Assert.Equal([NotificationParkedCalls.Acknowledge, NotificationParkedCalls.Send],
+                Assert.Equal([NotificationParkedCalls.Acknowledge, NotificationParkedCalls.Resolve, NotificationParkedCalls.Send],
                     await check.NotificationParkedCalls.OrderBy(c => c.Id).Select(c => c.Kind).ToListAsync(Ct));
             }
             finally

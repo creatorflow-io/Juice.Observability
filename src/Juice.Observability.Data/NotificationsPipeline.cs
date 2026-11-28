@@ -229,7 +229,7 @@ namespace Juice.Observability.Data
     {
         public Guid Id { get; init; } = Guid.CreateVersion7();
         public Guid TenantId { get; init; }
-        /// <summary><see cref="NotificationParkedCalls.Acknowledge"/> or <see cref="NotificationParkedCalls.Send"/>.</summary>
+        /// <summary><see cref="NotificationParkedCalls.Acknowledge"/>, <see cref="NotificationParkedCalls.Send"/> or <see cref="NotificationParkedCalls.Resolve"/>.</summary>
         public required string Kind { get; init; }
         /// <summary>The correlation to acknowledge, or to resolve before the request is sent (an action request's ending notice).</summary>
         public string? CorrelationKey { get; init; }
@@ -253,5 +253,8 @@ namespace Juice.Observability.Data
     {
         public const string Acknowledge = "acknowledge";
         public const string Send = "send";
+
+        /// <summary>A resolve and nothing else (an approval item's): the correlation, and its outcome in <c>By</c>; no request.</summary>
+        public const string Resolve = "resolve";
     }
 }

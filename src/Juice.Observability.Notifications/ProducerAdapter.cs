@@ -49,11 +49,17 @@ namespace Juice.Observability.Notifications
         /// </summary>
         internal const string SignedInResolver = "signed-in";
 
+        /// <summary>The only role an approval item is for: the Console's <c>admin</c>, as <see cref="InboxNotificationsOptions.KnownRoles"/> names it.</summary>
+        private const string AdminRole = "admin";
+
         public static string AlertCorrelation(Guid alertId) => $"alert:{alertId}";
 
         public static string TransitionKey(Guid transitionId) => $"transition:{transitionId}";
 
         public static string ActionCorrelation(Guid requestId) => $"action:{requestId}";
+
+        /// <summary>The correlation (and the key) of an action request's approval item: <c>approval:{id}</c>, a lowercase <c>D</c>-format guid.</summary>
+        public static string ApprovalCorrelation(Guid requestId) => $"approval:{requestId:D}";
 
         private const string RequestPrefix = "action.request.";
 
@@ -121,11 +127,27 @@ namespace Juice.Observability.Notifications
                 onConflict: () => Park(tenantId, NotificationParkedCalls.Acknowledge, AlertCorrelation(alertId), Bounded(by, 200), null));
         }
 
+        private static readonly object ParkedIdLock = new();
+        private static long _lastParkedMillisecond;
+
+        /// <summary>
+        /// The id of the next kept call: a version 7 id, whose order is the replay's. Two calls kept in the same millisecond (an approval's resolve
+        /// and its notice) would otherwise get ids in no order, so each is at least a millisecond after the one before.
+        /// </summary>
+        private static Guid NextParkedId()
+        {
+            lock (ParkedIdLock)
+            {
+                _lastParkedMillisecond = Math.Max(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), _lastParkedMillisecond + 1);
+                return Guid.CreateVersion7(DateTimeOffset.FromUnixTimeMilliseconds(_lastParkedMillisecond));
+            }
+        }
+
         /// <summary>A call kept while the pipeline is down (<see cref="NotificationParkedCall"/>), in the change's transaction.</summary>
         private void Park(Guid tenantId, string kind, string? correlationKey, string? by, NotificationToSend? request)
             => db.NotificationParkedCalls.Add(new NotificationParkedCall
             {
-                TenantId = tenantId,
+                Id = NextParkedId(), TenantId = tenantId,
                 Kind = kind, CorrelationKey = correlationKey, By = by, CreatedAt = clock.GetUtcNow(), Pipeline = Mode,
                 Request = request is null ? null : JsonSerializer.Serialize(request, JsonSerializerOptions.Web),
             });
@@ -138,12 +160,20 @@ namespace Juice.Observability.Notifications
                 await TolerateAsync("acknowledge", () => client.AcknowledgeAsync(call.CorrelationKey!, call.By, cancellationToken), conflictThrows: true);
                 return;
             }
+            if (call.Kind == NotificationParkedCalls.Resolve)
+            {
+                // A resolve alone (an approval's): By is its outcome. None to resolve (the inbox was never on) is no failure.
+                await TolerateAsync("resolve", () => client.ResolveAsync(call.CorrelationKey!, call.By, null, cancellationToken), conflictThrows: true);
+                return;
+            }
             if (call.CorrelationKey is { } resolve)
             {
                 await TolerateAsync("resolve", () => client.ResolveAsync(resolve, null, null, cancellationToken), conflictThrows: true);
             }
-            var request = WithoutRolesIfInboxOff(JsonSerializer.Deserialize<NotificationToSend>(call.Request!, JsonSerializerOptions.Web)!);
-            await SendAsync(request, cancellationToken, conflictThrows: true);
+            if (WithoutRolesIfInboxOff(JsonSerializer.Deserialize<NotificationToSend>(call.Request!, JsonSerializerOptions.Web)!) is { } request)
+            {
+                await SendAsync(request, cancellationToken, conflictThrows: true);
+            }
         }
 
         /// <summary>The hold's reason for a silence: <c>silence:{id}</c>.</summary>
@@ -213,12 +243,34 @@ namespace Juice.Observability.Notifications
                 Data = WithoutId(ActionRequestNotices.Payload(Guid.Empty, type, platform.Value.TenantKey, request, hostname, now)),
                 Links = Link("approvals"),
             };
+            // The approval item (M56): an admin's inbox gets one while the request waits, and it is resolved when the request ends, whatever the
+            // inbox's state now (it may have been turned off since the item was made). Never a route's: see Approval().
+            var approval = type == ActionRequestEvents.Created && console.Value.Inbox.Enabled ? Approval(request, notice) : null;
+            var outcome = ApprovalOutcome(request, type);
             if (Unavailable)
             {
                 // Kept with the resolve it needs first, and replayed in order once the pipeline is up.
+                if (outcome is not null)
+                {
+                    Park(request.TenantId, NotificationParkedCalls.Resolve, ApprovalCorrelation(request.Id), outcome, null);
+                }
                 Park(request.TenantId, NotificationParkedCalls.Send, ends ? ActionCorrelation(request.Id) : null, null, notice);
+                if (approval is not null)
+                {
+                    Park(request.TenantId, NotificationParkedCalls.Send, null, null, approval);
+                }
                 logger.LogWarning("The notification pipeline didn't start ({Failure}): {Type} of action request {Request} is kept until it does", start!.Failure, type, request.Id);
                 return;
+            }
+            if (outcome is not null)
+            {
+                // Before the notice: the item is closed for everyone whether or not the request's own correlation ends. A concurrent change is kept and replayed in order.
+                await TolerateAsync("resolve", () => client.ResolveAsync(ApprovalCorrelation(request.Id), outcome, null, cancellationToken),
+                    onConflict: () => Park(request.TenantId, NotificationParkedCalls.Resolve, ApprovalCorrelation(request.Id), outcome, null));
+            }
+            if (approval is not null)
+            {
+                await SendAsync(approval, cancellationToken, onConflict: () => Park(request.TenantId, NotificationParkedCalls.Send, null, null, approval));
             }
             // Still refused for a concurrent change: kept as when the pipeline is down (the resolve with its notice), and replayed in order.
             var parked = false;
@@ -234,6 +286,34 @@ namespace Juice.Observability.Notifications
             await SendAsync(notice, cancellationToken, onConflict: () => Park(request.TenantId, NotificationParkedCalls.Send, null, null, notice));
         }
 
+        /// <summary>
+        /// The approval item for a request that was just made: <c>observability.action.approval</c>, keyed and correlated <c>approval:{id}</c>, with
+        /// the admins who signed in as its <b>only</b> recipients and the notice's own data. It names no route, and is never sent without its roles
+        /// (<see cref="WithoutRolesIfInboxOff"/>): a route's default delivery would send an approval request to a channel.
+        /// </summary>
+        private NotificationToSend Approval(ActionRequest request, NotificationToSend notice) => new(ObservabilityTypes.ActionApproval, ApprovalCorrelation(request.Id))
+        {
+            CorrelationKey = ApprovalCorrelation(request.Id),
+            Recipients = [new NotificationRecipientSpec(RecipientKinds.Role, Id: AdminRole, Resolver: SignedInResolver)],
+            Labels = notice.Labels,
+            Data = notice.Data,
+            Links = notice.Links,
+        };
+
+        /// <summary>How the request's approval item ends: <c>Approved by erin</c>; null for an event that doesn't end the wait (<c>created</c>, and the verification's).</summary>
+        private static string? ApprovalOutcome(ActionRequest request, string type)
+        {
+            var word = type switch
+            {
+                ActionRequestEvents.Approved => "Approved",
+                ActionRequestEvents.Rejected => "Rejected",
+                ActionRequestEvents.Cancelled => "Cancelled",
+                ActionRequestEvents.Expired => "Expired",
+                _ => null,
+            };
+            return word is null ? null : Bounded($"{word} by {request.DecidedBy ?? ActionRequestSweeper.Actor}", 200);
+        }
+
         /// <summary>Whether this event ends the request: decided against, lapsed, or done (verified, or issued with nothing to verify).</summary>
         internal static bool Ends(ActionRequest request, string type) => type switch
         {
@@ -244,17 +324,27 @@ namespace Juice.Observability.Notifications
 
         /// <summary>Sends a request kept by a hold, now that no silence covers it; false when the pipeline refused it.</summary>
         internal Task<bool> SendHeldAsync(NotificationHold hold, CancellationToken cancellationToken)
-        {
-            var request = WithoutRolesIfInboxOff(JsonSerializer.Deserialize<NotificationToSend>(hold.Request, JsonSerializerOptions.Web)!);
-            return SendAsync(request, cancellationToken, conflictThrows: true);
-        }
+            => WithoutRolesIfInboxOff(JsonSerializer.Deserialize<NotificationToSend>(hold.Request, JsonSerializerOptions.Web)!) is { } request
+                ? SendAsync(request, cancellationToken, conflictThrows: true)
+                : Task.FromResult(false);
 
         /// <summary>
         /// A request kept while the inbox was on (a silence's hold, a parked send) and sent after it was turned off: the pipeline refuses a
         /// <c>role</c> recipient with no inbox, which would lose the notice for its routes too. Sent without them, its routes are as before.
         /// </summary>
-        internal NotificationToSend WithoutRolesIfInboxOff(NotificationToSend request)
+        internal NotificationToSend? WithoutRolesIfInboxOff(NotificationToSend request)
         {
+            // An approval has no route to fall back to: with the inbox off, or with no role left, it is dropped (null), logged and counted
+            // (refused{call=send,code=inbox_off}), never sent with its default recipients (the routes it matches).
+            if (request.Type == ObservabilityTypes.ActionApproval)
+            {
+                if (console.Value.Inbox.Enabled && request.Recipients is { Count: > 0 } named && named.All(r => r.Kind == RecipientKinds.Role))
+                {
+                    return request;
+                }
+                DropApproval(request);
+                return null;
+            }
             if (console.Value.Inbox.Enabled || request.Recipients is not { } recipients || !recipients.Any(r => r.Kind == RecipientKinds.Role))
             {
                 return request;
@@ -347,19 +437,39 @@ namespace Juice.Observability.Notifications
 
         private static string? Bounded(string? value, int max) => value is { Length: > 0 } ? value.Length > max ? value[..max] : value : null;
 
-        private Task<bool> SendAsync(NotificationToSend request, CancellationToken cancellationToken, bool conflictThrows = false, Action? onConflict = null)
-            => TolerateAsync("send", () => SendOrWithoutRolesAsync(request, cancellationToken), conflictThrows, request.IdempotencyKey, onConflict);
+        /// <summary>Sends it; false when the pipeline refused it, or when it was dropped (an approval that can't go to its roles).</summary>
+        private async Task<bool> SendAsync(NotificationToSend request, CancellationToken cancellationToken, bool conflictThrows = false, Action? onConflict = null)
+        {
+            var sent = false;
+            var taken = await TolerateAsync("send", async () => (sent = await SendOrWithoutRolesAsync(request, cancellationToken) is not null), conflictThrows,
+                request.IdempotencyKey, onConflict);
+            return taken && sent;
+        }
+
+        /// <summary>An approval that can't go to its roles is dropped, not sent on: logged, and counted as <c>refused{call=send,code=inbox_off}</c>.</summary>
+        private void DropApproval(NotificationToSend request)
+        {
+            Refused.Add(1, new KeyValuePair<string, object?>("call", "send"), new KeyValuePair<string, object?>("code", "inbox_off"));
+            logger.LogWarning("Approval {Key} is dropped: it goes to the admins' inbox only, and the inbox can't take it", request.IdempotencyKey);
+        }
 
         /// <summary>
         /// Sends the request; when the pipeline refuses only its role recipients (<see cref="ErrorCodes.RecipientNotAllowed"/>: the shared
         /// <c>signed-in</c> resolver was disabled by a replica that restarted with the inbox off), sends it once more without them. Delivery to the
         /// routes never depends on the inbox, and the correlation must exist for the acknowledgement and the resolve.
         /// </summary>
-        private async Task<NotificationAccepted> SendOrWithoutRolesAsync(NotificationToSend request, CancellationToken cancellationToken)
+        private async Task<NotificationAccepted?> SendOrWithoutRolesAsync(NotificationToSend request, CancellationToken cancellationToken)
         {
             try
             {
                 return await client.SendAsync(request, cancellationToken);
+            }
+            catch (NotificationRefusedException refused) when (refused.Code is ErrorCodes.RecipientNotAllowed && OnlyRoles(request, refused)
+                && request.Type == ObservabilityTypes.ActionApproval)
+            {
+                // Its roles are all it has: sent without them it would go to the routes the request matches.
+                DropApproval(request);
+                return null;
             }
             catch (NotificationRefusedException refused) when (refused.Code is ErrorCodes.RecipientNotAllowed && OnlyRoles(request, refused))
             {

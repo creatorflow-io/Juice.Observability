@@ -211,7 +211,8 @@ namespace Juice.Observability.Tests
                     await transaction.CommitAsync(Ct);
                 }
                 Assert.Equal(0, await ScalarAsync(database, "SELECT count(*) FROM notifications.requests WHERE idempotency_key LIKE 'action:%' OR idempotency_key LIKE 'transition:%'"));
-                Assert.Equal(2, await ScalarAsync(database, "SELECT count(*) FROM notification_parked_calls WHERE replayed_at IS NULL"));
+                // Both notices, and (M56) the rejection's tolerant resolve of its approval item, kept before the rejected notice.
+                Assert.Equal(3, await ScalarAsync(database, "SELECT count(*) FROM notification_parked_calls WHERE replayed_at IS NULL"));
                 Assert.Equal(1, await ScalarAsync(database, $"SELECT count(*) FROM notification_holds WHERE alert_id = '{alert}' AND decided_at IS NULL"));
             }
             finally
