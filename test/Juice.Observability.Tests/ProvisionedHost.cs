@@ -64,6 +64,35 @@ namespace Juice.Observability.Tests
             return new TempFile(path);
         }
 
+        /// <summary>
+        /// A file with one integration (<paramref name="integration"/>, an object with channel, kind, settings and targets) and a route from the alerts' labels
+        /// to its target <paramref name="targetKey"/>, for the platform's tenant.
+        /// </summary>
+        public static TempFile WriteIntegration(string key, object integration, string targetKey)
+        {
+            var file = new
+            {
+                tenants = new Dictionary<string, object>
+                {
+                    [LocalStack.TenantKey] = new
+                    {
+                        integrations = new Dictionary<string, object> { [key] = integration },
+                        routes = new Dictionary<string, object>
+                        {
+                            ["alerts"] = new
+                            {
+                                match = new { type = "observability.alert.*", labels = new Dictionary<string, string> { ["rule"] = "orders-errors", ["environment"] = "production", ["severity"] = "critical" } },
+                                targets = new[] { targetKey },
+                            },
+                        },
+                    },
+                },
+            };
+            var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"juice-obs-m50-provisioning-{Guid.NewGuid():N}.json");
+            File.WriteAllText(path, JsonSerializer.Serialize(file));
+            return new TempFile(path);
+        }
+
         /// <summary>A host that runs the pipeline's stages quickly, sends once, and may send over http to what the file allowlists (the receiver is http on a private address).</summary>
         public static Dictionary<string, string> Settings(string path) => new()
         {
