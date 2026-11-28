@@ -320,17 +320,17 @@ namespace Juice.Observability.Tests
 
             await using (var db = database.Context())
             {
-                Assert.Equal((false, false, false), await ShadowComparer.HoldAsync(db, tenant, transition, DateTimeOffset.UtcNow, Ct));
+                Assert.Equal((false, false, false), Flags(await ShadowComparer.HoldAsync(db, tenant, transition, DateTimeOffset.UtcNow, Ct)));
             }
             var own = await HoldAsync(database, transition);
             await using (var db = database.Context())
             {
-                Assert.Equal((true, true, false), await ShadowComparer.HoldAsync(db, tenant, transition, DateTimeOffset.UtcNow, Ct));
+                Assert.Equal((true, true, false), Flags(await ShadowComparer.HoldAsync(db, tenant, transition, DateTimeOffset.UtcNow, Ct)));
             }
             await using (var db = database.Context())
             {
                 await db.NotificationHolds.Where(h => h.Id == own).ExecuteUpdateAsync(s => s.SetProperty(h => h.DecidedAt, DateTimeOffset.UtcNow), Ct);
-                Assert.Equal((true, false, false), await ShadowComparer.HoldAsync(db, tenant, transition, DateTimeOffset.UtcNow, Ct));
+                Assert.Equal((true, false, false), Flags(await ShadowComparer.HoldAsync(db, tenant, transition, DateTimeOffset.UtcNow, Ct)));
             }
         }
 
@@ -381,46 +381,74 @@ namespace Juice.Observability.Tests
             return silence.Id;
         }
 
-        /// <summary>
-        /// A hold under a silence that is still running is held on purpose, not stuck: however long it lasts (past MaxWait), the unit is explained
-        /// (told per alert) with no unsettled entry. Once the silence has ended and the hold is still undecided past MaxWait, it is unsettled.
-        /// </summary>
-        [Fact, Trait("Milestone", "M53")]
-        public async Task Comparer_UndecidedHoldUnderActiveSilence_PastMaxWait_Explained_EndedSilence_Unsettled()
+        private static (bool, bool, bool) Flags(ShadowComparer.HoldState s) => (s.Held, s.Undecided, s.Covered);
+
+        private static async Task<(WebApplicationFactory<Program> Factory, Guid Transition)> HeldFiringAsync(ScratchDatabase database, DateTimeOffset silenceStart, DateTimeOffset silenceEnd,
+            Receiver receiver, TimeSpan? transitionAge = null)
         {
-            LocalStack.RequireAvailable();
-            foreach (var active in new[] { true, false })
+            var factory = Factory(database);
+            _ = factory.Server;
+            await PipelineEndpointAsync(factory, receiver);
+            var (_, transition) = await ProducerAdapterTests.FireAsync(database);
+            await ProducerAdapterTests.PlanAsync(factory, database, transition);
+            await WouldSendAsync(factory);
+            if (transitionAge is { } age)
             {
-                await using var database = await LocalStack.CreateDatabaseAsync();
-                await using var factory = Factory(database);
-                _ = factory.Server;
-                await using var receiver = await Receiver.StartAsync();
-                await PipelineEndpointAsync(factory, receiver);
-                var (_, transition) = await ProducerAdapterTests.FireAsync(database);
-                await ProducerAdapterTests.PlanAsync(factory, database, transition);
-                await WouldSendAsync(factory);
-                var now = DateTimeOffset.UtcNow;
-                var silence = await SilenceAsync(database, now.AddHours(-3), active ? now.AddHours(3) : now.AddMinutes(-5));
-                await HoldAsync(database, transition, silence: silence);
-                var comparer = Comparer(factory, new ShadowOptions { Grace = TimeSpan.Zero, MaxWait = TimeSpan.Zero });
-
-                Assert.Equal(1, await comparer.CompareOnceAsync(Ct));
-
                 await using var db = database.Context();
-                var differences = await db.ShadowDifferences.AsNoTracking().Where(d => d.TransitionId == transition).ToListAsync(Ct);
-                if (active)
-                {
-                    Assert.DoesNotContain(differences, d => d.Kind == ShadowDifferenceKinds.Unsettled);
-                    Assert.All(differences, d => Assert.NotNull(d.Rule));
-                    Assert.Contains(differences, d => d.Rule == ShadowRules.ToldPerAlert);
-                }
-                else
-                {
-                    Assert.Contains(differences, d => d.Kind == ShadowDifferenceKinds.Unsettled && d.Rule is null);
-                }
+                await db.AlertTransitions.Where(t => t.Id == transition).ExecuteUpdateAsync(s => s.SetProperty(t => t.At, DateTimeOffset.UtcNow - age), Ct);
             }
+            await HoldAsync(database, transition, silence: await SilenceAsync(database, silenceStart, silenceEnd));
+            return (factory, transition);
         }
 
+        /// <summary>
+        /// A hold under a silence still running is held on purpose: the unit isn't recorded at all, however long the silence lasts (MaxWait zero here),
+        /// and after a restart (another comparer) it is still returned and still waits. Once the silence ends with the hold undecided (the release
+        /// pass failed), it is Unsettled after MaxWait from the silence's end, with no rule.
+        /// </summary>
+        [Fact, Trait("Milestone", "M53")]
+        public async Task Comparer_UndecidedHoldUnderActiveSilence_NotRecorded_ReleaseFailsAfterEnd_UnsettledAfterMaxWait()
+        {
+            LocalStack.RequireAvailable();
+            await using var receiver = await Receiver.StartAsync();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var now = DateTimeOffset.UtcNow;
+            var (factory, transition) = await HeldFiringAsync(database, now.AddHours(-3), now.AddHours(3), receiver, transitionAge: TimeSpan.FromHours(2));
+            await using var _ = factory;
+
+            Assert.Equal(0, await Comparer(factory, new ShadowOptions { Grace = TimeSpan.Zero, MaxWait = TimeSpan.Zero }).CompareOnceAsync(Ct));
+            Assert.Equal(0, await Comparer(factory, new ShadowOptions { Grace = TimeSpan.Zero, MaxWait = TimeSpan.Zero }).CompareOnceAsync(Ct));   // a restart
+            Assert.False(await ComparedAsync(database, transition, 0));
+
+            // The silence is cancelled two minutes ago and nothing releases the hold: within MaxWait of that it still waits ...
+            await using (var db = database.Context())
+            {
+                await db.Silences.ExecuteUpdateAsync(s => s.SetProperty(x => x.CancelledAt, DateTimeOffset.UtcNow.AddMinutes(-2)).SetProperty(x => x.CancelledBy, "erin"), Ct);
+            }
+            Assert.Equal(0, await Comparer(factory, new ShadowOptions { Grace = TimeSpan.Zero, MaxWait = TimeSpan.FromMinutes(30) }).CompareOnceAsync(Ct));
+            Assert.False(await ComparedAsync(database, transition, 0));
+            // ... and past it, it is recorded unsettled, unexplained.
+            Assert.Equal(1, await Comparer(factory, new ShadowOptions { Grace = TimeSpan.Zero, MaxWait = TimeSpan.FromMinutes(1) }).CompareOnceAsync(Ct));
+            await using var check = database.Context();
+            Assert.Contains(await check.ShadowDifferences.AsNoTracking().Where(d => d.TransitionId == transition).ToListAsync(Ct), d => d.Kind == ShadowDifferenceKinds.Unsettled && d.Rule is null);
+        }
+
+        /// <summary>A first look just after a long silence ended, before the release pass ran: the wait counts from the silence's end, not from when the unit was due.</summary>
+        [Fact, Trait("Milestone", "M53")]
+        public async Task Comparer_FirstLookJustAfterSilenceEnds_NotUnsettledUntilMaxWaitFromEnd()
+        {
+            LocalStack.RequireAvailable();
+            await using var receiver = await Receiver.StartAsync();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var now = DateTimeOffset.UtcNow;
+            // The firing was due 3 hours ago; the silence ended 5 minutes ago; MaxWait is an hour.
+            var (factory, transition) = await HeldFiringAsync(database, now.AddHours(-4), now.AddMinutes(-5), receiver, transitionAge: TimeSpan.FromHours(3));
+            await using var _ = factory;
+
+            Assert.Equal(0, await Comparer(factory, new ShadowOptions { Grace = TimeSpan.Zero, MaxWait = TimeSpan.FromHours(1) }).CompareOnceAsync(Ct));
+            Assert.False(await ComparedAsync(database, transition, 0));
+            Assert.Equal(1, await Comparer(factory, new ShadowOptions { Grace = TimeSpan.Zero, MaxWait = TimeSpan.FromMinutes(1) }).CompareOnceAsync(Ct));
+        }
 
         /// <summary>A sent firing, then a silence, then the alert resolves under it: both pipelines hold the resolve. Returns the alert, the held resolve and the silence.</summary>
         private static async Task<(Guid Alert, Guid Resolve, Guid Silence, Receiver Receiver)> HeldResolveCycleAsync(WebApplicationFactory<Program> factory, ScratchDatabase database, Receiver receiver)
@@ -494,21 +522,43 @@ namespace Juice.Observability.Tests
             Assert.DoesNotContain(await check.ShadowDifferences.AsNoTracking().Where(d => d.AlertId == alert).ToListAsync(Ct), d => d.Kind == ShadowDifferenceKinds.Unsettled);
         }
 
-        /// <summary>A silence that outlasts MaxWait (made small here) is held on purpose: the resolve is recorded with no unsettled entry and nothing unexplained.</summary>
+        /// <summary>A silence that outlasts MaxWait (zero here) is held on purpose: the resolve isn't recorded while it runs, and once released, is recorded with nothing unexplained.</summary>
         [Fact, Trait("Milestone", "M53")]
-        public async Task LiveShadow_SilenceLongerThanMaxWait_ExplainedNotUnsettled()
+        public async Task LiveShadow_SilenceLongerThanMaxWait_WaitsThenRecordedNoUnexplained()
         {
             LocalStack.RequireAvailable();
             await using var receiver = await Receiver.StartAsync();
             await using var database = await LocalStack.CreateDatabaseAsync();
             await using var factory = Factory(database);
             _ = factory.Server;
-            var (alert, resolve, _, _) = await HeldResolveCycleAsync(factory, database, receiver);
-            var comparer = Comparer(factory, new ShadowOptions { Grace = TimeSpan.Zero, MaxWait = TimeSpan.Zero });
+            var (alert, resolve, silence, _) = await HeldResolveCycleAsync(factory, database, receiver);
+            var comparer = Comparer(factory, new ShadowOptions { Grace = TimeSpan.Zero, Interval = TimeSpan.Zero, MaxWait = TimeSpan.Zero });
 
-            for (var i = 0; i < 5 && !await ComparedAsync(database, resolve, 0); i++)
+            for (var i = 0; i < 3; i++)
             {
                 await comparer.CompareOnceAsync(Ct);
+            }
+            Assert.False(await ComparedAsync(database, resolve, 0));
+
+            await using (var db = database.Context())
+            {
+                await db.Silences.Where(s => s.Id == silence).ExecuteUpdateAsync(s => s.SetProperty(x => x.CancelledAt, DateTimeOffset.UtcNow).SetProperty(x => x.CancelledBy, "erin"), Ct);
+            }
+            var release = new NotificationsReleasePass(factory.Services.GetRequiredService<IServiceScopeFactory>(), Options.Create(new WebhookOptions()), TimeProvider.System,
+                NullLogger<NotificationsReleasePass>.Instance);
+            Assert.True(await release.ReleaseOnceAsync(Ct) > 0);
+            await Flow.Worker(database).RunOnceAsync(Ct);
+            var dispatcher = Flow.Dispatcher(database);
+            for (var i = 0; i < 100 && receiver.Requests.Count < 2; i++)
+            {
+                await dispatcher.DispatchOnceAsync(Ct);
+                await Task.Delay(20, Ct);
+            }
+            for (var i = 0; i < 100 && !await ComparedAsync(database, resolve, 0); i++)
+            {
+                // A fresh comparer each time (a restart): the silence ended, and a held-back look would wait up to its own interval.
+                await Comparer(factory, new ShadowOptions { Grace = TimeSpan.Zero, Interval = TimeSpan.Zero, MaxWait = TimeSpan.Zero }).CompareOnceAsync(Ct);
+                await Task.Delay(100, Ct);
             }
 
             Assert.True(await ComparedAsync(database, resolve, 0));

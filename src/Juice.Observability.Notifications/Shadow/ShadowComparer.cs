@@ -127,29 +127,51 @@ namespace Juice.Observability.Notifications.Shadow
             {
                 _deferred.TryRemove(key, out _);
             }
-            var units = await DueAsync(db, pipeline, tenant, application, since, due, settings.Batch, [.. _deferred.Keys.Select(k => k.Transition).Distinct()], cancellationToken);
             var compare = new ShadowCompareOptions(settings.TimingTolerance, webhooks.Value.ConsoleUrl);
             var recorded = 0;
-            foreach (var (platformTenant, transitionId, step, unitAt) in units)
+            while (true)
             {
-                var transition = await db.AlertTransitions.AsNoTracking().SingleAsync(t => t.Id == transitionId, cancellationToken);
-                var (held, undecided, covered) = await HoldAsync(db, platformTenant, transitionId, now, cancellationToken);
-                var unit = new ShadowUnit(platformTenant, transitionId, step, transition.AlertId,
-                    step > 0 ? NotificationPlan.Escalated : transition.ToState == AlertState.Firing ? NotificationPlan.Firing : NotificationPlan.Resolved,
-                    await db.AlertTransitions.AnyAsync(t => t.AlertId == transition.AlertId && t.ToState == AlertState.Resolved && t.At > transition.At, cancellationToken),
-                    held, transition.ToState == AlertState.Resolved && await StaleDroppedAsync(db, transitionId, cancellationToken, platformTenant), undecided, covered);
-                var legacy = await LegacyAsync(db, transitionId, step, cancellationToken);
-                var @new = await NewAsync(pipeline, tenant, application, transitionId, step, cancellationToken);
-                var findings = ShadowCompare.Compare(unit, legacy, @new, compare);
-                // Still sending on one side: looked at again after the next interval, until the wait runs out.
-                if (findings.Any(f => f.Kind == ShadowDifferenceKinds.Unsettled) && now - unitAt < settings.MaxWait)
+                var units = await DueAsync(db, pipeline, tenant, application, since, due, settings.Batch, [.. _deferred.Keys.Select(k => k.Transition).Distinct()], cancellationToken);
+                var deferred = 0;
+                foreach (var (platformTenant, transitionId, step, unitAt) in units)
                 {
-                    var next = now + settings.Interval;
-                    _deferred[(transitionId, step)] = next < unitAt + settings.MaxWait ? next : unitAt + settings.MaxWait;
-                    continue;
+                    var transition = await db.AlertTransitions.AsNoTracking().SingleAsync(t => t.Id == transitionId, cancellationToken);
+                    var hold = await HoldAsync(db, platformTenant, transitionId, now, cancellationToken);
+                    // Every undecided hold is under a silence still running: kept on purpose, not recorded, however long it lasts. Looked at again
+                    // when the silence is due to end (at most every few minutes, so a cancelled silence is seen), and after a restart (the due
+                    // query returns it again: nothing here is the only record of it).
+                    if (hold.Covered)
+                    {
+                        var look = now + settings.Interval;
+                        _deferred[(transitionId, step)] = hold.CoveredUntil is { } until && until > look ? (until < now + CoveredLook ? until : now + CoveredLook) : look;
+                        deferred++;
+                        continue;
+                    }
+                    // Waits count from when the unit was due, or from the silence's end if later: the release pass has had no chance before it.
+                    var waitFrom = hold.WaitFrom is { } ended && ended > unitAt ? ended : unitAt;
+                    var unit = new ShadowUnit(platformTenant, transitionId, step, transition.AlertId,
+                        step > 0 ? NotificationPlan.Escalated : transition.ToState == AlertState.Firing ? NotificationPlan.Firing : NotificationPlan.Resolved,
+                        await db.AlertTransitions.AnyAsync(t => t.AlertId == transition.AlertId && t.ToState == AlertState.Resolved && t.At > transition.At, cancellationToken),
+                        hold.Held, transition.ToState == AlertState.Resolved && await StaleDroppedAsync(db, transitionId, cancellationToken, platformTenant), hold.Undecided);
+                    var legacy = await LegacyAsync(db, transitionId, step, cancellationToken);
+                    var @new = await NewAsync(pipeline, tenant, application, transitionId, step, cancellationToken);
+                    var findings = ShadowCompare.Compare(unit, legacy, @new, compare);
+                    // Still sending on one side: looked at again after the next interval, until the wait runs out.
+                    if (findings.Any(f => f.Kind == ShadowDifferenceKinds.Unsettled) && now - waitFrom < settings.MaxWait)
+                    {
+                        var next = now + settings.Interval;
+                        _deferred[(transitionId, step)] = next < waitFrom + settings.MaxWait ? next : waitFrom + settings.MaxWait;
+                        deferred++;
+                        continue;
+                    }
+                    await RecordAsync(db, unit, legacy, @new, findings, now, cancellationToken);
+                    recorded++;
                 }
-                await RecordAsync(db, unit, legacy, @new, findings, now, cancellationToken);
-                recorded++;
+                // A full batch that was all deferred hides what is due behind it: look at the next one (the deferred are skipped now).
+                if (deferred == 0 || units.Count < settings.Batch)
+                {
+                    break;
+                }
             }
             return recorded;
         }
@@ -158,22 +180,52 @@ namespace Juice.Observability.Notifications.Shadow
         internal static Task<bool> StaleDroppedAsync(PlatformDbContext db, Guid transitionId, CancellationToken ct, Guid? tenant = null)
             => db.NotificationHolds.AnyAsync(h => h.TransitionId == transitionId && (tenant == null || h.TenantId == tenant) && h.Outcome == NotificationHoldOutcomes.DroppedStale, ct);
 
+        /// <summary>How long a unit under a running silence waits before it is looked at again, at most (a silence cancelled meanwhile is seen then).</summary>
+        private static readonly TimeSpan CoveredLook = TimeSpan.FromMinutes(5);
+
         /// <summary>
-        /// Whether a hold kept the transition; whether one of its holds is still undecided (<c>decided_at</c> null); and whether such a hold is still
-        /// under an active silence, which the release pass leaves alone for as long as it lasts (it is held on purpose, not stuck). By transition and tenant.
+        /// The transition's holds (by transition and tenant): whether it was held; whether one is still undecided (<c>decided_at</c> null); whether every
+        /// undecided hold is still under an active silence, which the release pass leaves alone while it lasts (held on purpose, not stuck), and when the
+        /// first of those silences is due to end; and otherwise when the last silence of an undecided hold ended (the wait for the release pass counts from there).
         /// </summary>
-        internal static async Task<(bool Held, bool Undecided, bool Covered)> HoldAsync(PlatformDbContext db, Guid tenant, Guid transitionId, DateTimeOffset now, CancellationToken ct)
+        internal sealed record HoldState(bool Held, bool Undecided, bool Covered, DateTimeOffset? CoveredUntil, DateTimeOffset? WaitFrom);
+
+        internal static async Task<HoldState> HoldAsync(PlatformDbContext db, Guid tenant, Guid transitionId, DateTimeOffset now, CancellationToken ct)
         {
             var holds = await db.NotificationHolds.AsNoTracking().Where(h => h.TenantId == tenant && h.TransitionId == transitionId)
-                .Select(h => new { Undecided = h.DecidedAt == null, h.SilenceId }).ToListAsync(ct);
+                .Select(h => new { Undecided = h.DecidedAt == null, h.SilenceId, h.CreatedAt }).ToListAsync(ct);
             var undecided = holds.Where(h => h.Undecided).ToList();
-            var covered = false;
-            if (undecided.Count > 0)
+            if (undecided.Count == 0)
             {
-                var active = (await NotificationWorker.ActiveAsync(db, now, ct)).Where(s => s.TenantId == tenant).Select(s => s.Id).ToHashSet();
-                covered = undecided.All(h => active.Contains(h.SilenceId));
+                return new(holds.Count > 0, false, false, null, null);
             }
-            return (holds.Count > 0, undecided.Count > 0, covered);
+            var ids = undecided.Select(h => h.SilenceId).Distinct().ToList();
+            var silences = await db.Silences.AsNoTracking().Where(s => s.TenantId == tenant && ids.Contains(s.Id)).ToListAsync(ct);
+            var active = silences.Where(s => s.CancelledAt == null && SilenceMatcher.IsActive(s, now)).ToList();
+            var covered = undecided.All(h => active.Any(s => s.Id == h.SilenceId));
+            if (covered)
+            {
+                return new(true, true, true, active.Min(s => s.RepeatWeekly ? s.EndsAt.AddDays(7 * Math.Floor((now - s.StartsAt).TotalDays / 7)) : s.EndsAt), null);
+            }
+            var ended = undecided.Where(h => !active.Any(s => s.Id == h.SilenceId)).Select(h =>
+                silences.SingleOrDefault(s => s.Id == h.SilenceId) is { } s ? EndedAt(s, now) : h.CreatedAt).Max();
+            return new(true, true, false, null, ended);
+        }
+
+        /// <summary>When a silence that isn't active now last ended: its cancellation, or the end of its last run.</summary>
+        private static DateTimeOffset EndedAt(Silence s, DateTimeOffset now)
+        {
+            var end = s.EndsAt;
+            if (s.RepeatWeekly && now > s.EndsAt)
+            {
+                var runs = Math.Floor((now - s.StartsAt).TotalDays / 7);
+                end = s.EndsAt.AddDays(7 * runs);
+                if (end > now)
+                {
+                    end = end.AddDays(-7);
+                }
+            }
+            return s.CancelledAt is { } cancelled && cancelled < end ? cancelled : end;
         }
 
         /// <summary>
