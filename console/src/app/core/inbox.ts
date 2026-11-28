@@ -13,8 +13,7 @@ export function inboxProviders(s: Pick<ConsoleSettings, 'apiBase' | 'inbox'>): (
     return [];
   }
   return [
-    // `acknowledge`: the bell offers Acknowledge on open alert items (the host's handler decides it, as the Alert page does).
-    provideNotifications({ apiUrl: `${s.apiBase}/notifications`, acknowledge: true }),
+    provideNotifications({ apiUrl: `${s.apiBase}/notifications` }),
     { provide: LAYOUT_TOOLBAR_ITEMS, useValue: NotificationBellComponent, multi: true },
   ];
 }

@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The module contract (core 2.0 M1): what an in-process module implements and what the host gives it. Additive within 2.x: members are
+       never removed or changed; new capabilities arrive as new interfaces or default interface members. See docs/extensibility.md. -->
+  <PropertyGroup>
+    <Description>Module contract for Juice Observability: module info, services and endpoints builders, mutation audit, paging and the Console manifest.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Juice.Observability.Api" />
+    <InternalsVisibleTo Include="Juice.Observability.Tests" />
+  </ItemGroup>
+
+</Project>
