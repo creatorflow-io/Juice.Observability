@@ -1,4 +1,4 @@
-import { DatePipe, DecimalPipe } from '@angular/common';
+import { DatePipe, DecimalPipe, formatNumber } from '@angular/common';
 import { ChangeDetectionStrategy, Component, DestroyRef, ElementRef, computed, inject, input, output, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormsModule } from '@angular/forms';
@@ -12,6 +12,7 @@ import { ApiService } from '../core/api.service';
 import { MetricInfo, PreviewSubject, Rule, RulePreview, SignalPack } from '../core/models';
 import { OBSERVABILITY_CAN_ADMIN, OBSERVABILITY_CAN_OPERATE } from '../core/options';
 import { FieldError, ruleFieldErrors } from '../shared/form-errors';
+import { formatBytes, formatDuration } from '../shared/format';
 
 /** What a rule can be made from, in the order the picker shows them, and what each does. SloBurn is the platform's own, made for SLOs. */
 export const TEMPLATES: Record<string, string> = {
@@ -210,9 +211,9 @@ function stepText(step: string): string {
             <ol>
               @for (s of r.subjects; track s.subjectKey; let i = $index) {
                 <li class="jc-preview-subject" [attr.data-testid]="'rule-preview-subject-' + i">
-                  <strong>{{ s.subjectKey }}</strong> <span class="jc-muted">{{ s.subjectType }}</span>:
+                  <strong>{{ s.subjectKey }}</strong><span class="jc-muted"> · {{ s.subjectType }}</span>:
                   would fire {{ s.wouldFire }}, open {{ s.wouldOpen }}, {{ s.breaches }} over the threshold, {{ s.noData }} without data@if (s.firstFiredAt) {, first at {{ s.firstFiredAt | date: 'MMM d, HH:mm' }} }.
-                  @if (s.last !== null) { <span class="jc-muted">Last {{ s.last | number: '1.0-3' }} @if (s.min !== null) {, lowest {{ s.min | number: '1.0-3' }} } @if (s.max !== null) {, highest {{ s.max | number: '1.0-3' }} } {{ r.unit ?? '' }}.</span> }
+                  @if (s.last !== null) { <span class="jc-muted">Last {{ value(s.last, r.unit) }}@if (s.min !== null) {, lowest {{ value(s.min, r.unit) }}}@if (s.max !== null) {, highest {{ value(s.max, r.unit) }}}.</span> }
                   @for (d of detail(s); track d[0]) { <span class="jc-muted"> {{ d[0] }} {{ d[1] }}.</span> }
                   <div class="jc-strip" role="img" [attr.aria-label]="s.breaches + ' of ' + s.points.length + ' points over the threshold'">@for (p of s.points; track p.at) { <i [class]="'jc-pv-' + p.condition.toLowerCase()" [attr.title]="(p.at | date: 'MMM d, HH:mm') + ': ' + (p.value === null ? 'no data' : (p.value | number: '1.0-3')) + ', ' + p.condition"></i> }</div>
                 </li>
@@ -452,5 +453,12 @@ export class RuleEditor {
     const step = `sampled every ${stepText(r.step)}`;
     return (fired > 0 ? `Would have fired ${plural(fired, 'time')} on ${plural(on, 'subject')}, ${step}.` : `Would not have fired in the last 24 hours, ${step}.`);
   }
-  protected detail(s: PreviewSubject): [string, string][] { return Object.entries(s.lastDetail ?? {}); }
+  protected detail(s: PreviewSubject): [string, string][] { return Object.entries(s.lastDetail ?? {}).filter(([k]) => k.toLowerCase() !== 'unit'); }
+  /** A preview value with its unit once: bytes and seconds humanised, other units after the number. */
+  protected value(v: number, unit: string | null | undefined): string {
+    if (unit === 'By') return formatBytes(v);
+    if (unit === 's') return formatDuration(v * 1000);
+    const n = formatNumber(v, 'en-US', '1.0-3');
+    return unit ? `${n} ${unit}` : n;
+  }
 }
