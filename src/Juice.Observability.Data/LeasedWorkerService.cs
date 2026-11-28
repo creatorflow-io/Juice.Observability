@@ -28,6 +28,9 @@ namespace Juice.Observability.Data
 
         protected ILogger Logger { get; }
 
+        /// <summary>What the lease's lock is keyed by, when not the worker's name (see <see cref="WorkerLease"/>). A core worker's is its name.</summary>
+        protected virtual string? LeaseKeyName => null;
+
         /// <summary>The time between passes.</summary>
         protected abstract TimeSpan Interval { get; }
 
@@ -46,7 +49,7 @@ namespace Juice.Observability.Data
             var interval = Interval;
             PlatformCaller.Set(Worker, stoppingToken);
             WorkerPulse.Register(Worker, interval, stopping: stoppingToken);
-            await using var lease = WorkerLease.For(Scopes, Worker, Logger);
+            await using var lease = WorkerLease.For(Scopes, Worker, Logger, LeaseKeyName);
             using var timer = new PeriodicTimer(interval);
             var generation = 0;
             do
@@ -77,6 +80,11 @@ namespace Juice.Observability.Data
                 catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
                 {
                     LogFailure(ex);
+                }
+                catch (Exception) when (stoppingToken.IsCancellationRequested)
+                {
+                    // A pass that ended in an error because the host is stopping isn't a failure of the worker: don't fault the service for it.
+                    return;
                 }
             }
             while (await timer.WaitForNextTickAsync(stoppingToken));

@@ -1,4 +1,3 @@
-using System.ComponentModel;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -28,14 +27,29 @@ public enum LeasedPassOutcome { Succeeded, Partial, Idle }
 public sealed record LeasedPass(string Worker, int Generation, bool Retaken, CancellationToken LeaseLost);
 
 /// <summary>A module's leased worker as composed. Core side: modules don't create these.</summary>
-[EditorBrowsable(EditorBrowsableState.Never)]
-public sealed record LeasedWorkerRegistration(string Module, string Name, Type WorkerType, bool Enabled);
+internal sealed record LeasedWorkerRegistration(string Module, string Name, Type WorkerType, bool Enabled);
 
 /// <summary>Core side: starts the loop of a registered worker (implemented by the host; modules don't use it).</summary>
-[EditorBrowsable(EditorBrowsableState.Never)]
-public interface ILeasedWorkerHostFactory
+internal interface ILeasedWorkerHostFactory
 {
     IHostedService Create(LeasedWorkerRegistration registration);
+}
+
+/// <summary>
+/// Marks the host's own builder. Anything can implement <see cref="IModuleServicesBuilder"/>, and one could report another module's name: the
+/// extensions that act in the module's name (workers, event handlers) refuse a builder that isn't the core's.
+/// </summary>
+internal interface ICoreModuleBuilder;
+
+internal static class CoreBuilders
+{
+    internal static void Require(IModuleServicesBuilder b)
+    {
+        if (b is not ICoreModuleBuilder)
+        {
+            throw new ModuleCompositionException($"{b.GetType().Name} is not the host's module builder: the module's name can't be trusted.");
+        }
+    }
 }
 
 public static class LeasedWorkerModuleExtensions
@@ -48,10 +62,15 @@ public static class LeasedWorkerModuleExtensions
     public static IModuleServicesBuilder AddLeasedWorker<T>(this IModuleServicesBuilder b, string name) where T : class, ILeasedWorker
     {
         ArgumentNullException.ThrowIfNull(b);
+        CoreBuilders.Require(b);
         var module = b.Module.Name;
         if (LeasedWorkerNames.Validate(module, name) is { } invalid)
         {
             throw new ModuleCompositionException($"Module '{module}' leased worker '{name}' is refused: {invalid}");
+        }
+        if (typeof(T).IsAbstract || typeof(T).IsGenericTypeDefinition || !typeof(T).GetConstructors().Any())
+        {
+            throw new ModuleCompositionException($"Module '{module}' leased worker '{name}' is refused: {typeof(T).Name} must be a class with a public constructor.");
         }
         // Read from what is registered, not kept apart: a refused module's registrations are put back, and so are these.
         var taken = b.Services.Where(d => d.ServiceType == typeof(LeasedWorkerRegistration)).Select(d => d.ImplementationInstance).OfType<LeasedWorkerRegistration>()

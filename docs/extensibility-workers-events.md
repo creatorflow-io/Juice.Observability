@@ -52,7 +52,10 @@ public sealed class MyHandler : IObservabilityEventHandler<AlertTransitionedEven
 - **One envelope per module.** A module's handlers run in a scope of their own. When one throws, the delivery is tried again for that module only.
 - **Nothing without a handler.** With no module handling an event type, no row is written: a core-only host's outbox is what it was.
 - **Platform tenant only.** `TenantId` is the deployment's tenant; an event never carries another.
-- **Not covered.** Incidents opened or joined through correlation suggestions, and alerts opened outside the rules' and SLO burn's commands, raise no event yet.
+- **Not covered.** Incidents opened or joined through correlation suggestions, a service forgotten (`DELETE .../resources/{id}`), and alerts opened
+  outside the rules' and SLO burn's commands, raise no event yet.
+- **Stopping.** Handlers get the host's stopping token.
 
-Only the four events above can be handled. `IPlatformEventPublisher`, `ILeasedWorkerHostFactory`, `LeasedWorkerRegistration` and
-`ModuleEventSubscription` are the core's side of this contract: modules don't use them.
+Only the four events above can be handled. The registration, publisher and host-factory types are internal to the core: a module can't name them,
+and `AddLeasedWorker` and `AddEventHandler` refuse a builder that isn't the host's own. A module worker's lease is keyed `module:<name>`, apart
+from every core lease and lock whatever its name; the event's `TenantId` is set by the core, not by the code that raised it.

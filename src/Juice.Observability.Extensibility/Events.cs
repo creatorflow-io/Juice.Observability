@@ -1,4 +1,3 @@
-using System.ComponentModel;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Juice.Observability.Extensibility;
@@ -34,27 +33,7 @@ public interface IObservabilityEventHandler<in TEvent> where TEvent : Observabil
 }
 
 /// <summary>A module's handler of an event, as composed. Core side: modules don't create these.</summary>
-[EditorBrowsable(EditorBrowsableState.Never)]
-public sealed record ModuleEventSubscription(string Module, Type EventType, Type HandlerType);
-
-/// <summary>
-/// Core side: writes an event to the outbox in the transaction of the change that raised it, one envelope per module with a handler for it, and
-/// nothing when no module has one. Modules don't publish.
-/// </summary>
-[EditorBrowsable(EditorBrowsableState.Never)]
-public interface IPlatformEventPublisher
-{
-    /// <summary>Whether any module handles <typeparamref name="TEvent"/>: false means publishing it writes nothing, so don't build it.</summary>
-    bool HasSubscribers<TEvent>() where TEvent : ObservabilityEvent;
-
-    /// <summary>
-    /// Inside a command, the envelopes join its transaction (and are dispatched locally right after it commits). Elsewhere, the caller has a
-    /// transaction open on the platform's context, and they commit with it, and are delivered from the outbox.
-    /// </summary>
-    Task PublishAsync(IReadOnlyCollection<ObservabilityEvent> events, CancellationToken ct);
-
-    Task PublishAsync(ObservabilityEvent e, CancellationToken ct) => PublishAsync([e], ct);
-}
+internal sealed record ModuleEventSubscription(string Module, Type EventType, Type HandlerType);
 
 public static class EventModuleExtensions
 {
@@ -66,6 +45,7 @@ public static class EventModuleExtensions
         where TEvent : ObservabilityEvent where THandler : class, IObservabilityEventHandler<TEvent>
     {
         ArgumentNullException.ThrowIfNull(b);
+        CoreBuilders.Require(b);
         var module = b.Module.Name;
         if (!EventTypes.Core.Contains(typeof(TEvent)))
         {

@@ -38,11 +38,12 @@ namespace Juice.Observability.Data
         /// <param name="name">The worker.</param>
         /// <param name="logger">Where taking and losing it is logged.</param>
         /// <param name="version">This replica's version.</param>
-        public WorkerLease(string connectionString, string name, ILogger logger, string? version = null)
+        /// <param name="keyName">What the lock is keyed by, when not the name: a module's worker is keyed by <c>module:&lt;name&gt;</c>, so it can never be a core lease or lock.</param>
+        public WorkerLease(string connectionString, string name, ILogger logger, string? version = null, string? keyName = null)
         {
             _name = name;
             _version = version ?? CurrentVersion;
-            _key = KeyOf(name);
+            _key = KeyOf(keyName ?? name);
             _logger = logger;
             // Unpooled: a pooled connection keeps its session, and so the lock, until the pool reuses or prunes it. PostgreSQL keeps 63
             // bytes of an application name; one that doesn't fit has no version anyone can read, and is never taken over.
@@ -53,12 +54,12 @@ namespace Juice.Observability.Data
             => $"{ApplicationPrefix}{name}:{version}" is { Length: <= 63 } full ? full : $"{ApplicationPrefix}{name}"[..Math.Min(63, ApplicationPrefix.Length + name.Length)];
 
         /// <summary>A lease on the platform database, for a worker resolved from the host's services.</summary>
-        public static WorkerLease For(IServiceScopeFactory scopes, string name, ILogger logger)
+        public static WorkerLease For(IServiceScopeFactory scopes, string name, ILogger logger, string? keyName = null)
         {
             using var scope = scopes.CreateScope();
             var connectionString = scope.ServiceProvider.GetRequiredService<PlatformDbContext>().Database.GetConnectionString()
                 ?? throw new InvalidOperationException("The platform database has no connection string");
-            return new WorkerLease(connectionString, name, logger);
+            return new WorkerLease(connectionString, name, logger, keyName: keyName);
         }
 
         /// <summary>
@@ -94,12 +95,14 @@ namespace Juice.Observability.Data
             }
 
             var connection = new NpgsqlConnection(_connectionString);
+            var kept = false;
             try
             {
                 await connection.OpenAsync(cancellationToken);
                 if (await TakeAsync(connection, cancellationToken))
                 {
                     _connection = connection;
+                    kept = true;
                     Generation++;
                     _logger.LogInformation("This replica now runs {Worker}, version {Version}", _name, _version);
                     return true;
@@ -107,6 +110,7 @@ namespace Juice.Observability.Data
                 if (await EndOlderHolderAsync(connection, cancellationToken) && await TakeAsync(connection, cancellationToken))
                 {
                     _connection = connection;
+                    kept = true;
                     Generation++;
                     _logger.LogWarning("This replica took {Worker} over from an older version; that replica should be upgraded or stopped", _name);
                     return true;
@@ -116,7 +120,14 @@ namespace Juice.Observability.Data
             {
                 _logger.LogWarning(ex, "Could not take the {Worker} lease", _name);
             }
-            await connection.DisposeAsync();
+            finally
+            {
+                // Cancelled halfway (the pass ended, the host stopped) is a way out too: a connection not kept is never left open, and with it a lock.
+                if (!kept)
+                {
+                    await connection.DisposeAsync();
+                }
+            }
             return false;
         }
 

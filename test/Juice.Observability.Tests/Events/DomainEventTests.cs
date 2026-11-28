@@ -59,6 +59,69 @@ namespace Juice.Observability.Tests.Events
             Assert.Contains("twice", Assert.Throws<ModuleCompositionException>(() => builder.AddObservabilityModule<DoubleHandlerModule>()).Message);
         }
 
+        private sealed class FakeBuilder : IModuleServicesBuilder
+        {
+            public ModuleInfo Module { get; } = new("victim", "Victim", "1.0.0", "[2.0.0,3.0.0)");
+
+            public IServiceCollection Services { get; } = new ServiceCollection();
+
+            public Microsoft.Extensions.Configuration.IConfiguration Configuration { get; } = new Microsoft.Extensions.Configuration.ConfigurationBuilder().Build();
+
+            public IModuleServicesBuilder AddWorker<TWorker>() where TWorker : class, Microsoft.Extensions.Hosting.IHostedService => this;
+
+            public IModuleServicesBuilder AddMigrations<TContext>() where TContext : DbContext => this;
+
+            public IModuleServicesBuilder AddPolicy(string name, params string[] roles) => this;
+
+            public IModuleServicesBuilder SetConsoleManifest(ConsoleManifest manifest) => this;
+        }
+
+        [Fact]
+        public void A_builder_that_is_not_the_hosts_is_refused_for_workers_and_event_handlers()
+        {
+            var fake = new FakeBuilder();
+            Assert.Contains("not the host's module builder", Assert.Throws<ModuleCompositionException>(() => fake.AddLeasedWorker<Workers.ProbeWorker>("victim")).Message);
+            Assert.Contains("not the host's module builder", Assert.Throws<ModuleCompositionException>(() => fake.AddEventHandler<ChangeRecordedEvent, OneChangeHandler>()).Message);
+            Assert.Empty(fake.Services);
+        }
+
+        [Fact]
+        public void A_subscription_is_the_registering_modules_own()
+        {
+            var builder = CoreHost.CreateBuilder();
+            builder.Services.AddJuiceObservability(builder.Configuration);
+            builder.AddObservabilityModule<EventsOneModule>();
+            builder.AddObservabilityModule<EventsTwoModule>();
+
+            var subscriptions = builder.Services.Select(d => d.ImplementationInstance).OfType<ModuleEventSubscription>().ToList();
+            Assert.All(subscriptions.Where(s => s.HandlerType.Name.StartsWith("One")), s => Assert.Equal("evone", s.Module));
+            Assert.All(subscriptions.Where(s => s.HandlerType.Name.StartsWith("Two")), s => Assert.Equal("evtwo", s.Module));
+            Assert.Equal(4, subscriptions.Count);
+        }
+
+        [Fact]
+        public async Task An_event_with_another_tenant_is_published_with_the_platform_tenant()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var host = await ModuleTestHost.StartAsync(b => b.AddObservabilityModule<EventsOneModule>(), database);
+            var stranger = Guid.NewGuid();
+            await using (var scope = host.App.Services.CreateAsyncScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+                await using var transaction = await db.Database.BeginTransactionAsync(Ct);
+                using var context = PlatformMessageContext.Begin("test");
+                await scope.ServiceProvider.GetRequiredService<IPlatformEventPublisher>()
+                    .PublishAsync(new ChangeRecordedEvent(Guid.NewGuid(), "Deployment", null) { EventId = Guid.NewGuid(), TenantId = stranger, At = DateTimeOffset.UtcNow }, Ct);
+                await transaction.CommitAsync(Ct);
+            }
+
+            await using var check = database.Context();
+            var payload = System.Text.Encoding.UTF8.GetString((await check.Outbox.SingleAsync(o => o.EventTypeName == nameof(ModuleEventEnvelope), Ct)).PayloadBytes);
+            Assert.Contains(host.TenantId.ToString(), payload);
+            Assert.DoesNotContain(stranger.ToString(), payload);
+        }
+
         [Fact]
         public async Task No_subscriber_writes_no_outbox_row()
         {
