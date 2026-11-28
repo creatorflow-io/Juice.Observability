@@ -101,6 +101,22 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
+        public async Task HostCpu_utilization_fallback_does_not_count_iowait_as_busy_Async()
+        {
+            LocalStack.RequireAvailable();
+            var host = Host("cpuutilwait");
+            // Mean idle 0.6 and mean iowait 0.1: busy is 0.3 (0.4 with iowait counted).
+            await CpuUtilization(host, "idle", (Early, 0.5), (Late, 0.7));
+            await CpuUtilization(host, "wait", (Early, 0.1), (Late, 0.1));
+            await WaitForRowsAsync("otel_metrics_gauge", "system.cpu.utilization", host, 4);
+
+            var observation = Assert.Single(await Templates().ObserveAsync(Rule(RuleTemplate.HostCpu, host), Window(), Ct));
+
+            Assert.InRange(observation.Value!.Value, 0.2999, 0.3001);
+            Assert.Equal("system.cpu.utilization", observation.Detail!["source"]);
+        }
+
+        [Fact]
         public async Task HostCpu_prefers_cpu_time_over_utilization_Async()
         {
             LocalStack.RequireAvailable();
