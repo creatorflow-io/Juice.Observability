@@ -44,10 +44,12 @@ namespace Juice.Observability.Rules
             FROM (
                 SELECT {HostExpr} AS host, Attributes['state'] AS state,
                        argMaxIf(Value, TimeUnix, TimeUnix >= {From}) AS last_v,
-                       -- a last value below an earlier one is a restart under the same start time: it counts from zero (as a histogram's was_reset)
+                       -- a last value below an earlier one is a restart under the same start time: the increase up to the peak is kept and the value now
+                       -- counts from zero (100, 160, 3 is 60 + 3)
+                       if(countIf(TimeUnix < {From}) > 0, maxIf(Value, TimeUnix < {From}),
+                           if(StartTimeUnix >= {From}, 0, argMinIf(Value, TimeUnix, TimeUnix >= {From}))) AS base_v,
                        last_v < greatest(maxIf(Value, TimeUnix >= {From}), maxIf(Value, TimeUnix < {From})) AS was_reset,
-                       if(was_reset, last_v, greatest(last_v - if(countIf(TimeUnix < {From}) > 0, maxIf(Value, TimeUnix < {From}),
-                           if(StartTimeUnix >= {From}, 0, argMinIf(Value, TimeUnix, TimeUnix >= {From}))), 0)) AS increase
+                       if(was_reset, greatest(maxIf(Value, TimeUnix >= {From}) - base_v, 0) + last_v, greatest(last_v - base_v, 0)) AS increase
                 FROM otel.otel_metrics_sum
                 WHERE {Tenant} AND TimeUnix >= {From} - INTERVAL 1 HOUR AND TimeUnix < {To} AND MetricName = '{CpuTime}' AND {HostFilter}
                 GROUP BY host, state, cityHash64(ResourceAttributes, Attributes), StartTimeUnix
@@ -87,7 +89,7 @@ namespace Juice.Observability.Rules
                 HAVING used_points > 0 AND free_points > 0 AND used + free > 0
             )
             WHERE host != ''
-            ORDER BY host, ratio DESC, mount
+            ORDER BY host, ratio DESC, mount   -- hosts in name order (the cut above the limit keeps the first); within a host, the fullest mount first
             LIMIT 1 BY host
             LIMIT {Limit}
             """;
@@ -102,7 +104,7 @@ namespace Juice.Observability.Rules
                 GROUP BY host, mount, device
             )
             WHERE host != ''
-            ORDER BY host, ratio DESC, mount
+            ORDER BY host, ratio DESC, mount   -- hosts in name order (the cut above the limit keeps the first); within a host, the fullest mount first
             LIMIT 1 BY host
             LIMIT {Limit}
             """;
@@ -114,7 +116,8 @@ namespace Juice.Observability.Rules
             return new RuleObservation($"host:{host}", HealthSubject.Host, "", "", "", host, value, 1) { Detail = detail };
         }
 
-        // The two sources of one metric, a host once: from the first that has it. Bounded by the window's row limit, as each query is.
+        // The two sources of one metric, a host once: from the first that has it. Each is read one row past the limit, uncut; the merge is ordered
+        // by host and cut once, so one cut is counted once. Above the limit, hosts are kept in name order.
         private static IReadOnlyList<RuleObservation> PreferFirst(RuleTemplate template, IReadOnlyList<RuleObservation> preferred, IReadOnlyList<RuleObservation> fallback, int limit)
         {
             var seen = preferred.Select(o => o.SubjectKey).ToHashSet();
@@ -127,9 +130,9 @@ namespace Juice.Observability.Rules
             Dictionary<string, object> scope, CancellationToken cancellationToken)
         {
             var fromTime = await QueryBoundedAsync(RuleTemplate.HostCpu, HostCpuTime, window, r => Host(r.GetString(0),
-                Math.Clamp(Convert.ToDouble(r.GetValue(1)) / Convert.ToDouble(r.GetValue(2)), 0, 1), CpuTime), cancellationToken, scope);
+                Math.Clamp(Convert.ToDouble(r.GetValue(1)) / Convert.ToDouble(r.GetValue(2)), 0, 1), CpuTime), cancellationToken, scope, cut: false);
             var fromUtilization = await QueryBoundedAsync(RuleTemplate.HostCpu, HostCpuUtilization, window, r => Host(r.GetString(0),
-                Math.Clamp(Convert.ToDouble(r.GetValue(1)), 0, 1), CpuUtilization), cancellationToken, scope);
+                Math.Clamp(Convert.ToDouble(r.GetValue(1)), 0, 1), CpuUtilization), cancellationToken, scope, cut: false);
             return PreferFirst(RuleTemplate.HostCpu, fromTime, fromUtilization, window.Limit);
         }
 
@@ -137,9 +140,9 @@ namespace Juice.Observability.Rules
             Dictionary<string, object> scope, CancellationToken cancellationToken)
         {
             var fromUsage = await QueryBoundedAsync(RuleTemplate.HostDisk, HostDiskUsage, window, r => Host(r.GetString(0),
-                Math.Clamp(Convert.ToDouble(r.GetValue(2)), 0, 1), FilesystemUsage, r.GetString(1)), cancellationToken, scope);
+                Math.Clamp(Convert.ToDouble(r.GetValue(2)), 0, 1), FilesystemUsage, r.GetString(1)), cancellationToken, scope, cut: false);
             var fromUtilization = await QueryBoundedAsync(RuleTemplate.HostDisk, HostDiskUtilization, window, r => Host(r.GetString(0),
-                Math.Clamp(Convert.ToDouble(r.GetValue(2)), 0, 1), FilesystemUtilization, r.GetString(1)), cancellationToken, scope);
+                Math.Clamp(Convert.ToDouble(r.GetValue(2)), 0, 1), FilesystemUtilization, r.GetString(1)), cancellationToken, scope, cut: false);
             return PreferFirst(RuleTemplate.HostDisk, fromUsage, fromUtilization, window.Limit);
         }
     }

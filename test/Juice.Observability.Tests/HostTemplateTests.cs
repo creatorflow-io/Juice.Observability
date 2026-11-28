@@ -165,19 +165,19 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
-        public async Task HostCpu_counter_drop_under_the_same_start_time_counts_from_zero_Async()
+        public async Task HostCpu_counter_drop_under_the_same_start_time_counts_from_zero_and_keeps_the_increase_before_it_Async()
         {
             LocalStack.RequireAvailable();
             var host = Host("cpusamestart");
             // One start time throughout, the user counter drops 100 -> 110 -> 5 (a reset the start time doesn't show): it counts from 0 after the
-            // drop, as a histogram does, so user is 5 (not 10) against idle +60: busy 5 of 65.
+            // drop, with the increase before it kept: user is 10 + 5 = 15 against idle +60, busy 15 of 75.
             await CpuTime(host, "user", Before, (Before, 100), (Early, 110), (Late, 5));
             await CpuTime(host, "idle", Before, (Before, 400), (Late, 460));
             await WaitForRowsAsync("otel_metrics_sum", "system.cpu.time", host, 5);
 
             var observation = Assert.Single(await Templates().ObserveAsync(Rule(RuleTemplate.HostCpu, host), Window(), Ct));
 
-            Assert.InRange(observation.Value!.Value, 5d / 65 - 0.0001, 5d / 65 + 0.0001);
+            Assert.InRange(observation.Value!.Value, 15d / 75 - 0.0001, 15d / 75 + 0.0001);
         }
 
         /// <summary>The tenant holds other hosts (the Collector's own), so the cut is read against the whole ordered list: a limit one below it.</summary>

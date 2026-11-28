@@ -290,14 +290,27 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
-        public async Task Counter_drop_under_the_same_start_time_counts_from_zero_Async()
+        public async Task Counter_drop_under_the_same_start_time_counts_from_zero_and_keeps_the_increase_before_it_Async()
         {
             LocalStack.RequireAvailable();
             var (service, metric) = ($"mt-{_run}-samestart", $"mt.{_run}.samestart");
             // 100 before the window, then 110 and 5 in it under one start time: a reset the start time doesn't show. After the drop it counts from 0
-            // (as a histogram's was_reset does), so the increase is 5, not 110 - 100 = 10.
+            // counts from 0, with the increase before the drop kept: (110 - 100) + 5 = 15 (not 10, and not 5).
             await SendAsync(OtlpMetrics.Sum(Res(service), metric, OtlpMetrics.Cumulative, true, Ago(30), [], (Ago(7), 100), (Ago(3), 110), (Ago(1), 5)), "sum", metric, 3);
-            Assert.Equal(5, (await ObserveOneAsync(Rule(metric, MetricKind.Counter, MetricAggregation.Increase, service))).Value);
+            Assert.Equal(15, (await ObserveOneAsync(Rule(metric, MetricKind.Counter, MetricAggregation.Increase, service))).Value);
+        }
+
+        [Fact]
+        public async Task Counter_crash_loop_reset_keeps_the_growth_before_the_drop_Async()
+        {
+            LocalStack.RequireAvailable();
+            var (service, metric) = ($"mt-{_run}-crashloop", $"mt.{_run}.crashloop");
+            // 100 before the window, 160 inside it, then the process restarts under the same start time and reports 3: 60 + 3, so `Increase > 50` fires.
+            await SendAsync(OtlpMetrics.Sum(Res(service), metric, OtlpMetrics.Cumulative, true, Ago(30), [], (Ago(7), 100), (Ago(3), 160), (Ago(1), 3)), "sum", metric, 3);
+            var rule = Rule(metric, MetricKind.Counter, MetricAggregation.Increase, service, r => r.Threshold = 50);
+            var observation = await ObserveOneAsync(rule);
+            Assert.Equal(63, observation.Value);
+            Assert.True(observation.Value > rule.Threshold);
         }
 
         [Fact]

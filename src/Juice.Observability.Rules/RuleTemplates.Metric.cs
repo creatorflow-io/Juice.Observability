@@ -93,7 +93,7 @@ namespace Juice.Observability.Rules
                     // time, so a new attribute set (errors{type=timeout}) on a long-running service is a first increment, not a lifetime total. After a
                     // Collector outage of more than 1 h the first window can over-count; that is accepted, as in CounterIncrease.
                     // A last value in the window below an earlier one (before the window, or its peak) is a restart under the same start time: it counts
-                    // from zero, as a histogram's does (was_reset), so 100, 110, 5 reads 5, not 10.
+                    // from zero after the drop, with the increase before it kept (peak less the value before the window, plus the value now), so 100, 110, 5 reads 15 and 100, 160, 3 reads 63.
                     // Delta series are summed. A series without a point in the window is left out.
                     return $"""
                         SELECT {group}, sum(increase) AS v, sum(n) AS n, any(unit) AS unit
@@ -102,7 +102,8 @@ namespace Juice.Observability.Rules
                                    argMaxIf(Value, TimeUnix, TimeUnix >= {From}) AS last_v,
                                    last_v < greatest(maxIf(Value, TimeUnix >= {From}), maxIf(Value, TimeUnix < {From})) AS was_reset,
                                    if(any(AggregationTemporality) = 1, sumIf(Value, TimeUnix >= {From}),
-                                      if(was_reset, last_v, greatest(last_v - maxIf(Value, TimeUnix < {From}), 0))) AS increase,
+                                      if(was_reset, greatest(maxIf(Value, TimeUnix >= {From}) - maxIf(Value, TimeUnix < {From}), 0) + last_v,
+                                         greatest(last_v - maxIf(Value, TimeUnix < {From}), 0))) AS increase,
                                    countIf(TimeUnix >= {From}) AS n, any(MetricUnit) AS unit
                             FROM otel.otel_metrics_sum
                             WHERE {Tenant} AND TimeUnix >= {From} - INTERVAL 1 HOUR AND TimeUnix < {To} AND {match} AND IsMonotonic = true
