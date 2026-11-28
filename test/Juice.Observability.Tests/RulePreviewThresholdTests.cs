@@ -29,7 +29,7 @@ namespace Juice.Observability.Tests
             var provider = new ThresholdSeamTests.Provider(keys => keys.ToDictionary(k => k, _ => new RuleThreshold(0.4, 0.3)));
             var rule = Draft();
 
-            var points = await RulePreview.WithThresholdsAsync(ThresholdSeamTests.Thresholds(provider), rule, Points(0.5), Ct);
+            var points = await RulePreview.WithThresholdsAsync(ThresholdSeamTests.Thresholds(provider), rule, Points(0.5), Ct, Ct);
             var subject = Assert.Single(RulePreview.Replay(rule, points, 50, out _));
 
             Assert.Equal(3, subject.Breaches);
@@ -44,7 +44,7 @@ namespace Juice.Observability.Tests
             var rule = Draft();
 
             var subject = Assert.Single(RulePreview.Replay(rule,
-                await RulePreview.WithThresholdsAsync(ThresholdSeamTests.Thresholds(provider), rule, Points(0.99), Ct), 50, out _));
+                await RulePreview.WithThresholdsAsync(ThresholdSeamTests.Thresholds(provider), rule, Points(0.99), Ct, Ct), 50, out _));
 
             Assert.Equal(0, subject.Breaches);
             Assert.Equal(3, subject.NoData);
@@ -55,8 +55,55 @@ namespace Juice.Observability.Tests
         {
             var rule = Draft();
 
-            var subject = Assert.Single(RulePreview.Replay(rule, await RulePreview.WithThresholdsAsync(RuleThresholds.Default, rule, Points(0.99), Ct), 50, out _));
+            var subject = Assert.Single(RulePreview.Replay(rule, await RulePreview.WithThresholdsAsync(RuleThresholds.Default, rule, Points(0.99), Ct, Ct), 50, out _));
 
+            Assert.Equal(0, subject.Breaches);
+            Assert.Equal(3, subject.NoData);
+        }
+
+        /// <summary>Answers the first instant, then waits until it is cancelled (or throws, when told to).</summary>
+        private sealed class Awkward(bool throws) : IRuleThresholdProvider
+        {
+            private int _calls;
+
+            public string Key => "demo.p95";
+
+            public async ValueTask<IReadOnlyDictionary<string, RuleThreshold>> ResolveAsync(RuleSpec rule, System.Text.Json.JsonElement? settings,
+                IReadOnlyCollection<string> subjectKeys, DateTimeOffset at, CancellationToken ct)
+            {
+                if (throws) throw new InvalidOperationException("the provider failed");
+                if (Interlocked.Increment(ref _calls) > 1) await Task.Delay(Timeout.Infinite, ct);
+                return subjectKeys.ToDictionary(k => k, _ => new RuleThreshold(0.4, 0.3));
+            }
+        }
+
+        private static RuleThresholds ThresholdsOf(IRuleThresholdProvider provider)
+            => new(new RuleTemplateRegistry(BuiltInTemplates.Create(null), null, [provider], [new ModuleRuleContribution("demo", provider.GetType())]));
+
+        [Fact]
+        public async Task A_slow_provider_ends_the_preview_as_a_partial_result_within_the_budget_Async()
+        {
+            var rule = Draft();
+            using var budget = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+            budget.CancelAfter(TimeSpan.FromMilliseconds(300));
+            var started = System.Diagnostics.Stopwatch.StartNew();
+
+            var points = await RulePreview.WithThresholdsAsync(ThresholdsOf(new Awkward(false)), rule, Points(0.5), budget.Token, Ct);
+
+            Assert.True(started.Elapsed < TimeSpan.FromSeconds(10));
+            Assert.Single(points);   // the instant answered before the budget ran out is kept; the rest is cut
+            Assert.Equal(1, Assert.Single(RulePreview.Replay(rule, points, 50, out _)).Breaches);
+        }
+
+        [Fact]
+        public async Task A_provider_that_throws_gives_no_data_for_the_instant_not_an_error_Async()
+        {
+            var rule = Draft();
+
+            var points = await RulePreview.WithThresholdsAsync(ThresholdsOf(new Awkward(true)), rule, Points(0.99), Ct, Ct);
+            var subject = Assert.Single(RulePreview.Replay(rule, points, 50, out _));
+
+            Assert.Equal(3, points.Count);
             Assert.Equal(0, subject.Breaches);
             Assert.Equal(3, subject.NoData);
         }
@@ -68,7 +115,7 @@ namespace Juice.Observability.Tests
             var rule = Draft(source: false);
 
             var subject = Assert.Single(RulePreview.Replay(rule,
-                await RulePreview.WithThresholdsAsync(ThresholdSeamTests.Thresholds(provider), rule, Points(0.5), Ct), 50, out _));
+                await RulePreview.WithThresholdsAsync(ThresholdSeamTests.Thresholds(provider), rule, Points(0.5), Ct, Ct), 50, out _));
 
             Assert.Equal(0, subject.Breaches);
             Assert.Equal(0, provider.Calls);

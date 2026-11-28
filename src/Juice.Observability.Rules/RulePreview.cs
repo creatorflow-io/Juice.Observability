@@ -71,7 +71,8 @@ namespace Juice.Observability.Rules
         /// A provider that is not installed leaves every subject without a threshold (no data).
         /// </summary>
         public static async Task<IReadOnlyList<(DateTimeOffset At, IReadOnlyList<RuleObservation> Observed, IReadOnlyDictionary<string, RuleThreshold>? Thresholds)>> WithThresholdsAsync(
-            RuleThresholds thresholds, RuleDefinition rule, IReadOnlyList<(DateTimeOffset At, IReadOnlyList<RuleObservation> Observed)> points, CancellationToken cancellationToken)
+            RuleThresholds thresholds, RuleDefinition rule, IReadOnlyList<(DateTimeOffset At, IReadOnlyList<RuleObservation> Observed)> points,
+            CancellationToken budget, CancellationToken cancellationToken)
         {
             if (rule.ThresholdSource is null) return [.. points.Select(p => (p.At, p.Observed, (IReadOnlyDictionary<string, RuleThreshold>?)null))];
             var keys = points.SelectMany(p => p.Observed).Select(o => o.SubjectKey).Distinct(StringComparer.Ordinal).ToList();
@@ -79,9 +80,23 @@ namespace Juice.Observability.Rules
             var result = new List<(DateTimeOffset, IReadOnlyList<RuleObservation>, IReadOnlyDictionary<string, RuleThreshold>?)>();
             foreach (var (at, observed) in points)
             {
-                IReadOnlyDictionary<string, RuleThreshold> provided = installed && keys.Count > 0
-                    ? await thresholds.ResolveAsync(rule, keys, at, cancellationToken)
-                    : new Dictionary<string, RuleThreshold>();
+                IReadOnlyDictionary<string, RuleThreshold> provided = new Dictionary<string, RuleThreshold>();
+                if (installed && keys.Count > 0)
+                {
+                    try
+                    {
+                        provided = await thresholds.ResolveAsync(rule, keys, at, budget);
+                    }
+                    catch (OperationCanceledException) when (budget.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                    {
+                        // The budget ran out inside the provider: the instants so far are the result.
+                        break;
+                    }
+                    catch (Exception) when (!cancellationToken.IsCancellationRequested && !budget.IsCancellationRequested)
+                    {
+                        // A provider that fails has no numbers for this instant: no data, as a subject it leaves out.
+                    }
+                }
                 result.Add((at, observed, provided));
             }
             return result;
