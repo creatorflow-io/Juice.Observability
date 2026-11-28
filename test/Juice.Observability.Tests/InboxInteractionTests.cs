@@ -501,6 +501,43 @@ namespace Juice.Observability.Tests
             Assert.Empty(await db.IdempotencyRecords.Where(r => r.Key == "bell-key-1").ToListAsync(Ct));
         }
 
+        /// <summary>Wraps what tells the pipeline of an action request's events, and records the message context's source each is told in.</summary>
+        private sealed class RequestSourceSpy(IActionRequestNotifications inner) : IActionRequestNotifications
+        {
+            public static readonly ConcurrentQueue<(string Type, string? Source)> Told = new();
+
+            public Task NotifyAsync(ActionRequest request, string hostname, string type, DateTimeOffset now, CancellationToken cancellationToken)
+            {
+                Told.Enqueue((type, Juice.Messaging.MessageContext.IsInitialized ? Juice.Messaging.MessageContext.Current.Source : null));
+                return inner.NotifyAsync(request, hostname, type, now, cancellationToken);
+            }
+        }
+
+        private static void SpyOnRequests(IServiceCollection services)
+        {
+            var original = services.Last(d => d.ServiceType == typeof(IActionRequestNotifications));
+            services.Add(ServiceDescriptor.Describe(typeof(IActionRequestNotifications),
+                sp => new RequestSourceSpy((IActionRequestNotifications)ActivatorUtilities.CreateInstance(sp, original.ImplementationType!)), original.Lifetime));
+        }
+
+        [Theory]
+        [InlineData("approve", ActionRequestEvents.Approved)]
+        [InlineData("reject", ActionRequestEvents.Rejected)]
+        public async Task BellDecision_RunsInTheInboxContext_NotTheApisOrNone(string action, string expectedEvent)
+        {
+            await using var rig = await Rig.StartAsync(services: SpyOnRequests);
+            var (alice, erin) = (await Rig.CallerAsync(rig, "alice"), await Rig.CallerAsync(rig, "erin"));
+            Assert.Empty(await rig.ItemsAsync(alice));
+            await rig.RequestAsync(erin);
+            var item = await rig.WaitItemAsync(alice, ObservabilityTypes.ActionApproval);
+            RequestSourceSpy.Told.Clear();
+
+            Assert.Equal(HttpStatusCode.OK, (await rig.BellAsync(alice, item.GetProperty("id").GetGuid(), action)).StatusCode);
+
+            // The event the decision tells the pipeline of, handled in the bell's context.
+            Assert.Equal((expectedEvent, "inbox"), Assert.Single(RequestSourceSpy.Told));
+        }
+
         // ─── The handler's own gates ──────────────────────────────────────────
 
         [Theory]
