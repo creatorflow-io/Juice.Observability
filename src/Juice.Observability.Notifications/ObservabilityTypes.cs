@@ -15,6 +15,16 @@ namespace Juice.Observability.Notifications
         public const string AlertFiring = "observability.alert.firing";
         public const string AlertResolved = "observability.alert.resolved";
 
+        /// <summary>
+        /// A request waiting for an admin's decision, as an inbox item (M56): sent only to the people who may decide it, never to a route, and
+        /// decided from the item with its two actions.
+        /// </summary>
+        public const string ActionApproval = "observability.action.approval";
+
+        /// <summary>The approval's inbox actions: the ids the inbox handler dispatches on.</summary>
+        public const string ApproveAction = "approve";
+        public const string RejectAction = "reject";
+
         /// <summary>The label naming the escalation policy of a firing (<c>escalationPolicy</c>), which its workflow escalates by.</summary>
         public const string EscalationPolicyLabel = "escalationPolicy";
 
@@ -35,6 +45,10 @@ namespace Juice.Observability.Notifications
                 Json($$"""[{"step":"send"},{"step":"escalate","policyFrom":"labels.{{EscalationPolicyLabel}}"}]"""), DefaultTemplates.Declaration());
             yield return new TypeDeclaration(AlertResolved, "Alert resolved", "alerts", null, null, null, ExternalRecipients: true,
                 Json(AlertSchema), CorrelationRules.Optional, null, Json(TypeRules.SendOnlyWorkflow), DefaultTemplates.Declaration());
+            // Declared always, inert while the inbox is off: nothing sends it then.
+            yield return new TypeDeclaration(ActionApproval, "Action approval", "action-requests", "approval", null, null, ExternalRecipients: false,
+                Json(ActionRequestSchema), CorrelationRules.Required, null, Json(TypeRules.SendOnlyWorkflow), DefaultTemplates.ApprovalDeclaration(),
+                Json($$"""[{"id":"{{ApproveAction}}","label":"Approve"},{"id":"{{RejectAction}}","label":"Reject"}]"""));
             foreach (var type in ActionRequestEventTypes)
             {
                 yield return new TypeDeclaration(ForPlatformEvent(type), Name(type), "action-requests", null, null, null, ExternalRecipients: true,
