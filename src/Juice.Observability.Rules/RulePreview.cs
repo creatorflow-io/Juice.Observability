@@ -19,6 +19,14 @@ namespace Juice.Observability.Rules
     /// </summary>
     public static class RulePreview
     {
+        /// <summary>The provider calls a preview did not get an answer to: <see cref="BudgetLost"/> not made or cut off by the time budget, <see cref="Failed"/> thrown within it.</summary>
+        public sealed class ThresholdLoss
+        {
+            public int BudgetLost { get; set; }
+
+            public int Failed { get; set; }
+        }
+
         public static readonly TimeSpan Span = TimeSpan.FromHours(24);
         public static readonly TimeSpan MinimumStep = TimeSpan.FromMinutes(15);
         public const int MaxPoints = 96;
@@ -72,7 +80,7 @@ namespace Juice.Observability.Rules
         /// </summary>
         public static async Task<IReadOnlyList<(DateTimeOffset At, IReadOnlyList<RuleObservation> Observed, IReadOnlyDictionary<string, RuleThreshold>? Thresholds)>> WithThresholdsAsync(
             RuleThresholds thresholds, RuleDefinition rule, IReadOnlyList<(DateTimeOffset At, IReadOnlyList<RuleObservation> Observed)> points,
-            CancellationToken budget, CancellationToken cancellationToken)
+            CancellationToken budget, CancellationToken cancellationToken, ThresholdLoss? loss = null)
         {
             if (rule.ThresholdSource is null) return [.. points.Select(p => (p.At, p.Observed, (IReadOnlyDictionary<string, RuleThreshold>?)null))];
             var keys = points.SelectMany(p => p.Observed).Select(o => o.SubjectKey).Distinct(StringComparer.Ordinal).ToList();
@@ -82,16 +90,28 @@ namespace Juice.Observability.Rules
             {
                 IReadOnlyDictionary<string, RuleThreshold> provided = new Dictionary<string, RuleThreshold>();
                 // A spent budget asks no one: the instant is kept (it was observed), with no thresholds, which reads as no data.
-                if (installed && keys.Count > 0 && !budget.IsCancellationRequested)
+                if (installed && keys.Count > 0)
                 {
-                    try
+                    if (budget.IsCancellationRequested)
                     {
-                        provided = await thresholds.ResolveAsync(rule, keys, at, budget);
+                        if (loss is not null) loss.BudgetLost++;
                     }
-                    catch (Exception) when (!cancellationToken.IsCancellationRequested)
+                    else
                     {
-                        // The budget ran out inside the provider, or it failed: no numbers for this instant, no data, as a subject it leaves out.
-                        provided = new Dictionary<string, RuleThreshold>();
+                        try
+                        {
+                            provided = await thresholds.ResolveAsync(rule, keys, at, budget);
+                        }
+                        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+                        {
+                            // The budget ran out inside the provider, or it failed: no numbers for this instant, no data, as a subject it leaves out.
+                            provided = new Dictionary<string, RuleThreshold>();
+                            if (loss is not null)
+                            {
+                                if (budget.IsCancellationRequested) loss.BudgetLost++;
+                                else loss.Failed++;
+                            }
+                        }
                     }
                 }
                 result.Add((at, observed, provided));
