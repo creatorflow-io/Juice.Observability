@@ -55,6 +55,8 @@ namespace Juice.Observability.Data.Migrations
         }
 
         /// <inheritdoc />
+        // Down restores the schema, not the data: the legacy tables come back empty, and every escalation policy gets empty steps and 1.x's
+        // default for stop_on_acknowledge (true), not what its row held. Restore from a backup if that data matters.
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.AddColumn<string>(
@@ -69,7 +71,7 @@ namespace Juice.Observability.Data.Migrations
                 table: "escalation_policies",
                 type: "boolean",
                 nullable: false,
-                defaultValue: false);
+                defaultValue: true);
 
             migrationBuilder.CreateTable(
                 name: "alert_escalations",
