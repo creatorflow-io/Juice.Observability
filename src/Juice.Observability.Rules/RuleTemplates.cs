@@ -165,10 +165,10 @@ namespace Juice.Observability.Rules
         /// out and <c>rules.truncated</c> counted. The same for every template, as the histogram's.
         /// </summary>
         private async Task<IReadOnlyList<RuleObservation>> QueryBoundedAsync(RuleTemplate template, string sql, TelemetryWindow window,
-            Func<System.Data.Common.DbDataReader, RuleObservation> map, CancellationToken cancellationToken, Dictionary<string, object> parameters)
+            Func<System.Data.Common.DbDataReader, RuleObservation> map, CancellationToken cancellationToken, Dictionary<string, object> parameters, bool cut = true)
         {
             var rows = await clickHouse.QueryAsync(sql, window with { Limit = window.Limit + 1 }, map, cancellationToken, parameters);
-            return CutLast(rows, window.Limit, template);
+            return cut ? CutLast(rows, window.Limit, template) : rows;   // cut: false when the caller merges sources and cuts once
         }
 
         private static IReadOnlyList<RuleObservation> CutLast(IReadOnlyList<RuleObservation> rows, int limit, RuleTemplate template)

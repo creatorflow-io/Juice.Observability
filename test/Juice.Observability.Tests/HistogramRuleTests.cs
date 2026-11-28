@@ -321,6 +321,21 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
+        public async Task Cumulative_reset_under_the_same_start_keeps_the_growth_before_the_drop_Async()
+        {
+            LocalStack.RequireAvailable();
+            var service = $"hist-{_run}-crashloop";
+            // Before the window [10,25,5] (40, sum 100); inside it growth to [20,35,5] (60, sum 150), then a restart under the same start: [3,0,0] (3, sum 1.5).
+            // Per bucket: (20-10, 35-25, 5-5) + (3, 0, 0) = [13,10,0], 23 observations, a sum of 50 + 1.5.
+            await LocalStack.SendAsync("metrics", OtlpMetrics.BucketHistogram(Resource(service), Metric, OtlpMetrics.Cumulative, At(-30), [], Bounds,
+                (At(-5), [10, 25, 5], 100), (At(2), [20, 35, 5], 150), (At(6), [3, 0, 0], 1.5)));
+            await WaitAsync("otel_metrics_histogram", service, 3);
+
+            Assert.Equal(23, (await ObserveAsync(Rule(service, MetricAggregation.P50))).Samples);
+            Assert.Equal(51.5 / 23, (await ObserveAsync(Rule(service, MetricAggregation.Avg))).Value!.Value, 9);
+        }
+
+        [Fact]
         public async Task Subject_host_groups_by_host_Async()
         {
             LocalStack.RequireAvailable();

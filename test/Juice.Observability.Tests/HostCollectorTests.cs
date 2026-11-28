@@ -201,6 +201,12 @@ namespace Juice.Observability.Tests
                 $"SELECT count() FROM otel.{table} WHERE JuiceTenant = '{tenant}' AND MetricName = '{metric}' AND TimeUnix > now() - INTERVAL 2 MINUTE " +
                 $"AND ResourceAttributes['juice.collector'] = 'host-collector' AND lower(ResourceAttributes['host.name']) = '{host}' {extra}";
 
+            // Opt-in profile: skipped, with the reason, unless the host Collector has sent something in the last 3 minutes.
+            var sent = int.Parse(await LocalStack.ClickHouseAsync(
+                $"SELECT count() FROM otel.otel_metrics_sum WHERE JuiceTenant = '{tenant}' AND TimeUnix > now() - INTERVAL 3 MINUTE " +
+                "AND ResourceAttributes['juice.collector'] = 'host-collector'"));
+            Assert.SkipUnless(sent > 0, "the host profile is not up (docker compose --profile host up -d host-collector, with host_metrics off on the platform Collector)");
+
             var expected = new[]
             {
                 ("otel_metrics_sum", "system.cpu.time", ""),
