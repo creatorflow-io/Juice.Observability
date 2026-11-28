@@ -206,6 +206,19 @@ namespace Juice.Observability.Rules
                 ["samples"] = (observation?.Samples ?? 0).ToString(CultureInfo.InvariantCulture),
             };
             if (observation?.Value is { } value) evidence["value"] = value.ToString("G6", CultureInfo.InvariantCulture);
+            if (rule.Metric is { } metric)
+            {
+                evidence["metric"] = metric.Name;
+                evidence["kind"] = metric.Kind?.ToString() ?? "";
+                evidence["aggregation"] = metric.Aggregation.ToString();
+                evidence["filters"] = string.Join("; ", metric.Filters.Select(f => f.Op == FilterOp.Equals
+                    ? $"{f.Key}={string.Join(",", f.Values)}" : $"{f.Key} in [{string.Join(",", f.Values)}]"));
+                evidence["window"] = rule.Window.ToString("c", CultureInfo.InvariantCulture);
+            }
+            if (observation?.Detail is { } detail)
+            {
+                foreach (var (k, v) in detail) evidence.TryAdd(k, v);
+            }
             return evidence;
         }
 

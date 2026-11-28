@@ -337,7 +337,8 @@ namespace Juice.Observability.Rules
 
         /// <summary>A change after which an open alert's subject may never be observed again, so nothing could resolve it.</summary>
         public static bool ChangesWhatItWatches(RuleDefinition before, RuleDefinition after)
-            => before.Template != after.Template || before.Service != after.Service || before.Environment != after.Environment || before.Host != after.Host;
+            => before.Template != after.Template || before.Service != after.Service || before.Environment != after.Environment || before.Host != after.Host
+               || System.Text.Json.JsonSerializer.Serialize(before.Metric) != System.Text.Json.JsonSerializer.Serialize(after.Metric);
 
         public async Task StartAsync(CancellationToken cancellationToken)
         {
