@@ -26,7 +26,9 @@ namespace Juice.Observability.Api.Evidence
                 return null;
             }
             var related = await ChangeEndpoints.RelatedForAsync(context.TenantId, alert, db, ct);
-            var items = related.Items.Where(i => i.Type == "change").Select(i => new EvidenceItem(Text(i.Title) ?? "(no text)", Text(i.Detail), i.At)).ToList();
+            // To the service page when the alert is on a service, else the timeline: both are routes of the core's manifest.
+            var link = alert.SubjectType == HealthSubject.Service && alert.SubjectId is { } service ? new EvidenceLink($"services/{service}") : new EvidenceLink("timeline");
+            var items = related.Items.Where(i => i.Type == "change").Select(i => new EvidenceItem(Text(i.Title) ?? "(no text)", Text(i.Detail), i.At, link)).ToList();
             return items.Count == 0 ? null : new EvidenceSection("Changes around this alert", items, related.Note);
         }
     }
