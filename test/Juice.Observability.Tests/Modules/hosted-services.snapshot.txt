@@ -24,6 +24,7 @@ Juice.Observability.Rules.RuleProvisioner
 Juice.Observability.Rules.RuleScheduler
 Juice.Observability.Slos.SloProvisioner
 Juice.Observability.Slos.SloCounter
+Juice.Observability.Api.Modules.ModuleMigrationRunner
 Microsoft.AspNetCore.DataProtection.Internal.DataProtectionHostedService
 Juice.Observability.Api.PlatformSampler
 Juice.Observability.Api.PlatformTelemetry+StartupNote

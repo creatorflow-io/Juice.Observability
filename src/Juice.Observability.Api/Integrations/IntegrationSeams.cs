@@ -2,7 +2,6 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using Microsoft.Extensions.Options;
 
 namespace Juice.Observability.Api.Integrations
 {
@@ -45,6 +44,10 @@ namespace Juice.Observability.Api.Integrations
                         Write(writer, item);
                     }
                     writer.WriteEndArray();
+                    break;
+                case JsonValueKind.Number when value.TryGetDecimal(out var number):
+                    // The database's jsonb rewrites numbers (1.0, 1e2): one spelling per value keeps a stored text equal to the one that was hashed.
+                    writer.WriteNumberValue(number / 1.0000000000000000000000000000m);
                     break;
                 default:
                     value.WriteTo(writer);
