@@ -78,11 +78,12 @@ namespace Juice.Observability.Api.Endpoints
 
             var observed = new List<(DateTimeOffset At, IReadOnlyList<RuleObservation> Observed)>();
             string? cut = null;
+            // One budget for the queries and for the threshold provider's calls.
+            using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            budget.CancelAfter(TimeSpan.FromSeconds(budgetSeconds));
             if (unseen is null)
             {
                 // The metric hasn't been reported in 24 h, so every instant is no data: nothing to ask ClickHouse.
-                using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                budget.CancelAfter(TimeSpan.FromSeconds(budgetSeconds));
                 foreach (var at in instants)
                 {
                     ct.ThrowIfCancellationRequested();
@@ -103,9 +104,15 @@ namespace Juice.Observability.Api.Endpoints
                 observed.AddRange(instants.Select(at => (at, (IReadOnlyList<RuleObservation>)[])));
             }
 
-            var subjects = RulePreview.Replay(definition, await RulePreview.WithThresholdsAsync(thresholds, definition, observed, ct), MaxSubjects, out var truncated);
+            var judged = await RulePreview.WithThresholdsAsync(thresholds, definition, observed, budget.Token, ct);
+            if (judged.Count < observed.Count)
+            {
+                // The budget ran out in the provider: what was judged before is the result.
+                cut ??= string.Create(CultureInfo.InvariantCulture, $"stopped after {judged.Count} of {instants.Count} points");
+            }
+            var subjects = RulePreview.Replay(definition, judged, MaxSubjects, out var truncated);
             var unit = entry?.Unit is { Length: > 0 } u ? u : null;
-            return Results.Ok(new RulePreviewDto(instants[0], instants[^1], step, instants.Count, observed.Count, cut is null, cut, quiet, unit, definition,
+            return Results.Ok(new RulePreviewDto(instants[0], instants[^1], step, instants.Count, judged.Count, cut is null, cut, quiet, unit, definition,
                 [.. subjects.Select(s => new PreviewSubjectDto(s.SubjectKey, s.SubjectType.ToString(), s.Breaches, s.NoData, s.WouldOpen, s.WouldFire, s.FirstFiredAt,
                     s.Last, s.Min, s.Max, s.LastDetail, [.. s.Points.Select(p => new PreviewPointDto(p.At, p.Value, p.Condition.ToString()))]))], truncated));
         }
