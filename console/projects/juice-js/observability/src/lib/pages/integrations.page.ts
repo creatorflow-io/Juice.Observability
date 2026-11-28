@@ -1,15 +1,17 @@
 import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { forkJoin } from 'rxjs';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { distinctUntilChanged, forkJoin, map, skip } from 'rxjs';
 import { MatButtonModule } from '@angular/material/button';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { Router, RouterLink } from '@angular/router';
+import { ApiService } from '../core/api.service';
 import { IntegrationInstanceDto, IntegrationPluginDto, IntegrationsApi } from '../core/integrations-api';
 import { LinkPipe, OBSERVABILITY_CAN_ADMIN, ObservabilityLinks } from '../core/options';
 import { AgoPipe } from '../shared/format';
-import { IntegrationForm } from '../shared/integration-form';
+import { IntegrationForm, cap } from '../shared/integration-form';
 import { apiResource } from '../shared/resource';
 import { problemText } from '../shared/telemetry';
 import { ContextBar } from '../shared/ui';
@@ -53,11 +55,11 @@ export function integrationHealthText(i: IntegrationInstanceDto): string {
       <p class="jc-muted" data-testid="integrations-none">No integration plugins are installed. Plugins are built into the platform's host, so there is nothing to add here until one is.</p>
     }
 
-    @if (creating() && selected(); as plugin) {
+    @if (creating() && admin() && selected(); as plugin) {
       @if (plugins().length > 1) {
         <label class="jc-small">Plugin
           <select data-testid="integration-plugin" [ngModel]="pluginKey()" (ngModelChange)="pluginKey.set($event)">
-            @for (p of plugins(); track p.key) { <option [value]="p.key">{{ p.displayName }} ({{ p.key }})</option> }
+            @for (p of plugins(); track p.key) { <option [value]="p.key">{{ cap(p.displayName) }} ({{ p.key }})</option> }
           </select>
         </label>
       }
@@ -91,6 +93,8 @@ export function integrationHealthText(i: IntegrationInstanceDto): string {
 })
 export class IntegrationsPage {
   private readonly api = inject(IntegrationsApi);
+  private readonly tenants = inject(ApiService).tenant$;
+  protected readonly cap = cap;
   private readonly router = inject(Router);
   private readonly links = inject(ObservabilityLinks);
   private readonly canAdmin = inject(OBSERVABILITY_CAN_ADMIN);
@@ -105,6 +109,15 @@ export class IntegrationsPage {
   protected readonly plugins = computed<IntegrationPluginDto[]>(() => this.data.value()?.plugins ?? []);
   protected readonly instances = computed(() => this.data.value()?.instances.items ?? []);
   protected readonly selected = computed(() => this.plugins().find(p => p.key === this.pluginKey()) ?? this.plugins()[0] ?? null);
+
+  constructor() {
+    // A different tenant starts afresh: no form, draft or plugin choice from the last one stays open.
+    this.tenants.pipe(map(t => t.id), distinctUntilChanged(), skip(1), takeUntilDestroyed()).subscribe(() => {
+      this.creating.set(false);
+      this.pluginKey.set('');
+      this.data.reload();
+    });
+  }
 
   protected created(i: IntegrationInstanceDto) {
     this.creating.set(false);

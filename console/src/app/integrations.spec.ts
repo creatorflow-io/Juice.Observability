@@ -1,12 +1,12 @@
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { provideNoopAnimations } from '@angular/platform-browser/animations';
-import { EMPTY, Observable, of, throwError } from 'rxjs';
+import { BehaviorSubject, EMPTY, Observable, of, throwError } from 'rxjs';
 import { ApiService, OBSERVABILITY_CAN_ADMIN, OBSERVABILITY_OPTIONS } from '@juice-js/observability';
 import { IntegrationInstanceDto, IntegrationPluginDto, IntegrationsApi } from '../../projects/juice-js/observability/src/lib/core/integrations-api';
 import { IntegrationPage } from '../../projects/juice-js/observability/src/lib/pages/integration.page';
 import { IntegrationsPage } from '../../projects/juice-js/observability/src/lib/pages/integrations.page';
-import { IntegrationForm, buildRequest, formProblems, initialValues } from '../../projects/juice-js/observability/src/lib/shared/integration-form';
+import { IntegrationForm, buildRequest, cap, fieldProblem, formProblems, initialValues } from '../../projects/juice-js/observability/src/lib/shared/integration-form';
 
 type Api = Record<string, (...args: never[]) => Observable<unknown>>;
 type Fx = { nativeElement: HTMLElement; whenStable(): Promise<unknown>; detectChanges(): void };
@@ -35,7 +35,12 @@ const INSTANCE = (extra: Partial<IntegrationInstanceDto> = {}): IntegrationInsta
   createdBy: 'victor', createdAt: '2026-11-28T00:00:00Z', updatedBy: 'victor', updatedAt: '2026-11-28T00:00:00Z', etag: 'e1', ...extra,
 });
 
+const role = { admin: true };
+let tenant = new BehaviorSubject({ id: 't1' });
+
 function setup(api: Api, admin = true) {
+  role.admin = admin;
+  tenant = new BehaviorSubject({ id: 't1' });
   const calls: Record<string, unknown[][]> = {};
   const fake = new Proxy({}, {
     get: (_, name: string) => (...args: unknown[]) => {
@@ -46,8 +51,8 @@ function setup(api: Api, admin = true) {
   TestBed.resetTestingModule();
   TestBed.configureTestingModule({
     providers: [provideRouter([]), provideNoopAnimations(), { provide: IntegrationsApi, useValue: fake },
-      { provide: ApiService, useValue: new Proxy({}, { get: () => () => EMPTY }) },
-      { provide: OBSERVABILITY_CAN_ADMIN, useValue: () => admin },
+      { provide: ApiService, useValue: new Proxy({}, { get: (_, n) => (n === 'tenant$' ? tenant : () => EMPTY) }) },
+      { provide: OBSERVABILITY_CAN_ADMIN, useValue: () => role.admin },
       { provide: OBSERVABILITY_OPTIONS, useValue: { apiBase: '', basePath: '/', notificationsLink: null } }],
   });
   return calls;
@@ -95,7 +100,7 @@ describe('integrations page (I1)', () => {
     const empty = formProblems(PLUGIN, initialValues(PLUGIN, null));
     expect(Object.keys(empty).sort()).toEqual(['config.batch', 'config.endpoint', 'name', 'secret.token']);
 
-    const v = { ...initialValues(PLUGIN, null), name: 'a', 'config.endpoint': 'http://x', 'config.batch': '500', 'config.tags': 'a\nb\nc', interval: '30', 'secret.token': 'env:JUICE_INTEGRATION_T' };
+    const v = { ...initialValues(PLUGIN, null), name: 'a', 'config.endpoint': 'https://' + 'x'.repeat(20), 'config.batch': '500', 'config.tags': 'a\nb\nc', interval: '30', 'secret.token': 'env:JUICE_INTEGRATION_T' };
     const bad = formProblems(PLUGIN, v);
     expect(bad['config.endpoint']).toBeDefined();
     expect(bad['config.batch'][0]).toContain('at most 100');
@@ -190,6 +195,63 @@ describe('integrations page (I1)', () => {
     const marked = Array.from(fixture.nativeElement.querySelectorAll('[data-testid="rule-field-error"]')).map(e => (e as HTMLElement).dataset['field']).sort();
     expect(marked).toEqual(['config.endpoint', 'name', 'secret.token']);
     expect(q(fixture, 'integration-form-error')!.textContent).toContain('Something else.');
+  });
+
+  it('save_rechecks_the_admin_role_and_sends_nothing_once_it_is_gone', async () => {
+    const calls = setup({ create: () => of(INSTANCE()) });
+    const fixture = TestBed.createComponent(IntegrationForm);
+    fixture.componentRef.setInput('plugin', PLUGIN);
+    fixture.componentInstance['edited'].set({ ...initialValues(PLUGIN, null), name: 'Jobs', 'config.endpoint': 'https://x', 'config.batch': '5', 'secret.token': 'env:JUICE_INTEGRATION_T' });
+    await flush(fixture);
+    role.admin = false;
+    q(fixture, 'integration-save')!.click();
+    await flush(fixture);
+    expect(calls['create']).toBeUndefined();
+    expect(q(fixture, 'integration-form-error')!.textContent).toContain('admin role');
+    // The same valid form sends once the role is back, so the role was what stopped it.
+    role.admin = true;
+    q(fixture, 'integration-save')!.click();
+    await flush(fixture);
+    expect(calls['create'].length).toBe(1);
+  });
+
+  it('a_tenant_change_resets_the_list_form_and_reloads', async () => {
+    const { fixture, calls } = await openList([PLUGIN], [], true);
+    q(fixture, 'integration-new')!.click();
+    await flush(fixture);
+    expect(q(fixture, 'integration-form')).not.toBeNull();
+    const before = calls['instances'].length;
+    tenant.next({ id: 't2' });
+    await flush(fixture);
+    expect(q(fixture, 'integration-form')).toBeNull();
+    expect(calls['instances'].length).toBeGreaterThan(before);
+  });
+
+  it('a_tenant_change_resets_the_detail_form_stale_notice_and_errors', async () => {
+    const { fixture, calls } = await openDetail(INSTANCE(), { update: () => throwError(() => ({ status: 412, error: {} })) });
+    q(fixture, 'integration-edit')!.click();
+    await flush(fixture);
+    q(fixture, 'integration-save')!.click();
+    await flush(fixture);
+    expect(q(fixture, 'stale-reload')).not.toBeNull();
+    const before = calls['instance'].length;
+    tenant.next({ id: 't2' });
+    await flush(fixture);
+    expect(q(fixture, 'integration-form')).toBeNull();
+    expect(q(fixture, 'stale-reload')).toBeNull();
+    expect(calls['instance'].length).toBeGreaterThan(before);
+  });
+
+  it('durations_accept_hhmmss_and_iso8601_and_plugin_text_and_patterns_are_bounded', () => {
+    const f = { name: 'every', kind: 'duration' as const, label: 'Every', required: false };
+    for (const ok of ['00:05:00', '1.02:03:04', 'PT5M', 'P1DT2H', 'PT0.5S']) expect(fieldProblem(f, ok)).toBeNull();
+    for (const bad of ['5m', '00:75:00', 'P', 'PT', 'soon']) expect(fieldProblem(f, bad)).toContain('Every');
+    const long = 'x'.repeat(500);
+    expect(cap(long).length).toBe(200);
+    expect(cap(long).endsWith('…')).toBe(true);
+    // A pattern is left to the server: a catastrophic one costs the tab nothing.
+    const evil = { name: 'p', kind: 'string' as const, label: 'P', required: false, pattern: '^(a+)+$' };
+    expect(fieldProblem(evil, 'a'.repeat(40) + 'b')).toBeNull();
   });
 
   it('no_plugins_empty_state', async () => {

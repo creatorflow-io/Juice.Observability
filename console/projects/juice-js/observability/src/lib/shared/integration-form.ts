@@ -4,7 +4,8 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatCheckboxModule } from '@angular/material/checkbox';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
-import { FieldDto, IntegrationInstanceDto, IntegrationInstanceRequest, IntegrationPluginDto, IntegrationsApi } from '../core/integrations-api';
+import { OBSERVABILITY_CAN_ADMIN } from '../core/options';
+import { FieldDto,IntegrationInstanceDto, IntegrationInstanceRequest, IntegrationPluginDto, IntegrationsApi } from '../core/integrations-api';
 import { FieldError, FormMarks } from './form-errors';
 import { problemText } from './telemetry';
 
@@ -15,6 +16,15 @@ type Section = 'config' | 'scope';
 export const fieldKey = (section: Section | 'secret', name: string) => `${section}.${name}`;
 
 const INTEGER = /^-?\d+$/;
+const DURATION = /^-?(\d{1,7}\.)?\d{1,2}:[0-5]\d:[0-5]\d(\.\d{1,7})?$/;
+const ISO_DURATION = /^P(?=\d|T\d)(\d+Y)?(\d+M)?(\d+W)?(\d+D)?(T(?=\d)(\d+H)?(\d+M)?(\d+(\.\d+)?S)?)?$/;
+
+/** Plugin text is untrusted: a label, allowed value or name longer than this is cut with an ellipsis. */
+export const MAX_PLUGIN_TEXT = 200;
+export function cap(text: string | null | undefined): string {
+  const s = text ?? '';
+  return s.length > MAX_PLUGIN_TEXT ? `${s.slice(0, MAX_PLUGIN_TEXT - 1)}…` : s;
+}
 
 function listOf(text: string): string[] { return text.split(/\r?\n/).map(s => s.trim()).filter(Boolean); }
 
@@ -35,25 +45,24 @@ export function initialValues(plugin: IntegrationPluginDto, instance: Integratio
 export function fieldProblem(f: FieldDto, value: string | boolean | undefined): string | null {
   if (f.kind === 'boolean') return null;
   const text = String(value ?? '').trim();
-  if (text === '') return f.required ? `${f.label}: required.` : null;
+  if (text === '') return f.required ? `${cap(f.label)}: required.` : null;
   if (f.kind === 'integer' || f.kind === 'number') {
     const n = Number(text);
-    if (f.kind === 'integer' ? !INTEGER.test(text) : !Number.isFinite(n)) return `${f.label}: enter ${f.kind === 'integer' ? 'a whole number' : 'a number'}.`;
-    if (f.min != null && n < f.min) return `${f.label}: at least ${f.min}.`;
-    if (f.max != null && n > f.max) return `${f.label}: at most ${f.max}.`;
+    if (f.kind === 'integer' ? !INTEGER.test(text) : !Number.isFinite(n)) return `${cap(f.label)}: enter ${f.kind === 'integer' ? 'a whole number' : 'a number'}.`;
+    if (f.min != null && n < f.min) return `${cap(f.label)}: at least ${f.min}.`;
+    if (f.max != null && n > f.max) return `${cap(f.label)}: at most ${f.max}.`;
     return null;
   }
   if (f.kind === 'stringList') {
     const items = listOf(text);
-    if (f.maxItems != null && items.length > f.maxItems) return `${f.label}: at most ${f.maxItems} entries.`;
-    if (f.maxLength != null && items.some(i => i.length > f.maxLength!)) return `${f.label}: each entry at most ${f.maxLength} characters.`;
+    if (f.maxItems != null && items.length > f.maxItems) return `${cap(f.label)}: at most ${f.maxItems} entries.`;
+    if (f.maxLength != null && items.some(i => i.length > f.maxLength!)) return `${cap(f.label)}: each entry at most ${f.maxLength} characters.`;
     return null;
   }
-  if (f.kind === 'enum' && f.allowed && !f.allowed.includes(text)) return `${f.label}: choose one of the listed values.`;
-  if (f.maxLength != null && text.length > f.maxLength) return `${f.label}: at most ${f.maxLength} characters.`;
-  if (f.pattern) {
-    try { if (!new RegExp(f.pattern).test(text)) return `${f.label}: doesn't match the expected format.`; } catch { /* the server decides on a pattern the browser can't read */ }
-  }
+  if (f.kind === 'enum' && f.allowed && !f.allowed.includes(text)) return `${cap(f.label)}: choose one of the listed values.`;
+  if (f.maxLength != null && text.length > f.maxLength) return `${cap(f.label)}: at most ${f.maxLength} characters.`;
+  // A plugin's `pattern` is not run here: a slow expression would hang the tab. The server checks it, with a timeout.
+  if (f.kind === 'duration' && !DURATION.test(text) && !ISO_DURATION.test(text)) return `${cap(f.label)}: enter hh:mm:ss or an ISO 8601 duration such as PT5M.`;
   return null;
 }
 
@@ -71,7 +80,7 @@ export function formProblems(plugin: IntegrationPluginDto, v: FormValues): Recor
     for (const f of fields) add(fieldKey(section, f.name), fieldProblem(f, v[fieldKey(section, f.name)]));
   for (const s of plugin.secrets) {
     const ref = String(v[fieldKey('secret', s.name)] ?? '').trim();
-    add(fieldKey('secret', s.name), ref === '' && s.required ? `${s.label}: required.` : null);
+    add(fieldKey('secret', s.name), ref === '' && s.required ? `${cap(s.label)}: required.` : null);
   }
   return out;
 }
@@ -126,7 +135,7 @@ function placeKey(path: string, plugin: IntegrationPluginDto): string | null {
   imports: [FormsModule, MatButtonModule, MatCheckboxModule, MatFormFieldModule, MatInputModule, FieldError],
   template: `
     <form class="jc-form jc-card" data-testid="integration-form" (ngSubmit)="save()" novalidate>
-      <h2>{{ instance() ? 'Edit ' + instance()!.name : 'New ' + plugin().displayName + ' instance' }}</h2>
+      <h2>{{ instance() ? 'Edit ' + instance()!.name : 'New ' + cap(plugin().displayName) + ' instance' }}</h2>
       <mat-form-field subscriptSizing="dynamic" class="jc-field-wide">
         <mat-label>Name</mat-label>
         <input matInput name="name" data-field="name" data-testid="if-name" maxlength="64" [ngModel]="v()['name']" (ngModelChange)="set('name', $event)" [attr.aria-invalid]="marks.bad('name')">
@@ -146,28 +155,28 @@ function placeKey(path: string, plugin: IntegrationPluginDto): string | null {
               @switch (f.kind) {
                 @case ('boolean') {
                   <mat-checkbox [name]="key(section.name, f)" [attr.data-field]="key(section.name, f)" [attr.data-testid]="'if-' + key(section.name, f)"
-                    [ngModel]="v()[key(section.name, f)]" (ngModelChange)="set(key(section.name, f), $event)">{{ f.label }}</mat-checkbox>
+                    [ngModel]="v()[key(section.name, f)]" (ngModelChange)="set(key(section.name, f), $event)">{{ cap(f.label) }}</mat-checkbox>
                 }
                 @case ('enum') {
                   <mat-form-field subscriptSizing="dynamic" class="jc-field-wide">
-                    <mat-label>{{ f.label }}{{ f.required ? ' *' : '' }}</mat-label>
+                    <mat-label>{{ cap(f.label) }}{{ f.required ? ' *' : '' }}</mat-label>
                     <select matNativeControl [name]="key(section.name, f)" [attr.data-field]="key(section.name, f)" [attr.data-testid]="'if-' + key(section.name, f)"
                       [ngModel]="v()[key(section.name, f)]" (ngModelChange)="set(key(section.name, f), $event)">
                       <option value=""></option>
-                      @for (o of f.allowed ?? []; track o) { <option [value]="o">{{ o }}</option> }
+                      @for (o of f.allowed ?? []; track o) { <option [value]="o">{{ cap(o) }}</option> }
                     </select>
                   </mat-form-field>
                 }
                 @case ('stringList') {
                   <mat-form-field subscriptSizing="dynamic" class="jc-field-wide">
-                    <mat-label>{{ f.label }}{{ f.required ? ' *' : '' }} (one per line)</mat-label>
+                    <mat-label>{{ cap(f.label) }}{{ f.required ? ' *' : '' }} (one per line)</mat-label>
                     <textarea matInput rows="3" [name]="key(section.name, f)" [attr.data-field]="key(section.name, f)" [attr.data-testid]="'if-' + key(section.name, f)"
                       [ngModel]="v()[key(section.name, f)]" (ngModelChange)="set(key(section.name, f), $event)"></textarea>
                   </mat-form-field>
                 }
                 @default {
                   <mat-form-field subscriptSizing="dynamic" class="jc-field-wide">
-                    <mat-label>{{ f.label }}{{ f.required ? ' *' : '' }}{{ f.kind === 'duration' ? ' (hh:mm:ss or ISO 8601)' : '' }}</mat-label>
+                    <mat-label>{{ cap(f.label) }}{{ f.required ? ' *' : '' }}{{ f.kind === 'duration' ? ' (hh:mm:ss or ISO 8601)' : '' }}</mat-label>
                     <input matInput [type]="f.kind === 'integer' || f.kind === 'number' ? 'number' : 'text'" [attr.step]="f.kind === 'number' ? 'any' : null"
                       [attr.min]="f.min ?? null" [attr.max]="f.max ?? null" [attr.maxlength]="f.maxLength ?? null"
                       [name]="key(section.name, f)" [attr.data-field]="key(section.name, f)" [attr.data-testid]="'if-' + key(section.name, f)"
@@ -187,7 +196,7 @@ function placeKey(path: string, plugin: IntegrationPluginDto): string | null {
         @for (s of plugin().secrets; track s.name) {
           <div class="jc-field">
             <mat-form-field subscriptSizing="dynamic" class="jc-field-wide">
-              <mat-label>{{ s.label }} (reference){{ s.required ? ' *' : '' }}</mat-label>
+              <mat-label>{{ cap(s.label) }} (reference){{ s.required ? ' *' : '' }}</mat-label>
               <input matInput type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="env:JUICE_INTEGRATION_..."
                 [name]="'secret-' + s.name" [attr.data-field]="'secret.' + s.name" [attr.data-testid]="'if-secret.' + s.name"
                 [ngModel]="v()['secret.' + s.name]" (ngModelChange)="set('secret.' + s.name, $event)" [attr.aria-invalid]="marks.bad('secret.' + s.name)">
@@ -213,6 +222,8 @@ function placeKey(path: string, plugin: IntegrationPluginDto): string | null {
 })
 export class IntegrationForm {
   private readonly api = inject(IntegrationsApi);
+  private readonly canAdmin = inject(OBSERVABILITY_CAN_ADMIN);
+  protected readonly cap = cap;
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   readonly plugin = input.required<IntegrationPluginDto>();
   readonly instance = input<IntegrationInstanceDto | null>(null);
@@ -246,6 +257,8 @@ export class IntegrationForm {
 
   protected save() {
     const plugin = this.plugin();
+    // The role is read again here: a form opened as an admin sends nothing once the role is gone.
+    if (!this.canAdmin()) { this.marks.mark({}, 'Changing integrations needs the admin role.', this.order(), this.host.nativeElement); return; }
     const problems = formProblems(plugin, this.v());
     this.stale.set(false);
     if (Object.keys(problems).length) { this.marks.mark(problems, '', this.order(), this.host.nativeElement); return; }

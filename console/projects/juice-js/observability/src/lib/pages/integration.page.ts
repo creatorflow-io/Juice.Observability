@@ -1,9 +1,11 @@
 import { ChangeDetectionStrategy, Component, computed, inject, input, signal } from '@angular/core';
 import { DatePipe } from '@angular/common';
-import { Observable, forkJoin } from 'rxjs';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { Observable, distinctUntilChanged, forkJoin, map, skip } from 'rxjs';
 import { MatButtonModule } from '@angular/material/button';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { Router, RouterLink } from '@angular/router';
+import { ApiService } from '../core/api.service';
 import { IntegrationInstanceDto, IntegrationsApi, ValidationCheckDto } from '../core/integrations-api';
 import { LinkPipe, OBSERVABILITY_CAN_ADMIN, ObservabilityLinks } from '../core/options';
 import { AgoPipe } from '../shared/format';
@@ -128,6 +130,7 @@ const DELETABLE = ['Configured', 'Validated', 'Disabled'];
 })
 export class IntegrationPage {
   private readonly api = inject(IntegrationsApi);
+  private readonly tenants = inject(ApiService).tenant$;
   private readonly router = inject(Router);
   private readonly links = inject(ObservabilityLinks);
   private readonly canAdmin = inject(OBSERVABILITY_CAN_ADMIN);
@@ -150,6 +153,15 @@ export class IntegrationPage {
   protected readonly item = computed(() => this.data.value()?.instance ?? null);
   protected readonly plugin = computed(() => this.data.value()?.plugins.find(p => p.key === this.item()?.pluginKey) ?? null);
   protected readonly checks = computed(() => this.fresh() ?? this.item()?.lastValidation ?? null);
+
+  constructor() {
+    // A different tenant starts afresh: no open form or draft, refusal, stale notice, report or delete confirmation from the last one.
+    this.tenants.pipe(map(t => t.id), distinctUntilChanged(), skip(1), takeUntilDestroyed()).subscribe(() => {
+      this.busy.set(false);
+      this.confirmingDelete.set(false);
+      this.reload();
+    });
+  }
 
   protected summary(i: IntegrationInstanceDto) { return integrationHealthText(i); }
   protected canValidate(i: IntegrationInstanceDto) { return VALIDATABLE.includes(i.state) && !!i.pluginName; }
