@@ -1,5 +1,6 @@
 import { LinkPipe } from '../core/options';
-import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, ElementRef, computed, inject, signal } from '@angular/core';
+import { FieldError, ruleFieldErrors } from '../shared/form-errors';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatCheckboxModule } from '@angular/material/checkbox';
@@ -57,7 +58,7 @@ const NEW_RULE: RuleForm = {
  */
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [LinkPipe, RouterLink, FormsModule, MatButtonModule, MatCheckboxModule, MatFormFieldModule, MatInputModule, MatProgressBarModule, MatSelectModule, ContextBar, AgoPipe],
+  imports: [LinkPipe, RouterLink, FormsModule, MatButtonModule, MatCheckboxModule, MatFormFieldModule, MatInputModule, MatProgressBarModule, MatSelectModule, ContextBar, AgoPipe, FieldError],
   template: `
     <jc-context-bar>
       <h1>Rules</h1>
@@ -70,36 +71,38 @@ const NEW_RULE: RuleForm = {
       <section class="jc-card" data-testid="rule-form">
         <h2>{{ editing() ? 'Change ' + editing()!.key : 'New rule' }}</h2>
         <form class="jc-form" (ngSubmit)="save(f)">
-          @if (!editing()) { <mat-form-field subscriptSizing="dynamic"><mat-label>Key</mat-label><input matInput name="key" [(ngModel)]="f.key" required></mat-form-field> }
-          <mat-form-field subscriptSizing="dynamic" class="jc-field-wide"><mat-label>Name</mat-label><input matInput name="name" [(ngModel)]="f.name" required></mat-form-field>
-          <mat-form-field subscriptSizing="dynamic"><mat-label>Template</mat-label>
+          @if (!editing()) {
+            <div class="jc-field"><mat-form-field subscriptSizing="dynamic"><mat-label>Key</mat-label><input matInput name="key" [(ngModel)]="f.key" (ngModelChange)="clear('key')" required [attr.aria-invalid]="bad('key')" [attr.aria-describedby]="bad('key') ? 'err-key' : null"></mat-form-field><jc-field-error field="key" [messages]="msgs('key')" /></div>
+          }
+          <div class="jc-field jc-field-wide"><mat-form-field subscriptSizing="dynamic" class="jc-field-wide"><mat-label>Name</mat-label><input matInput name="name" [(ngModel)]="f.name" (ngModelChange)="clear('name')" required [attr.aria-invalid]="bad('name')" [attr.aria-describedby]="bad('name') ? 'err-name' : null"></mat-form-field><jc-field-error field="name" [messages]="msgs('name')" /></div>
+          <div class="jc-field"><mat-form-field subscriptSizing="dynamic"><mat-label>Template</mat-label>
             <mat-select name="template" [(ngModel)]="f.template">@for (t of templates(); track t) { <mat-option [value]="t">{{ t }}</mat-option> }</mat-select>
-          </mat-form-field>
-          <mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Severity</mat-label>
+          </mat-form-field></div>
+          <div class="jc-field"><mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Severity</mat-label>
             <mat-select name="severity" [(ngModel)]="f.severity"><mat-option value="Info">Info</mat-option><mat-option value="Warning">Warning</mat-option><mat-option value="Critical">Critical</mat-option></mat-select>
-          </mat-form-field>
+          </mat-form-field></div>
           @if (f.template === 'HostMemory') {
-            <mat-form-field subscriptSizing="dynamic"><mat-label>Host (all if empty)</mat-label><input matInput name="host" [(ngModel)]="f.host"></mat-form-field>
+            <div class="jc-field jc-field-wide"><mat-form-field subscriptSizing="dynamic" class="jc-field-wide"><mat-label>Host (all if empty)</mat-label><input matInput name="host" [(ngModel)]="f.host"></mat-form-field></div>
           } @else {
-            <mat-form-field subscriptSizing="dynamic"><mat-label>Service (all if empty)</mat-label><input matInput name="service" [(ngModel)]="f.service"></mat-form-field>
-            <mat-form-field subscriptSizing="dynamic"><mat-label>Environment (all if empty)</mat-label><input matInput name="environment" [(ngModel)]="f.environment"></mat-form-field>
+            <div class="jc-field jc-field-wide"><mat-form-field subscriptSizing="dynamic" class="jc-field-wide"><mat-label>Service (all if empty)</mat-label><input matInput name="service" [(ngModel)]="f.service"></mat-form-field></div>
+            <div class="jc-field jc-field-wide"><mat-form-field subscriptSizing="dynamic" class="jc-field-wide"><mat-label>Environment (all if empty)</mat-label><input matInput name="environment" [(ngModel)]="f.environment"></mat-form-field></div>
           }
           <p class="jc-muted jc-small jc-form-actions">{{ hint(f.template) }}</p>
           @if (offPack(f.template); as pack) { <p class="jc-muted jc-small jc-form-actions" data-testid="rule-pack-off">{{ f.template }} reads the {{ pack }} signal pack, which this deployment has switched off: the rule can only be saved disabled.</p> }
-          <mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Threshold</mat-label><input matInput type="number" step="any" name="threshold" [(ngModel)]="f.threshold" required></mat-form-field>
-          <mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Recovery threshold</mat-label><input matInput type="number" step="any" name="recoveryThreshold" [(ngModel)]="f.recoveryThreshold"></mat-form-field>
-          <mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Minimum samples</mat-label><input matInput type="number" name="minimumSamples" [(ngModel)]="f.minimumSamples"></mat-form-field>
-          <mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Every (s)</mat-label><input matInput type="number" name="schedule" [(ngModel)]="f.scheduleSeconds"></mat-form-field>
-          <mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Window (s)</mat-label><input matInput type="number" name="window" [(ngModel)]="f.windowSeconds"></mat-form-field>
-          <mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Fire after (s)</mat-label><input matInput type="number" name="for" [(ngModel)]="f.forSeconds"></mat-form-field>
-          <mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Recover after (s)</mat-label><input matInput type="number" name="recovery" [(ngModel)]="f.recoverySeconds"></mat-form-field>
-          <mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Cooldown (s)</mat-label><input matInput type="number" name="cooldown" [(ngModel)]="f.cooldownSeconds"></mat-form-field>
+          <div class="jc-field"><mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Threshold</mat-label><input matInput type="number" step="any" name="threshold" [(ngModel)]="f.threshold" (ngModelChange)="clear('threshold')" required [attr.aria-invalid]="bad('threshold')" [attr.aria-describedby]="bad('threshold') ? 'err-threshold' : null"></mat-form-field><jc-field-error field="threshold" [messages]="msgs('threshold')" /></div>
+          <div class="jc-field"><mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Recovery threshold</mat-label><input matInput type="number" step="any" name="recoveryThreshold" [(ngModel)]="f.recoveryThreshold" (ngModelChange)="clear('recoveryThreshold')" [attr.aria-invalid]="bad('recoveryThreshold')" [attr.aria-describedby]="bad('recoveryThreshold') ? 'err-recoveryThreshold' : null"></mat-form-field><jc-field-error field="recoveryThreshold" [messages]="msgs('recoveryThreshold')" /></div>
+          <div class="jc-field"><mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Minimum samples</mat-label><input matInput type="number" name="minimumSamples" [(ngModel)]="f.minimumSamples" (ngModelChange)="clear('minimumSamples')" [attr.aria-invalid]="bad('minimumSamples')" [attr.aria-describedby]="bad('minimumSamples') ? 'err-minimumSamples' : null"></mat-form-field><jc-field-error field="minimumSamples" [messages]="msgs('minimumSamples')" /></div>
+          <div class="jc-field"><mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Every (s)</mat-label><input matInput type="number" name="schedule" [(ngModel)]="f.scheduleSeconds" (ngModelChange)="clear('schedule')" [attr.aria-invalid]="bad('schedule')" [attr.aria-describedby]="bad('schedule') ? 'err-schedule' : null"></mat-form-field><jc-field-error field="schedule" [messages]="msgs('schedule')" /></div>
+          <div class="jc-field"><mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Window (s)</mat-label><input matInput type="number" name="window" [(ngModel)]="f.windowSeconds" (ngModelChange)="clear('window')" [attr.aria-invalid]="bad('window')" [attr.aria-describedby]="bad('window') ? 'err-window' : null"></mat-form-field><jc-field-error field="window" [messages]="msgs('window')" /></div>
+          <div class="jc-field"><mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Fire after (s)</mat-label><input matInput type="number" name="for" [(ngModel)]="f.forSeconds" (ngModelChange)="clear('forDuration')" [attr.aria-invalid]="bad('forDuration')" [attr.aria-describedby]="bad('forDuration') ? 'err-forDuration' : null"></mat-form-field><jc-field-error field="forDuration" [messages]="msgs('forDuration')" /></div>
+          <div class="jc-field"><mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Recover after (s)</mat-label><input matInput type="number" name="recovery" [(ngModel)]="f.recoverySeconds" (ngModelChange)="clear('recoveryDuration')" [attr.aria-invalid]="bad('recoveryDuration')" [attr.aria-describedby]="bad('recoveryDuration') ? 'err-recoveryDuration' : null"></mat-form-field><jc-field-error field="recoveryDuration" [messages]="msgs('recoveryDuration')" /></div>
+          <div class="jc-field"><mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Cooldown (s)</mat-label><input matInput type="number" name="cooldown" [(ngModel)]="f.cooldownSeconds" (ngModelChange)="clear('cooldown')" [attr.aria-invalid]="bad('cooldown')" [attr.aria-describedby]="bad('cooldown') ? 'err-cooldown' : null"></mat-form-field><jc-field-error field="cooldown" [messages]="msgs('cooldown')" /></div>
           <mat-checkbox name="enabled" [(ngModel)]="f.enabled">Enabled</mat-checkbox>
           @if (editing()) { <p class="jc-muted jc-small jc-form-actions">Disabling this rule, or changing its template or scope, resolves its open alerts: nothing would be watching them any more.</p> }
+          @if (summary()) { <p class="jc-error jc-small jc-form-actions" role="alert" data-testid="rule-error">{{ summary() }}</p> }
           <div class="jc-form-actions">
             <button mat-flat-button type="submit" data-testid="rule-save" [disabled]="saving()">Save</button>
             <button mat-button type="button" (click)="form.set(null)">Cancel</button>
-            @if (saveError()) { <span class="jc-error" data-testid="rule-error">{{ saveError() }}</span> }
           </div>
         </form>
       </section>
@@ -143,7 +146,10 @@ export class RulesPage {
   protected readonly form = signal<RuleForm | null>(null);
   protected readonly editing = signal<Rule | null>(null);
   protected readonly saving = signal(false);
-  protected readonly saveError = signal('');
+  /** One sentence about the whole save (refused, stale, unreachable, or a path no field here has), and the messages each field shows under itself. */
+  protected readonly summary = signal('');
+  protected readonly fieldMessages = signal<Record<string, string[]>>({});
+  private readonly host = inject(ElementRef<HTMLElement>);
   protected readonly data = apiResource({
     stream: () => forkJoin({
       rules: this.api.rules().pipe(map(p => p.items)),
@@ -171,12 +177,27 @@ export class RulesPage {
     return this.data.value()?.packs.find(p => !p.enabled && p.ruleTemplates.includes(template))?.name ?? null;
   }
 
-  protected startNew() { this.editing.set(null); this.saveError.set(''); this.form.set({ ...NEW_RULE }); }
+  protected msgs(field: string): string[] { return this.fieldMessages()[field] ?? []; }
+  protected bad(field: string): 'true' | null { return this.msgs(field).length ? 'true' : null; }
+  /** Editing a field takes its own message away and leaves the others. */
+  protected clear(field: string) {
+    if (!this.fieldMessages()[field]) return;
+    const { [field]: _, ...rest } = this.fieldMessages();
+    this.fieldMessages.set(rest);
+  }
+  private reset() { this.summary.set(''); this.fieldMessages.set({}); }
+  private mark(fields: Record<string, string[]>, summary: string) {
+    this.fieldMessages.set(fields);
+    this.summary.set(summary);
+    setTimeout(() => (this.host.nativeElement as HTMLElement).querySelector<HTMLElement>('[aria-invalid="true"]')?.focus());
+  }
+
+  protected startNew() { this.editing.set(null); this.reset(); this.form.set({ ...NEW_RULE }); }
 
   protected edit(rule: Rule) {
     const d = rule.definition;
     this.editing.set(rule);
-    this.saveError.set('');
+    this.reset();
     this.form.set({
       key: rule.key, name: rule.name, template: rule.template, severity: rule.severity, service: String(d['service'] ?? ''), environment: String(d['environment'] ?? ''), host: String(d['host'] ?? ''),
       threshold: d['threshold'] as number, recoveryThreshold: (d['recoveryThreshold'] as number | null) ?? null, minimumSamples: d['minimumSamples'] as number, scheduleSeconds: seconds(d['schedule']), windowSeconds: seconds(d['window']),
@@ -184,7 +205,19 @@ export class RulesPage {
     });
   }
 
+  /** Every required field at once, so the person fixes them in one go. */
+  private invalid(f: RuleForm): Record<string, string[]> {
+    const out: Record<string, string[]> = {};
+    if (!this.editing() && !f.key?.trim()) out['key'] = ['Key: enter a key.'];
+    if (!f.name?.trim()) out['name'] = ['Name: enter a name.'];
+    if (f.threshold === null || f.threshold === undefined || !Number.isFinite(Number(f.threshold))) out['threshold'] = ['Threshold: enter a number.'];
+    return out;
+  }
+
   protected save(f: RuleForm) {
+    if (this.saving()) return;
+    const local = this.invalid(f);
+    if (Object.keys(local).length) { this.mark(local, ''); return; }
     const host = f.template === 'HostMemory';
     const body = {
       key: f.key, name: f.name, template: f.template, severity: f.severity, service: host ? '' : f.service.trim(), environment: host ? '' : f.environment.trim().toLowerCase(), host: host ? f.host.trim() : '',
@@ -194,10 +227,10 @@ export class RulesPage {
     const editing = this.editing();
     const request: Observable<Rule> = editing ? this.api.updateRule(editing.key, body, editing.etag) : this.api.createRule(body);
     this.saving.set(true);
-    this.saveError.set('');
+    this.reset();
     request.subscribe({
       next: () => { this.saving.set(false); this.form.set(null); this.data.reload(); },
-      error: e => { this.saving.set(false); this.saveError.set(problemText(e)); },
+      error: e => { this.saving.set(false); const r = ruleFieldErrors(e); this.mark(r.fields, r.rest); },
     });
   }
 }
