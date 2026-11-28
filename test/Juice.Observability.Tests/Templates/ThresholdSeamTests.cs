@@ -208,6 +208,7 @@ namespace Juice.Observability.Tests.Templates
                 [new ModuleRuleContribution("demo", typeof(Provider))]);
 
             Assert.Empty(WithSource().Validate(null, known));
+            Assert.Contains(WithSource(r => r.Template = (RuleTemplate)999).Validate(null, known), e => e.Contains("unknown Template", StringComparison.Ordinal));
             Assert.Contains(WithSource().Validate(), e => e.Contains("'demo.p95' is not a known provider", StringComparison.Ordinal));
             Assert.Contains(WithSource(r => r.ThresholdSource!.Provider = "no spaces").Validate(null, known), e => e.Contains("must be 'fixed' or '<module>.<name>'", StringComparison.Ordinal));
             Assert.Contains(WithSource(r => r.ThresholdSource!.Provider = "").Validate(null, known), e => e.Contains("must be 'fixed' or '<module>.<name>'", StringComparison.Ordinal));

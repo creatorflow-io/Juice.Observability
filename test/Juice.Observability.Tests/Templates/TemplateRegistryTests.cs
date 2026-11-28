@@ -205,6 +205,14 @@ namespace Juice.Observability.Tests.Templates
                 var e = await Assert.ThrowsAsync<ArgumentException>(() => telemetry.QueryAsync(full.Replace(missing, "1"), none, Unused, Ct));
                 Assert.Contains(missing, e.Message);
             }
+        }
+
+        [Fact]
+        public async Task TemplateTelemetry_refuses_reserved_parameter_names_Async()
+        {
+            var telemetry = new TemplateTelemetry(ClickHouse(), new TelemetryWindow("tenant", DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow, 10));
+            DbDataReader Unused(DbDataReader r) => r;
+            var full = $"SELECT 1 FROM otel.otel_traces WHERE {TemplateSql.Tenant} AND Timestamp >= {TemplateSql.From} AND Timestamp < {TemplateSql.To} LIMIT {TemplateSql.Limit}";
             foreach (var name in new[] { "tenant", "from", "to", "limit", "Tenant", "LIMIT" })
             {
                 var e = await Assert.ThrowsAsync<ArgumentException>(() => telemetry.QueryAsync(full, new Dictionary<string, object> { [name] = "x" }, Unused, Ct));
