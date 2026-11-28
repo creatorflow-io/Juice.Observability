@@ -13,7 +13,7 @@ namespace Juice.Observability.Rules
         public const int MaxHistogramLayoutsPerSubject = 8;
 
         private static readonly Meter HistogramMeter = new("Juice.Observability");
-        private static readonly Counter<long> HistogramTruncated = HistogramMeter.CreateCounter<long>("juice.observability.rules.truncated", "{subject}",
+        private static readonly Counter<long> HistogramTruncated = HistogramMeter.CreateCounter<long>("juice.observability.rules.truncated", "{cut}",
             "Times a rule's query reached the row limit and left out its last subject, by template");
 
         private const string HistogramHost = "if(JuiceHostId != '', lower(JuiceHostId), lower(JuiceHostName))";

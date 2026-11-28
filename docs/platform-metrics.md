@@ -115,6 +115,7 @@ The rule scheduler has no single pass: it shows as busy slots instead.
 | `juice.observability.discovery.duration` | histogram, s | – | Near `Discovery:Interval` (30 s) |
 | `juice.observability.discovery.created` | counter | kind | – |
 | `juice.observability.discovery.truncated` | counter | kind | Rising: windows or values cut at their limits |
+| `juice.observability.rules.truncated` | counter (`{cut}`) | template | Rising: a rule's query reached its row limit and left out its last subject, so that subject isn't evaluated. Counts cuts, not subjects (one per query that was cut) |
 | `juice.observability.discovery.retirements` | counter | change (`retired`, `restored`) | Many `retired` at once: telemetry stopped arriving, not services going away |
 | `juice.observability.discovery.watermark_lag` | gauge, s | – | Past `Discovery:Lag` (60 s) by a minute or more: discovery is behind |
 | `juice.observability.health.evaluations` | counter | outcome | `failure` rising |
