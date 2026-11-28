@@ -34,7 +34,8 @@ namespace Juice.Observability.Api.Endpoints
     public sealed record OperationDto(string Name, string Kind, long Count, double RequestsPerSecond, double ErrorRate,
         double P50Ms, double P95Ms, double P99Ms, DateTimeOffset LastSeen);
 
-    public sealed record MetricInfoDto(string Name, string Type, string Unit, string Description);
+    /// <summary>A reported metric. <c>Monotonic</c>, for a sum only: true for a counter, false for an up-down counter.</summary>
+    public sealed record MetricInfoDto(string Name, string Type, string Unit, string Description, bool? Monotonic = null);
 
     public sealed record PointDto(DateTimeOffset At, double? Value);
 
@@ -686,13 +687,14 @@ namespace Juice.Observability.Api.Endpoints
             var scope = await MetricScopeAsync(http, db, clock, serviceId, environment, instanceId, resourceId, from, to, Cursor.MaxLimit + 1, ct);
             var where = scope.Where("TimeUnix");
             var rows = await clickHouse.QueryAsync($"""
-                SELECT MetricName, any(type), any(MetricUnit), any(MetricDescription) FROM (
+                SELECT MetricName, any(type), any(MetricUnit), any(MetricDescription), max(mono) FROM (
                 {string.Join("\nUNION ALL\n", MetricTables.Select(t =>
-                    $"SELECT MetricName, '{t.Type}' AS type, MetricUnit, MetricDescription FROM otel.{t.Table} WHERE {where} LIMIT 1 BY MetricName"))}
+                    $"SELECT MetricName, '{t.Type}' AS type, MetricUnit, MetricDescription, {(t.Type == "sum" ? "toUInt8(if(IsMonotonic, 1, 2))" : "toUInt8(0)")} AS mono FROM otel.{t.Table} WHERE {where} LIMIT 1 BY MetricName"))}
                 )
                 GROUP BY MetricName ORDER BY MetricName
                 LIMIT {ClickHouseTelemetrySource.Limit}
-                """, scope.Window, r => new MetricInfoDto(r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3)), ct, scope.Parameters);
+                """, scope.Window, r => new MetricInfoDto(r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3),
+                    r.GetString(1) == "sum" ? Convert.ToInt32(r.GetValue(4)) switch { 1 => true, 2 => false, _ => null } : null), ct, scope.Parameters);
             return Results.Ok(new TelemetryPage<MetricInfoDto>(rows.Take(Cursor.MaxLimit).ToList(), rows.Count > Cursor.MaxLimit));
         });
 

@@ -43,7 +43,8 @@ namespace Juice.Observability.Api.Endpoints
             return tenant;
         }
 
-        private static async Task<IResult> ListRulesAsync(Guid tenantId, int? limit, string? cursor, PlatformDbContext db, CancellationToken ct)
+        private static async Task<IResult> ListRulesAsync(Guid tenantId, int? limit, string? cursor, HttpContext http, PlatformDbContext db,
+            Discovery.ClickHouseTelemetrySource clickHouse, TimeProvider clock, CancellationToken ct)
         {
             if (Cursor.Validate(limit, cursor, out var take, out var after) is { } invalid)
             {
@@ -55,6 +56,23 @@ namespace Juice.Observability.Api.Endpoints
             var page = rows.Take(take).Select(RuleAdminEndpoints.ToDto).ToList();
             var quiet = await SignalCoverage.QuietReasonsAsync(db, tenantId, page.Where(r => r.Enabled).Select(r => r.Definition).ToList(), ct);
             page = [.. page.Select(r => quiet.TryGetValue(r.Key, out var reason) ? r with { Quiet = reason } : r)];
+
+            // An enabled metric rule whose metric the tenant hasn't reported in 24 h: one catalog query for the page. ClickHouse busy or out of
+            // reach leaves them as they are: the listing doesn't depend on it.
+            var metrics = page.Where(r => r.Quiet is null && r.Enabled && r.Definition is { Template: RuleTemplate.MetricThreshold, Metric.Name.Length: > 0 })
+                .Select(r => r.Definition.Metric!.Name).Distinct().ToList();
+            if (metrics.Count > 0)
+            {
+                try
+                {
+                    var seen = await MetricCatalog.SeenAsync(clickHouse, (string)http.Items[TelemetryEndpoints.TenantKeyItem]!, metrics, clock.GetUtcNow(), ct);
+                    page = [.. page.Select(r => r.Quiet is null && r.Enabled && r.Definition is { Template: RuleTemplate.MetricThreshold, Metric.Name.Length: > 0 }
+                        && !seen.Contains(r.Definition.Metric!.Name) ? r with { Quiet = $"metric {r.Definition.Metric.Name} has not been reported in the last 24 h" } : r)];
+                }
+                catch (Exception e) when (e is Discovery.TelemetryBusyException or Discovery.TelemetryUnavailableException)
+                {
+                }
+            }
             return Results.Ok(new Page<RuleDto>(page, rows.Count > take ? new Cursor("r", rows[take - 1].Id).Encode() : null));
         }
 

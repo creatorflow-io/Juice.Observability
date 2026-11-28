@@ -108,6 +108,7 @@ POST /api/v1/tenants/{tenantId:guid}/incidents/{incidentId:guid}/transitions | p
 POST /api/v1/tenants/{tenantId:guid}/load-runs | platform.read | -
 POST /api/v1/tenants/{tenantId:guid}/load-runs/{runId:guid}/end | platform.read | -
 POST /api/v1/tenants/{tenantId:guid}/rules | platform.read | -
+POST /api/v1/tenants/{tenantId:guid}/rules/preview | platform.read | -
 POST /api/v1/tenants/{tenantId:guid}/silences | platform.read | -
 POST /notifications/api/v1/tenants/{tenantId:guid}/correlations/{key}/acknowledge | (authenticated) | -
 POST /notifications/api/v1/tenants/{tenantId:guid}/correlations/{key}/cancel | (authenticated) | -
