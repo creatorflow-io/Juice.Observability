@@ -458,6 +458,7 @@ namespace Juice.Observability.Tests
             Assert.Equal("acknowledged", (await CorrelationStateAsync(rig.Database, $"alert:{alert}"))?.ToLowerInvariant());
             // The escalation stopped: no step is left to page an alert someone took.
             await ProvisionedHost.WaitAsync(() => ScalarAsync(rig.Database, EscalationSql("e.stop_reason")).GetAwaiter().GetResult() is not null, "the escalation to stop");
+            Assert.Equal("acknowledged", await ScalarAsync(rig.Database, EscalationSql("e.stop_reason")));
             Assert.Null(await ScalarAsync(rig.Database, EscalationSql("e.next_at")));
 
             // Resolved: the item is closed, and a click on it records nothing.
@@ -579,9 +580,15 @@ namespace Juice.Observability.Tests
         [Fact]
         public async Task Inbox_TwoBellsAndAPage_AtOnce_OneDecision_OneCommand_OneAuditRow_LosersRefused()
         {
-            await using var rig = await Rig.StartAsync();
-            var (alice, adam, erin) = (await Rig.CallerAsync(rig, "alice"), await Rig.CallerAsync(rig, "adam"), await Rig.CallerAsync(rig, "erin"));
-            var carol = await Rig.CallerAsync(rig, "alice");
+            // Three different admins (X's bell, Y's bell, and the page's caller) and an operator who asks: each is a person by their claims.
+            await using var rig = await Rig.StartAsync(claimsHeader: true);
+            Caller Person(string name, string role)
+            {
+                var client = rig.Factory.CreateClient();
+                client.DefaultRequestHeaders.Add("X-Test-Claims", $"sub=s-{name};preferred_username={name};roles={role};platform_tenant={LocalStack.TenantKey}");
+                return new Caller(client, "unused");
+            }
+            var (alice, adam, erin, carol) = (Person("alice", "admin"), Person("adam", "admin"), Person("erin", "operator"), Person("carol", "admin"));
             Assert.Empty(await rig.ItemsAsync(alice));
             Assert.Empty(await rig.ItemsAsync(adam));
             HashSet<Guid> seenA = [], seenB = [];
@@ -592,12 +599,15 @@ namespace Juice.Observability.Tests
                 seenA.Add(a.GetProperty("id").GetGuid());
                 seenB.Add(b.GetProperty("id").GetGuid());
                 var (commands, audits) = (await rig.CommandsAsync(), (await rig.AuditAsync("action.request.approve")).Count + (await rig.AuditAsync("action.request.reject")).Count);
+                var recorded = await rig.InteractionsAsync();
 
-                // Admin X's bell approves, admin Y's bell rejects, and the page approves, all at once.
+                // Admin X's bell approves, admin Y's bell rejects, and a third admin's page approves, all at once.
                 var results = await Task.WhenAll(rig.BellAsync(alice, a.GetProperty("id").GetGuid(), "approve"), rig.BellAsync(adam, b.GetProperty("id").GetGuid(), "reject"),
                     carol.PostAsync($"/api/v1/tenants/{rig.Tenant}/action-requests/{request}/approval", new { comment = "page" }));
 
                 Assert.Single(results, r => r.StatusCode == HttpStatusCode.OK);
+                // At most one interaction is recorded, and only when a bell won.
+                Assert.Equal(recorded + (results[0].StatusCode == HttpStatusCode.OK || results[1].StatusCode == HttpStatusCode.OK ? 1 : 0), await rig.InteractionsAsync());
                 Assert.All(results.Where(r => r.StatusCode != HttpStatusCode.OK), r => Assert.Contains(r.StatusCode, new[] { HttpStatusCode.Conflict }));
                 var state = (await rig.RequestRowAsync(request)).State;
                 Assert.Contains(state, new[] { ActionRequestState.Issued, ActionRequestState.Rejected });
