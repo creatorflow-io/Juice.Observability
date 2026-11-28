@@ -96,6 +96,8 @@ public static class RuleTemplateModuleExtensions
     /// <summary>Key <c>&lt;module&gt;.&lt;name&gt;</c>, unique, not a built-in. The host creates the type once, as a singleton.</summary>
     public static IModuleServicesBuilder AddRuleTemplate<T>(this IModuleServicesBuilder b) where T : class, IRuleTemplate
     {
+        ArgumentNullException.ThrowIfNull(b);
+        CoreBuilders.Require(b);
         Contribute<T>(b, "rule template");
         b.Services.AddSingleton<IRuleTemplate, T>();
         if (typeof(T).GetConstructor(Type.EmptyTypes) is not null && RuleTemplateKeys.Error(b.Module.Name, Activator.CreateInstance<T>().Info.Key) is { } error)
@@ -108,6 +110,8 @@ public static class RuleTemplateModuleExtensions
     /// <summary>Key <c>&lt;module&gt;.&lt;name&gt;</c>, unique. The host creates the type once, as a singleton.</summary>
     public static IModuleServicesBuilder AddThresholdProvider<T>(this IModuleServicesBuilder b) where T : class, IRuleThresholdProvider
     {
+        ArgumentNullException.ThrowIfNull(b);
+        CoreBuilders.Require(b);
         Contribute<T>(b, "threshold provider");
         b.Services.AddSingleton<IRuleThresholdProvider, T>();
         if (typeof(T).GetConstructor(Type.EmptyTypes) is not null && RuleTemplateKeys.Error(b.Module.Name, Activator.CreateInstance<T>().Key) is { } error)
