@@ -90,6 +90,45 @@ namespace Juice.Observability.Api.Evidence
             return true;
         }
 
+        /// <summary>
+        /// For text the core takes from its own data (a change summary, a source) rather than a contributor's: control and line characters become a space, and format
+        /// characters (bidirectional marks, zero-width joiners, soft hyphens), private-use and unassigned ones and unpaired surrogates are removed, so
+        /// <see cref="Plain"/> holds. An item is cleaned, not the section dropped.
+        /// </summary>
+        internal static string Clean(string? text)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return "";
+            }
+            var result = new System.Text.StringBuilder(text.Length);
+            for (var i = 0; i < text.Length; i++)
+            {
+                var c = text[i];
+                if (char.IsHighSurrogate(c) && i + 1 < text.Length && char.IsLowSurrogate(text[i + 1]))
+                {
+                    result.Append(c).Append(text[++i]);
+                    continue;
+                }
+                if (char.IsSurrogate(c))
+                {
+                    continue;
+                }
+                switch (char.GetUnicodeCategory(c))
+                {
+                    case UnicodeCategory.Control or UnicodeCategory.LineSeparator or UnicodeCategory.ParagraphSeparator:
+                        result.Append(' ');
+                        break;
+                    case UnicodeCategory.Format or UnicodeCategory.PrivateUse or UnicodeCategory.OtherNotAssigned:
+                        break;
+                    default:
+                        result.Append(c);
+                        break;
+                }
+            }
+            return result.ToString().Trim();
+        }
+
         /// <summary>No control, format (bidirectional marks, zero-width joiners), line or paragraph separator character, and no unpaired surrogate.</summary>
         internal static bool Plain(string text)
         {
