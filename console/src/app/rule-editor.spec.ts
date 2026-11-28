@@ -417,6 +417,17 @@ describe('review lows', () => {
     expect(f.nativeElement.querySelector('input[name="filterKey-0"]')!.getAttribute('aria-describedby')).toBe('err-filters');
   });
 
+  it('the definition a preview echoes (enabled: true) never changes the form: a disabled rule stays disabled, and is saved so', async () => {
+    const { f, calls } = await open({ rules: () => page([{ ...metricRule, enabled: false }]), previewRule: () => of(preview({ definition: { ...metricRule.definition, enabled: true, threshold: 99 } })), updateRule: () => of({}) }, {}, 'rule-edit-m1');
+    const enabled = () => f.nativeElement.querySelector('mat-checkbox[name="enabled"] input') as HTMLInputElement;
+    expect(enabled().checked).toBe(false);
+    await click(f, 'rule-preview');
+    expect(enabled().checked).toBe(false);
+    expect((f.nativeElement.querySelector('input[name="threshold"]') as HTMLInputElement).value).toBe('0.9');
+    await click(f, 'rule-save');
+    expect((calls['updateRule'][0][1] as Record<string, unknown>)['enabled']).toBe(false);
+  });
+
   it('a message led by an Object.prototype name is not a field', () => {
     const r = ruleFieldErrors(problem(400, 'Invalid request', 'x', { errors: ['constructor is odd', 'toString too'] }));
     expect(r.fields).toEqual({});
