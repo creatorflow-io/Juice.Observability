@@ -38,13 +38,25 @@ namespace Juice.Observability.Notifications
             ActionRequestEvents.Expired, ActionRequestEvents.Verified, ActionRequestEvents.NotVerified,
         ];
 
-        public static IEnumerable<TypeDeclaration> All()
+        /// <summary>Every type the platform declares: the core's, then the action requests'. What the host's embedded options hold once the modules are composed, in this order.</summary>
+        public static IEnumerable<TypeDeclaration> All() => Core().Concat(ActionRequests());
+
+        /// <summary>The core's own types: the alerts'. Declared by <c>AddPlatformNotifications</c>.</summary>
+        public static IEnumerable<TypeDeclaration> Core()
         {
             yield return new TypeDeclaration(AlertFiring, "Alert firing", "alerts", null, null, null, ExternalRecipients: true,
                 Json(AlertSchema), CorrelationRules.Required, null,
                 Json($$"""[{"step":"send"},{"step":"escalate","policyFrom":"labels.{{EscalationPolicyLabel}}"}]"""), DefaultTemplates.Declaration());
             yield return new TypeDeclaration(AlertResolved, "Alert resolved", "alerts", null, null, null, ExternalRecipients: true,
                 Json(AlertSchema), CorrelationRules.Optional, null, Json(TypeRules.SendOnlyWorkflow), DefaultTemplates.Declaration());
+        }
+
+        /// <summary>
+        /// The action request types: the approval and one per event. The agents module declares them (<c>AddNotificationTypes</c>, as the moved keys of
+        /// <see cref="CoreMovedNotificationTypes"/>), exactly as they were declared when the core did.
+        /// </summary>
+        public static IEnumerable<TypeDeclaration> ActionRequests()
+        {
             // Declared always, inert while the inbox is off: nothing sends it then.
             yield return new TypeDeclaration(ActionApproval, "Action approval", "action-requests", "approval", null, null, ExternalRecipients: false,
                 Json(ActionRequestSchema), CorrelationRules.Required, null, Json(TypeRules.SendOnlyWorkflow), DefaultTemplates.ApprovalDeclaration(),

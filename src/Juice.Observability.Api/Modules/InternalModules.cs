@@ -1,6 +1,7 @@
 using Juice.Observability.Agents;
 using Juice.Observability.Api.Endpoints;
 using Juice.Observability.Extensibility;
+using Juice.Observability.Notifications;
 using Juice.Observability.Slos;
 
 namespace Juice.Observability.Api.Modules
@@ -57,7 +58,12 @@ namespace Juice.Observability.Api.Modules
     {
         public ModuleInfo Info { get; } = InternalModuleInfo.Of("agents", "Agents");
 
-        public void ConfigureServices(IModuleServicesBuilder module) => module.Services.AddPlatformAgents(module.Configuration);
+        public void ConfigureServices(IModuleServicesBuilder module)
+        {
+            module.Services.AddPlatformAgents(module.Configuration);
+            // The approval and the action request events: the core's until M3, declared by their module now (the same declarations, so no new type version).
+            module.AddNotificationTypes(ObservabilityTypes.ActionRequests().ToArray());
+        }
 
         public void MapEndpoints(IModuleEndpointsBuilder endpoints)
         {
