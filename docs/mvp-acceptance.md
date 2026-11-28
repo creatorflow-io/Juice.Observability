@@ -3,7 +3,8 @@
 **Run:** 2026-11-01, local reference environment (`deploy/local`). Windows 11 workstation, Docker Desktop 29.9.1.
 **Rerun:** 2026-11-04 for `dotnet test`, `verify.sh --outage`, the load, API latency, breach-to-alert and the Console
 journey. The §9 rows for ingestion freshness, reference load, API reads and breach-to-alert, and the Console section, are
-from that rerun. Everything else is from 2026-11-01 unless it gives another date.
+from that rerun. Everything else is from 2026-11-01 unless it gives another date. Rows that cite the 1.x webhooks (`WebhookSecurityTests`,
+`WebhookTests`, webhook delivery records, the webhook dispatcher) describe what was removed in 2.0 (W-16); the notification pipeline replaces them.
 **Recheck:** 2026-11-05, after the 1.0.0 release, with the released code in `src` and the Console: `dotnet test` (161 pass),
 `verify.sh --outage` and the Console journey all pass. The load figures were not measured again.
 **Decisions:** the [Phase 0 recommendations](phase-0-decisions.md), approved 2026-11-01. Juice 10.8.0 inventory signed off
@@ -31,7 +32,7 @@ BASE=http://localhost:5180 node e2e/journey.mjs
 | 5 | PostgreSQL holds tenant, application, environment, resource, service, instance, dependency, health, rule, alert, webhook delivery and audit records; migrations; stable reconciliation | **Pass** | 4 migrations. `MigrationTests`: clean install, step-by-step upgrade, data backfill, no unmigrated model changes. `DiscoveryTests`: restarts, replays, no cross-tenant merge. |
 | 6 | Health states, Unknown/Offline semantics, freshness, policy rollups | **Pass** | `HealthEvaluatorTests` (26 cases). `HealthRunnerTests` end to end, including the outage that keeps states and evidence-to-visible in 10–11 s. |
 | 7 | Scheduled typed threshold rule: stable Pending/Firing/Resolved, duration and recovery, stale data | **Pass** | `AlertLifecycleTests`. `RuleEvaluatorTests`: full lifecycle on real telemetry, no-data holding, deduplication, timeout, overload. |
-| 8 | Signed webhook: SSRF protection, bounded retries, signature verification guidance, delivery history | **Pass** | `WebhookSecurityTests`. `WebhookTests`: a real signed delivery; retries with the same id and body; permanent failure; blocked destinations never contacted; alert state untouched. Delivery history API. Guidance in `deployment.md`. |
+| 8 | Signed webhook: SSRF protection, bounded retries, signature verification guidance, delivery history | **Pass** | `WebhookSecurityTests`. `WebhookTests`: a real signed delivery; retries with the same id and body; permanent failure; blocked destinations never contacted; alert state untouched. Delivery history API. Guidance in `deployment.md`. (Removed in 2.0, W-16: `WebhookSecurityTests`, `WebhookTests` and the 1.x delivery records went with the 1.x webhooks; the pipeline's own delivery and security tests replace them.) |
 | 9 | Operator goes from alert to evidence and a tenant-safe Grafana view (now: the Console investigation) | **Pass** | Alert detail gives evidence, history, subject health (`AlertApiTests`); the Console's alert page opens the service over the breach window; `runbook.md` "From an alert to its cause". |
 | 10 | §9 targets measured and recorded | see below | |
 
