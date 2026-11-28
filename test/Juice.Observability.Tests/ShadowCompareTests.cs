@@ -325,6 +325,16 @@ namespace Juice.Observability.Tests
                 ShadowDifferenceKinds.MissingInNew, ShadowRules.ToldPerAlert);
         }
 
+        /// <summary>M53: an undecided hold still under an active silence is held on purpose: told per alert, not unsettled.</summary>
+        [Fact, Trait("Milestone", "M53")]
+        public void Compare_UndecidedHold_UnderActiveSilence_ToldPerAlert_NotUnsettled()
+        {
+            var a = Alert();
+            var unit = new ShadowUnit(TenantId, Guid.CreateVersion7(), 0, a.Alert.Id, NotificationPlan.Firing, false, true, false, true, true);
+            Single(ShadowCompare.Compare(unit, [Legacy(Payload(a))], [], Options), ShadowDifferenceKinds.MissingInNew, ShadowRules.ToldPerAlert);
+            Single(ShadowCompare.Compare(unit with { HoldCovered = false }, [Legacy(Payload(a))], [], Options), ShadowDifferenceKinds.Unsettled, null);
+        }
+
         /// <summary>Only a unit with a hold waits on it: HoldUndecided without Held (no hold read) changes nothing.</summary>
         [Fact, Trait("Milestone", "M53")]
         public void Compare_UndecidedFlagWithoutHold_DoesNotWait()

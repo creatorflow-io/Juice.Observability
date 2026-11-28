@@ -280,13 +280,13 @@ namespace Juice.Observability.Tests
             await SendAsync(factory, new PutRoute(notifications, "ops", JsonDocument.Parse("{}").RootElement, ["ops"], true));
         }
 
-        private static async Task<Guid> HoldAsync(ScratchDatabase database, Guid transition, Guid? tenant = null, bool decided = false)
+        private static async Task<Guid> HoldAsync(ScratchDatabase database, Guid transition, Guid? tenant = null, bool decided = false, Guid? silence = null)
         {
             await using var db = database.Context();
             var t = await db.AlertTransitions.AsNoTracking().SingleAsync(x => x.Id == transition, Ct);
             var hold = new NotificationHold
             {
-                TenantId = tenant ?? t.TenantId, AlertId = t.AlertId, TransitionId = transition, Event = NotificationPlan.Firing, SilenceId = Guid.CreateVersion7(), Request = "{}",
+                TenantId = tenant ?? t.TenantId, AlertId = t.AlertId, TransitionId = transition, Event = NotificationPlan.Firing, SilenceId = silence ?? Guid.CreateVersion7(), Request = "{}",
                 CreatedAt = DateTimeOffset.UtcNow, Reason = NotificationHoldReasons.Silence,
                 DecidedAt = decided ? DateTimeOffset.UtcNow : null, Outcome = decided ? NotificationHoldOutcomes.Sent : null,
             };
@@ -319,17 +319,17 @@ namespace Juice.Observability.Tests
 
             await using (var db = database.Context())
             {
-                Assert.Equal((false, false), await ShadowComparer.HoldAsync(db, tenant, transition, Ct));
+                Assert.Equal((false, false, false), await ShadowComparer.HoldAsync(db, tenant, transition, DateTimeOffset.UtcNow, Ct));
             }
             var own = await HoldAsync(database, transition);
             await using (var db = database.Context())
             {
-                Assert.Equal((true, true), await ShadowComparer.HoldAsync(db, tenant, transition, Ct));
+                Assert.Equal((true, true, false), await ShadowComparer.HoldAsync(db, tenant, transition, DateTimeOffset.UtcNow, Ct));
             }
             await using (var db = database.Context())
             {
                 await db.NotificationHolds.Where(h => h.Id == own).ExecuteUpdateAsync(s => s.SetProperty(h => h.DecidedAt, DateTimeOffset.UtcNow), Ct);
-                Assert.Equal((true, false), await ShadowComparer.HoldAsync(db, tenant, transition, Ct));
+                Assert.Equal((true, false, false), await ShadowComparer.HoldAsync(db, tenant, transition, DateTimeOffset.UtcNow, Ct));
             }
         }
 
@@ -369,6 +369,55 @@ namespace Juice.Observability.Tests
             var differences = await check.ShadowDifferences.AsNoTracking().Where(d => d.TransitionId == transition).ToListAsync(Ct);
             Assert.DoesNotContain(differences, d => d.Kind == ShadowDifferenceKinds.Unsettled);
             Assert.All(differences, d => Assert.NotNull(d.Rule));
+        }
+
+        private static async Task<Guid> SilenceAsync(ScratchDatabase database, DateTimeOffset startsAt, DateTimeOffset endsAt)
+        {
+            await using var db = database.Context();
+            var silence = new Silence { TenantId = await ProducerAdapterTests.TenantAsync(database), Comment = "m53", AllAlerts = true, StartsAt = startsAt, EndsAt = endsAt, CreatedBy = "test", CreatedAt = startsAt };
+            db.Silences.Add(silence);
+            await db.SaveChangesAsync(Ct);
+            return silence.Id;
+        }
+
+        /// <summary>
+        /// A hold under a silence that is still running is held on purpose, not stuck: however long it lasts (past MaxWait), the unit is explained
+        /// (told per alert) with no unsettled entry. Once the silence has ended and the hold is still undecided past MaxWait, it is unsettled.
+        /// </summary>
+        [Fact, Trait("Milestone", "M53")]
+        public async Task Comparer_UndecidedHoldUnderActiveSilence_PastMaxWait_Explained_EndedSilence_Unsettled()
+        {
+            LocalStack.RequireAvailable();
+            foreach (var active in new[] { true, false })
+            {
+                await using var database = await LocalStack.CreateDatabaseAsync();
+                await using var factory = Factory(database);
+                _ = factory.Server;
+                await using var receiver = await Receiver.StartAsync();
+                await PipelineEndpointAsync(factory, receiver);
+                var (_, transition) = await ProducerAdapterTests.FireAsync(database);
+                await ProducerAdapterTests.PlanAsync(factory, database, transition);
+                await WouldSendAsync(factory);
+                var now = DateTimeOffset.UtcNow;
+                var silence = await SilenceAsync(database, now.AddHours(-3), active ? now.AddHours(3) : now.AddMinutes(-5));
+                await HoldAsync(database, transition, silence: silence);
+                var comparer = Comparer(factory, new ShadowOptions { Grace = TimeSpan.Zero, MaxWait = TimeSpan.Zero });
+
+                Assert.Equal(1, await comparer.CompareOnceAsync(Ct));
+
+                await using var db = database.Context();
+                var differences = await db.ShadowDifferences.AsNoTracking().Where(d => d.TransitionId == transition).ToListAsync(Ct);
+                if (active)
+                {
+                    Assert.DoesNotContain(differences, d => d.Kind == ShadowDifferenceKinds.Unsettled);
+                    Assert.All(differences, d => Assert.NotNull(d.Rule));
+                    Assert.Contains(differences, d => d.Rule == ShadowRules.ToldPerAlert);
+                }
+                else
+                {
+                    Assert.Contains(differences, d => d.Kind == ShadowDifferenceKinds.Unsettled && d.Rule is null);
+                }
+            }
         }
 
         /// <summary>A hold stuck undecided past MaxWait is recorded as unsettled with no rule: a release pass stuck that long is a real fault.</summary>

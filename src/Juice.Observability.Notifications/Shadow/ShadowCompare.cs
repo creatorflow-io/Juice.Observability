@@ -24,10 +24,10 @@ namespace Juice.Observability.Notifications.Shadow
     /// resolved after it (a firing a resolve may have cancelled, Q2); <c>Held</c>: a silence held it in the new pipeline ("told" per alert, Q4).
     /// <c>FiredSince</c>: for a resolved transition, the release pass dropped its hold because the alert fired again after it (outcome
     /// <c>dropped_stale</c>, M46c), not for another reason. <c>HoldUndecided</c>: a hold of this transition has no decision yet (<c>decided_at</c> is
-    /// null; M53): the release pass hasn't said what became of it, so the unit isn't settled.
+    /// null; M53): the release pass hasn't said what became of it, so the unit isn't settled.  <c>HoldCovered</c>: every undecided hold is still under an active silence, held on purpose, so it is told per alert, not unsettled.
     /// </summary>
     public sealed record ShadowUnit(Guid TenantId, Guid TransitionId, int EscalationStep, Guid AlertId, string Event, bool ResolvedSince, bool Held, bool FiredSince = false,
-        bool HoldUndecided = false);
+        bool HoldUndecided = false, bool HoldCovered = false);
 
     /// <summary>A difference found, and the rule that explains it (null: unexplained).</summary>
     public sealed record ShadowFinding(string EndpointKey, string Kind, string? Rule, string Detail);
@@ -72,7 +72,7 @@ namespace Juice.Observability.Notifications.Shadow
         private static bool Unsettled(NewSent d) => d.Status is NewStatus.Pending or NewStatus.Sending or NewStatus.Retrying;
 
         /// <summary>A hold of the transition the release pass hasn't decided: what the new side does with it isn't known yet.</summary>
-        private static bool UndecidedHold(ShadowUnit unit) => unit.Held && unit.HoldUndecided;
+        private static bool UndecidedHold(ShadowUnit unit) => unit.Held && unit.HoldUndecided && !unit.HoldCovered;
 
         private static IEnumerable<ShadowFinding> Endpoint(ShadowUnit unit, string key, List<LegacySent> legacy, List<NewSent> @new, ShadowCompareOptions options)
         {
