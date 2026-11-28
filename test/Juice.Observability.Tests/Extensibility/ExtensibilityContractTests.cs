@@ -171,9 +171,8 @@ public class ExtensibilityContractTests
     [Fact]
     public void Manifest_accepts_a_valid_one()
     {
-        Assert.Null(ModuleValidation.Manifest(Manifest(), OwnPolicies));
-        Assert.Null(ModuleValidation.Manifest(Manifest("@juice-js/observability"), OwnPolicies));
-        Assert.Null(ModuleValidation.Manifest(Manifest(routes: [new ConsoleRoute("a/b/:id", null)]), OwnPolicies));
+        Assert.Null(ModuleValidation.Manifest(Manifest(), Sample, OwnPolicies));
+        Assert.Null(ModuleValidation.Manifest(Manifest(routes: [new ConsoleRoute("a/b/:id", null)]), Sample, OwnPolicies));
     }
 
     [Theory]
@@ -187,37 +186,89 @@ public class ExtensibilityContractTests
     [InlineData("")]
     public void Manifest_refuses_scheme_protocol_relative_dotdot_paths(string path)
     {
-        Assert.NotNull(ModuleValidation.Manifest(Manifest(routes: [new ConsoleRoute(path, null)]), OwnPolicies));
+        Assert.NotNull(ModuleValidation.Manifest(Manifest(routes: [new ConsoleRoute(path, null)]), Sample, OwnPolicies));
         Assert.NotNull(ModuleValidation.Manifest(
-            Manifest(menu: [new ConsoleMenuEntry("k", "L", path, null, null, 0)]), OwnPolicies));
+            Manifest(menu: [new ConsoleMenuEntry("k", "L", path, null, null, 0)]), Sample, OwnPolicies));
     }
 
     [Fact]
     public void Manifest_refuses_long_labels_and_too_many_entries()
     {
         Assert.NotNull(ModuleValidation.Manifest(
-            Manifest(menu: [new ConsoleMenuEntry("k", new string('x', 65), "items", null, null, 0)]), OwnPolicies));
+            Manifest(menu: [new ConsoleMenuEntry("k", new string('x', 65), "items", null, null, 0)]), Sample, OwnPolicies));
         Assert.Null(ModuleValidation.Manifest(
-            Manifest(menu: [new ConsoleMenuEntry("k", new string('x', 64), "items", null, null, 0)]), OwnPolicies));
+            Manifest(menu: [new ConsoleMenuEntry("k", new string('x', 64), "items", null, null, 0)]), Sample, OwnPolicies));
         Assert.NotNull(ModuleValidation.Manifest(Manifest(
-            menu: Enumerable.Range(0, 51).Select(i => new ConsoleMenuEntry($"k{i}", "L", "items", null, null, i))), OwnPolicies));
+            menu: Enumerable.Range(0, 51).Select(i => new ConsoleMenuEntry($"k{i}", "L", "items", null, null, i))), Sample, OwnPolicies));
         Assert.Null(ModuleValidation.Manifest(Manifest(
-            menu: Enumerable.Range(0, 50).Select(i => new ConsoleMenuEntry($"k{i}", "L", "items", null, null, i))), OwnPolicies));
+            menu: Enumerable.Range(0, 50).Select(i => new ConsoleMenuEntry($"k{i}", "L", "items", null, null, i))), Sample, OwnPolicies));
         Assert.NotNull(ModuleValidation.Manifest(Manifest(
-            routes: Enumerable.Range(0, 51).Select(i => new ConsoleRoute($"r{i}", null))), OwnPolicies));
+            routes: Enumerable.Range(0, 51).Select(i => new ConsoleRoute($"r{i}", null))), Sample, OwnPolicies));
     }
 
     [Fact]
     public void Manifest_refuses_bad_package_and_unknown_policy()
     {
-        Assert.NotNull(ModuleValidation.Manifest(Manifest("evil-package"), OwnPolicies));
-        Assert.NotNull(ModuleValidation.Manifest(Manifest("@other/observability-x"), OwnPolicies));
-        Assert.NotNull(ModuleValidation.Manifest(Manifest(routes: [new ConsoleRoute("items", "other.x")]), OwnPolicies));
+        Assert.NotNull(ModuleValidation.Manifest(Manifest("evil-package"), Sample, OwnPolicies));
+        Assert.NotNull(ModuleValidation.Manifest(Manifest("@other/observability-x"), Sample, OwnPolicies));
+        Assert.NotNull(ModuleValidation.Manifest(Manifest(routes: [new ConsoleRoute("items", "other.x")]), Sample, OwnPolicies));
         Assert.NotNull(ModuleValidation.Manifest(
-            Manifest(menu: [new ConsoleMenuEntry("k", "L", "items", null, "other.x", 0)]), OwnPolicies));
-        Assert.Null(ModuleValidation.Manifest(Manifest(routes: [new ConsoleRoute("items", CorePolicies.Operate)]), OwnPolicies));
-        Assert.NotNull(ModuleValidation.Manifest(null, OwnPolicies));
+            Manifest(menu: [new ConsoleMenuEntry("k", "L", "items", null, "other.x", 0)]), Sample, OwnPolicies));
+        Assert.Null(ModuleValidation.Manifest(Manifest(routes: [new ConsoleRoute("items", CorePolicies.Operate)]), Sample, OwnPolicies));
+        Assert.NotNull(ModuleValidation.Manifest(null, Sample, OwnPolicies));
     }
+
+    [Theory]
+    [InlineData("core")]
+    [InlineData("platform")]
+    [InlineData("slos")]
+    [InlineData("agents")]
+    [InlineData("alerts")]
+    [InlineData("telemetry")]
+    [InlineData("incidents")]
+    public void Reserved_names_are_refused_for_external_modules_only(string name)
+    {
+        Assert.NotNull(ModuleValidation.Name(name));
+        Assert.NotNull(ModuleValidation.Info(Sample with { Name = name }));
+        Assert.Null(ModuleValidation.Name(name, allowReserved: true));
+        Assert.Null(ModuleValidation.Info(Sample with { Name = name }, allowReserved: true));
+    }
+
+    [Fact]
+    public void Policy_refuses_a_core_policy_name_even_for_a_module_named_platform()
+    {
+        var platform = Sample with { Name = "platform" };
+        Assert.NotNull(ModuleValidation.Policy(platform, CorePolicies.Read, [CoreRoles.Viewer]));
+        Assert.NotNull(ModuleValidation.Policy(platform, CorePolicies.Operate, [CoreRoles.Viewer]));
+        Assert.NotNull(ModuleValidation.Policy(platform, "platform.anything", [CoreRoles.Viewer]));
+    }
+
+    [Theory]
+    [InlineData("@juice-js/observability")]
+    [InlineData("@juice-js/observability-other")]
+    [InlineData("@juice-js/observability-sample-x")]
+    public void Manifest_package_must_be_exactly_the_modules_own(string package)
+        => Assert.NotNull(ModuleValidation.Manifest(Manifest(package), Sample, OwnPolicies));
+
+    [Fact]
+    public void SemVer_refuses_non_ascii_digits()
+        => Assert.NotNull(ModuleValidation.Version("١.٢.٣"));
+
+    [Fact]
+    public void PlainText_refuses_format_characters()
+    {
+        Assert.NotNull(ModuleValidation.DisplayName("Sample‮evil"));
+        Assert.NotNull(ModuleValidation.DisplayName("a​b"));
+        Assert.NotNull(ModuleValidation.Manifest(
+            Manifest(menu: [new ConsoleMenuEntry("k", "L‮", "items", null, null, 0)]), Sample, OwnPolicies));
+    }
+
+    [Theory]
+    [InlineData("a/:")]
+    [InlineData("a/")]
+    [InlineData(":")]
+    public void Manifest_refuses_a_bare_colon_segment_and_a_trailing_slash(string path)
+        => Assert.NotNull(ModuleValidation.Manifest(Manifest(routes: [new ConsoleRoute(path, null)]), Sample, OwnPolicies));
 
     [Fact]
     public void Paging_matches_Api_cursor_encoding()
