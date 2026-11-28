@@ -444,14 +444,33 @@ namespace Juice.Observability.Tests
             await using var factory = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string>
             {
                 ["ClickHouse:MonitorConnectionString"] = LocalStack.ClickHouseMonitor,
+                // The holds worker takes its lease at its first tick, one interval after the start (15 s by default).
+                ["Notifications:HoldPassInterval"] = "00:00:01",
             });
             using var client = factory.CreateClient();
             var services = factory.Services;
 
-            // The host's heartbeats written and sampled once: ok.
-            await new HeartbeatWriter(services.GetRequiredService<IServiceScopeFactory>(), NullLogger<HeartbeatWriter>.Instance).WriteOnceAsync(ct);
+            // The host's heartbeats written and sampled once: ok. Written once the host's lease workers hold their leases: the worker registry is the
+            // process's, shared by every host a test run has up at once, so a worker's registration time is that of the oldest of them, and a lease worker
+            // that hasn't taken its lease yet reads as unheld once the registration is older than its threshold, whatever this host's own age.
+            var writer = new HeartbeatWriter(services.GetRequiredService<IServiceScopeFactory>(), NullLogger<HeartbeatWriter>.Instance);
+            for (var i = 0; i < 100; i++)
+            {
+                await writer.WriteOnceAsync(ct);
+                await using var check = database.Context();
+                if (await check.WorkerHeartbeats.AnyAsync(w => w.Worker == "notifications-holds" && w.Held, ct))
+                {
+                    break;
+                }
+                await Task.Delay(100, ct);
+            }
             for (var i = 0; i < 100 && services.GetRequiredService<PlatformSampler>().Latest is null; i++) await Task.Delay(100, ct);
             var (okCode, okBody) = await HealthAsync(client);
+            if (okBody.GetProperty("status").GetString() != "ok")
+            {
+                var why = await (await ApiTests.Get(client, "/api/v1/platform/status", await LocalStack.TokenAsync("erin"))).Content.ReadAsStringAsync(ct);
+                Assert.Fail($"expected ok, got {okBody}; the operators' status says {why}");
+            }
             Assert.Equal(["status"], okBody.EnumerateObject().Select(p => p.Name));
             Assert.Equal((HttpStatusCode.OK, "ok"), (okCode, okBody.GetProperty("status").GetString()));
 
