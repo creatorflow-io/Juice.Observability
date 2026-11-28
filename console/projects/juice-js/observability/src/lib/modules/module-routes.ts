@@ -9,12 +9,12 @@ import { MODULE_MENU, ModuleMenuService } from './module-menu';
 /** Matches a module route only when the server says the module is installed (and the user is signed in: without a session the host's guard decides). */
 export function installed(name: string): CanMatchFn {
   return async () => {
-    const options = inject(OBSERVABILITY_MODULES_OPTIONS);
     const modules = inject(InstalledModules);
     // Without a session nothing is asked: the route matches, and the host's guard sends the user to sign in.
-    if (options.signedIn && !modules.signedIn()) return true;
+    // Without a `signedIn` option the check is whether a page has fetched the tenant; a 401 from /modules also defers to sign-in.
+    if (!modules.signedIn()) return true;
     await modules.load();
-    return modules.names().has(name);
+    return modules.state() === 'loading' || modules.names().has(name);
   };
 }
 

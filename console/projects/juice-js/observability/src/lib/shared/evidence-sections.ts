@@ -40,6 +40,13 @@ export function evidenceLink(item: EvidenceItem, patterns: readonly string[]): {
 }
 
 const WEEK_MS = 7 * 24 * 3_600_000;
+
+/** The window the API accepts: at most 7 days, keeping its end (an absolute range from the URL isn't bounded by the context). */
+export function clampWindow(window: { from: string; to: string }): { from: string; to: string } {
+  const to = Date.parse(window.to);
+  const from = Date.parse(window.from);
+  return Number.isFinite(to) && Number.isFinite(from) && to - from > WEEK_MS ? { from: new Date(to - WEEK_MS).toISOString(), to: window.to } : window;
+}
 const SEVERITIES = new Set(['info', 'warning', 'critical']);
 
 /**
@@ -91,10 +98,10 @@ export class EvidenceSections {
     stream: ({ params }) => (params.target === 'alert'
       ? this.api.alertEvidence(params.id)
       : this.api.environments().pipe(
-        map(page => page.items.find(e => e.key === params.env)?.id ?? null),
+        // A page with an environment that doesn't resolve (the call failed, or the key isn't in the list) asks for nothing, rather than for every environment.
+        map(page => (params.env ? page.items.find(e => e.key === params.env)?.id ?? null : '')),
         catchError(() => of(null)),
-        // The window is the page's, at most 7 days (the API's bound).
-        switchMap(environmentId => this.api.serviceEvidence(params.id, { environmentId, ...this.ctx.window(WEEK_MS) })))
+        switchMap(environmentId => environmentId === null ? of(null) : this.api.serviceEvidence(params.id, { environmentId, ...clampWindow(this.ctx.window(WEEK_MS)) })))
     ).pipe(catchError(() => of(null))),
   });
 
