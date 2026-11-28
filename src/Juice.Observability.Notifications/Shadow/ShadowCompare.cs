@@ -81,7 +81,9 @@ namespace Juice.Observability.Notifications.Shadow
                 yield return new(key, ShadowDifferenceKinds.Unsettled, null, "not settled when compared: a hold of the transition is not decided yet");
                 yield break;
             }
-            if (legacy.Any(Unsettled) || @new.Any(Unsettled))
+            // Under a silence still running, legacy's suppressed delivery is held on purpose too, not unsettled.
+            var held = unit.Held && unit.HoldUndecided && unit.HoldCovered;
+            if (legacy.Any(d => Unsettled(d) && !(held && d.Status == DeliveryStatus.Suppressed)) || @new.Any(Unsettled))
             {
                 yield return new(key, ShadowDifferenceKinds.Unsettled, null,
                     $"not settled when compared: legacy {string.Join(",", legacy.Select(d => d.Status))}; new {string.Join(",", @new.Select(d => d.Status))}");

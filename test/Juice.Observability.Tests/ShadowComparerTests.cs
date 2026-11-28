@@ -3,6 +3,7 @@ using System.Text.Json;
 using Juice.Notifications.Configuration;
 using Juice.Notifications.Data;
 using Juice.Observability.Data;
+using Juice.Observability.Notifications;
 using Juice.Observability.Notifications.Shadow;
 using Juice.Observability.Webhooks;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -418,6 +419,100 @@ namespace Juice.Observability.Tests
                     Assert.Contains(differences, d => d.Kind == ShadowDifferenceKinds.Unsettled && d.Rule is null);
                 }
             }
+        }
+
+
+        /// <summary>A sent firing, then a silence, then the alert resolves under it: both pipelines hold the resolve. Returns the alert, the held resolve and the silence.</summary>
+        private static async Task<(Guid Alert, Guid Resolve, Guid Silence, Receiver Receiver)> HeldResolveCycleAsync(WebApplicationFactory<Program> factory, ScratchDatabase database, Receiver receiver)
+        {
+            await Flow.EndpointAsync(database, receiver, "ops", secretVariable: LegacySecret);
+            await PipelineEndpointAsync(factory, receiver);
+            var (alert, firing) = await ProducerAdapterTests.FireAsync(database);
+            await ProducerAdapterTests.PlanAsync(factory, database, firing);
+            var dispatcher = Flow.Dispatcher(database);
+            for (var i = 0; i < 100 && receiver.Requests.Count < 1; i++)
+            {
+                await dispatcher.DispatchOnceAsync(Ct);
+                await Task.Delay(20, Ct);
+            }
+            Assert.Single(receiver.Requests);
+            await WouldSendAsync(factory);
+            var silence = await ProducerAdapterTests.SilenceAsync(database);
+            var resolve = await ProducerAdapterTests.ResolveAsync(database, alert);
+            await ProducerAdapterTests.PlanAsync(factory, database, resolve);
+            return (alert, resolve, silence, receiver);
+        }
+
+        /// <summary>
+        /// The real cycle, in shadow (M53): a silence, the alert resolves under it, the silence ends; the comparer waits while the hold is undecided;
+        /// the release passes (the new pipeline's and legacy's) decide it; and the unit is then recorded with no unexplained difference.
+        /// </summary>
+        [Fact, Trait("Milestone", "M53")]
+        public async Task LiveShadow_UndecidedHoldThenRelease_NoUnexplained()
+        {
+            LocalStack.RequireAvailable();
+            await using var receiver = await Receiver.StartAsync();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var factory = Factory(database);
+            _ = factory.Server;
+            var (alert, resolve, silence, _) = await HeldResolveCycleAsync(factory, database, receiver);
+            await using (var db = database.Context())
+            {
+                await db.Silences.Where(s => s.Id == silence).ExecuteUpdateAsync(s => s.SetProperty(x => x.CancelledAt, DateTimeOffset.UtcNow).SetProperty(x => x.CancelledBy, "erin"), Ct);
+            }
+            var comparer = Comparer(factory, new ShadowOptions { Grace = TimeSpan.Zero, Interval = TimeSpan.Zero });
+
+            // The silence ended, nobody has decided the hold: the resolve waits (the firing is compared).
+            for (var i = 0; i < 3; i++)
+            {
+                await comparer.CompareOnceAsync(Ct);
+            }
+            Assert.False(await ComparedAsync(database, resolve, 0));
+
+            // Released: the new pipeline's pass decides its hold, legacy's worker sends its suppressed delivery.
+            var release = new NotificationsReleasePass(factory.Services.GetRequiredService<IServiceScopeFactory>(), Options.Create(new WebhookOptions()), TimeProvider.System,
+                NullLogger<NotificationsReleasePass>.Instance);
+            Assert.True(await release.ReleaseOnceAsync(Ct) > 0);
+            await Flow.Worker(database).RunOnceAsync(Ct);
+            var dispatcher = Flow.Dispatcher(database);
+            for (var i = 0; i < 100 && receiver.Requests.Count < 2; i++)
+            {
+                await dispatcher.DispatchOnceAsync(Ct);
+                await Task.Delay(20, Ct);
+            }
+            for (var i = 0; i < 100 && !await ComparedAsync(database, resolve, 0); i++)
+            {
+                await comparer.CompareOnceAsync(Ct);
+                await Task.Delay(100, Ct);
+            }
+
+            Assert.True(await ComparedAsync(database, resolve, 0), "the resolve was never compared after the release");
+            await using var check = database.Context();
+            Assert.Equal(0, await check.ShadowComparisons.AsNoTracking().Where(c => c.AlertId == alert).SumAsync(c => c.Unexplained, Ct));
+            Assert.DoesNotContain(await check.ShadowDifferences.AsNoTracking().Where(d => d.AlertId == alert).ToListAsync(Ct), d => d.Kind == ShadowDifferenceKinds.Unsettled);
+        }
+
+        /// <summary>A silence that outlasts MaxWait (made small here) is held on purpose: the resolve is recorded with no unsettled entry and nothing unexplained.</summary>
+        [Fact, Trait("Milestone", "M53")]
+        public async Task LiveShadow_SilenceLongerThanMaxWait_ExplainedNotUnsettled()
+        {
+            LocalStack.RequireAvailable();
+            await using var receiver = await Receiver.StartAsync();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var factory = Factory(database);
+            _ = factory.Server;
+            var (alert, resolve, _, _) = await HeldResolveCycleAsync(factory, database, receiver);
+            var comparer = Comparer(factory, new ShadowOptions { Grace = TimeSpan.Zero, MaxWait = TimeSpan.Zero });
+
+            for (var i = 0; i < 5 && !await ComparedAsync(database, resolve, 0); i++)
+            {
+                await comparer.CompareOnceAsync(Ct);
+            }
+
+            Assert.True(await ComparedAsync(database, resolve, 0));
+            await using var check = database.Context();
+            Assert.Equal(0, await check.ShadowComparisons.AsNoTracking().Where(c => c.AlertId == alert).SumAsync(c => c.Unexplained, Ct));
+            Assert.DoesNotContain(await check.ShadowDifferences.AsNoTracking().Where(d => d.AlertId == alert).ToListAsync(Ct), d => d.Kind == ShadowDifferenceKinds.Unsettled);
         }
 
         /// <summary>A hold stuck undecided past MaxWait is recorded as unsettled with no rule: a release pass stuck that long is a real fault.</summary>
