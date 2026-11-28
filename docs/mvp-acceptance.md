@@ -44,7 +44,7 @@ BASE=http://localhost:5180 node e2e/journey.mjs
 | Platform API reads at 20 req/s (under reference load) | p95 ≤ 500 ms | p95 6.8 ms, p50 4.3 ms, 0 errors (1,200 requests) | **Pass** |
 | Health freshness | evaluated ≤ 30 s; p95 evidence-to-visible ≤ 60 s | 30 s interval; 10–11 s measured on a 1 s loop; bound about 42 s at the 30 s interval | **Pass** |
 | Rule breach-to-alert (1-minute schedule, under reference load) | p95 ≤ 2 min after ForDuration | 23 s, 59 s, 59 s after ForDuration over 3 runs (p95 59 s), polled every 5 s, during the reference load | **Pass** |
-| Webhook first dispatch after transition | p95 ≤ 30 s | dispatcher polls every 2 s; delivery written in the transition's transaction; `juice.observability.webhooks.dispatch_delay` | **Pass** (bound 2 s + send) |
+| Webhook first dispatch after transition | p95 ≤ 30 s | dispatcher polls every 2 s; delivery written in the transition's transaction; `juice.observability.webhooks.dispatch_delay` | **Pass** (bound 2 s + send; removed in 2.0, W-16: the 1.x dispatcher and its metric are gone, and the scale harness measures first dispatch from the pipeline's deliveries) |
 | Durability | daily backup; RPO ≤ 24 h, RTO ≤ 4 h | `scripts/backup.sh` and `scripts/backup-telemetry.sh` daily; restore drill 11 s (21 tables), telemetry 7 s (8 tables, 2026-11-04) | **Pass** |
 | Retention defaults | 30 d traces/logs, 90 d metrics | TTL on the tables | **Pass** |
 | Availability objective | 99.5 % monthly | tracked in operation; readiness `/health/ready`, restart tested | not in this gate (§11) |

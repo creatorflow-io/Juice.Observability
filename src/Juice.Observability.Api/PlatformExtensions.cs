@@ -123,7 +123,7 @@ namespace Juice.Observability.Api
             messaging.AddDelivery(delivery =>
             {
                 // The framework's default gives up after 3 retries, about 35 seconds: a database restart would lose an alert's notifications. These keep
-                // trying for about 85 minutes (5 s doubling, 10 retries), check every 2 seconds as the webhook dispatcher does, and take back a message
+                // trying for about 85 minutes (5 s doubling, 10 retries), check every 2 seconds (as the 1.x webhook dispatcher did), and take back a message
                 // whose handler has run a minute, which planning never needs.
                 delivery.AddDeliveryPolicies(options => options.DefaultPolicy = new PolicyConfiguration
                 {

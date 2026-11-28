@@ -3,7 +3,7 @@
   <!-- Platform API (/api/v1, requirements §6.1) and the platform's background workers, as a library: a host adds them
        with AddJuiceObservability and MapJuiceObservability (src/Juice.Observability.Host is the reference host). -->
   <PropertyGroup>
-    <Description>Juice Observability platform API (/api/v1) and its discovery, health, rule and webhook workers, for an ASP.NET Core host.</Description>
+    <Description>Juice Observability platform API (/api/v1) and its discovery, health, rule and notification workers, for an ASP.NET Core host.</Description>
   </PropertyGroup>
 
   <ItemGroup>

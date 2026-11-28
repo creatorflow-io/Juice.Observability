@@ -17,7 +17,7 @@ The mutation checks cover silences, closing alerts, secret references, the per-t
 
 | Roadmap requirement | How it's met | Evidence |
 |---|---|---|
-| Delivery failure and retry are visible | `GET /alerts/{id}/notifications` and the alert page list every delivery with status, attempts and last error. `GET /webhooks` counts failures in the last 24 hours and what's waiting, and the Notifications page has each channel's history | `One_alerts_notifications_show_failure_retry_silence_and_escalation`, journey step `failures-visible` with a receiver answering 503 |
+| Delivery failure and retry are visible | `GET /alerts/{id}/notifications` and the alert page list every delivery with status, attempts and last error. `GET /webhooks` counts failures in the last 24 hours and what's waiting (removed in 2.0, W-16: the pipeline's admin pages show the same), and the Notifications page has each channel's history | `One_alerts_notifications_show_failure_retry_silence_and_escalation`, journey step `failures-visible` with a receiver answering 503 |
 | Silence behaviour is visible | The alert page says a silence is holding notifications, and why. A held delivery shows `Suppressed` with its silence, and the Silences page counts what each holds | `A_silence_holds_the_notification_not_the_alert...`, journey step `silence-holds-escalation` |
 | Incident transitions are auditable | Each one writes an audit record and an event on the incident in one transaction, with actor and correlation id. Refused ones are audited too | `Every_transition_is_recorded_and_audited_and_changes_no_alert`, journey step `incident` |
 | Escalation stops on resolution or acknowledgement according to policy | Resolving always stops it. Acknowledging stops it if the policy's `stopOnAcknowledge` says so, and `alert_escalations.stop_reason` records why | `Resolving_stops_an_escalation`, `Acknowledging_stops_an_escalation_only_if_the_policy_says_so`, journey step `acknowledge-stops-escalation` |
@@ -44,8 +44,8 @@ These weren't in the roadmap, so they're mine to justify and yours to overrule.
 - **Escalation steps keep their spacing when late.** After a silence or downtime, the overdue step goes out and the next waits the policy's gap from then, so the later people still get the time the policy gives the earlier ones. Before 7 November, every overdue step went out about 2 seconds apart.
 - **Operators can silence and open incidents; only admins change rules, channels, the allowlist and escalation.** Stopping noise during an outage shouldn't need an admin.
 - **Disabling a rule, or changing its template or scope, resolves its open alerts** with `rule_disabled` or `rule_changed`. Nothing would watch them any more, and they'd fire and escalate forever. This also fixes alerts stranded by rules removed from the file in earlier versions. A file emptied by mistake therefore resolves its alerts and sends those notifications.
-- **A secret reference set through the API is restricted** to `env:JUICE_WEBHOOK_*`, or files directly in `Webhooks:ApiSecretDirectory`. Otherwise an admin could name any variable or file on the host as a signing key.
-- **Slack and Teams URLs live behind a secret reference**, not in the database, since the URL is the credential. They may only post to those services' hosts, plus `Webhooks:AdditionalChatHosts`.
+- **A secret reference set through the API is restricted** to `env:JUICE_WEBHOOK_*`, or files directly in `Webhooks:ApiSecretDirectory`. Otherwise an admin could name any variable or file on the host as a signing key. (Removed in 2.0, W-16: the key is now `Notifications:Delivery:ApiSecretDirectory`.)
+- **Slack and Teams URLs live behind a secret reference**, not in the database, since the URL is the credential. They may only post to those services' hosts, plus `Webhooks:AdditionalChatHosts`. (Removed in 2.0, W-16: an allowlist entry in the provisioning file.)
 - **Text from telemetry is made harmless per channel.** A service named `<!channel>` can't page a Slack channel, and `[x](http://evil)` can't become a Teams link.
 - **Incidents and alerts don't drive each other.** Resolving an incident changes no alert. An alert is in one unresolved incident at most.
 - **Rules and endpoints are disabled, never deleted,** since alerts and deliveries keep them.
@@ -64,8 +64,8 @@ These weren't in the roadmap, so they're mine to justify and yours to overrule.
 - **A hand retry is one more attempt.** If it fails again for a transient reason, the delivery is `Failed` again rather than going back to the backoff schedule.
 
 Resolved on 8 November, each with a test that fails without the fix:
-- **A test send:** `POST /webhooks/{id}/test` and the Console's Test button send a `webhook.test` notification through the same checks, signing and formatting as an alert's. They work on a disabled channel too, and are audited (`WebhookOperationsTests`).
-- **A failed delivery retried by an admin:** `POST /webhooks/{id}/deliveries/{deliveryId}/retry` and the Console's Retry button, audited, in place of the runbook's SQL.
+- **A test send:** `POST /webhooks/{id}/test` and the Console's Test button send a `webhook.test` notification through the same checks, signing and formatting as an alert's. They work on a disabled channel too, and are audited (`WebhookOperationsTests`). (Removed in 2.0, W-16, with the 1.x webhooks and those tests: the pipeline's admin pages test an integration.)
+- **A failed delivery retried by an admin:** `POST /webhooks/{id}/deliveries/{deliveryId}/retry` and the Console's Retry button, audited, in place of the runbook's SQL. (Removed in 2.0, W-16: a failed delivery is retried on the pipeline's admin pages.)
 - **An escalation step whose channels are all disabled** no longer counts as sent:
   - It's audited (`escalation.step.unreachable`) and logged as an error, and the next step is due at once.
   - If it was the last step, the escalation stops as `unreachable`.

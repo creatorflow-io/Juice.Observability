@@ -11,7 +11,7 @@ namespace Juice.Observability.Api
 {
     /// <summary>
     /// Who administers the platform's notifications (phase-5-plan p5-d6): the platform's own roles, for its one tenant (the pipeline's
-    /// embedded tenant). <c>admin</c> changes the setup as it changes webhook endpoints today; <c>operator</c> reads history and retries
+    /// embedded tenant). <c>admin</c> changes the setup (integrations, routes, policies); <c>operator</c> reads history and retries
     /// deliveries; <c>viewer</c> sees nothing of notifications. Only for a caller of this deployment: one IdP may serve several, and roles alone
     /// don't say which, so a caller whose tenant claim isn't this deployment's tenant key (or who has none) has no right, whatever its roles
     /// (as <c>/api/v1/platform/status</c> judges it).

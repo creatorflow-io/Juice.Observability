@@ -9,7 +9,7 @@ namespace Juice.Observability.Notifications
     /// <summary>
     /// What the pipeline does at start before it takes anything: migrate its schema (I60, after the platform's), load its provisioning file, and
     /// declare the platform's application and types (I63). A failure here fails readiness (<c>/health/ready</c>, check <c>notifications</c>), not
-    /// the host: the alert evaluator, the webhooks and the API go on (phase-5-plan risk table). After a failure, what follows it is skipped, since it
+    /// the host: the alert evaluator, the other workers and the API go on (phase-5-plan risk table). After a failure, what follows it is skipped, since it
     /// needs what failed. Restart the host once the cause is fixed.
     /// <para>The pipeline's own migrator throws at start, so it is off (<c>Database:Migrate=false</c> in its settings) and the platform migrates
     /// the schema in its place, by <see cref="NotificationsDatabase.MigrateAsync"/>.</para>
