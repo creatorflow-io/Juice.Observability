@@ -289,9 +289,145 @@ namespace Juice.Observability.Tests.EvidenceContributors
             clock.Stop();
 
             Assert.Equal("timeout", sections["evidence-sample.one"].GetProperty("state").GetString());
-            Assert.Equal("timeout", sections["evidence-sample.two"].GetProperty("state").GetString());
-            Assert.DoesNotContain(EvidenceBehaviors.Seen, s => s.Key == "evidence-sample.two");
+            // Every contributor has a connection of its own, so the next one runs as usual.
+            Assert.Equal("ok", sections["evidence-sample.two"].GetProperty("state").GetString());
             Assert.True(clock.Elapsed < TimeSpan.FromSeconds(2.8), $"took {clock.Elapsed}");
+        }
+
+        /// <summary>Backends of the database that still sit in a transaction or run a sleep: what a contributor given up on must not leave behind.</summary>
+        private static async Task<List<string>> LeftoverBackendsAsync(ScratchDatabase database, TimeSpan wait)
+        {
+            var name = new NpgsqlConnectionStringBuilder(database.ConnectionString).Database;
+            var found = new List<string>();
+            var until = Stopwatch.StartNew();
+            while (true)
+            {
+                await using var connection = new NpgsqlConnection(database.ConnectionString);
+                await connection.OpenAsync(Ct);
+                await using var command = new NpgsqlCommand(
+                    "SELECT state || ': ' || left(query, 60) FROM pg_stat_activity WHERE datname = @db AND pid <> pg_backend_pid() AND (state = 'idle in transaction' OR (state = 'active' AND query LIKE '%pg_sleep%'))", connection);
+                command.Parameters.AddWithValue("db", name!);
+                found.Clear();
+                await using (var reader = await command.ExecuteReaderAsync(Ct))
+                {
+                    while (await reader.ReadAsync(Ct))
+                    {
+                        found.Add(reader.GetString(0));
+                    }
+                }
+                if (found.Count == 0 || until.Elapsed > wait)
+                {
+                    return found;
+                }
+                await Task.Delay(200, Ct);
+            }
+        }
+
+        private static readonly EvidenceBehaviors.Behavior SleepIgnoringToken = async (_, services, _) =>
+        {
+            // A statement that runs for seconds, started with a token that never cancels.
+            await services.Core.Database.ExecuteSqlRawAsync("SELECT pg_sleep(4)", CancellationToken.None);
+            return new EvidenceSection("Late", []);
+        };
+
+        [Fact]
+        public async Task Stuck_contributor_leaves_no_backend_in_transaction()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var host = await HostAsync(database, new() { ["Evidence:ContributorTimeout"] = "00:00:00.5" });
+            var seed = await SeedAsync(database);
+            EvidenceBehaviors.ByKey["evidence-sample.one"] = SleepIgnoringToken;
+            using var client = host.As("viewer");
+
+            var response = await client.GetAsync(Alerts(seed), Ct);
+            var sections = ByKey(await Json(response));
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal("timeout", sections["evidence-sample.one"].GetProperty("state").GetString());
+            Assert.Equal("ok", sections["evidence-sample.two"].GetProperty("state").GetString());
+            Assert.Empty(await LeftoverBackendsAsync(database, TimeSpan.FromSeconds(3)));
+            // A connection from the same pool afterwards is an ordinary one: the session setting didn't outlive the contributor.
+            await using var connection = new NpgsqlConnection(database.ConnectionString);
+            await connection.OpenAsync(Ct);
+            await using var show = new NpgsqlCommand("SHOW default_transaction_read_only", connection);
+            Assert.Equal("off", (string?)await show.ExecuteScalarAsync(Ct));
+        }
+
+        [Fact]
+        public async Task Contributor_commit_then_write_row_absent()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var host = await HostAsync(database);
+            var seed = await SeedAsync(database);
+            EvidenceBehaviors.ByKey["evidence-sample.one"] = async (context, services, ct) =>
+            {
+                // Ends the read-only transaction, and then writes in whatever the connection allows next.
+                await services.Core.Database.CommitTransactionAsync(ct);
+                services.Core.ChangeEvents.Add(new ChangeEvent { TenantId = context.TenantId, Kind = ChangeKind.Other, Source = "evil", Summary = "written", OccurredAt = DateTimeOffset.UtcNow, RecordedAt = DateTimeOffset.UtcNow });
+                await services.Core.SaveChangesAsync(ct);
+                return new EvidenceSection("Wrote", []);
+            };
+            EvidenceBehaviors.ByKey["evidence-sample.two"] = async (_, services, ct) =>
+            {
+                await services.Core.Database.CommitTransactionAsync(ct);
+                services.Module.Notes.Add(new EvidenceNote { Id = Guid.CreateVersion7(), Text = "written" });
+                await services.Module.SaveChangesAsync(ct);
+                return new EvidenceSection("Wrote", []);
+            };
+            using var client = host.As("viewer");
+
+            var sections = ByKey(await Json(await client.GetAsync(Alerts(seed), Ct)));
+
+            Assert.Equal("failed", sections["evidence-sample.one"].GetProperty("state").GetString());
+            Assert.Equal("failed", sections["evidence-sample.two"].GetProperty("state").GetString());
+            Assert.Equal(0, await CountAsync(database, "SELECT count(*) FROM change_events WHERE source = 'evil'"));
+            Assert.Equal(0, await CountAsync(database, "SELECT count(*) FROM evidence_sample.notes"));
+        }
+
+        [Fact]
+        public async Task Client_disconnect_while_contributor_runs_leaves_no_backend()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var host = await HostAsync(database);
+            var seed = await SeedAsync(database);
+            EvidenceBehaviors.ByKey["evidence-sample.one"] = SleepIgnoringToken;
+            using var client = host.As("viewer");
+            using var abort = new CancellationTokenSource();
+            abort.CancelAfter(TimeSpan.FromSeconds(1));
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => client.GetAsync(Alerts(seed), abort.Token));
+
+            Assert.Empty(await LeftoverBackendsAsync(database, TimeSpan.FromSeconds(3)));
+            // The host is still serving.
+            Assert.Equal(HttpStatusCode.OK, (await client.GetAsync(Alerts(seed, seed.SecondAlert), Ct)).StatusCode);
+        }
+
+        [Fact]
+        public async Task Format_characters_in_a_change_summary_are_stripped_not_the_section()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            await using var host = await HostAsync(database);
+            var seed = await SeedAsync(database);
+            await using (var db = database.Context())
+            {
+                db.ChangeEvents.Add(new ChangeEvent
+                {
+                    TenantId = seed.Tenant, Kind = ChangeKind.Deployment, Source = "pipe‏line", Summary = "Dep­loyed‍ v‮3⁦", ServiceId = seed.Service,
+                    Environment = "production", OccurredAt = seed.Breach.AddMinutes(-2), RecordedAt = DateTimeOffset.UtcNow,
+                });
+                await db.SaveChangesAsync(Ct);
+            }
+            using var client = host.As("viewer");
+
+            var section = ByKey(await Json(await client.GetAsync(Alerts(seed), Ct)))["core.changes"];
+
+            Assert.Equal("ok", section.GetProperty("state").GetString());
+            var labels = section.GetProperty("items").EnumerateArray().Select(i => i.GetProperty("label").GetString()).ToList();
+            Assert.Contains("Deployed v3", labels);
         }
 
         private static readonly EvidenceBehaviors.Behavior Slow = async (_, _, ct) =>

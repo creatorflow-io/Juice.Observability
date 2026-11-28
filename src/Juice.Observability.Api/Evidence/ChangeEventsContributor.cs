@@ -15,6 +15,9 @@ namespace Juice.Observability.Api.Evidence
 
         public EvidenceTarget Target => EvidenceTarget.Alert;
 
+        /// <summary>A change's text is a pipeline's: odd characters are cleaned from the item, never the section.</summary>
+        private static string? Text(string? text) => EvidenceSanitizer.Clean(text) is { Length: > 0 } clean ? clean : null;
+
         public async Task<EvidenceSection?> ContributeAsync(EvidenceContext context, CancellationToken ct)
         {
             var alert = await db.Alerts.AsNoTracking().SingleOrDefaultAsync(a => a.TenantId == context.TenantId && a.Id == context.SubjectId, ct);
@@ -23,7 +26,7 @@ namespace Juice.Observability.Api.Evidence
                 return null;
             }
             var related = await ChangeEndpoints.RelatedForAsync(context.TenantId, alert, db, ct);
-            var items = related.Items.Where(i => i.Type == "change").Select(i => new EvidenceItem(i.Title, i.Detail, i.At)).ToList();
+            var items = related.Items.Where(i => i.Type == "change").Select(i => new EvidenceItem(Text(i.Title) ?? "(no text)", Text(i.Detail), i.At)).ToList();
             return items.Count == 0 ? null : new EvidenceSection("Changes around this alert", items, related.Note);
         }
     }
