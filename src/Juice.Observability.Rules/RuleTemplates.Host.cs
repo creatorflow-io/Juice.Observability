@@ -32,14 +32,17 @@ namespace Juice.Observability.Rules
             AND NOT match(Attributes['mountpoint'], '^/var/lib/docker(/|$)')
             """;
 
-        // CPU time is a cumulative counter per (cpu, state): its increase is measured as the other counters' are (CounterIncrease): from the series'
-        // last value before the window, from zero for a series that starts in it, and a series without a point in the window is left out. The
-        // non-idle share is busy / total over all of them.
+        // CPU time is a cumulative counter per (cpu, state), counted as the other counters are (CounterIncrease) with one difference. The increase
+        // is measured from the series' last value before the window; failing that, from zero for a series that started in the window (a restart),
+        // but from the series' first point in the window for an older one: a hostmetrics series starts at boot, so counting it from zero would
+        // read the lifetime average. A series without a point in the window is left out. Busy is every state but idle and iowait ('wait', which
+        // top doesn't count as use); the share is busy / total over all states.
         private static readonly string HostCpuTime = $"""
-            SELECT host, sumIf(increase, state != 'idle') AS busy, sum(increase) AS total
+            SELECT host, sumIf(increase, state NOT IN ('idle', 'wait')) AS busy, sum(increase) AS total
             FROM (
                 SELECT {HostExpr} AS host, Attributes['state'] AS state,
-                       greatest(maxIf(Value, TimeUnix >= {From}) - maxIf(Value, TimeUnix < {From}), 0) AS increase
+                       greatest(maxIf(Value, TimeUnix >= {From}) - if(countIf(TimeUnix < {From}) > 0, maxIf(Value, TimeUnix < {From}),
+                           if(StartTimeUnix >= {From}, 0, argMinIf(Value, TimeUnix, TimeUnix >= {From}))), 0) AS increase
                 FROM otel.otel_metrics_sum
                 WHERE {Tenant} AND TimeUnix >= {From} - INTERVAL 1 HOUR AND TimeUnix < {To} AND MetricName = '{CpuTime}' AND {HostFilter}
                 GROUP BY host, state, cityHash64(ResourceAttributes, Attributes), StartTimeUnix
@@ -51,9 +54,9 @@ namespace Juice.Observability.Rules
             LIMIT {Limit}
             """;
 
-        // The fallback, for a Collector without the cpu.time metric: one minus the mean idle share over the window.
+        // The fallback, for a Collector without the cpu.time metric: one minus the mean idle and iowait shares over the window.
         private static readonly string HostCpuUtilization = $"""
-            SELECT {HostExpr} AS host, 1 - avgIf(Value, Attributes['state'] = 'idle') AS busy
+            SELECT {HostExpr} AS host, 1 - avgIf(Value, Attributes['state'] = 'idle') - ifNotFinite(avgIf(Value, Attributes['state'] = 'wait'), 0) AS busy
             FROM otel.otel_metrics_gauge
             WHERE {Tenant} AND TimeUnix >= {From} AND TimeUnix < {To} AND MetricName = '{CpuUtilization}' AND {HostFilter}
             GROUP BY host
