@@ -13,10 +13,10 @@ import { NotFoundPage, PING_LIBRARY, PING_SERVER, StubPage, flat, settle, stubbe
 const MODULES_URL = '/api/v1/modules';
 const WITH_PING = { items: [...BUILTIN_MODULES, PING_SERVER] };
 
-function setup(signedIn: boolean) {
-  const state = { signedIn, guardCalls: 0 };
+function setup(signedIn: boolean, withOption = true) {
+  const state = { signedIn, guardPasses: signedIn, guardCalls: 0 };
   const libraries = stubbed([...CORE_CONSOLE_MODULES, PING_LIBRARY]);
-  const authGuard: CanActivateFn = () => { state.guardCalls++; return state.signedIn ? true : inject(Router).parseUrl('/auth/signin'); };
+  const authGuard: CanActivateFn = () => { state.guardCalls++; return state.guardPasses ? true : inject(Router).parseUrl('/auth/signin'); };
   TestBed.configureTestingModule({
     providers: [
       // The host's shape: the libraries' routes each behind sign-in, the sign-in page and the not-found page after them.
@@ -27,7 +27,7 @@ function setup(signedIn: boolean) {
       ] }]),
       provideHttpClient(), provideHttpClientTesting(),
       provideJuiceObservability({ approvalCount: false }),
-      provideObservabilityModules(libraries, { signedIn: () => state.signedIn }),
+      provideObservabilityModules(libraries, withOption ? { signedIn: () => state.signedIn } : {}),
       { provide: TenantService, useValue: { getTenantIdentifier: async () => null } },
     ],
   });
@@ -119,6 +119,27 @@ describe('Module routes and the installed modules (core 2.0 M3, E7)', () => {
     expect(state.guardCalls).toBe(1);
     // nothing was asked of the server without a session
     http.expectNone(MODULES_URL);
+  });
+
+  it('signed_out_deep_link_without_signedIn_option_defers_to_signin', async () => {
+    // No  option: no page has fetched the tenant, so there is no session as far as the library knows
+    const { go, http, state, router } = setup(false, false);
+    expect(await go('/ping')).toBe('auth/signin');
+    expect(router.url).toBe('/auth/signin');
+    expect(state.guardCalls).toBe(1);
+    http.expectNone(MODULES_URL);
+    expect(TestBed.inject(InstalledModules).state()).toBe('loading');
+  });
+
+  it('a_401_from_modules_defers_to_signin_and_is_not_a_failure', async () => {
+    const { go, state, router } = setup(true);
+    const modules = TestBed.inject(InstalledModules);
+    // the session looks valid to the library but the server says 401; the host's guard decides
+    state.guardPasses = false;
+    expect(await go('/ping', { status: 401 })).toBe('auth/signin');
+    expect(router.url).toBe('/auth/signin');
+    expect(modules.state()).toBe('loading');
+    expect(modules.names().has('slos')).toBe(true); // still the built-in menu, not the core-only fallback
   });
 
   it('menu_updates_when_modules_arrive_after_shell_built_on_unguarded_route', async () => {
