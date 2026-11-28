@@ -291,6 +291,19 @@ public sealed record ConsoleManifest(string Package, IReadOnlyList<ConsoleRoute>
 
 public sealed record ConsoleRoute(string Path, string? Policy);
 
-public sealed record ConsoleMenuEntry(string Key, string Label, string Route, string? Icon, string? Policy, int Order);
+public sealed record ConsoleMenuEntry(string Key, string Label, string Route, string? Icon, string? Policy, int Order)
+{
+    /// <summary>Null for the top level of the menu, or a core group (<see cref="ConsoleMenuGroups"/>). Left out of the JSON when null.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? Group { get; init; }
+}
+
+/// <summary>The groups of the Console menu an entry may sit in. A group with no visible entry is hidden.</summary>
+public static class ConsoleMenuGroups
+{
+    public const string Explore = "explore", Automation = "automation", Configure = "configure";
+
+    public static IReadOnlySet<string> All { get; } = new HashSet<string>(StringComparer.Ordinal) { Explore, Automation, Configure };
+}
 
 public sealed class ModuleCompositionException(string message) : InvalidOperationException(message);
