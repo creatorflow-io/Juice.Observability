@@ -307,6 +307,19 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
+        public async Task Cumulative_series_started_before_the_window_and_seen_once_is_no_data_Async()
+        {
+            LocalStack.RequireAvailable();
+            var service = $"hist-{_run}-once";
+            await LocalStack.SendAsync("metrics", OtlpMetrics.BucketHistogram(Resource(service), Metric, OtlpMetrics.Cumulative, At(-5000), [], Bounds,
+                (At(4), [100, 200, 50], 500)));
+            await WaitAsync("otel_metrics_histogram", service, 1);
+
+            // Nothing to measure it from: no observation, not a rate of 0 that a Below rule would page on.
+            Assert.Empty(await Templates.ObserveAsync(Rule(service, MetricAggregation.Rate), Window(), Ct));
+        }
+
+        [Fact]
         public async Task Cumulative_reset_under_the_same_start_counts_from_zero_Async()
         {
             LocalStack.RequireAvailable();
