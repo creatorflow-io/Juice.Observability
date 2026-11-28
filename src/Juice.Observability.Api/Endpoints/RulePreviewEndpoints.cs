@@ -107,13 +107,18 @@ namespace Juice.Observability.Api.Endpoints
                 observed.AddRange(instants.Select(at => (at, (IReadOnlyList<RuleObservation>)[])));
             }
 
-            var judged = await RulePreview.WithThresholdsAsync(thresholds, definition, observed, budget.Token, ct);
+            var loss = new RulePreview.ThresholdLoss();
+            var judged = await RulePreview.WithThresholdsAsync(thresholds, definition, observed, budget.Token, ct, loss);
             var reasons = new List<string>();
             if (cut is not null) reasons.Add(cut);
-            if (definition.ThresholdSource is not null && observed.Count > 0 && budget.IsCancellationRequested)
+            if (loss.BudgetLost > 0)
             {
                 // Every observed instant is kept; those the provider was not asked about, or did not answer in time, read as no data.
-                reasons.Add("the time budget ran out before the threshold provider had answered for every instant; the rest read as no data");
+                reasons.Add(string.Create(CultureInfo.InvariantCulture, $"the time budget ran out before the threshold provider had answered for {loss.BudgetLost} instants; they read as no data"));
+            }
+            if (loss.Failed > 0)
+            {
+                reasons.Add(string.Create(CultureInfo.InvariantCulture, $"the threshold provider failed for {loss.Failed} instants; they read as no data"));
             }
             // Each instant is read under the row limit, but the instants see different subjects: the union is capped too.
             var cap = SubjectCap(rules.Value.RowLimit);

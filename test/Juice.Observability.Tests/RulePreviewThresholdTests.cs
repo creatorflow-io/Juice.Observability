@@ -125,6 +125,37 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
+        public async Task Loss_is_counted_only_for_calls_skipped_cut_off_or_failed_Async()
+        {
+            var rule = Draft();
+            var answers = new ThresholdSeamTests.Provider(keys => keys.ToDictionary(k => k, _ => new RuleThreshold(0.4, 0.3)));
+
+            // The provider answers every instant, and the budget fires after: nothing was lost.
+            using var late = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+            var answered = new RulePreview.ThresholdLoss();
+            await RulePreview.WithThresholdsAsync(ThresholdSeamTests.Thresholds(answers), rule, Points(0.5), late.Token, Ct, answered);
+            await late.CancelAsync();
+            Assert.Equal((0, 0), (answered.BudgetLost, answered.Failed));
+
+            // A spent budget: every call is skipped.
+            using var spent = new CancellationTokenSource();
+            await spent.CancelAsync();
+            var skipped = new RulePreview.ThresholdLoss();
+            await RulePreview.WithThresholdsAsync(ThresholdSeamTests.Thresholds(answers), rule, Points(0.5), spent.Token, Ct, skipped);
+            Assert.Equal((3, 0), (skipped.BudgetLost, skipped.Failed));
+
+            // A provider that throws within the budget: failed, not lost to the budget.
+            var failed = new RulePreview.ThresholdLoss();
+            await RulePreview.WithThresholdsAsync(ThresholdsOf(new Awkward(true)), rule, Points(0.5), Ct, Ct, failed);
+            Assert.Equal((0, 3), (failed.BudgetLost, failed.Failed));
+
+            // No subjects at any instant: nothing was asked, nothing lost, even on a spent budget.
+            var quiet = new RulePreview.ThresholdLoss();
+            await RulePreview.WithThresholdsAsync(ThresholdSeamTests.Thresholds(answers), rule, [(End, [])], spent.Token, Ct, quiet);
+            Assert.Equal((0, 0), (quiet.BudgetLost, quiet.Failed));
+        }
+
+        [Fact]
         public async Task A_budget_already_spent_keeps_the_observed_points_with_no_threshold_Async()
         {
             var rule = Draft();
