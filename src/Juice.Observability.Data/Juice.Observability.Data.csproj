@@ -18,4 +18,13 @@
     <PackageReference Include="Juice.Messaging.Outbox.EF" />
   </ItemGroup>
 
+  <!-- The core's own assemblies, which raise events for modules (IPlatformEventPublisher): a module can't name it. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="Juice.Observability.Discovery" />
+    <InternalsVisibleTo Include="Juice.Observability.Rules" />
+    <InternalsVisibleTo Include="Juice.Observability.Slos" />
+    <InternalsVisibleTo Include="Juice.Observability.Api" />
+    <InternalsVisibleTo Include="Juice.Observability.Tests" />
+  </ItemGroup>
+
 </Project>

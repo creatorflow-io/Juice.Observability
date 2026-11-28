@@ -7,7 +7,7 @@ namespace Juice.Observability.Data
     /// them, one envelope per module with a handler for them, and nothing when no module has one. Modules don't publish, and aren't given this: it
     /// isn't in the module contract. The event's <see cref="ObservabilityEvent.TenantId"/> is always the platform tenant's, whatever the caller set.
     /// </summary>
-    public interface IPlatformEventPublisher
+    internal interface IPlatformEventPublisher
     {
         /// <summary>Whether any module handles <typeparamref name="TEvent"/>: false means publishing it writes nothing, so don't build it.</summary>
         bool HasSubscribers<TEvent>() where TEvent : ObservabilityEvent;
