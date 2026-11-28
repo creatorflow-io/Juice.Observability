@@ -66,7 +66,8 @@ namespace Juice.Observability.Notifications
                 .ToListAsync(cancellationToken);
             foreach (var call in parked)
             {
-                if (await EachAsync(transaction, () => adapter.ReplayAsync(call, cancellationToken), cancellationToken) is { } error)
+                var finished = true;
+                if (await EachAsync(transaction, async () => finished = await adapter.ReplayAsync(call, cancellationToken), cancellationToken) is { } error)
                 {
                     call.Attempts++;
                     call.LastError = Bounded(error);
@@ -77,7 +78,11 @@ namespace Juice.Observability.Notifications
                     }
                     continue;
                 }
-                call.ReplayedAt = now;
+                if (finished)
+                {
+                    // Not finished: kept as it is for the next pass (a decision holds its request), and no attempt is counted against it.
+                    call.ReplayedAt = now;
+                }
             }
             var active = await NotificationPlan.ActiveAsync(db, now, cancellationToken);
             var activeIds = active.Select(s => s.Id).ToArray();

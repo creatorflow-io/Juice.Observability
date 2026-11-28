@@ -369,6 +369,42 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
+        public async Task ApprovalItem_KeptWhileDown_DecisionHoldsTheRequestRow_PassDoesNotWait_KeepsItParked_NextPassDrops()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            var (request, correlation) = await KeptWhileDownAsync(database);
+            await using var up = new ApiFactory(database, settings: On());
+            _ = up.Server;
+
+            // A decision is in progress: it holds the request's row, and has not committed.
+            await using var decision = database.Context();
+            await using var transaction = await decision.Database.BeginTransactionAsync(Ct);
+            await decision.Database.ExecuteSqlAsync($"SELECT 1 FROM action_requests WHERE id = {request.Id} FOR UPDATE", Ct);
+            var started = System.Diagnostics.Stopwatch.StartNew();
+            await Pass(up).ReleaseOnceAsync(Ct);
+
+            // The pass went on without waiting for it, and kept the item: not sent, not given up, no attempt counted.
+            Assert.True(started.Elapsed < TimeSpan.FromSeconds(5), $"the pass waited {started.Elapsed}");
+            Assert.Null(await CorrelationStateAsync(database, correlation));
+            await using (var check = database.Context())
+            {
+                var kept = (await check.NotificationParkedCalls.AsNoTracking().ToListAsync(Ct)).Single(c => c.Request!.Contains(ObservabilityTypes.ActionApproval, StringComparison.Ordinal));
+                Assert.Equal((null, 0), (kept.ReplayedAt, kept.Attempts));
+            }
+
+            // The decision commits; the next pass finds the request decided and drops the item.
+            await decision.ActionRequests.Where(r => r.Id == request.Id).ExecuteUpdateAsync(r => r.SetProperty(x => x.State, ActionRequestState.Rejected), Ct);
+            await transaction.CommitAsync(Ct);
+            await Pass(up).ReleaseOnceAsync(Ct);
+
+            Assert.Null(await CorrelationStateAsync(database, correlation));
+            await using var after = database.Context();
+            Assert.All(await after.NotificationParkedCalls.ToListAsync(Ct), c => Assert.NotNull(c.ReplayedAt));
+            Assert.DoesNotContain(await RequestsAsync(database), r => r.Type == ObservabilityTypes.ActionApproval);
+        }
+
+        [Fact]
         public async Task ApprovalItem_KeptWhileDown_RequestStillWaitingAtTheReplay_Sent_OpenUntilDecided()
         {
             LocalStack.RequireAvailable();
