@@ -123,6 +123,8 @@ own_otlp_token() {
     echo "wrote $file"
   fi
   if ! grep -qF "$(cat "$file") " secrets/otlp-tokens; then
+    # A hand-edited file may lack its last newline: end the line first, so two tokens don't share one.
+    [[ -n "$(tail -c1 secrets/otlp-tokens)" ]] && echo >> secrets/otlp-tokens
     echo "$(cat "$file") $1" >> secrets/otlp-tokens
     echo "added $1 to secrets/otlp-tokens"
   fi
