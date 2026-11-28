@@ -531,6 +531,60 @@ namespace Juice.Observability.Tests
         // ─── Races ────────────────────────────────────────────────────────────
 
         [Fact]
+        public async Task Inbox_TwoBellsAndAPage_AtOnce_OneDecision_OneCommand_OneAuditRow_LosersRefused()
+        {
+            await using var rig = await Rig.StartAsync();
+            var (alice, adam, erin) = (await Rig.CallerAsync(rig, "alice"), await Rig.CallerAsync(rig, "adam"), await Rig.CallerAsync(rig, "erin"));
+            var carol = await Rig.CallerAsync(rig, "alice");
+            Assert.Empty(await rig.ItemsAsync(alice));
+            Assert.Empty(await rig.ItemsAsync(adam));
+            HashSet<Guid> seenA = [], seenB = [];
+            for (var i = 0; i < 10; i++)
+            {
+                var request = await rig.RequestAsync(erin, $"race-{i}");
+                var (a, b) = (await rig.WaitItemAsync(alice, ObservabilityTypes.ActionApproval, except: seenA), await rig.WaitItemAsync(adam, ObservabilityTypes.ActionApproval, except: seenB));
+                seenA.Add(a.GetProperty("id").GetGuid());
+                seenB.Add(b.GetProperty("id").GetGuid());
+                var (commands, audits) = (await rig.CommandsAsync(), (await rig.AuditAsync("action.request.approve")).Count + (await rig.AuditAsync("action.request.reject")).Count);
+
+                // Admin X's bell approves, admin Y's bell rejects, and the page approves, all at once.
+                var results = await Task.WhenAll(rig.BellAsync(alice, a.GetProperty("id").GetGuid(), "approve"), rig.BellAsync(adam, b.GetProperty("id").GetGuid(), "reject"),
+                    carol.PostAsync($"/api/v1/tenants/{rig.Tenant}/action-requests/{request}/approval", new { comment = "page" }));
+
+                Assert.Single(results, r => r.StatusCode == HttpStatusCode.OK);
+                Assert.All(results.Where(r => r.StatusCode != HttpStatusCode.OK), r => Assert.Contains(r.StatusCode, new[] { HttpStatusCode.Conflict }));
+                var state = (await rig.RequestRowAsync(request)).State;
+                Assert.Contains(state, new[] { ActionRequestState.Issued, ActionRequestState.Rejected });
+                Assert.Equal(commands + (state == ActionRequestState.Issued ? 1 : 0), await rig.CommandsAsync());
+                // One decision, one audit row: the losers find the request decided and write none.
+                var after = (await rig.AuditAsync("action.request.approve")).Count + (await rig.AuditAsync("action.request.reject")).Count;
+                Assert.Equal(audits + 1, after);
+            }
+        }
+
+        [Fact]
+        public async Task BellAck_AlreadyAcknowledgedAlert_WritesNoSecondAuditRow()
+        {
+            await using var rig = await Rig.StartAsync();
+            var (erin, alice) = (await Rig.CallerAsync(rig, "erin"), await Rig.CallerAsync(rig, "alice"));
+            Assert.Empty(await rig.ItemsAsync(erin));
+            Assert.Empty(await rig.ItemsAsync(alice));
+            var (alert, firing) = await FireAsync(rig.Database);
+            await PlanAsync(rig.Factory, rig.Database, firing);
+            var item = await rig.WaitItemAsync(erin, ObservabilityTypes.AlertFiring);
+            var other = await rig.WaitItemAsync(alice, ObservabilityTypes.AlertFiring);
+
+            Assert.Equal(HttpStatusCode.OK, (await rig.BellAcknowledgeAsync(erin, item.GetProperty("id").GetGuid())).StatusCode);
+            var first = (await rig.AuditAsync("alert.acknowledge")).Count;
+            // Another person's item for the same alert: the alert is acknowledged already, so the page's path writes nothing more.
+            var again = await rig.BellAcknowledgeAsync(alice, other.GetProperty("id").GetGuid());
+
+            Assert.True(again.StatusCode is HttpStatusCode.OK or HttpStatusCode.Conflict);
+            Assert.Equal((1, first), (first, (await rig.AuditAsync("alert.acknowledge")).Count));
+            _ = alert;
+        }
+
+        [Fact]
         public async Task Inbox_BellAndPage_ApproveSameMoment_OneCommand_LoserGets409()
         {
             await using var rig = await Rig.StartAsync();
