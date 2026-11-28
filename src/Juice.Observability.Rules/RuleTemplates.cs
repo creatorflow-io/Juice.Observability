@@ -22,7 +22,8 @@ namespace Juice.Observability.Rules
     /// tenant, is bounded by the evidence window and row limit, and takes the rule's scope only as parameters.
     /// </summary>
     public sealed partial class RuleTemplates(ClickHouseTelemetrySource clickHouse, SignalPacks? packs = null, IEnumerable<IRuleTemplate>? moduleTemplates = null,
-        IEnumerable<IRuleThresholdProvider>? thresholdProviders = null, IEnumerable<ModuleRuleContribution>? contributions = null)
+        IEnumerable<IRuleThresholdProvider>? thresholdProviders = null, IEnumerable<ModuleRuleContribution>? contributions = null,
+        IEnumerable<ModuleAlertSourceDeclaration>? alertSources = null)
     {
         private RuleTemplateRegistry? _registry;
 
@@ -30,7 +31,7 @@ namespace Juice.Observability.Rules
         /// The templates and threshold providers this host knows: the core's, whose queries are in this class, and the modules' (core 2.0 M2).
         /// </summary>
         public RuleTemplateRegistry Registry => LazyInitializer.EnsureInitialized(ref _registry, () =>
-            new RuleTemplateRegistry(BuiltInTemplates.Create(this), moduleTemplates, thresholdProviders, contributions))!;
+            new RuleTemplateRegistry(BuiltInTemplates.Create(this), moduleTemplates, thresholdProviders, contributions, alertSources))!;
 
         private const string Svc = "{svc:String}", Ns = "{ns:String}", EnvParam = "{env:String}", HostParam = "{host:String}";
 

@@ -115,6 +115,18 @@ namespace Juice.Observability.Tests.ModuleData
         }
 
         [Fact]
+        public void An_alert_source_key_a_container_built_template_has_stops_the_host_when_the_registry_is_built()
+        {
+            // Composition can't read the key of a template that needs the container to be built; the registry, which has them all, refuses it.
+            var host = CoreHost.Build(b => b.AddObservabilityModule<DiTemplateAndSourceModule>());
+
+            var refused = Assert.Throws<ModuleCompositionException>(() => host.Services.GetRequiredService<Juice.Observability.Rules.RuleTemplateRegistry>());
+
+            Assert.Contains("source-di.split", refused.Message);
+            Assert.Contains("alert source", refused.Message);
+        }
+
+        [Fact]
         public void An_alert_source_key_follows_the_rule_template_key_rules()
         {
             Assert.Contains("lower case", Refused<UpperCaseSourceModule>().Message);
