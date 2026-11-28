@@ -106,7 +106,7 @@ namespace Juice.Observability.Tests
             var body = new
             {
                 key = "old-rule", name = "Old", template = "MetricThreshold", threshold = 50, service, schedule = "01:00:00", window = "06:00:00", forDuration = "00:00:00",
-                metric = new { name = metric, aggregation = "Last" },
+                metric = new { name = metric, kind = "Gauge", aggregation = "Last" },
             };
 
             var preview = await Caller.JsonAsync(await admin.PostAsync(PreviewUrl(tenant), body));
@@ -114,6 +114,28 @@ namespace Juice.Observability.Tests
             Assert.Equal(JsonValueKind.Null, preview.GetProperty("quiet").ValueKind);
             var subject = Assert.Single(preview.GetProperty("subjects").EnumerateArray());
             Assert.Equal(90, subject.GetProperty("max").GetDouble());
+        }
+
+        [Fact]
+        public async Task Kind_is_filled_from_24h_only_in_preview_and_create_alike_Async()
+        {
+            LocalStack.RequireAvailable();
+            var (service, metric) = ($"pv-{_run}-26h", $"pv.{_run}.26h");
+            await SendGaugeAsync(service, metric, (Ago(26 * 60), 5));   // 26 h ago: not in the last 24 h
+            var (database, factory, _, _, admin, tenant) = await StartAsync();
+            await using var _d = database; await using var _f = factory;
+            var body = new
+            {
+                key = "kind-rule", name = "Kind", template = "MetricThreshold", threshold = 50, service, schedule = "01:00:00", window = "06:00:00",
+                metric = new { name = metric, aggregation = "Last" },
+            };
+
+            foreach (var url in new[] { PreviewUrl(tenant), $"/api/v1/tenants/{tenant}/rules" })
+            {
+                var response = await admin.PostAsync(url, body);
+                Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+                Assert.Contains("Metric.Kind is required", await response.Content.ReadAsStringAsync(Ct));
+            }
         }
 
         [Fact]

@@ -146,7 +146,7 @@ namespace Juice.Observability.Tests
             foreach (Exception error in new Exception[] { new InvalidOperationException("Authentication failed"), new TaskCanceledException("The request timed out", new TimeoutException()) })
             {
                 var log = new Capture();
-                var page = await Juice.Observability.Api.Endpoints.AlertEndpoints.MarkNeverObservedAsync(Page("m.x"),
+                var page = await Juice.Observability.Api.Endpoints.AlertEndpoints.MarkNeverObservedAsync(Page("m.x"), DateTimeOffset.UtcNow,
                     (_, _) => throw error, log, CancellationToken.None);
 
                 Assert.Null(Assert.Single(page).Quiet);
@@ -160,7 +160,7 @@ namespace Juice.Observability.Tests
         {
             using var cancel = new CancellationTokenSource();
             await cancel.CancelAsync();
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Juice.Observability.Api.Endpoints.AlertEndpoints.MarkNeverObservedAsync(Page("m.x"),
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Juice.Observability.Api.Endpoints.AlertEndpoints.MarkNeverObservedAsync(Page("m.x"), DateTimeOffset.UtcNow,
                 (_, _) => throw new OperationCanceledException(cancel.Token), new Capture(), cancel.Token));
         }
 
@@ -196,8 +196,9 @@ namespace Juice.Observability.Tests
 
             var rules = await ListAsync(viewer, tenant);
 
-            // One lookback per page (the longest window), as the catalog is read once: the page is not quiet when a preview of its longest rule has data.
+            // One query, but each rule against its own lookback: last seen 26 h ago is inside 24 h + 6 h, outside 24 h + 5 min.
             Assert.Equal(JsonValueKind.Null, rules["long-window"].GetProperty("quiet").ValueKind);
+            Assert.Equal(Never(metric), rules["short-window"].GetProperty("quiet").GetString());
         }
 
         [Fact]

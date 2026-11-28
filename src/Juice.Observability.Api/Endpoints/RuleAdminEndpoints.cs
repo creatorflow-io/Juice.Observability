@@ -85,12 +85,19 @@ namespace Juice.Observability.Api.Endpoints
                     try
                     {
                         var entry = await MetricCatalog.FindAsync(http.RequestServices.GetRequiredService<Discovery.ClickHouseTelemetrySource>(), tenantKey,
-                            metric.Name, clock.GetUtcNow(), ct,
-                            // A preview reads back to the first point's window: 24 h and the rule's window (validated to 6 h at most, so clamped here).
-                            preview ? MetricCatalog.Lookback + TimeSpan.FromTicks(Math.Clamp(definition.Window.Ticks, 0, TimeSpan.FromHours(6).Ticks)) : null);
+                            metric.Name, clock.GetUtcNow(), ct);
                         if (entry is null)
                         {
                             if (metric.Kind is not null) unseen = $"metric {metric.Name} has not been reported in the last 24 h";
+                            // The kind is filled from the last 24 h, as create does, so both agree. Only the short-circuit looks further: a preview reads back to
+                            // the first point's window (24 h and the rule's window, validated to 6 h at most, so clamped here).
+                            if (preview && unseen is not null && await MetricCatalog.FindAsync(http.RequestServices.GetRequiredService<Discovery.ClickHouseTelemetrySource>(),
+                                tenantKey, metric.Name, clock.GetUtcNow(), ct,
+                                MetricCatalog.Lookback + TimeSpan.FromTicks(Math.Clamp(definition.Window.Ticks, 0, TimeSpan.FromHours(6).Ticks))) is { } older)
+                            {
+                                unseen = null;
+                                catalog = older;
+                            }
                         }
                         else if (metric.Kind is { } given && given != entry.Kind)
                         {
