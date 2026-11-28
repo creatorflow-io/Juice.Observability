@@ -424,8 +424,18 @@ namespace Juice.Observability.Tests
             var (erin, victor) = (await Rig.CallerAsync(rig, "erin"), await Rig.CallerAsync(rig, "victor"));
             Assert.Empty(await rig.ItemsAsync(erin));
             Assert.Empty(await rig.ItemsAsync(victor));
+            // The alert escalates: a policy the platform selects and the pipeline has.
+            await using (var policies = rig.Database.Context())
+            {
+                policies.EscalationPolicies.Add(new EscalationPolicy { TenantId = rig.Tenant, Key = "pager-a", Name = "pager-a", MinimumSeverity = AlertSeverity.Info, Enabled = true });
+                await policies.SaveChangesAsync(Ct);
+            }
+            await PipelinePolicyAsync(rig.Factory, "pager-a");
             var (alert, firing) = await FireAsync(rig.Database);
             await PlanAsync(rig.Factory, rig.Database, firing);
+            string EscalationSql(string column) => $"SELECT {column} FROM notifications.escalations e JOIN notifications.correlations c ON c.id = e.correlation_id AND c.tenant_id = e.tenant_id WHERE c.key = 'alert:{alert}'";
+            await ProvisionedHost.WaitAsync(() => ScalarAsync(rig.Database, EscalationSql("count(*)")).GetAwaiter().GetResult() is long n && n == 1, "the escalation to start");
+            Assert.Null(await ScalarAsync(rig.Database, EscalationSql("e.stop_reason")));
             var (operatorItem, viewerItem) = (await rig.WaitItemAsync(erin, ObservabilityTypes.AlertFiring), await rig.WaitItemAsync(victor, ObservabilityTypes.AlertFiring));
 
             // A viewer may see the alert, not acknowledge it: the page's 403, nothing recorded.
@@ -445,6 +455,9 @@ namespace Juice.Observability.Tests
             var acknowledged = await rig.WaitItemAsync(erin, ObservabilityTypes.AlertFiring, state: "acknowledged");
             Assert.Equal("erin", acknowledged.GetProperty("correlation").GetProperty("acknowledgedBy").GetString());
             Assert.Equal("acknowledged", (await CorrelationStateAsync(rig.Database, $"alert:{alert}"))?.ToLowerInvariant());
+            // The escalation stopped: no step is left to page an alert someone took.
+            await ProvisionedHost.WaitAsync(() => ScalarAsync(rig.Database, EscalationSql("e.stop_reason")).GetAwaiter().GetResult() is not null, "the escalation to stop");
+            Assert.Null(await ScalarAsync(rig.Database, EscalationSql("e.next_at")));
 
             // Resolved: the item is closed, and a click on it records nothing.
             await PlanAsync(rig.Factory, rig.Database, await ResolveAsync(rig.Database, alert));
