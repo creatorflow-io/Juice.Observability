@@ -150,6 +150,32 @@ namespace Juice.Observability.Tests
             Assert.Equal(0, begun.Of<Juice.Notifications.Data.NotificationsDbContext>());
         }
 
+        /// <summary>
+        /// The flake of the full run: a host worker's pass (the action-request sweep begins a transaction at the host's start) landed inside the
+        /// count of the command's transactions, 2 for 1. A worker names its caller, and the count is of the test's own flow.
+        /// </summary>
+        [Fact]
+        public async Task A_worker_pass_in_the_same_database_is_not_counted_among_the_commands_transactions_Async()
+        {
+            LocalStack.RequireAvailable();
+            await using var database = await LocalStack.CreateDatabaseAsync();
+            using var begun = new TransactionsBegun(database.Name);
+
+            await Task.Run(async () =>
+            {
+                PlatformCaller.Set("action-requests");
+                await using var db = database.Context();
+                await using var transaction = await db.Database.BeginTransactionAsync(Ct);
+            }, Ct);
+            Assert.Equal(0, begun.Of<PlatformDbContext>());
+
+            await using (var db = database.Context())
+            await using (await db.Database.BeginTransactionAsync(Ct))
+            {
+            }
+            Assert.Equal(1, begun.Of<PlatformDbContext>());
+        }
+
         [Fact]
         public async Task A_rolled_back_platform_command_takes_its_request_with_it_Async()
         {
@@ -302,7 +328,10 @@ namespace Juice.Observability.Tests
             return (long)(await command.ExecuteScalarAsync(Ct))!;
         }
 
-        /// <summary>Transactions begun on one database, per context type (EF's diagnostics).</summary>
+        /// <summary>
+        /// Transactions begun on one database, per context type (EF's diagnostics), by the test's own flow: a host worker's pass (the action-request
+        /// sweep and the SLO counter run one at the start, and a loaded machine puts it after the subscription) names its caller and is not counted.
+        /// </summary>
         private sealed class TransactionsBegun : IObserver<DiagnosticListener>, IObserver<KeyValuePair<string, object?>>, IDisposable
         {
             private readonly string _database;
@@ -329,7 +358,7 @@ namespace Juice.Observability.Tests
             public void OnNext(KeyValuePair<string, object?> value)
             {
                 if (value.Key == RelationalEventId.TransactionStarted.Name && value.Value is TransactionEndEventData { Context: { } context }
-                    && context.Database.GetDbConnection().Database == _database)
+                    && context.Database.GetDbConnection().Database == _database && PlatformCaller.Current == "other")
                 {
                     _begun.AddOrUpdate(context.GetType(), 1, (_, n) => n + 1);
                 }
