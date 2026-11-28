@@ -23,7 +23,10 @@ namespace Juice.Observability.Rules
     {
         public string Key { get; set; } = "";
         public FilterOp Op { get; set; }
-        public List<string> Values { get; set; } = [];
+        private List<string> _values = [];
+
+        /// <summary>Never null: a null in a body or file is read as no values.</summary>
+        public List<string> Values { get => _values; set => _values = value ?? []; }
     }
 
     /// <summary>What a <see cref="Juice.Observability.Data.RuleTemplate.MetricThreshold"/> rule watches: one metric, one aggregation, optional attribute filters.</summary>
@@ -38,7 +41,10 @@ namespace Juice.Observability.Rules
         /// <summary>Required after the API fills it from the catalog, and in rules.json.</summary>
         public MetricKind? Kind { get; set; }
         public MetricAggregation Aggregation { get; set; }
-        public List<MetricFilter> Filters { get; set; } = [];
+        private List<MetricFilter> _filters = [];
+
+        /// <summary>Never null: a null in a body or file is read as no filters.</summary>
+        public List<MetricFilter> Filters { get => _filters; set => _filters = value ?? []; }
         public MetricSubject Subject { get; set; } = MetricSubject.Service;
         public Comparison Comparison { get; set; } = Comparison.Above;
     }
