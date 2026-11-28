@@ -41,6 +41,9 @@ namespace Juice.Observability.Api.Modules
 
         public void ConfigureServices(IModuleServicesBuilder module)
         {
+            // The host's composers for module data and alert sources: the first module to compose (this one, before any external) registers them.
+            module.Services.AddSingleton<IModuleDataComposer>(new Modules.ModuleData.ModuleDataComposerService());
+            module.Services.AddSingleton<IAlertSourceComposer>(new Modules.AlertSources.AlertSourceComposerService());
             module.Services.AddPlatformSlos(module.Configuration);
             // The burn alerts are the core's first alert source (core 2.0 M2): the SLO counter's evaluation applies its signals through it.
             module.AddAlertSource(EvaluateSloBurnsHandler.Template);

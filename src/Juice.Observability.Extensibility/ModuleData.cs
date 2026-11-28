@@ -1,4 +1,3 @@
-using System.Reflection;
 using Microsoft.EntityFrameworkCore;
 
 namespace Juice.Observability.Extensibility;
@@ -40,33 +39,24 @@ public static class ModuleDataExtensions
     public static IModuleServicesBuilder AddModuleData<TContext>(this IModuleServicesBuilder b, Action<ModuleDataOptions>? configure = null) where TContext : ModuleDbContext
     {
         ArgumentNullException.ThrowIfNull(b);
-        ModuleHostBridge.Invoke("Juice.Observability.Api.Modules.ModuleData.ModuleDataComposer", "Add", [typeof(TContext)], b, configure);
+        HostComposers.Find<IModuleDataComposer>(b).AddModuleData<TContext>(b, configure);
         return b;
     }
 }
 
 /// <summary>
-/// How an extension method reaches the host's implementation: the contract assembly sits below the host (the core's DbContext, mediator and
-/// module registry are the host's), so a composition call goes through a static method of the host assembly, found by name. Refused when this
-/// isn't running in a Juice Observability host.
+/// The host's side of <see cref="ModuleDataExtensions.AddModuleData{TContext}"/>. Internal: the host (the Api assembly, by InternalsVisibleTo) implements it
+/// and registers an instance in the services before any module composes, and no module assembly can name it, so a module can't compose around the checks.
 /// </summary>
-internal static class ModuleHostBridge
+internal interface IModuleDataComposer
 {
-    private const string HostAssembly = "Juice.Observability.Api";
+    void AddModuleData<TContext>(IModuleServicesBuilder b, Action<ModuleDataOptions>? configure) where TContext : ModuleDbContext;
+}
 
-    public static void Invoke(string type, string method, Type[] typeArguments, params object?[] arguments)
-    {
-        var host = Type.GetType($"{type}, {HostAssembly}", throwOnError: false)
-            ?? throw new ModuleCompositionException($"{method} needs the Juice Observability host ({HostAssembly}) to compose a module.");
-        var target = host.GetMethod(method, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
-            ?? throw new ModuleCompositionException($"{type}.{method} was not found in {HostAssembly}.");
-        try
-        {
-            (typeArguments.Length == 0 ? target : target.MakeGenericMethod(typeArguments)).Invoke(null, arguments);
-        }
-        catch (TargetInvocationException e) when (e.InnerException is not null)
-        {
-            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(e.InnerException).Throw();
-        }
-    }
+/// <summary>Finds the host's internal composer among the registered services; refused when this isn't a Juice Observability host.</summary>
+internal static class HostComposers
+{
+    public static T Find<T>(IModuleServicesBuilder b) where T : class
+        => b.Services.LastOrDefault(d => d.ServiceType == typeof(T))?.ImplementationInstance as T
+            ?? throw new ModuleCompositionException($"{typeof(T).Name} is not registered: modules compose only in a Juice Observability host, after AddJuiceObservability.");
 }

@@ -7,6 +7,12 @@ using Microsoft.Extensions.Options;
 
 namespace Juice.Observability.Api.Modules.AlertSources
 {
+    /// <summary>The host's <see cref="IAlertSourceComposer"/>, registered as an instance before any module composes.</summary>
+    internal sealed class AlertSourceComposerService : IAlertSourceComposer
+    {
+        public void AddAlertSource(IModuleServicesBuilder b, string template) => AlertSourceComposer.Add(b, template);
+    }
+
     /// <summary>
     /// <c>AddAlertSource</c> (reached through the contract assembly's extension): declares a template's alert source and registers it as a keyed scoped
     /// <see cref="IAlertSource"/>. A template is declared once per host, is never a registry template (the ten built-ins evaluate through the rule

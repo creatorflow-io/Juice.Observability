@@ -35,7 +35,13 @@ public static class AlertSourceModuleExtensions
     public static IModuleServicesBuilder AddAlertSource(this IModuleServicesBuilder b, string template)
     {
         ArgumentNullException.ThrowIfNull(b);
-        ModuleHostBridge.Invoke("Juice.Observability.Api.Modules.AlertSources.AlertSourceComposer", "Add", [], b, template);
+        HostComposers.Find<IAlertSourceComposer>(b).AddAlertSource(b, template);
         return b;
     }
+}
+
+/// <summary>The host's side of <see cref="AlertSourceModuleExtensions.AddAlertSource"/>: internal, implemented and registered by the host (see <c>IModuleDataComposer</c>).</summary>
+internal interface IAlertSourceComposer
+{
+    void AddAlertSource(IModuleServicesBuilder b, string template);
 }

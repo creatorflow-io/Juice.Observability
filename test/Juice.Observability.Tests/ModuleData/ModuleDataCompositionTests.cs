@@ -45,6 +45,20 @@ namespace Juice.Observability.Tests.ModuleData
         [Fact]
         public void Adopting_core_table_not_moved_refused() => Assert.Contains("audit_records", Refused<AdoptCoreTableModule>().Message);
 
+        [Theory]
+        [InlineData("Juice.Observability.Extensibility.IModuleDataComposer")]
+        [InlineData("Juice.Observability.Extensibility.IAlertSourceComposer")]
+        [InlineData("Juice.Observability.Extensibility.HostComposers")]
+        public void Host_composition_seams_are_not_visible_to_a_module_assembly(string name)
+        {
+            // Internal to the contract assembly (visible to the host and the tests by InternalsVisibleTo only): a module can't name them to compose around the checks.
+            var type = typeof(IObservabilityModule).Assembly.GetType(name);
+            Assert.NotNull(type);
+            Assert.False(type.IsVisible);
+            Assert.DoesNotContain(typeof(IObservabilityModule).Assembly.GetExportedTypes(), t => t.Name.EndsWith("Composer", StringComparison.Ordinal));
+            Assert.DoesNotContain(typeof(ModuleCompositionException).Assembly.GetExportedTypes(), t => t.Name == "ModuleHostBridge");
+        }
+
         [Fact]
         public void Module_data_twice_refused() => Assert.Contains("twice", Refused<TwiceModule>().Message);
 

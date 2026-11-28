@@ -16,6 +16,13 @@ namespace Juice.Observability.Api.Modules.ModuleData
         public const string HistoryTable = "__ef_migrations_history";
     }
 
+    /// <summary>The host's <see cref="IModuleDataComposer"/>, registered as an instance before any module composes.</summary>
+    internal sealed class ModuleDataComposerService : IModuleDataComposer
+    {
+        public void AddModuleData<TContext>(IModuleServicesBuilder b, Action<ModuleDataOptions>? configure) where TContext : ModuleDbContext
+            => ModuleDataComposer.Add<TContext>(b, configure);
+    }
+
     /// <summary>
     /// <c>AddModuleData</c> (reached through <see cref="ModuleDbContext"/>'s extension in the contract assembly): checks the declaration and the context's
     /// model at composition, and registers the module's context scoped over the request's PlatformDbContext connection. Every refusal is a
