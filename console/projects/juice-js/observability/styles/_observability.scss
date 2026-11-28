@@ -200,6 +200,8 @@ $_layout-tokens: (bg: bg, surface: surface, border: border, text: text, muted: m
     > .jc-field { min-width: 0; }
     > mat-form-field.jc-field-wide, > .jc-field.jc-field-wide { grid-column: span 2; }
     > mat-checkbox { align-self: center; }
+    // A checkbox in a field wrapper sits at the height of the inputs beside it and wraps its own long label.
+    > .jc-field > mat-checkbox { display: block; padding-top: 6px; }
     > .jc-form-actions { grid-column: 1 / -1; }
     @media (max-width: 520px) { > mat-form-field.jc-field-wide, > .jc-field.jc-field-wide { grid-column: auto; } } }
   .jc-form-actions { display: flex; align-items: center; gap: 8px; width: 100%; }
