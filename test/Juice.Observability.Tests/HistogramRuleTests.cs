@@ -234,6 +234,69 @@ namespace Juice.Observability.Tests
             // Three rows (dev, prod x2) with a limit of 2: prod is cut mid-subject, so only dev is reported.
             var cut = await Templates.ObserveAsync(rule, Window() with { Limit = 2 }, Ct);
             Assert.EndsWith("@dev", Assert.Single(cut).SubjectKey);
+            // Rows that just fit are not a cut: both subjects are reported, the last one whole.
+            var exact = await Templates.ObserveAsync(rule, Window() with { Limit = 3 }, Ct);
+            Assert.Equal(2, exact.Count);
+            Assert.Equal(31d / 600, exact.Single(o => o.SubjectKey.EndsWith("@prod")).Value!.Value, 9);
+        }
+
+        [Fact]
+        public async Task One_subject_s_layouts_are_capped_so_it_cannot_fill_the_limit_Async()
+        {
+            LocalStack.RequireAvailable();
+            var service = $"hist-{_run}-layouts";
+            var layouts = RuleTemplates.MaxHistogramLayoutsPerSubject + 2;
+            for (var i = 1; i <= layouts; i++)
+            {
+                // Layout i has i observations, so the two least observed are the ones left out.
+                await LocalStack.SendAsync("metrics", OtlpMetrics.BucketHistogram(Resource(service), Metric, OtlpMetrics.Delta, At(-30), [("l", i.ToString())],
+                    [10 * i, 10 * i + 1], (At(2), [i, 0, 0], i)));
+            }
+            await WaitAsync("otel_metrics_histogram", service, layouts);
+
+            // A limit of the cap holds the subject; without the cap its 10 rows would exceed it and the subject would be dropped.
+            var observed = Assert.Single(await Templates.ObserveAsync(Rule(service, MetricAggregation.Rate),
+                Window() with { Limit = RuleTemplates.MaxHistogramLayoutsPerSubject }, Ct));
+            Assert.Equal(Enumerable.Range(3, layouts - 2).Sum() / 600d, observed.Value!.Value, 9);
+        }
+
+        [Fact]
+        public async Task Sum_of_zero_is_missing_only_when_a_bucket_beyond_zero_holds_observations_Async()
+        {
+            LocalStack.RequireAvailable();
+            // Everything in the first bucket (which holds 0): a sum of 0 is a real average of 0.
+            var zeros = $"hist-{_run}-zeros";
+            await LocalStack.SendAsync("metrics", OtlpMetrics.BucketHistogram(Resource(zeros), Metric, OtlpMetrics.Delta, At(-30), [], Bounds, (At(2), [10, 0, 0], 0)));
+            // Observations in (1, 2] can't sum to 0: the sum is missing.
+            var missing = $"hist-{_run}-missing";
+            await LocalStack.SendAsync("metrics", OtlpMetrics.BucketHistogram(Resource(missing), Metric, OtlpMetrics.Delta, At(-30), [], Bounds, (At(2), [0, 10, 0], 0)));
+            // One series reports its sum, another doesn't: the average is the first one's alone (20 over 10, not 20 over 40).
+            var mixed = $"hist-{_run}-sums";
+            await LocalStack.SendAsync("metrics", OtlpMetrics.BucketHistogram(Resource(mixed), Metric, OtlpMetrics.Delta, At(-30), [("s", "a")], Bounds, (At(2), [0, 10, 0], 20)));
+            await LocalStack.SendAsync("metrics", OtlpMetrics.BucketHistogram(Resource(mixed), Metric, OtlpMetrics.Delta, At(-30), [("s", "b")], Bounds, (At(2), [0, 30, 0], 0)));
+            await WaitAsync("otel_metrics_histogram", zeros, 1);
+            await WaitAsync("otel_metrics_histogram", missing, 1);
+            await WaitAsync("otel_metrics_histogram", mixed, 2);
+
+            Assert.Equal(0, (await ObserveAsync(Rule(zeros, MetricAggregation.Avg))).Value);
+            Assert.Null((await ObserveAsync(Rule(missing, MetricAggregation.Avg))).Value);
+            Assert.Equal(2, (await ObserveAsync(Rule(mixed, MetricAggregation.Avg))).Value!.Value, 9);
+            Assert.Equal(40d / 600, (await ObserveAsync(Rule(mixed, MetricAggregation.Rate))).Value!.Value, 9);
+        }
+
+        [Fact]
+        public async Task Cumulative_reset_under_the_same_start_counts_from_zero_Async()
+        {
+            LocalStack.RequireAvailable();
+            var service = $"hist-{_run}-samestart";
+            // 40 observations and a sum of 100 before the window; inside it the counts fall (a restart that kept its start time) and grow to 8.
+            await LocalStack.SendAsync("metrics", OtlpMetrics.BucketHistogram(Resource(service), Metric, OtlpMetrics.Cumulative, At(-30), [], Bounds,
+                (At(-5), [10, 25, 5], 100), (At(2), [3, 0, 0], 1.5), (At(6), [6, 2, 0], 5)));
+            await WaitAsync("otel_metrics_histogram", service, 3);
+
+            var avg = await ObserveAsync(Rule(service, MetricAggregation.Avg));
+            Assert.Equal(5d / 8, avg.Value!.Value, 9);                       // never negative
+            Assert.Equal(8, (await ObserveAsync(Rule(service, MetricAggregation.P50))).Samples);
         }
 
         [Fact]
