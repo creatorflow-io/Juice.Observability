@@ -25,17 +25,64 @@ namespace Juice.Observability.Tests
         public const string TenantKey = "0193f0aa-0000-7000-8000-0000000000f1";
 
         private static readonly Lazy<string?> Directory = new(() =>
+            ResolveDeployDirectory(AppContext.BaseDirectory, Environment.GetEnvironmentVariable, MainCheckout));
+
+        /// <summary>
+        /// Where <c>deploy/local</c> (its <c>.env</c> and <c>secrets/</c>) is found, in this order: the checkout's own
+        /// <c>deploy/local</c> when it has a <c>.env</c>; the folder named by <c>JUICE_LOCAL_DEPLOY</c>; the main worktree's
+        /// <c>deploy/local</c>. Null when none has a <c>.env</c>, so CI skips the stack-backed tests.
+        /// </summary>
+        public static string? ResolveDeployDirectory(string startDirectory, Func<string, string?> environment, Func<string, string?> mainCheckout)
         {
-            for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
+            for (var dir = new DirectoryInfo(startDirectory); dir is not null; dir = dir.Parent)
             {
-                var candidate = Path.Combine(dir.FullName, "deploy", "local");
-                if (File.Exists(Path.Combine(candidate, ".env")))
+                var own = Path.Combine(dir.FullName, "deploy", "local");
+                if (File.Exists(Path.Combine(own, ".env")))
                 {
-                    return candidate;
+                    return own;
+                }
+            }
+            var configured = environment("JUICE_LOCAL_DEPLOY");
+            if (!string.IsNullOrWhiteSpace(configured) && File.Exists(Path.Combine(configured, ".env")))
+            {
+                return configured;
+            }
+            for (var dir = new DirectoryInfo(startDirectory); dir is not null; dir = dir.Parent)
+            {
+                if (System.IO.Directory.Exists(Path.Combine(dir.FullName, ".git")) || File.Exists(Path.Combine(dir.FullName, ".git")))
+                {
+                    var main = mainCheckout(dir.FullName);
+                    var candidate = main is null ? null : Path.Combine(main, "deploy", "local");
+                    return candidate is not null && File.Exists(Path.Combine(candidate, ".env")) ? candidate : null;
                 }
             }
             return null;
-        });
+        }
+
+        /// <summary>The main worktree of the checkout at <paramref name="checkout"/>: the parent of the repository's common git dir.</summary>
+        private static string? MainCheckout(string checkout)
+        {
+            try
+            {
+                var info = new System.Diagnostics.ProcessStartInfo("git", "rev-parse --path-format=absolute --git-common-dir")
+                {
+                    WorkingDirectory = checkout,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                };
+                using var process = System.Diagnostics.Process.Start(info);
+                var output = process?.StandardOutput.ReadToEnd().Trim();
+                if (process is null || !process.WaitForExit(5000) || process.ExitCode != 0 || string.IsNullOrEmpty(output))
+                {
+                    return null;
+                }
+                return Path.GetDirectoryName(Path.GetFullPath(output, checkout).TrimEnd('/', '\\'));
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
 
         private static readonly Lazy<Dictionary<string, string>> Env = new(() => Directory.Value is null ? [] :
             File.ReadAllLines(Path.Combine(Directory.Value, ".env"))
