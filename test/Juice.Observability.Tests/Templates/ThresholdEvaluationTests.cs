@@ -100,7 +100,7 @@ namespace Juice.Observability.Tests.Templates
         }
 
         [Fact]
-        public async Task A_subject_without_a_usable_threshold_is_no_data_and_holds_an_open_alert_Async()
+        public async Task Provider_missing_subject_is_nodata_Async()
         {
             LocalStack.RequireAvailable();
             await using var database = await LocalStack.CreateDatabaseAsync();
@@ -126,7 +126,7 @@ namespace Juice.Observability.Tests.Templates
         }
 
         [Fact]
-        public async Task A_provider_that_throws_fails_the_evaluation_and_leaves_the_alert_as_it_was_Async()
+        public async Task Provider_throws_evaluation_failed_alerts_unchanged_Async()
         {
             LocalStack.RequireAvailable();
             await using var database = await LocalStack.CreateDatabaseAsync();
