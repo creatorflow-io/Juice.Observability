@@ -460,6 +460,15 @@ namespace Juice.Observability.Tests
             {
                 await db.Silences.Where(s => s.Id == silence).ExecuteUpdateAsync(s => s.SetProperty(x => x.CancelledAt, DateTimeOffset.UtcNow).SetProperty(x => x.CancelledBy, "erin"), Ct);
             }
+            // Legacy's worker releases and sends its suppressed delivery first: only the new pipeline's hold is undecided now.
+            await Flow.Worker(database).RunOnceAsync(Ct);
+            var dispatcher = Flow.Dispatcher(database);
+            for (var i = 0; i < 100 && receiver.Requests.Count < 2; i++)
+            {
+                await dispatcher.DispatchOnceAsync(Ct);
+                await Task.Delay(20, Ct);
+            }
+            Assert.Equal(2, receiver.Requests.Count);
             var comparer = Comparer(factory, new ShadowOptions { Grace = TimeSpan.Zero, Interval = TimeSpan.Zero });
 
             // The silence ended, nobody has decided the hold: the resolve waits (the firing is compared).
@@ -469,17 +478,10 @@ namespace Juice.Observability.Tests
             }
             Assert.False(await ComparedAsync(database, resolve, 0));
 
-            // Released: the new pipeline's pass decides its hold, legacy's worker sends its suppressed delivery.
+            // Released: the new pipeline's pass decides its hold.
             var release = new NotificationsReleasePass(factory.Services.GetRequiredService<IServiceScopeFactory>(), Options.Create(new WebhookOptions()), TimeProvider.System,
                 NullLogger<NotificationsReleasePass>.Instance);
             Assert.True(await release.ReleaseOnceAsync(Ct) > 0);
-            await Flow.Worker(database).RunOnceAsync(Ct);
-            var dispatcher = Flow.Dispatcher(database);
-            for (var i = 0; i < 100 && receiver.Requests.Count < 2; i++)
-            {
-                await dispatcher.DispatchOnceAsync(Ct);
-                await Task.Delay(20, Ct);
-            }
             for (var i = 0; i < 100 && !await ComparedAsync(database, resolve, 0); i++)
             {
                 await comparer.CompareOnceAsync(Ct);
