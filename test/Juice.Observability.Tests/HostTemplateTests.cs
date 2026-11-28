@@ -118,6 +118,39 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
+        public async Task HostCpu_series_started_long_before_the_window_counts_from_its_first_point_in_window_Async()
+        {
+            LocalStack.RequireAvailable();
+            var host = Host("cpuboot");
+            // The start time of a hostmetrics counter is the boot time: no point before the window, but the series is not new. Counting it
+            // from zero would read the lifetime average (here 0.1017); the window's own increase is user +20 of 80.
+            var boot = _now.AddDays(-10);
+            await CpuTime(host, "user", boot, (Early, 100), (Late, 120));
+            await CpuTime(host, "idle", boot, (Early, 1000), (Late, 1060));
+            await WaitForRowsAsync("otel_metrics_sum", "system.cpu.time", host, 4);
+
+            var observation = Assert.Single(await Templates().ObserveAsync(Rule(RuleTemplate.HostCpu, host), Window(), Ct));
+
+            Assert.InRange(observation.Value!.Value, 0.2499, 0.2501);
+        }
+
+        [Fact]
+        public async Task HostCpu_iowait_is_not_busy_Async()
+        {
+            LocalStack.RequireAvailable();
+            var host = Host("cpuwait");
+            // user +20, wait +30, idle +50: busy is 0.2, as top counts it (0.5 with iowait counted).
+            await CpuTime(host, "user", Before, (Before, 0), (Late, 20));
+            await CpuTime(host, "wait", Before, (Before, 0), (Late, 30));
+            await CpuTime(host, "idle", Before, (Before, 0), (Late, 50));
+            await WaitForRowsAsync("otel_metrics_sum", "system.cpu.time", host, 6);
+
+            var observation = Assert.Single(await Templates().ObserveAsync(Rule(RuleTemplate.HostCpu, host), Window(), Ct));
+
+            Assert.InRange(observation.Value!.Value, 0.1999, 0.2001);
+        }
+
+        [Fact]
         public async Task HostCpu_counter_reset_not_negative_Async()
         {
             LocalStack.RequireAvailable();
