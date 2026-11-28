@@ -8,6 +8,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveTenant } from './tenant.mjs';
 
 const here = fileURLToPath(new URL('./', import.meta.url));
 const SERVICES = ['gateway', 'catalog', 'cart', 'checkout', 'users', 'payments', 'inventory', 'shipping', 'notifications', 'search'];
@@ -53,8 +54,7 @@ for (const s of SERVICES) {
 // with the sink as its target, a route for the alerts, and the sink's network in the allowlist. The file is keyed by the deployment's tenant Id
 // (JUICE_PLATFORM_TENANT_ID in the environment or .env, else the local stacks' tenant), the only one the pipeline accepts.
 const envFile = join(here, '..', '.env');
-const tenantId = process.env.JUICE_PLATFORM_TENANT_ID
-  ?? (existsSync(envFile) ? readFileSync(envFile, 'utf8').match(/^JUICE_PLATFORM_TENANT_ID=(S+)/m)?.[1] : undefined) ?? '0193f0aa-0000-7000-8000-0000000000a1';
+const tenantId = resolveTenant(process.env, existsSync(envFile) ? readFileSync(envFile, 'utf8') : undefined);
 const provisioning = {
   tenants: {
     [tenantId]: {

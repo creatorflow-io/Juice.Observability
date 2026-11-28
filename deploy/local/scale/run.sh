@@ -116,16 +116,25 @@ done
 echo "drained in $(( 360 - (drain_end - $(date +%s)) )) s (queue ${queue:-?}, rows $rows)" > "$out/drain.log"
 collector "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$out/collector.csv"
 
-# Notification planning: from a transition to its notifications planned as a request to the pipeline (the outbox, the mediator, the adapter), for
-# the transitions that notify (to or from Firing) up to 30 s before the window's end (requirements §9: p95 ≤ 30 s). One not planned yet counts as
-# waiting until the window's end, so it can't drop out of the percentile. The pipeline's own sends are read on its admin pages.
+# First dispatch (requirements §9: p95 ≤ 30 s): from a transition that notifies (to or from Firing, up to 30 s before the window's end) to the
+# first delivery attempt of any delivery the pipeline made for it (the request keyed transition:<id>, its delivery items, their deliveries).
+# One never attempted counts as waiting until the window's end, and so does one not planned yet (no request, so no delivery to time), so
+# neither can drop out of the percentile. The last two columns: deliveries Delivered or Accepted, and transitions with no request yet.
 pg "WITH waits AS (
-      SELECT extract(epoch FROM coalesce(notifications_planned_at, timestamptz '$stop') - at) AS s, notifications_planned_at IS NOT NULL AS planned
-        FROM alert_transitions WHERE (to_state = 'Firing' OR from_state = 'Firing') AND at >= '$start' AND at < timestamptz '$stop' - interval '30 seconds')
-    SELECT count(*), count(*) FILTER (WHERE planned),
+      SELECT extract(epoch FROM coalesce(d.first_attempt, timestamptz '$stop') - t.at) AS s, d.first_attempt IS NOT NULL AS attempted, coalesce(d.delivered, false) AS delivered,
+             d.first_attempt IS NULL AND NOT EXISTS (SELECT 1 FROM notifications.requests r WHERE r.idempotency_key = 'transition:' || t.id) AS unplanned
+        FROM alert_transitions t
+        LEFT JOIN LATERAL (
+          SELECT min(dl.first_attempt_at) AS first_attempt, bool_or(dl.status IN ('Delivered', 'Accepted')) AS delivered
+            FROM notifications.requests r
+            JOIN notifications.delivery_items i ON i.request_id = r.id
+            JOIN notifications.deliveries dl ON dl.id = i.delivery_id
+           WHERE r.idempotency_key = 'transition:' || t.id) d ON true
+       WHERE (t.to_state = 'Firing' OR t.from_state = 'Firing') AND t.at >= '$start' AND t.at < timestamptz '$stop' - interval '30 seconds')
+    SELECT count(*), count(*) FILTER (WHERE attempted),
       round(percentile_cont(0.5) WITHIN GROUP (ORDER BY s)::numeric, 2), round(percentile_cont(0.95) WITHIN GROUP (ORDER BY s)::numeric, 2),
-      round(max(s)::numeric, 2), count(*) FILTER (WHERE planned), count(*) FILTER (WHERE NOT planned)
-    FROM waits" > "$out/webhooks.csv"
+      round(max(s)::numeric, 2), count(*) FILTER (WHERE delivered), count(*) FILTER (WHERE unplanned)
+    FROM waits" > "$out/dispatch.csv"
 pg "SELECT count(*) FROM alert_transitions WHERE at >= '$start' AND at < '$stop'" > "$out/transitions.csv"
 # Outbox deliveries created in the window and given up for good (Failed with no next attempt: MaxRetryAttempts used): dropped.
 pg "SELECT count(*) FROM outbox_deliveries WHERE state = 3 AND next_attempt_on IS NULL AND creation_time >= '$start' AND creation_time < '$stop'" > "$out/outbox.csv"
