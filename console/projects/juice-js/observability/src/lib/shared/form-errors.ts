@@ -102,7 +102,7 @@ export class FormMarks {
     this.summary.set([summary, ...lost].filter(Boolean).join(' '));
     const first = order.find(k => placed[k]);
     if (first) setTimeout(() => {
-      const el = host.querySelector<HTMLElement>(`[name="${first}"]`);
+      const el = host.querySelector<HTMLElement>(`[data-field="${first}"]`);
       // A mat-checkbox carries the name on its host; the focusable control is the input inside it.
       (el?.matches('mat-checkbox') ? el.querySelector<HTMLElement>('input') : el)?.focus();
     });
