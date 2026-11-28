@@ -263,6 +263,8 @@ $_layout-tokens: (bg: bg, surface: surface, border: border, text: text, muted: m
     mat-sidenav-content > .jc-fill-page { height: auto; display: block; overflow: visible; }
     .jc-fill-page > .jc-trace > .jc-waterfall, .jc-fill-page > .jc-trace > .jc-span-detail { overflow: visible; }
     .jc-field-wide { min-width: 0; }
+    // In a form a wide field still wraps to a row of its own before it gets narrower than a label can be read.
+    .jc-form:not(.jc-form-grid) > mat-form-field.jc-field-wide { flex: 1 1 240px; min-width: min(100%, 200px); }
   }
 }
 
