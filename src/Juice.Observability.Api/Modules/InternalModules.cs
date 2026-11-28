@@ -1,4 +1,6 @@
 using Juice.Observability.Agents;
+using Juice.Observability.Api.Integrations;
+using Juice.Observability.Api.Integrations.Health;
 using Juice.Observability.Api.Endpoints;
 using Juice.Observability.Extensibility;
 using Juice.Observability.Slos;
@@ -68,5 +70,35 @@ namespace Juice.Observability.Api.Modules
 
         // Answers only on the agent listener, and only when agents are enabled (Agents:Enabled).
         void IInternalModule.MapRoot(IEndpointRouteBuilder app) => app.MapAgentApi();
+    }
+
+    /// <summary>
+    /// Integration instances (integration core I1): the plugin registry, the module's own schema <c>integrations</c>, and the admin API under
+    /// <c>/integrations</c>. With no plugin installed it does nothing but hold an empty table.
+    /// </summary>
+    internal sealed class IntegrationsModule : IInternalModule
+    {
+        public ModuleInfo Info { get; } = InternalModuleInfo.Of("integrations", "Integrations");
+
+        public void ConfigureServices(IModuleServicesBuilder module)
+        {
+            module.Services.AddSingleton<IIntegrationPluginComposer>(new IntegrationPluginComposerService());
+            module.Services.Configure<IntegrationsOptions>(module.Configuration.GetSection(IntegrationsOptions.Section));
+            module.Services.AddSingleton<IIntegrationPluginRegistry, IntegrationPluginRegistry>();
+            // The module's migrations run at start, with the modules' (the runner is otherwise registered by the first external module).
+            var registry = (ModuleRegistry)module.Services.Last(d => d.ServiceType == typeof(ModuleRegistry)).ImplementationInstance!;
+            if (!registry.RunnerRegistered)
+            {
+                module.Services.AddHostedService<ModuleMigrationRunner>();
+                registry.RunnerRegistered = true;
+            }
+            module.AddModuleData<IntegrationsDbContext>();
+            IntegrationHealthComposition.Add(module);
+        }
+
+        public void MapEndpoints(IModuleEndpointsBuilder endpoints)
+        {
+            endpoints.Tenant.MapIntegrationEndpoints();
+        }
     }
 }
