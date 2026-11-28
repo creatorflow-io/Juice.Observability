@@ -118,6 +118,30 @@ namespace Juice.Observability.Tests.Integrations.Health
         }
 
         [Fact]
+        public async Task Slo_close_with_counting_off_never_resolves_the_integration_alert()
+        {
+            await using var host = await IntegrationHealthHost.StartAsync(new Dictionary<string, string?> { ["Slos:Enabled"] = "false" });
+            var id = await host.AddAsync();
+            await FailAsync(host, id);
+            Assert.Equal(AlertState.Firing, Assert.Single(await host.AlertsAsync()).State);
+
+            // What the SLO provisioner sends at startup when counting is off: it closes burn alerts, whatever platform-managed rule owns another's.
+            await using (var scope = host.Services.CreateAsyncScope())
+            {
+                using var context = Juice.Observability.Data.PlatformMessageContext.Begin("test");
+                var closed = await scope.ServiceProvider.GetRequiredService<Juice.MediatR.IMediator>()
+                    .Send(new Juice.Observability.Slos.CloseSloBurnAlerts(Juice.Observability.Slos.CloseSloBurnAlertsHandler.CountingDisabled), Ct);
+                Assert.Equal(0, closed);
+            }
+
+            var alert = Assert.Single(await host.AlertsAsync());
+            Assert.Equal(AlertState.Firing, alert.State);
+            await using var db = host.Platform();
+            Assert.DoesNotContain(await db.AlertTransitions.AsNoTracking().Where(t => t.AlertId == alert.Id).ToListAsync(Ct),
+                t => t.ToState == AlertState.Resolved);
+        }
+
+        [Fact]
         public async Task Concurrent_reconcile_one_open_alert()
         {
             await using var host = await IntegrationHealthHost.StartAsync();

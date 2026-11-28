@@ -109,7 +109,7 @@ namespace Juice.Observability.Api.Integrations.Health
             var version = instance.Version;
             var next = now + options.Value.MaxBackoff;
             var failures = instance.State == IntegrationState.Failed ? instance.ConsecutiveFailures : instance.ConsecutiveFailures + 1;
-            await db.Instances.Where(i => i.Id == id && i.Version == version && Active.Contains(i.State))
+            var rows = await db.Instances.Where(i => i.Id == id && i.Version == version && Active.Contains(i.State))
                 .ExecuteUpdateAsync(s => s
                     .SetProperty(i => i.State, IntegrationState.Failed)
                     .SetProperty(i => i.StateReason, reason)
@@ -120,6 +120,11 @@ namespace Juice.Observability.Api.Integrations.Health
                     .SetProperty(i => i.LastRunAt, (DateTimeOffset?)now)
                     .SetProperty(i => i.NextRunAt, (DateTimeOffset?)next)
                     .SetProperty(i => i.RunToken, (Guid?)null), ct);
+            // A failed run for the metrics too, so an instance the core failed shows up as failing: counted only when this write took effect.
+            if (rows == 1)
+            {
+                state.Run(instance.PluginKey, id, nameof(CollectionResult.Failed).ToLowerInvariant(), IntegrationFailure.Configuration);
+            }
         }
 
         /// <summary>True when there was something to reconcile (an instance in an active state, or an alert still open).</summary>

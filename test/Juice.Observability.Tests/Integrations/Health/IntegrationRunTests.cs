@@ -343,7 +343,7 @@ namespace Juice.Observability.Tests.Integrations.Health
         }
 
         [Fact]
-        public async Task Failures_counter_counts_failed_runs_only_and_missing_plugin_emits_nothing()
+        public async Task Failures_counter_counts_failed_runs_only_and_instances_the_core_fails_are_counted()
         {
             await using var host = await IntegrationHealthHost.StartAsync();
             var id = await host.AddAsync();
@@ -359,8 +359,17 @@ namespace Juice.Observability.Tests.Integrations.Health
             var mine = measurements.Where(m => (string?)m.Tags.GetValueOrDefault("instance") == id.ToString("N")).ToList();
             Assert.Contains(mine, m => m.Name == "juice.integration.runs" && (string?)m.Tags["outcome"] == "partial");
             Assert.DoesNotContain(mine, m => m.Name == "juice.integration.failures");
-            // Failing an instance whose plugin isn't installed is the core's doing, not a run.
-            Assert.DoesNotContain(measurements, m => (string?)m.Tags.GetValueOrDefault("instance") == gone.ToString("N"));
+            // An instance the core fails (its plugin isn't installed) is a failed run with a configuration failure, once.
+            var missing = measurements.Where(m => (string?)m.Tags.GetValueOrDefault("instance") == gone.ToString("N")).ToList();
+            Assert.Single(missing, m => m.Name == "juice.integration.runs" && (string?)m.Tags["outcome"] == "failed" && (string?)m.Tags["plugin"] == "gone.plugin");
+            Assert.Single(missing, m => m.Name == "juice.integration.failures" && (string?)m.Tags["reason"] == "configuration");
+
+            // And so is one whose config version isn't the plugin's.
+            var stale = await host.AddAsync(name: "stale", configVersion: 9);
+            await host.PassAsync();
+            var versioned = measurements.Where(m => (string?)m.Tags.GetValueOrDefault("instance") == stale.ToString("N")).ToList();
+            Assert.Single(versioned, m => m.Name == "juice.integration.failures" && (string?)m.Tags["reason"] == "configuration");
+            Assert.Single(versioned, m => m.Name == "juice.integration.runs");
         }
 
         [Fact]
