@@ -26,7 +26,8 @@ export const OBSERVABILITY_ROUTES: Routes = [
   page('alerts', 'Alerts', () => import('./pages/alerts.page').then(m => m.AlertsPage)),
   page('alerts/:id', 'Alert', () => import('./pages/alert.page').then(m => m.AlertPage)),
   page('rules', 'Rules', () => import('./pages/rules.page').then(m => m.RulesPage)),
-  page('notifications', 'Notifications', () => import('./pages/notifications.page').then(m => m.NotificationsPage)),
+  page('escalation', 'Escalation selection', () => import('./pages/notifications.page').then(m => m.NotificationsPage)),
+  { path: 'notifications', redirectTo: 'escalation', pathMatch: 'full' },
   page('silences', 'Silences', () => import('./pages/silences.page').then(m => m.SilencesPage)),
   page('incidents', 'Incidents', () => import('./pages/incidents.page').then(m => m.IncidentsPage)),
   page('incidents/:id', 'Incident', () => import('./pages/incident.page').then(m => m.IncidentPage)),
@@ -48,7 +49,7 @@ export const OBSERVABILITY_ROUTES: Routes = [
  * Group ids carry an `observability-` prefix, as the host's menu sits beside them.
  *
  * `alertNotifications` (phase 5, M48): the menu of the notification pages the host mounted, shown as the Alerts › Notifications group after
- * Alerts; the webhooks page is then labelled Webhooks, and links to it.
+ * Alerts; the escalation selection page links to its Escalation Policies page.
  */
 export function observabilityMenus(basePath = '/', order = 1, alertNotifications?: Menus): Menus {
   const base = normalizeBasePath(basePath);
@@ -78,7 +79,7 @@ export function observabilityMenus(basePath = '/', order = 1, alertNotifications
     group('observability-configure', 'Configure', 'tune', [
       { id: 'rules', label: 'Rules', icon: 'rule', routerLink: link('rules') },
       { id: 'silences', label: 'Silences', icon: 'notifications_paused', routerLink: link('silences') },
-      { id: 'notifications', label: alertNotifications?.length ? 'Webhooks' : 'Notifications', icon: 'campaign', routerLink: link('notifications') },
+      { id: 'escalation', label: 'Escalation selection', icon: 'campaign', routerLink: link('escalation') },
     ]),
   ];
   return menus.map((menu, index) => ({ ...menu, order: order + index }));

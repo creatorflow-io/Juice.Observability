@@ -3,7 +3,7 @@ import { Injectable, inject, signal } from '@angular/core';
 import { EMPTY, Observable, expand, map, reduce, shareReplay, switchMap, tap } from 'rxjs';
 import { OBSERVABILITY_OPTIONS } from './options';
 import {
-  ActionRequest, ActionRequestsWaiting, ActionTarget, Agent, SloDetail, SloSummary, AgentActions, AgentCommand, AgentPackage, EnrollmentToken, AlertDetail, AlertNotifications, Alert, AllowlistEntry, Application, Channel, ChannelTestResult, Delivery, EscalationPolicy, IncidentDetail, IncidentEvent, IncidentSummary, Silence, DependencyEvidence, DependencyStatsPage, DeploymentEnvironment, LoadRun, LoadRunResults, Related, Timeline, Health, LogRecord, MetricInfo, Operation,
+  ActionRequest, ActionRequestsWaiting, ActionTarget, Agent, SloDetail, SloSummary, AgentActions, AgentCommand, AgentPackage, EnrollmentToken, AlertDetail, AlertNotifications, Alert, Application, EscalationPolicy, IncidentDetail, IncidentEvent, IncidentSummary, Silence, DependencyEvidence, DependencyStatsPage, DeploymentEnvironment, LoadRun, LoadRunResults, Related, Timeline, Health, LogRecord, MetricInfo, Operation,
   Page, PlatformOverview, ResourceDetail, ResourceSummary, Rule, SearchHit, Series, Capacity, ServiceStats, Tenant, TelemetryPage, Topology, Trace,
   TraceSummary, Suggestions, CorrelationDecision, SignalPack
 } from './models';
@@ -84,16 +84,6 @@ export class ApiService {
   createRule(definition: unknown) { return this.send<Rule>('POST', '/rules', definition); }
   /** With the rule's etag, so a change made since it was read isn't overwritten. */
   updateRule(key: string, definition: unknown, etag: string) { return this.send<Rule>('PUT', `/rules/${key}`, definition, { 'If-Match': `"${etag}"` }); }
-
-  channels() { return this.get<Page<Channel>>('/webhooks'); }
-  createChannel(body: unknown) { return this.send<Channel>('POST', '/webhooks', body); }
-  updateChannel(id: string, body: unknown) { return this.send<Channel>('PUT', `/webhooks/${id}`, body); }
-  deliveries(id: string, query: Query = {}) { return this.get<Page<Delivery>>(`/webhooks/${id}/deliveries`, { limit: 50, ...query }); }
-  testChannel(id: string) { return this.send<ChannelTestResult>('POST', `/webhooks/${id}/test`); }
-  retryDelivery(channelId: string, deliveryId: string) { return this.send<Delivery>('POST', `/webhooks/${channelId}/deliveries/${deliveryId}/retry`); }
-  allowlist() { return this.get<Page<AllowlistEntry>>('/webhooks/allowlist'); }
-  putAllowlist(destination: string, ports: number[]) { return this.send<AllowlistEntry>('PUT', '/webhooks/allowlist', { destination, ports }); }
-  removeAllowlist(destination: string) { return this.send<void>('DELETE', `/webhooks/allowlist?destination=${encodeURIComponent(destination)}`); }
 
   escalationPolicies() { return this.get<Page<EscalationPolicy>>('/escalation-policies'); }
   createEscalationPolicy(body: unknown) { return this.send<EscalationPolicy>('POST', '/escalation-policies', body); }

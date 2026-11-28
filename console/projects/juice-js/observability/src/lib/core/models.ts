@@ -61,11 +61,6 @@ export interface Rule {
   quiet?: string | null;
 }
 
-export interface Channel {
-  id: string; key: string; kind: string; destination: string; events: string[]; ruleKeys: string[]; environments: string[]; recipients: string[] | null; secretRef: string | null;
-  groupWindowSeconds: number; minimumSeverity: string; enabled: boolean; managedBy: string; loadedAt: string; recentFailures: number; waiting: number;
-}
-export interface DeliveryAttempt { number: number; at: string; statusCode: number | null; error: string | null; durationMs: number; }
 /** A Juice Agent. `online` means it called in within the last 2 minutes; a revoked agent is never online. */
 export interface Agent {
   id: string; hostname: string; operatingSystem: string; version: string; status: string; resourceId: string | null; online: boolean; lastSeenAt: string | null;
@@ -115,16 +110,9 @@ export interface AgentCommand {
   deliveredAt: string | null; deliveryCount: number; completedAt: string | null; reason: string | null; result: Record<string, unknown> | null; durationMs: number | null;
 }
 
-export interface Delivery {
-  id: string; alertId: string | null; actionRequestId?: string | null; event: string; status: string; attempts: number; createdAt: string; firstAttemptAt: string | null; deliveredAt: string | null; nextAttemptAt: string | null;
-  lastStatusCode: number | null; lastError: string | null; history: DeliveryAttempt[]; suppressedBy: string | null; groupedInto: string | null; escalationStep: number;
-}
-/** What a test send did; id is the webhook-id it carried. */
-export interface ChannelTestResult { id: string; delivered: boolean; statusCode: number | null; error: string | null; durationMs: number; }
-export interface AllowlistEntry { destination: string; ports: number[]; managedBy: string; loadedAt: string; }
-export interface EscalationStep { afterMinutes: number; endpointKeys: string[]; }
 export interface EscalationPolicy {
-  id: string; key: string; name: string; enabled: boolean; ruleKeys: string[]; environments: string[]; minimumSeverity: string; stopOnAcknowledge: boolean; steps: EscalationStep[]; updatedAt: string;
+  /** Which alerts take the policy; its steps live in Notifications, and `pipelinePolicyExists` says whether a policy with this key is there. */
+  id: string; key: string; name: string; enabled: boolean; ruleKeys: string[]; environments: string[]; minimumSeverity: string; pipelinePolicyExists: boolean; updatedAt: string;
 }
 export interface Silence {
   id: string; kind: string; comment: string; ruleKeys: string[]; service: string | null; environment: string | null; host: string | null; maximumSeverity: string | null; allAlerts: boolean;
@@ -134,9 +122,8 @@ export interface IncidentSummary { id: string; title: string; severity: string; 
 export interface IncidentEvent { at: string; actor: string; type: string; from: string | null; to: string | null; text: string | null; alertId: string | null; }
 export interface IncidentDetail { incident: IncidentSummary; alerts: Alert[]; events: IncidentEvent[]; openAlerts: number; }
 export interface AlertNotifications {
-  deliveries: { endpointKey: string; kind: string; delivery: Delivery; }[];
-  escalations: { policy: string; name: string; state: string; stepsSent: number; steps: number; nextAt: string | null; stopReason: string | null; endedAt: string | null; }[];
-  silences: Silence[]; incidents: IncidentSummary[];
+  /** `alert:{id}`: deliveries and escalation state are on the Notifications correlation page for it. */
+  correlationKey: string; silences: Silence[]; incidents: IncidentSummary[];
 }
 
 export interface TraceSummary {
