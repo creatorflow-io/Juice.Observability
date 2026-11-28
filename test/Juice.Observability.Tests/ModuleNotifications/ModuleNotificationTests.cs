@@ -11,6 +11,8 @@ using Juice.Observability.Notifications;
 using Juice.Observability.Tests.Modules;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace Juice.Observability.Tests.ModuleNotifications
 {
@@ -316,7 +318,7 @@ namespace Juice.Observability.Tests.ModuleNotifications
 
         private sealed class Recorder;
 
-        private class PagerProvider(string channel) : INotificationProvider
+        public class PagerProvider(string channel) : INotificationProvider
         {
             public PagerProvider() : this("notify-sample-pager")
             {
@@ -331,13 +333,90 @@ namespace Juice.Observability.Tests.ModuleNotifications
                 => Task.FromResult(new SendResult(AttemptOutcome.Delivered, null, "x", null, null));
         }
 
-        private sealed class WebhookPagerProvider() : PagerProvider("webhook");
+        public sealed class WebhookPagerProvider() : PagerProvider("webhook");
 
-        private sealed class OtherModulePagerProvider() : PagerProvider("notify-other-pager");
-
-        private sealed class NeedsServiceProvider(Recorder recorder) : PagerProvider
+        public sealed class PagerOptions
         {
-            public Recorder Recorder => recorder;
+            public string Channel { get; set; } = "notify-sample-pager";
+        }
+
+        /// <summary>Built by DI, as most HTTP providers are: options and a logger.</summary>
+        public sealed class DiPagerProvider(IOptions<PagerOptions> options, ILogger<DiPagerProvider> logger) : PagerProvider(options.Value.Channel)
+        {
+            public ILogger Logger => logger;
+        }
+
+        /// <summary>Two constructors: the parameterless one says its own channel, the one DI picks says <c>webhook</c>.</summary>
+        public sealed class TwoConstructorProvider : PagerProvider
+        {
+            public TwoConstructorProvider() : base("notify-sample-pager")
+            {
+            }
+
+            public TwoConstructorProvider(IOptions<PagerOptions> options) : base("webhook")
+            {
+                _ = options;
+            }
+        }
+
+        private static async Task<Exception> StartRefusedAsync(Action<IServiceCollection> channels)
+        {
+            using var _ = NotifySampleModule.Use(() => [], channels);
+            return await Assert.ThrowsAnyAsync<Exception>(async () => await (await ModuleTestHost.StartAsync(b => b.AddObservabilityModule<NotifySampleModule>())).DisposeAsync());
+        }
+
+        [Fact]
+        public async Task A_provider_built_by_di_that_serves_its_own_channel_starts()
+        {
+            using var _ = NotifySampleModule.Use(() => [], s =>
+            {
+                s.AddSingleton(Channel("notify-sample-pager"));
+                s.AddOptions<PagerOptions>();
+                s.AddSingleton<INotificationProvider, DiPagerProvider>();
+                s.AddSingleton<INotificationProvider>(sp => new PagerProvider(sp.GetRequiredService<IOptions<PagerOptions>>().Value.Channel));
+            });
+            await using var host = await ModuleTestHost.StartAsync(b => b.AddObservabilityModule<NotifySampleModule>());
+            Assert.Contains(host.App.Services.GetServices<INotificationProvider>(), p => p is DiPagerProvider { Channel: "notify-sample-pager" });
+        }
+
+        [Fact]
+        public async Task A_di_provider_whose_greediest_constructor_serves_a_core_channel_fails_startup()
+        {
+            // The parameterless constructor says its own channel: a probe of it would pass. The container builds the other one.
+            var e = await StartRefusedAsync(s =>
+            {
+                s.AddSingleton(Channel("notify-sample-pager"));
+                s.AddOptions<PagerOptions>();
+                s.AddSingleton<INotificationProvider, TwoConstructorProvider>();
+            });
+            Assert.Contains("webhook", e.ToString());
+        }
+
+        [Fact]
+        public async Task A_factory_provider_serving_another_modules_channel_fails_startup()
+        {
+            var e = await StartRefusedAsync(s =>
+            {
+                s.AddSingleton(Channel("notify-sample-pager"));
+                s.AddSingleton<INotificationProvider>(_ => new PagerProvider("slack"));
+            });
+            Assert.Contains("slack", e.ToString());
+        }
+
+        [Fact]
+        public void A_registration_of_the_provider_list_is_refused()
+        {
+            var builder = Core();
+            var before = builder.Services.Count;
+            using (NotifySampleModule.Use(() => [], s => { s.AddSingleton(Channel("notify-sample-pager")); s.AddSingleton<IEnumerable<INotificationProvider>>(_ => [new PagerProvider("webhook")]); }))
+            {
+                Assert.Contains("provider", Refused<NotifySampleModule>(builder).Message);
+            }
+            using (NotifySampleModule.Use(() => [], s => { s.AddSingleton<IReadOnlyList<INotificationProvider>>(_ => []); }))
+            {
+                Refused<NotifySampleModule>(builder);
+            }
+            Assert.Equal(before, builder.Services.Count);
         }
 
         [Fact]
@@ -346,7 +425,7 @@ namespace Juice.Observability.Tests.ModuleNotifications
             var builder = Core();
             var before = builder.Services.Count;
             // A new kind on a core channel: the pipeline would hand the module's provider the core channel's deliveries.
-            using (NotifySampleModule.Use(() => [], s => { s.AddSingleton(Channel("notify-sample-pager")); s.AddSingleton<INotificationProvider, WebhookPagerProvider>(); }))
+            using (NotifySampleModule.Use(() => [], s => { s.AddSingleton(Channel("notify-sample-pager")); s.AddSingleton<INotificationProvider>(new WebhookPagerProvider()); }))
             {
                 Assert.Contains("webhook", Refused<NotifySampleModule>(builder).Message);
             }
@@ -354,17 +433,13 @@ namespace Juice.Observability.Tests.ModuleNotifications
             {
                 Assert.Contains("slack", Refused<NotifySampleModule>(builder).Message);
             }
-            // Another module's key, and a provider for a channel the call doesn't add.
-            using (NotifySampleModule.Use(() => [], s => { s.AddSingleton(Channel("notify-sample-pager")); s.AddSingleton<INotificationProvider, OtherModulePagerProvider>(); }))
+            // Another module's key (an instance: checked now; a type or factory is checked when the container is built).
+            using (NotifySampleModule.Use(() => [], s => { s.AddSingleton(Channel("notify-sample-pager")); s.AddSingleton<INotificationProvider>(new PagerProvider("notify-other-pager")); }))
             {
                 Refused<NotifySampleModule>(builder);
             }
-            // Built by a factory or with services, its channel can't be known now.
-            using (NotifySampleModule.Use(() => [], s => { s.AddSingleton(Channel("notify-sample-pager")); s.AddSingleton<INotificationProvider>(_ => new PagerProvider()); }))
-            {
-                Assert.Contains("provider", Refused<NotifySampleModule>(builder).Message);
-            }
-            using (NotifySampleModule.Use(() => [], s => { s.AddSingleton(Channel("notify-sample-pager")); s.AddSingleton<INotificationProvider, NeedsServiceProvider>(); }))
+            // A keyed registration is never resolved by the pipeline: refused.
+            using (NotifySampleModule.Use(() => [], s => { s.AddSingleton(Channel("notify-sample-pager")); s.AddKeyedSingleton<INotificationProvider>("k", new PagerProvider()); }))
             {
                 Refused<NotifySampleModule>(builder);
             }

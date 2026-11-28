@@ -5,6 +5,7 @@ using Juice.Notifications.Embedded;
 using Juice.Notifications.Types;
 using Juice.Observability.Extensibility;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace Juice.Observability.Notifications
 {
@@ -21,6 +22,44 @@ namespace Juice.Observability.Notifications
 
     /// <summary>What a module declared, as composed (the host's own record: only <see cref="NotificationModuleExtensions"/> makes it).</summary>
     internal sealed record ModuleNotificationTypes(string Module, IReadOnlyList<TypeDeclaration> Types);
+
+    /// <summary>A provider a module registered: the module, its place among the container's <see cref="INotificationProvider"/> registrations, and the descriptor.</summary>
+    internal sealed record ModuleProviderRegistration(string Module, int Index, ServiceDescriptor Descriptor);
+
+    internal sealed class ModuleProvidersCheck;
+
+    /// <summary>
+    /// Builds each module's provider as the container does (the same descriptor, in the list the pipeline reads) and refuses the host's start when its
+    /// channel isn't one of its module's own: a constructor DI picks, or a factory, can answer what no probe at composition would.
+    /// </summary>
+    internal sealed class ModuleProviderValidation(IServiceProvider services) : IValidateOptions<ModuleProvidersCheck>
+    {
+        public ValidateOptionsResult Validate(string? name, ModuleProvidersCheck options)
+        {
+            var registrations = services.GetServices<ModuleProviderRegistration>().ToList();
+            if (registrations.Count == 0)
+            {
+                return ValidateOptionsResult.Success;
+            }
+            var keys = services.GetServices<ModuleNotificationChannels>().GroupBy(c => c.Module).ToDictionary(g => g.Key, g => g.SelectMany(c => c.Keys).ToHashSet(StringComparer.Ordinal));
+            using var scope = services.CreateScope();
+            var providers = scope.ServiceProvider.GetServices<INotificationProvider>().ToList();
+            var failures = new List<string>();
+            foreach (var registration in registrations)
+            {
+                var provider = registration.Index < providers.Count ? providers[registration.Index] : null;
+                if (provider is null || registration.Descriptor.ImplementationType is { } type && provider.GetType() != type)
+                {
+                    failures.Add($"Module '{registration.Module}' provider could not be matched to its registration.");
+                }
+                else if (!keys.TryGetValue(registration.Module, out var own) || !own.Contains(provider.Channel))
+                {
+                    failures.Add($"Module '{registration.Module}' provider {provider.GetType().Name} serves channel '{provider.Channel}', which isn't one of the module's own: a provider serves its own module's channels only.");
+                }
+            }
+            return failures.Count == 0 ? ValidateOptionsResult.Success : ValidateOptionsResult.Fail(failures);
+        }
+    }
 
     /// <summary>The channels a module added, by key.</summary>
     internal sealed record ModuleNotificationChannels(string Module, IReadOnlyList<string> Keys);
@@ -158,38 +197,44 @@ namespace Juice.Observability.Notifications
             // The module's providers serve its own channels only: a provider of another kind on a core channel would be handed that channel's deliveries.
             var own = keys.Concat(b.Services.Where(d => d.ServiceType == typeof(ModuleNotificationChannels)).Select(d => d.ImplementationInstance)
                 .OfType<ModuleNotificationChannels>().Where(c => c.Module == module).SelectMany(c => c.Keys)).ToHashSet(StringComparer.Ordinal);
-            foreach (var descriptor in scratch.Where(d => d.ServiceType == typeof(INotificationProvider) || d.ServiceType.IsAssignableTo(typeof(INotificationProvider))))
+            var providers = 0;
+            foreach (var descriptor in scratch)
             {
-                var channel = ProviderChannel(descriptor) ?? throw new ModuleCompositionException(
-                    $"Module '{module}' provider is refused: register an INotificationProvider as an instance, or as a type with a public parameterless constructor, so its channel can be checked.");
-                if (!own.Contains(channel))
+                // The pipeline reads its providers as the list of INotificationProvider: a registration of the list itself, or of a keyed provider, would skip the check below.
+                if (descriptor.ServiceType.IsGenericType && descriptor.ServiceType.GetGenericArguments().Contains(typeof(INotificationProvider))
+                    || descriptor.ServiceType == typeof(INotificationProvider) && descriptor.IsKeyedService)
                 {
-                    throw new ModuleCompositionException($"Module '{module}' provider for channel '{channel}' is refused: a provider serves its own module's channels only.");
+                    throw new ModuleCompositionException($"Module '{module}' provider is refused: register each INotificationProvider on its own (not a list of them, not keyed).");
+                }
+                if (descriptor.ServiceType != typeof(INotificationProvider))
+                {
+                    continue;
+                }
+                providers++;
+                // An instance says its channel now. A type or a factory is built by the container: it is checked when it is built, before the pipeline starts.
+                if (descriptor.ImplementationInstance is INotificationProvider instance && !own.Contains(instance.Channel))
+                {
+                    throw new ModuleCompositionException($"Module '{module}' provider for channel '{instance.Channel}' is refused: a provider serves its own module's channels only.");
                 }
             }
 
+            var index = b.Services.Count(d => d.ServiceType == typeof(INotificationProvider) && !d.IsKeyedService);
             foreach (var descriptor in scratch)
             {
                 b.Services.Add(descriptor);
+                if (descriptor.ServiceType == typeof(INotificationProvider))
+                {
+                    b.Services.AddSingleton(new ModuleProviderRegistration(module, index++, descriptor));
+                }
             }
             b.Services.AddSingleton(new ModuleNotificationChannels(module, keys));
+            if (providers > 0 && !b.Services.Any(d => d.ServiceType == typeof(IValidateOptions<ModuleProvidersCheck>)))
+            {
+                // Checked at start, as the host's options are: after the container is built, before any hosted service (so before the pipeline).
+                b.Services.AddOptions<ModuleProvidersCheck>().ValidateOnStart();
+                b.Services.AddSingleton<IValidateOptions<ModuleProvidersCheck>, ModuleProviderValidation>();
+            }
             return b;
-        }
-
-        /// <summary>The channel a provider descriptor serves, or null when it can't be told without building it from the container.</summary>
-        private static string? ProviderChannel(ServiceDescriptor descriptor)
-        {
-            if (descriptor.IsKeyedService)
-            {
-                return null;
-            }
-            if (descriptor.ImplementationInstance is INotificationProvider instance)
-            {
-                return instance.Channel;
-            }
-            return descriptor.ImplementationType is { IsAbstract: false } type && type.GetConstructor(Type.EmptyTypes) is not null
-                ? ((INotificationProvider)Activator.CreateInstance(type)!).Channel
-                : null;
         }
 
         private static HashSet<string> RegisteredChannels(IServiceCollection services)

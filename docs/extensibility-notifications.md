@@ -45,8 +45,9 @@ public void ConfigureServices(IModuleServicesBuilder module)
   channel's provider must enforce its own destination allowlist** (no redirects, every resolved address checked, as `SafeHttpClient` does for the
   platform's own senders). A public pipeline client for providers is a request to Juice.Notifications.
 - Every `INotificationProvider` the call registers must serve one of the **module's own channels**: never `webhook`, `email`, `inbox`, `slack`, `teams`
-  or another module's key, whatever its `Kind`. So that the channel can be checked at composition, register it as an instance, or as a type with a public
-  parameterless constructor; a factory, a keyed registration or a type that needs services is refused.
+  or another module's key, whatever its `Kind`. A provider may be built by DI (any constructor, a factory): the host builds each one as the container does,
+  after the container is built and before any hosted service starts, and refuses the start when its `Channel` isn't one of its module's own. An instance
+  is checked at composition. A registration of the list `IEnumerable<INotificationProvider>`, or a keyed provider, is refused.
 - A module can't be named `alert` or `action` (the first segment of the core's own types): it would own that prefix.
 - A channel whose shared targets have addresses of their own kind needs its provider to implement `ITargetAddresses` (the pipeline's default rule for
   a target's address is a URL).
