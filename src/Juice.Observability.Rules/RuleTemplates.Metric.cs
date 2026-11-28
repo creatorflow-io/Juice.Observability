@@ -20,7 +20,7 @@ namespace Juice.Observability.Rules
             var rate = metric.Aggregation == MetricAggregation.Rate;
             var host = metric.Subject == MetricSubject.Host;
             var query = MetricQuery(kind, metric.Aggregation, metric.Subject, metric.Filters);
-            return await clickHouse.QueryAsync(query, window, r =>
+            return await QueryBoundedAsync(RuleTemplate.MetricThreshold, query, window, r =>
             {
                 var at = host ? 1 : 3;
                 var value = Convert.ToDouble(r.GetValue(at)) / (rate ? seconds : 1);
@@ -67,6 +67,7 @@ namespace Juice.Observability.Rules
                         FROM otel.otel_metrics_gauge
                         WHERE {inWindow}
                         GROUP BY {group}
+                        ORDER BY {group}
                         LIMIT {Limit}
                         """;
                 case MetricKind.Gauge or MetricKind.UpDownCounter:
@@ -83,6 +84,7 @@ namespace Juice.Observability.Rules
                             GROUP BY {group}, series
                         )
                         GROUP BY {group}
+                        ORDER BY {group}
                         LIMIT {Limit}
                         """;
                 default:
@@ -90,13 +92,17 @@ namespace Juice.Observability.Rules
                     // before the window, or from zero when it has none (as CounterIncrease does): SDKs stamp every attribute set with the instrument's start
                     // time, so a new attribute set (errors{type=timeout}) on a long-running service is a first increment, not a lifetime total. After a
                     // Collector outage of more than 1 h the first window can over-count; that is accepted, as in CounterIncrease.
+                    // A last value in the window below an earlier one (before the window, or its peak) is a restart under the same start time: it counts
+                    // from zero, as a histogram's does (was_reset), so 100, 110, 5 reads 5, not 10.
                     // Delta series are summed. A series without a point in the window is left out.
                     return $"""
                         SELECT {group}, sum(increase) AS v, sum(n) AS n, any(unit) AS unit
                         FROM (
                             SELECT {keys}, {SeriesKey} AS series, StartTimeUnix,
+                                   argMaxIf(Value, TimeUnix, TimeUnix >= {From}) AS last_v,
+                                   last_v < greatest(maxIf(Value, TimeUnix >= {From}), maxIf(Value, TimeUnix < {From})) AS was_reset,
                                    if(any(AggregationTemporality) = 1, sumIf(Value, TimeUnix >= {From}),
-                                      greatest(maxIf(Value, TimeUnix >= {From}) - maxIf(Value, TimeUnix < {From}), 0)) AS increase,
+                                      if(was_reset, last_v, greatest(last_v - maxIf(Value, TimeUnix < {From}), 0))) AS increase,
                                    countIf(TimeUnix >= {From}) AS n, any(MetricUnit) AS unit
                             FROM otel.otel_metrics_sum
                             WHERE {Tenant} AND TimeUnix >= {From} - INTERVAL 1 HOUR AND TimeUnix < {To} AND {match} AND IsMonotonic = true
@@ -104,6 +110,7 @@ namespace Juice.Observability.Rules
                             HAVING n > 0
                         )
                         GROUP BY {group}
+                        ORDER BY {group}
                         LIMIT {Limit}
                         """;
             }

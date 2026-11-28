@@ -165,6 +165,67 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
+        public async Task HostCpu_counter_drop_under_the_same_start_time_counts_from_zero_Async()
+        {
+            LocalStack.RequireAvailable();
+            var host = Host("cpusamestart");
+            // One start time throughout, the user counter drops 100 -> 110 -> 5 (a reset the start time doesn't show): it counts from 0 after the
+            // drop, as a histogram does, so user is 5 (not 10) against idle +60: busy 5 of 65.
+            await CpuTime(host, "user", Before, (Before, 100), (Early, 110), (Late, 5));
+            await CpuTime(host, "idle", Before, (Before, 400), (Late, 460));
+            await WaitForRowsAsync("otel_metrics_sum", "system.cpu.time", host, 5);
+
+            var observation = Assert.Single(await Templates().ObserveAsync(Rule(RuleTemplate.HostCpu, host), Window(), Ct));
+
+            Assert.InRange(observation.Value!.Value, 5d / 65 - 0.0001, 5d / 65 + 0.0001);
+        }
+
+        /// <summary>The tenant holds other hosts (the Collector's own), so the cut is read against the whole ordered list: a limit one below it.</summary>
+        private static async Task AssertCutLeavesOutTheLastSubjectAsync(RuleTemplate template, Func<int, Task<IReadOnlyList<RuleObservation>>> observeLimited)
+        {
+            var all = await observeLimited(1000);
+            Assert.True(all.Count >= 2, "the test hosts are in the tenant");
+            Assert.Equal(all.Select(o => o.SubjectKey).OrderBy(k => k, StringComparer.Ordinal), all.Select(o => o.SubjectKey));   // ordered by host
+            using var probe = new TruncationProbe();
+
+            var exact = await observeLimited(all.Count);                                    // fits: nothing is left out
+            Assert.Equal(all.Select(o => o.SubjectKey), exact.Select(o => o.SubjectKey));
+
+            var cut = await observeLimited(all.Count - 1);                                  // one too many: the last subject goes, and it is counted
+            Assert.Equal(all.Take(all.Count - 1).Select(o => o.SubjectKey), cut.Select(o => o.SubjectKey));
+            Assert.True(probe.Count(template.ToString()) >= 1);
+        }
+
+        [Fact]
+        public async Task HostCpu_row_limit_leaves_out_the_last_host_and_counts_it_Async()
+        {
+            LocalStack.RequireAvailable();
+            foreach (var name in new[] { "cpucut1", "cpucut2" })
+            {
+                await CpuTime(Host(name), "user", Before, (Before, 0), (Late, 10));
+                await CpuTime(Host(name), "idle", Before, (Before, 0), (Late, 90));
+                await WaitForRowsAsync("otel_metrics_sum", "system.cpu.time", Host(name), 4);
+            }
+            var templates = Templates();
+            await AssertCutLeavesOutTheLastSubjectAsync(RuleTemplate.HostCpu,
+                limit => templates.ObserveAsync(Rule(RuleTemplate.HostCpu), Window() with { Limit = limit }, Ct));
+        }
+
+        [Fact]
+        public async Task HostDisk_row_limit_leaves_out_the_last_host_and_counts_it_Async()
+        {
+            LocalStack.RequireAvailable();
+            foreach (var name in new[] { "diskcut1", "diskcut2" })
+            {
+                await Usage(Host(name), "/data", "ext4", "rw", 50, 50);
+                await WaitForRowsAsync("otel_metrics_sum", "system.filesystem.usage", Host(name), 3);
+            }
+            var templates = Templates();
+            await AssertCutLeavesOutTheLastSubjectAsync(RuleTemplate.HostDisk,
+                limit => templates.ObserveAsync(Rule(RuleTemplate.HostDisk), Window() with { Limit = limit }, Ct));
+        }
+
+        [Fact]
         public async Task HostCpu_iowait_is_not_busy_Async()
         {
             LocalStack.RequireAvailable();

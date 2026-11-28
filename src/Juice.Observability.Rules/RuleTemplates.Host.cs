@@ -43,8 +43,11 @@ namespace Juice.Observability.Rules
             SELECT host, sumIf(increase, state NOT IN ('idle', 'wait')) AS busy, sum(increase) AS total
             FROM (
                 SELECT {HostExpr} AS host, Attributes['state'] AS state,
-                       greatest(maxIf(Value, TimeUnix >= {From}) - if(countIf(TimeUnix < {From}) > 0, maxIf(Value, TimeUnix < {From}),
-                           if(StartTimeUnix >= {From}, 0, argMinIf(Value, TimeUnix, TimeUnix >= {From}))), 0) AS increase
+                       argMaxIf(Value, TimeUnix, TimeUnix >= {From}) AS last_v,
+                       -- a last value below an earlier one is a restart under the same start time: it counts from zero (as a histogram's was_reset)
+                       last_v < greatest(maxIf(Value, TimeUnix >= {From}), maxIf(Value, TimeUnix < {From})) AS was_reset,
+                       if(was_reset, last_v, greatest(last_v - if(countIf(TimeUnix < {From}) > 0, maxIf(Value, TimeUnix < {From}),
+                           if(StartTimeUnix >= {From}, 0, argMinIf(Value, TimeUnix, TimeUnix >= {From}))), 0)) AS increase
                 FROM otel.otel_metrics_sum
                 WHERE {Tenant} AND TimeUnix >= {From} - INTERVAL 1 HOUR AND TimeUnix < {To} AND MetricName = '{CpuTime}' AND {HostFilter}
                 GROUP BY host, state, cityHash64(ResourceAttributes, Attributes), StartTimeUnix
@@ -54,6 +57,7 @@ namespace Juice.Observability.Rules
             WHERE host != ''
             GROUP BY host
             HAVING total > 0
+            ORDER BY host
             LIMIT {Limit}
             """;
 
@@ -64,6 +68,7 @@ namespace Juice.Observability.Rules
             WHERE {Tenant} AND TimeUnix >= {From} AND TimeUnix < {To} AND MetricName = '{CpuUtilization}' AND {HostFilter}
             GROUP BY host
             HAVING host != '' AND countIf(Attributes['state'] = 'idle') > 0
+            ORDER BY host
             LIMIT {Limit}
             """;
 
@@ -82,7 +87,7 @@ namespace Juice.Observability.Rules
                 HAVING used_points > 0 AND free_points > 0 AND used + free > 0
             )
             WHERE host != ''
-            ORDER BY ratio DESC, mount
+            ORDER BY host, ratio DESC, mount
             LIMIT 1 BY host
             LIMIT {Limit}
             """;
@@ -97,7 +102,7 @@ namespace Juice.Observability.Rules
                 GROUP BY host, mount, device
             )
             WHERE host != ''
-            ORDER BY ratio DESC, mount
+            ORDER BY host, ratio DESC, mount
             LIMIT 1 BY host
             LIMIT {Limit}
             """;
@@ -110,30 +115,32 @@ namespace Juice.Observability.Rules
         }
 
         // The two sources of one metric, a host once: from the first that has it. Bounded by the window's row limit, as each query is.
-        private static IReadOnlyList<RuleObservation> PreferFirst(IReadOnlyList<RuleObservation> preferred, IReadOnlyList<RuleObservation> fallback, int limit)
+        private static IReadOnlyList<RuleObservation> PreferFirst(RuleTemplate template, IReadOnlyList<RuleObservation> preferred, IReadOnlyList<RuleObservation> fallback, int limit)
         {
             var seen = preferred.Select(o => o.SubjectKey).ToHashSet();
-            return [.. preferred.Concat(fallback.Where(o => !seen.Contains(o.SubjectKey))).Take(limit)];
+            // Each source is cut on its own; the two together are ordered by subject and cut the same way.
+            var merged = preferred.Concat(fallback.Where(o => !seen.Contains(o.SubjectKey))).OrderBy(o => o.SubjectKey, StringComparer.Ordinal).ToList();
+            return CutLast(merged.Take(limit + 1).ToList(), limit, template);
         }
 
         private async partial Task<IReadOnlyList<RuleObservation>> ObserveHostCpuAsync(TelemetryWindow window,
             Dictionary<string, object> scope, CancellationToken cancellationToken)
         {
-            var fromTime = await clickHouse.QueryAsync(HostCpuTime, window, r => Host(r.GetString(0),
+            var fromTime = await QueryBoundedAsync(RuleTemplate.HostCpu, HostCpuTime, window, r => Host(r.GetString(0),
                 Math.Clamp(Convert.ToDouble(r.GetValue(1)) / Convert.ToDouble(r.GetValue(2)), 0, 1), CpuTime), cancellationToken, scope);
-            var fromUtilization = await clickHouse.QueryAsync(HostCpuUtilization, window, r => Host(r.GetString(0),
+            var fromUtilization = await QueryBoundedAsync(RuleTemplate.HostCpu, HostCpuUtilization, window, r => Host(r.GetString(0),
                 Math.Clamp(Convert.ToDouble(r.GetValue(1)), 0, 1), CpuUtilization), cancellationToken, scope);
-            return PreferFirst(fromTime, fromUtilization, window.Limit);
+            return PreferFirst(RuleTemplate.HostCpu, fromTime, fromUtilization, window.Limit);
         }
 
         private async partial Task<IReadOnlyList<RuleObservation>> ObserveHostDiskAsync(TelemetryWindow window,
             Dictionary<string, object> scope, CancellationToken cancellationToken)
         {
-            var fromUsage = await clickHouse.QueryAsync(HostDiskUsage, window, r => Host(r.GetString(0),
+            var fromUsage = await QueryBoundedAsync(RuleTemplate.HostDisk, HostDiskUsage, window, r => Host(r.GetString(0),
                 Math.Clamp(Convert.ToDouble(r.GetValue(2)), 0, 1), FilesystemUsage, r.GetString(1)), cancellationToken, scope);
-            var fromUtilization = await clickHouse.QueryAsync(HostDiskUtilization, window, r => Host(r.GetString(0),
+            var fromUtilization = await QueryBoundedAsync(RuleTemplate.HostDisk, HostDiskUtilization, window, r => Host(r.GetString(0),
                 Math.Clamp(Convert.ToDouble(r.GetValue(2)), 0, 1), FilesystemUtilization, r.GetString(1)), cancellationToken, scope);
-            return PreferFirst(fromUsage, fromUtilization, window.Limit);
+            return PreferFirst(RuleTemplate.HostDisk, fromUsage, fromUtilization, window.Limit);
         }
     }
 }

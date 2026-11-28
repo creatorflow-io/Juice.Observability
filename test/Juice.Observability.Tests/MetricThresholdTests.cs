@@ -255,6 +255,52 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
+        public async Task Row_limit_leaves_out_the_last_subject_in_order_and_counts_it_for_every_kind_Async()
+        {
+            LocalStack.RequireAvailable();
+            using var probe = new TruncationProbe();
+            var cases = new (string Name, MetricKind Kind, MetricAggregation Aggregation)[]
+            {
+                ("gauge", MetricKind.Gauge, MetricAggregation.Avg), ("gaugelast", MetricKind.Gauge, MetricAggregation.Last),
+                ("updown", MetricKind.UpDownCounter, MetricAggregation.Last), ("counter", MetricKind.Counter, MetricAggregation.Increase),
+            };
+            foreach (var (name, kind, aggregation) in cases)
+            {
+                var metric = $"mt.{_run}.cut.{name}";
+                // Created out of order: the cut is by subject, not by arrival.
+                foreach (var i in new[] { 2, 0, 1 })
+                {
+                    var resource = Res($"mt-{_run}-cut{name}{i}");
+                    var payload = kind == MetricKind.Gauge
+                        ? OtlpMetrics.Gauge(resource, metric, [], (Ago(1), i))
+                        : OtlpMetrics.Sum(resource, metric, OtlpMetrics.Cumulative, kind == MetricKind.Counter, Ago(20), [], (Ago(1), i + 1));
+                    await SendAsync(payload, kind == MetricKind.Gauge ? "gauge" : "sum", metric, 1);
+                }
+                var rule = Rule(metric, kind, aggregation);
+                var before = probe.Count("MetricThreshold");
+
+                var all = await Templates().ObserveAsync(rule, Window(10), Ct);
+                Assert.Equal(3, all.Count);
+                Assert.Equal(all.Select(o => o.SubjectKey).OrderBy(k => k, StringComparer.Ordinal), all.Select(o => o.SubjectKey));
+
+                var cut = await Templates().ObserveAsync(rule, Window(2), Ct);
+                Assert.Equal(all.Take(2).Select(o => o.SubjectKey), cut.Select(o => o.SubjectKey));
+                Assert.True(probe.Count("MetricThreshold") > before, name);
+            }
+        }
+
+        [Fact]
+        public async Task Counter_drop_under_the_same_start_time_counts_from_zero_Async()
+        {
+            LocalStack.RequireAvailable();
+            var (service, metric) = ($"mt-{_run}-samestart", $"mt.{_run}.samestart");
+            // 100 before the window, then 110 and 5 in it under one start time: a reset the start time doesn't show. After the drop it counts from 0
+            // (as a histogram's was_reset does), so the increase is 5, not 110 - 100 = 10.
+            await SendAsync(OtlpMetrics.Sum(Res(service), metric, OtlpMetrics.Cumulative, true, Ago(30), [], (Ago(7), 100), (Ago(3), 110), (Ago(1), 5)), "sum", metric, 3);
+            Assert.Equal(5, (await ObserveOneAsync(Rule(metric, MetricKind.Counter, MetricAggregation.Increase, service))).Value);
+        }
+
+        [Fact]
         public async Task Evidence_carries_metric_aggregation_filters_unit_window_Async()
         {
             LocalStack.RequireAvailable();

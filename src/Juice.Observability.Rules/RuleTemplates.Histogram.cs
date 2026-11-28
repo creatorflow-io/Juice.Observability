@@ -12,8 +12,8 @@ namespace Juice.Observability.Rules
         /// <summary>The bucket layouts one subject is read in at most, so a subject with many can't fill the row limit. The most observed layouts win.</summary>
         public const int MaxHistogramLayoutsPerSubject = 8;
 
-        private static readonly Meter HistogramMeter = new("Juice.Observability");
-        private static readonly Counter<long> HistogramTruncated = HistogramMeter.CreateCounter<long>("juice.observability.rules.truncated", "{cut}",
+        private static readonly Meter RulesMeter = new("Juice.Observability");
+        private static readonly Counter<long> RulesTruncated = RulesMeter.CreateCounter<long>("juice.observability.rules.truncated", "{cut}",
             "Times a rule's query reached the row limit and left out its last subject, by template");
 
         private const string HistogramHost = "if(JuiceHostId != '', lower(JuiceHostId), lower(JuiceHostName))";
@@ -28,9 +28,9 @@ namespace Juice.Observability.Rules
         // The metric, the scope and the filters are parameters ({m}, {svc}, {f0k}, {f0v}...); only their count shapes the text.
         private static string HistogramQuery(string innerKeys, string outerKeys, string scope, string filters) => $"""
             SELECT {outerKeys}, bounds, sumForEach(inc) AS counts, sum(observed) AS obs, sumIf(observed, sum_ok) AS sum_obs, sumIf(series_sum, sum_ok) AS sum_total,
-                   count() OVER (PARTITION BY {outerKeys}) AS layouts
+                   count() OVER (PARTITION BY {outerKeys}) AS layouts, any(series_unit) AS unit
             FROM (
-                SELECT {innerKeys}, ExplicitBounds AS bounds,
+                SELECT {innerKeys}, ExplicitBounds AS bounds, any(MetricUnit) AS series_unit,
                        argMaxIf(arraySum(BucketCounts), TimeUnix, TimeUnix >= {From}) AS last_n,
                        argMaxIf(arraySum(BucketCounts), TimeUnix, TimeUnix < {From}) AS before_n,
                        maxIf(arraySum(BucketCounts), TimeUnix >= {From}) AS peak_n,
@@ -67,7 +67,7 @@ namespace Juice.Observability.Rules
             $"({HostParam} = '' OR lower(JuiceHostName) = {HostParam} OR lower(JuiceHostId) = {HostParam}) AND {HistogramHost} != ''", filters);
 
         private sealed record HistogramRow(string SubjectKey, string Ns, string Svc, string Env, string Host, double[] Bounds, long[] Counts,
-            long Observed, long SumObserved, double SumTotal, long Layouts);
+            long Observed, long SumObserved, double SumTotal, long Layouts, string Unit);
 
         private async partial Task<IReadOnlyList<RuleObservation>> ObserveHistogramAsync(RuleDefinition rule, TelemetryWindow window,
             Dictionary<string, object> scope, CancellationToken cancellationToken)
@@ -89,9 +89,9 @@ namespace Juice.Observability.Rules
             // One row more than the limit: only a result that exceeds it was cut.
             var rows = await clickHouse.QueryAsync(sql, window with { Limit = window.Limit + 1 }, r => host
                 ? new HistogramRow($"host:{r.GetString(0)}", "", "", "", r.GetString(0), Doubles(r.GetValue(1)), Longs(r.GetValue(2)),
-                    Convert.ToInt64(r.GetValue(3)), Convert.ToInt64(r.GetValue(4)), Convert.ToDouble(r.GetValue(5)), Convert.ToInt64(r.GetValue(6)))
+                    Convert.ToInt64(r.GetValue(3)), Convert.ToInt64(r.GetValue(4)), Convert.ToDouble(r.GetValue(5)), Convert.ToInt64(r.GetValue(6)), r.GetString(7))
                 : new HistogramRow(ServiceSubjectKey(r.GetString(0), r.GetString(1), r.GetString(2)), r.GetString(0), r.GetString(1), r.GetString(2), "",
-                    Doubles(r.GetValue(3)), Longs(r.GetValue(4)), Convert.ToInt64(r.GetValue(5)), Convert.ToInt64(r.GetValue(6)), Convert.ToDouble(r.GetValue(7)), Convert.ToInt64(r.GetValue(8))),
+                    Doubles(r.GetValue(3)), Longs(r.GetValue(4)), Convert.ToInt64(r.GetValue(5)), Convert.ToInt64(r.GetValue(6)), Convert.ToDouble(r.GetValue(7)), Convert.ToInt64(r.GetValue(8)), r.GetString(9)),
                 cancellationToken, parameters);
 
             // The rows come ordered by subject: the last subject may have lost some of its layouts, so it's left out and counted.
@@ -100,7 +100,7 @@ namespace Juice.Observability.Rules
             {
                 var last = rows[^1].SubjectKey;
                 rows = rows.Where(r => r.SubjectKey != last).ToList();
-                HistogramTruncated.Add(1, new KeyValuePair<string, object?>("template", nameof(RuleTemplate.MetricThreshold)));
+                RulesTruncated.Add(1, new KeyValuePair<string, object?>("template", nameof(RuleTemplate.MetricThreshold)));
             }
 
             var seconds = Math.Max((window.To - window.From).TotalSeconds, 1);
@@ -110,7 +110,8 @@ namespace Juice.Observability.Rules
                 var first = layouts[0];
                 var observed = layouts.Sum(l => l.Observed);
                 double? value;
-                IReadOnlyDictionary<string, string>? detail = null;
+                // The unit the series report (R6), as the gauge and counter evidence has it.
+                IReadOnlyDictionary<string, string>? detail = new Dictionary<string, string> { ["unit"] = first.Unit };
                 var samples = observed;
                 switch (aggregation)
                 {
@@ -133,6 +134,7 @@ namespace Juice.Observability.Rules
                         {
                             var d = new Dictionary<string, string>
                             {
+                                ["unit"] = first.Unit,
                                 ["bucketLower"] = Bound(percentile.Lower),
                                 ["bucketUpper"] = Bound(percentile.Upper),
                             };

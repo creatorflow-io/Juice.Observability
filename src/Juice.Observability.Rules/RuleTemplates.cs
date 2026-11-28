@@ -72,6 +72,7 @@ namespace Juice.Observability.Rules
             WHERE host != ''
             GROUP BY host
             HAVING sum(bytes) > 0
+            ORDER BY host
             LIMIT {Limit}
             """;
 
@@ -131,7 +132,7 @@ namespace Juice.Observability.Rules
                     Convert.ToDouble(r.GetValue(3)), Convert.ToInt64(r.GetValue(4))), cancellationToken, scope),
                 RuleTemplate.DeliveryFailureRate => await clickHouse.QueryAsync(DeliveryFailureRate, window, r => Service(r.GetString(0), r.GetString(1), r.GetString(2),
                     Ratio(r.GetValue(3), r.GetValue(4)), Convert.ToInt64(Convert.ToDouble(r.GetValue(4)))), cancellationToken, scope),
-                RuleTemplate.HostMemory => await clickHouse.QueryAsync(HostMemory, window, r => new RuleObservation($"host:{r.GetString(0)}",
+                RuleTemplate.HostMemory => await QueryBoundedAsync(RuleTemplate.HostMemory, HostMemory, window, r => new RuleObservation($"host:{r.GetString(0)}",
                     HealthSubject.Host, "", "", "", r.GetString(0), Convert.ToDouble(r.GetValue(1)), 1), cancellationToken, scope),
                 RuleTemplate.MediatorErrors => await ObserveCountAsync(MediatorErrors, window, scope, cancellationToken),
                 RuleTemplate.ConsumerFailures => await ObserveCountAsync(ConsumerFailures, window, scope, cancellationToken),
@@ -158,6 +159,25 @@ namespace Juice.Observability.Rules
 
         private partial Task<IReadOnlyList<RuleObservation>> ObserveHostDiskAsync(TelemetryWindow window,
             Dictionary<string, object> scope, CancellationToken cancellationToken);
+
+        /// <summary>
+        /// A query ordered by subject, read one row past the limit: a result that exceeds it was cut, so its last subject (possibly partial) is left
+        /// out and <c>rules.truncated</c> counted. The same for every template, as the histogram's.
+        /// </summary>
+        private async Task<IReadOnlyList<RuleObservation>> QueryBoundedAsync(RuleTemplate template, string sql, TelemetryWindow window,
+            Func<System.Data.Common.DbDataReader, RuleObservation> map, CancellationToken cancellationToken, Dictionary<string, object> parameters)
+        {
+            var rows = await clickHouse.QueryAsync(sql, window with { Limit = window.Limit + 1 }, map, cancellationToken, parameters);
+            return CutLast(rows, window.Limit, template);
+        }
+
+        private static IReadOnlyList<RuleObservation> CutLast(IReadOnlyList<RuleObservation> rows, int limit, RuleTemplate template)
+        {
+            if (rows.Count <= limit) return rows;
+            var last = rows[^1].SubjectKey;
+            RulesTruncated.Add(1, new KeyValuePair<string, object?>("template", template.ToString()));
+            return [.. rows.Where(r => r.SubjectKey != last)];
+        }
 
         public static string ServiceSubjectKey(string ns, string name, string environment)
             => $"service:{(ns.Length == 0 ? name : $"{ns}/{name}")}@{environment}";

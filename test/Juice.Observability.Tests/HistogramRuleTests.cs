@@ -219,6 +219,21 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
+        public async Task Histogram_evidence_carries_the_unit_Async()
+        {
+            LocalStack.RequireAvailable();
+            var service = $"hist-{_run}-unit";
+            await LocalStack.SendAsync("metrics", OtlpMetrics.WithUnit(OtlpMetrics.BucketHistogram(Resource(service), Metric, OtlpMetrics.Delta, At(-30), [], Bounds,
+                (At(2), [10, 20, 0], 30)), "ms"));
+            await WaitAsync("otel_metrics_histogram", service, 1);
+
+            foreach (var aggregation in new[] { MetricAggregation.P50, MetricAggregation.Avg, MetricAggregation.Rate })
+            {
+                Assert.Equal("ms", (await ObserveAsync(Rule(service, aggregation))).Detail!["unit"]);
+            }
+        }
+
+        [Fact]
         public async Task Row_limit_never_cuts_a_subject_s_layouts_Async()
         {
             LocalStack.RequireAvailable();
