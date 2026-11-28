@@ -135,6 +135,20 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
+        public async Task HostCpu_old_series_with_one_point_in_window_is_no_data_not_zero_Async()
+        {
+            LocalStack.RequireAvailable();
+            var host = Host("cpuonepoint");
+            // Started at boot, nothing before the window, one point inside it: no elapsed time to measure over, so no data (not 0 % busy).
+            var boot = _now.AddDays(-10);
+            await CpuTime(host, "user", boot, (Late, 120));
+            await CpuTime(host, "idle", boot, (Late, 1060));
+            await WaitForRowsAsync("otel_metrics_sum", "system.cpu.time", host, 2);
+
+            Assert.Empty(await Templates().ObserveAsync(Rule(RuleTemplate.HostCpu, host), Window(), Ct));
+        }
+
+        [Fact]
         public async Task HostCpu_iowait_is_not_busy_Async()
         {
             LocalStack.RequireAvailable();
