@@ -61,6 +61,41 @@ namespace Juice.Observability.Api.Integrations
             return full.StartsWith(root, PathComparison) && full.Length > root.Length ? full : null;
         }
 
+        private static bool IsInside(string path, string folder)
+        {
+            var root = folder.EndsWith(Path.DirectorySeparatorChar) ? folder : folder + Path.DirectorySeparatorChar;
+            return path.StartsWith(root, PathComparison) && path.Length > root.Length;
+        }
+
+        /// <summary>
+        /// The path with every link in it followed, part by part from the root (a link may point through further links). Null when a link can't be
+        /// read or the chain is too long. A part that doesn't exist is kept as it is.
+        /// </summary>
+        private static string? RealPath(string path, int depth = 0)
+        {
+            if (depth > 16)
+            {
+                return null;
+            }
+            var full = Path.GetFullPath(path);
+            var current = Path.GetPathRoot(full)!;
+            foreach (var part in full[current.Length..].Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
+            {
+                current = Path.Combine(current, part);
+                FileSystemInfo info = Directory.Exists(current) ? new DirectoryInfo(current) : new FileInfo(current);
+                if (info.LinkTarget is not null)
+                {
+                    var target = info.ResolveLinkTarget(false);
+                    if (target is null || RealPath(target.FullName, depth + 1) is not { } followed)
+                    {
+                        return null;
+                    }
+                    current = followed;
+                }
+            }
+            return current;
+        }
+
         /// <summary>The value of the reference, or null with the reason. The reference is checked again here: configuration may have changed since it was saved.</summary>
         public static async ValueTask<(string? Value, string? Reason)> ResolveAsync(string reference, string? envPrefix, string? directory, CancellationToken ct)
         {
@@ -82,17 +117,20 @@ namespace Juice.Observability.Api.Integrations
                 var full = InsideDirectory(reference[5..], directory!)!;
                 try
                 {
-                    // A link out of the folder is no more allowed than a path out of it.
-                    var info = new FileInfo(full);
-                    if (info.ResolveLinkTarget(true) is { } target && InsideDirectory(target.FullName, directory!) is null)
+                    // A link anywhere in either path is followed, and the real file must be inside the real folder: a folder link inside the
+                    // secrets folder is no more allowed than a path out of it. The file is read through the real path, so what was checked is what is read.
+                    var real = RealPath(full);
+                    var folder = RealPath(directory!);
+                    if (real is null || folder is null || !IsInside(real, folder))
                     {
                         return (null, "the file is outside the secrets folder");
                     }
+                    var info = new FileInfo(real);
                     if (!info.Exists || info.Length > MaxValueLength)
                     {
                         return (null, info.Exists ? "the file is too large" : "the file does not exist");
                     }
-                    value = (await File.ReadAllTextAsync(full, ct)).TrimEnd('\r', '\n');
+                    value = (await File.ReadAllTextAsync(real, ct)).TrimEnd('\r', '\n');
                 }
                 catch (Exception e) when (e is IOException or UnauthorizedAccessException)
                 {

@@ -12,7 +12,27 @@ namespace Juice.Observability.Tests.Integrations.Instances
 
         public SecretFolderTests() => Directory.CreateDirectory(_root);
 
-        public void Dispose() => Directory.Delete(_root, true);
+        public void Dispose()
+        {
+            Unlink(new DirectoryInfo(_root));
+            Directory.Delete(_root, true);
+        }
+
+        /// <summary>Removes the links (never what they point to) so the folder can be deleted.</summary>
+        private static void Unlink(DirectoryInfo directory)
+        {
+            foreach (var child in directory.EnumerateDirectories())
+            {
+                if (child.LinkTarget is not null)
+                {
+                    child.Delete();
+                }
+                else
+                {
+                    Unlink(child);
+                }
+            }
+        }
 
         private string Folder() => Directory.CreateDirectory(Path.Combine(_root, "secrets")).FullName;
 

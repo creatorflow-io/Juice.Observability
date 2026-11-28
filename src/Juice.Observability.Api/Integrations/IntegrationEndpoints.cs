@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Juice.Observability.Api.Endpoints;
+using Juice.Observability.Data;
 using Juice.Observability.Discovery;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -157,6 +158,8 @@ namespace Juice.Observability.Api.Integrations
             {
                 return replay;
             }
+            // Creates in one tenant take turns from here to the commit, so the count below is the count the new row is added to.
+            await db.Database.ExecuteSqlAsync($"SELECT pg_advisory_xact_lock({WorkerLease.KeyOf($"integrations:create:{tenantId}")})", ct);
             if (await db.Instances.CountAsync(i => i.TenantId == tenantId, ct) >= options.Value.MaxInstances)
             {
                 return Problem(StatusCodes.Status409Conflict, "Too many integrations", $"A tenant has at most {options.Value.MaxInstances} integration instances.");
@@ -292,11 +295,14 @@ namespace Juice.Observability.Api.Integrations
         private static IResult? PreconditionFailure(HttpContext http, IntegrationInstance instance)
         {
             var match = http.Request.Headers.IfMatch.ToString();
-            if (match.Length == 0)
+            if (match.Trim().Length == 0)
             {
                 return Problem(StatusCodes.Status428PreconditionRequired, "If-Match required", "Send the ETag you read in If-Match.");
             }
-            return match.Trim().Trim('"') == instance.Version.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            // A list of tags, weak ones (W/"3") and * are all forms of If-Match: any tag that is the current version, or *, satisfies it.
+            var current = instance.Version.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var satisfied = match.Split(',').Select(t => t.Trim()).Any(t => t == "*" || (t.StartsWith("W/", StringComparison.Ordinal) ? t[2..] : t).Trim('"') == current && t.Contains('"'));
+            return satisfied
                 ? null
                 : Problem(StatusCodes.Status412PreconditionFailed, "Integration changed", "Someone changed this integration since you read it. Read it again.");
         }
@@ -383,9 +389,10 @@ namespace Juice.Observability.Api.Integrations
                 }, readOnly: true);
                 context = IntegrationContextFactory.Create(instance, http.RequestServices, checkpoints);
                 var plugin = http.RequestServices.GetRequiredService<IIntegrationPluginRegistry>().Resolve(http.RequestServices, descriptor.Key);
-                report = await plugin.ValidateAsync(context, timeout.Token);
+                // A plugin that ignores its token is stopped waiting for all the same.
+                report = await plugin.ValidateAsync(context, timeout.Token).WaitAsync(options.ValidateTimeout, ct);
             }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            catch (Exception e) when ((e is OperationCanceledException && !ct.IsCancellationRequested) || e is TimeoutException)
             {
                 failure = new ValidationCheck("timeout", false, $"The plugin did not answer within {options.ValidateTimeout.TotalSeconds:0} seconds.");
             }

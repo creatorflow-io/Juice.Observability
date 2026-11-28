@@ -65,7 +65,14 @@ namespace Juice.Observability.Api.Integrations
                     IntegrationJson.Canonical(instance.Config), IntegrationJson.Canonical(instance.Scope), IntegrationJson.Canonical(instance.SecretRefs)))));
     }
 
-    /// <summary>Removes resolved secret values, in the forms they usually appear in (as is, URL-encoded, JSON-escaped, base64), from text before it is stored or logged.</summary>
+    /// <summary>
+    /// Removes resolved secret values, in the forms they usually appear in (as is, URL-encoded, JSON-escaped, base64), from text before it is stored or logged.
+    /// <para>
+    /// Its limits: whole values only (a value the plugin splits, hashes or otherwise transforms is not found), and only what goes through the core (the
+    /// context's <c>Logger</c>, outcomes, validation reports). A plugin that injects its own <c>ILogger&lt;T&gt;</c> bypasses it. Plugins are trusted, compiled-in
+    /// code (W-15); the scrubber guards against accidents, not against a hostile plugin.
+    /// </para>
+    /// </summary>
     internal static class IntegrationScrubber
     {
         public const string Mask = "***";

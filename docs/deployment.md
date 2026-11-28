@@ -41,6 +41,19 @@ overrides it). Alert transitions, acknowledgements and action requests become it
 escalations (`Notifications:HoldPassInterval`, 15 s, for silences that start or end by time; what a silence held is decided every
 `Notifications:ReleasePassInterval`, 2 s).
 
+**Upgrading to a build with integration instances (the `integrations` module).** The module owns the database schema `integrations`
+(its own `__ef_migrations_history`), migrated with the platform's when `Database:Migrate` is on. A site that applies migrations outside
+the app (`Database:Migrate` false) can't start the new build until that schema exists, and the refusal names the module and the
+migration. Apply `deploy/migrations/integrations.sql` first, in the same step as the upgrade: it is idempotent (`psql -d <database> -f
+deploy/migrations/integrations.sql`), so it is safe to run again at the next upgrade. The module's tables are new and nothing of the
+core's is touched. A core-only install (no plugin) then holds two empty tables.
+
+**Integration plugins and secrets.** Plugins are trusted code compiled into the host (W-15). An instance holds secret *references*
+(`env:` names with the prefix `Modules:integrations:SecretEnvPrefix`, default `JUICE_INTEGRATION_`, or `file:` paths inside the one
+folder `Modules:integrations:SecretDirectory`, links resolved). Resolved values are removed from the text the core stores or logs, but
+only as whole values (a value the plugin splits, re-encodes or hashes is not found), and a plugin that injects its own `ILogger<T>`
+instead of using the context's logger bypasses it. Do not give a plugin a secret you would not give its author.
+
 **Upgrading from 1.x.** 2.0 removes the legacy webhooks, the shadow run and the migration tool on purpose, so nothing in the old
 configuration is ignored: each of these refuses the start, with a message that names the key that replaces it.
 

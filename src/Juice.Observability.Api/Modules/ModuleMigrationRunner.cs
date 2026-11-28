@@ -48,7 +48,9 @@ namespace Juice.Observability.Api.Modules
                     else if (await ModuleMigrator.FirstPendingAsync(registration, scope.ServiceProvider, connectionString, cancellationToken) is { } pending)
                     {
                         throw new ModuleMigrationException(
-                            $"Module '{registration.Module}' has a migration that is not applied ({pending}) and Database:Migrate is false: apply the module's migrations, or set Database:Migrate.");
+                            $"Module '{registration.Module}' has a migration that is not applied ({pending}) and Database:Migrate is false: apply the module's migrations"
+                            + (registration.Module == "integrations" ? " (the idempotent script deploy/migrations/integrations.sql, with psql -f)" : "")
+                            + ", or start once with Database:Migrate=true.");
                     }
                 }
             }
