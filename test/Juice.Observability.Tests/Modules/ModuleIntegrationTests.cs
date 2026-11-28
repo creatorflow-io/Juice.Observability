@@ -219,7 +219,7 @@ namespace Juice.Observability.Tests.Modules
             await using var host = await HostAsync(database);
             using var client = host.As("viewer");
             var page = await client.GetFromJsonAsync<ModulesDto>("/api/v1/modules", Ct);
-            Assert.Equal(["core", "slos", "agents", "sample"], page!.Items.Select(i => i.Name));
+            Assert.Equal(["core", "slos", "agents", "integrations", "sample"], page!.Items.Select(i => i.Name));
         }
     }
 }
