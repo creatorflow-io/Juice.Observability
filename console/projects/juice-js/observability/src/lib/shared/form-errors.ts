@@ -22,7 +22,29 @@ export const RULE_FIELDS: FieldMap = {
   recoveryDuration: { label: 'Recover after', numeric: true },
   cooldown: { label: 'Cooldown', numeric: true },
   enabled: { label: 'Enabled', numeric: false },
+  metricName: { label: 'Metric', numeric: false },
+  metricKind: { label: 'Kind', numeric: false },
+  aggregation: { label: 'Aggregation', numeric: false },
+  filters: { label: 'Filters', numeric: false },
+  subject: { label: 'Subject', numeric: false },
+  comparison: { label: 'Comparison', numeric: false },
 };
+
+/** The leading token of a rule error message (`Window must ...`, `Metric.Filters k: ...`) and the form field that shows it. */
+const MESSAGE_FIELD: Record<string, string> = {
+  key: 'key', name: 'name', template: 'template', severity: 'severity', service: 'service', environment: 'environment', host: 'host',
+  threshold: 'threshold', recoverythreshold: 'recoveryThreshold', minimumsamples: 'minimumSamples', schedule: 'schedule', window: 'window',
+  forduration: 'forDuration', recoveryduration: 'recoveryDuration', cooldown: 'cooldown', enabled: 'enabled',
+  metric: 'metricName', 'metric.name': 'metricName', 'metric.kind': 'metricKind', 'metric.aggregation': 'aggregation', 'metric.filters': 'filters',
+  'metric.subject': 'subject', 'metric.comparison': 'comparison',
+};
+
+/** `rule 'k': Window ...` or `Metric.Filters k: ...`: the message without the rule prefix, and the field its first word names (undefined for none). */
+function placeMessage(raw: string): { field: string | undefined; message: string } {
+  const message = raw.replace(/^rule '[^']*':\s*/, '').trim();
+  const token = /^[A-Za-z][A-Za-z.]*/.exec(message)?.[0].toLowerCase();
+  return { field: token ? MESSAGE_FIELD[token] : undefined, message };
+}
 
 /** The silence form: the API's names, and the form's own field name where it differs. */
 export const SILENCE_FIELDS: FieldMap = {
@@ -54,10 +76,22 @@ const PATH = /\$(?:\.([A-Za-z_][A-Za-z0-9_]*)|\[\s*'([^']*)'\s*\]|\[\s*"([^"]*)"
  */
 export function ruleFieldErrors(error: unknown, map: FieldMap = RULE_FIELDS): { fields: Record<string, string[]>; rest: string } {
   const byLower = new Map(Object.keys(map).map(k => [k.toLowerCase(), k]));
-  const e = error as { status?: number; error?: { title?: string; detail?: string } } | undefined;
+  const e = error as { status?: number; error?: { title?: string; detail?: string; errors?: unknown } } | undefined;
   const text = problemText(error);
   if (!e || (e.status !== 400 && e.status !== 422)) return { fields: {}, rest: text };
   const fields: Record<string, string[]> = {};
+  // The API's `errors[]` (one message each) places every message by its field token; a message no field here shows is kept in the sentence.
+  const listed = Array.isArray(e.error?.errors) ? (e.error!.errors as unknown[]).filter((m): m is string => typeof m === 'string' && m.trim() !== '') : [];
+  if (listed.length && map === RULE_FIELDS) {
+    const lost: string[] = [];
+    for (const raw of listed) {
+      const { field, message } = placeMessage(raw);
+      if (!field) { lost.push(message); continue; }
+      const list = (fields[field] ??= []);
+      if (!list.includes(message)) list.push(message);
+    }
+    return { fields, rest: lost.join(' ') };
+  }
   let unplaced = false;
   const haystack = [e.error?.detail, e.error?.title].filter(Boolean).join(' ');
   let any = false;

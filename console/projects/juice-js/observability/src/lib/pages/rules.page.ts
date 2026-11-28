@@ -1,115 +1,38 @@
-import { LinkPipe } from '../core/options';
-import { ChangeDetectionStrategy, Component, ElementRef, computed, inject, signal } from '@angular/core';
-import { FieldError, ruleFieldErrors } from '../shared/form-errors';
-import { FormsModule } from '@angular/forms';
+import { LinkPipe, OBSERVABILITY_CAN_ADMIN } from '../core/options';
+import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { MatButtonModule } from '@angular/material/button';
-import { MatCheckboxModule } from '@angular/material/checkbox';
-import { MatFormFieldModule } from '@angular/material/form-field';
-import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
-import { MatSelectModule } from '@angular/material/select';
 import { apiResource } from '../shared/resource';
 import { RouterLink } from '@angular/router';
-import { Observable, forkJoin, map } from 'rxjs';
+import { distinctUntilChanged, forkJoin, map, skip } from 'rxjs';
 import { ApiService } from '../core/api.service';
 import { ContextService } from '../core/context.service';
 import { Rule } from '../core/models';
 import { AgoPipe } from '../shared/format';
 import { ContextBar } from '../shared/ui';
 import { problemText } from '../shared/telemetry';
-
-const TEMPLATES: Record<string, string> = {
-  ErrorRate: 'Ratio of failed requests, 0 to 1. Fires above the threshold.',
-  LatencyP95: 'Milliseconds at the 95th percentile. Fires above the threshold.',
-  ThroughputAbsent: 'Requests in the window, for a service that had traffic. Fires at or below the threshold.',
-  DeliveryFailureRate: 'Ratio of failed deliveries, 0 to 1. Fires above the threshold.',
-  HostMemory: 'Ratio of host memory used, 0 to 1. Fires above the threshold.',
-  MediatorErrors: 'Mediator errors in the window. Fires above the threshold.',
-  ConsumerFailures: 'Failed consumer messages in the window. Fires above the threshold.',
-  SloBurn: "An SLO's burn rate over a long and a short window. Fires when both reach the rate; one alert per SLO.",
-};
-
-/** A TimeSpan as the API writes it (`1.02:03:04`) in seconds. */
-function seconds(value: unknown): number {
-  const match = /^(?:(\d+)\.)?(\d+):(\d+):(\d+)/.exec(String(value ?? ''));
-  return match ? (+(match[1] ?? 0)) * 86400 + +match[2] * 3600 + +match[3] * 60 + +match[4] : 0;
-}
-
-function span(total: number): string {
-  const s = Math.max(0, Math.round(total || 0));
-  const pad = (n: number) => String(n).padStart(2, '0');
-  const days = Math.floor(s / 86400);
-  return `${days ? `${days}.` : ''}${pad(Math.floor(s / 3600) % 24)}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}`;
-}
-
-const FIELD_ORDER = ['key', 'name', 'template', 'severity', 'host', 'service', 'environment', 'threshold', 'recoveryThreshold', 'minimumSamples', 'schedule', 'window', 'forDuration', 'recoveryDuration', 'cooldown', 'enabled'];
-/** The form's input name where it differs from the API's field name. */
-const INPUT_NAME: Record<string, string> = { forDuration: 'for', recoveryDuration: 'recovery' };
-
-interface RuleForm {
-  key: string; name: string; template: string; severity: string; service: string; environment: string; host: string; threshold: number | null; recoveryThreshold: number | null;
-  minimumSamples: number; scheduleSeconds: number; windowSeconds: number; forSeconds: number; recoverySeconds: number; cooldownSeconds: number; enabled: boolean;
-}
-
-const NEW_RULE: RuleForm = {
-  key: '', name: '', template: 'ErrorRate', severity: 'Warning', service: '', environment: '', host: '', threshold: null, recoveryThreshold: null,
-  minimumSamples: 10, scheduleSeconds: 60, windowSeconds: 300, forSeconds: 120, recoverySeconds: 120, cooldownSeconds: 600, enabled: true,
-};
+import { RuleEditor, TEMPLATES } from './rule-editor';
 
 /**
- * Rules and their current state (Console requirements §14), and changing them for admins. They stay typed templates (D5): this page never takes a query.
- * A rule in the deployment's file is shown but changed there. Disabling one, or changing what it watches, closes its open alerts, which the form says first.
+ * Rules and their current state (Console requirements §14); admins change them, everyone else views. They stay typed templates (D5): this page never
+ * takes a query. A rule in the deployment's file, or the platform's own for an SLO, is shown but changed elsewhere. The form is {@link RuleEditor}.
  */
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [LinkPipe, RouterLink, FormsModule, MatButtonModule, MatCheckboxModule, MatFormFieldModule, MatInputModule, MatProgressBarModule, MatSelectModule, ContextBar, AgoPipe, FieldError],
+  imports: [LinkPipe, RouterLink, MatButtonModule, MatProgressBarModule, ContextBar, AgoPipe, RuleEditor],
   template: `
     <jc-context-bar>
       <h1>Rules</h1>
       <span class="jc-spacer"></span>
-      <button mat-flat-button type="button" data-testid="rule-new" (click)="startNew()">New rule</button>
+      @if (admin()) { <button mat-flat-button type="button" data-testid="rule-new" (click)="startNew()">New rule</button> }
     </jc-context-bar>
     @if (data.isLoading()) { <mat-progress-bar mode="indeterminate" /> }
     @if (data.error()) { <p class="jc-error">{{ error() }}</p> }
-    @if (form(); as f) {
-      <section class="jc-card" data-testid="rule-form">
-        <h2>{{ editing() ? 'Change ' + editing()!.key : 'New rule' }}</h2>
-        <form class="jc-form jc-form-grid" (ngSubmit)="save(f)">
-          @if (!editing()) {
-            <div class="jc-field"><mat-form-field subscriptSizing="dynamic"><mat-label>Key</mat-label><input matInput name="key" [(ngModel)]="f.key" (ngModelChange)="clear('key')" required [attr.aria-invalid]="bad('key')" [attr.aria-describedby]="bad('key') ? 'err-key' : null"></mat-form-field><jc-field-error field="key" [messages]="msgs('key')" /></div>
-          }
-          <div class="jc-field jc-field-wide"><mat-form-field subscriptSizing="dynamic" class="jc-field-wide"><mat-label>Name</mat-label><input matInput name="name" [(ngModel)]="f.name" (ngModelChange)="clear('name')" required [attr.aria-invalid]="bad('name')" [attr.aria-describedby]="bad('name') ? 'err-name' : null"></mat-form-field><jc-field-error field="name" [messages]="msgs('name')" /></div>
-          <div class="jc-field"><mat-form-field subscriptSizing="dynamic"><mat-label>Template</mat-label>
-            <mat-select name="template" [(ngModel)]="f.template" (ngModelChange)="clear('template')" [attr.aria-describedby]="bad('template') ? 'err-template' : null">@for (t of templates(); track t) { <mat-option [value]="t">{{ t }}</mat-option> }</mat-select>
-          </mat-form-field><jc-field-error field="template" [messages]="msgs('template')" /></div>
-          <div class="jc-field"><mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Severity</mat-label>
-            <mat-select name="severity" [(ngModel)]="f.severity" (ngModelChange)="clear('severity')" [attr.aria-describedby]="bad('severity') ? 'err-severity' : null"><mat-option value="Info">Info</mat-option><mat-option value="Warning">Warning</mat-option><mat-option value="Critical">Critical</mat-option></mat-select>
-          </mat-form-field><jc-field-error field="severity" [messages]="msgs('severity')" /></div>
-          @if (f.template === 'HostMemory') {
-            <div class="jc-field jc-field-wide"><mat-form-field subscriptSizing="dynamic" class="jc-field-wide"><mat-label>Host (all if empty)</mat-label><input matInput name="host" [(ngModel)]="f.host" (ngModelChange)="clear('host')" [attr.aria-invalid]="bad('host')" [attr.aria-describedby]="bad('host') ? 'err-host' : null"></mat-form-field><jc-field-error field="host" [messages]="msgs('host')" /></div>
-          } @else {
-            <div class="jc-field jc-field-wide"><mat-form-field subscriptSizing="dynamic" class="jc-field-wide"><mat-label>Service (all if empty)</mat-label><input matInput name="service" [(ngModel)]="f.service" (ngModelChange)="clear('service')" [attr.aria-invalid]="bad('service')" [attr.aria-describedby]="bad('service') ? 'err-service' : null"></mat-form-field><jc-field-error field="service" [messages]="msgs('service')" /></div>
-            <div class="jc-field jc-field-wide"><mat-form-field subscriptSizing="dynamic" class="jc-field-wide"><mat-label>Environment (all if empty)</mat-label><input matInput name="environment" [(ngModel)]="f.environment" (ngModelChange)="clear('environment')" [attr.aria-invalid]="bad('environment')" [attr.aria-describedby]="bad('environment') ? 'err-environment' : null"></mat-form-field><jc-field-error field="environment" [messages]="msgs('environment')" /></div>
-          }
-          <p class="jc-muted jc-small jc-form-actions">{{ hint(f.template) }}</p>
-          @if (offPack(f.template); as pack) { <p class="jc-muted jc-small jc-form-actions" data-testid="rule-pack-off">{{ f.template }} reads the {{ pack }} signal pack, which this deployment has switched off: the rule can only be saved disabled.</p> }
-          <div class="jc-field"><mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Threshold</mat-label><input matInput type="number" step="any" name="threshold" [(ngModel)]="f.threshold" (ngModelChange)="clear('threshold')" required [attr.aria-invalid]="bad('threshold')" [attr.aria-describedby]="bad('threshold') ? 'err-threshold' : null"></mat-form-field><jc-field-error field="threshold" [messages]="msgs('threshold')" /></div>
-          <div class="jc-field"><mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Recovery threshold</mat-label><input matInput type="number" step="any" name="recoveryThreshold" [(ngModel)]="f.recoveryThreshold" (ngModelChange)="clear('recoveryThreshold')" [attr.aria-invalid]="bad('recoveryThreshold')" [attr.aria-describedby]="bad('recoveryThreshold') ? 'err-recoveryThreshold' : null"></mat-form-field><jc-field-error field="recoveryThreshold" [messages]="msgs('recoveryThreshold')" /></div>
-          <div class="jc-field"><mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Minimum samples</mat-label><input matInput type="number" name="minimumSamples" [(ngModel)]="f.minimumSamples" (ngModelChange)="clear('minimumSamples')" [attr.aria-invalid]="bad('minimumSamples')" [attr.aria-describedby]="bad('minimumSamples') ? 'err-minimumSamples' : null"></mat-form-field><jc-field-error field="minimumSamples" [messages]="msgs('minimumSamples')" /></div>
-          <div class="jc-field"><mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Every (s)</mat-label><input matInput type="number" name="schedule" [(ngModel)]="f.scheduleSeconds" (ngModelChange)="clear('schedule')" [attr.aria-invalid]="bad('schedule')" [attr.aria-describedby]="bad('schedule') ? 'err-schedule' : null"></mat-form-field><jc-field-error field="schedule" [messages]="msgs('schedule')" /></div>
-          <div class="jc-field"><mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Window (s)</mat-label><input matInput type="number" name="window" [(ngModel)]="f.windowSeconds" (ngModelChange)="clear('window')" [attr.aria-invalid]="bad('window')" [attr.aria-describedby]="bad('window') ? 'err-window' : null"></mat-form-field><jc-field-error field="window" [messages]="msgs('window')" /></div>
-          <div class="jc-field"><mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Fire after (s)</mat-label><input matInput type="number" name="for" [(ngModel)]="f.forSeconds" (ngModelChange)="clear('forDuration')" [attr.aria-invalid]="bad('forDuration')" [attr.aria-describedby]="bad('forDuration') ? 'err-forDuration' : null"></mat-form-field><jc-field-error field="forDuration" [messages]="msgs('forDuration')" /></div>
-          <div class="jc-field"><mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Recover after (s)</mat-label><input matInput type="number" name="recovery" [(ngModel)]="f.recoverySeconds" (ngModelChange)="clear('recoveryDuration')" [attr.aria-invalid]="bad('recoveryDuration')" [attr.aria-describedby]="bad('recoveryDuration') ? 'err-recoveryDuration' : null"></mat-form-field><jc-field-error field="recoveryDuration" [messages]="msgs('recoveryDuration')" /></div>
-          <div class="jc-field"><mat-form-field subscriptSizing="dynamic" class="jc-field-sm"><mat-label>Cooldown (s)</mat-label><input matInput type="number" name="cooldown" [(ngModel)]="f.cooldownSeconds" (ngModelChange)="clear('cooldown')" [attr.aria-invalid]="bad('cooldown')" [attr.aria-describedby]="bad('cooldown') ? 'err-cooldown' : null"></mat-form-field><jc-field-error field="cooldown" [messages]="msgs('cooldown')" /></div>
-          <div class="jc-field"><mat-checkbox name="enabled" [(ngModel)]="f.enabled" (ngModelChange)="clear('enabled')" [attr.aria-describedby]="bad('enabled') ? 'err-enabled' : null">Enabled</mat-checkbox><jc-field-error field="enabled" [messages]="msgs('enabled')" /></div>
-          @if (editing()) { <p class="jc-muted jc-small jc-form-actions">Disabling this rule, or changing its template or scope, resolves its open alerts: nothing would be watching them any more.</p> }
-          @if (summary()) { <p class="jc-error jc-small jc-form-actions" role="alert" data-testid="rule-error">{{ summary() }}</p> }
-          <div class="jc-form-actions">
-            <button mat-flat-button type="submit" data-testid="rule-save" [disabled]="saving()">Save</button>
-            <button mat-button type="button" (click)="form.set(null)">Cancel</button>
-          </div>
-        </form>
-      </section>
+    @if (open(); as o) {
+      @for (e of [o]; track e.id) {
+        <jc-rule-editor [rule]="o.rule" [templates]="templates()" [packs]="data.value()?.packs ?? []" (saved)="saved()" (closed)="close()" />
+      }
     }
     <table class="jc-table" data-testid="rules">
       <thead><tr><th>Rule</th><th>Template</th><th>Severity</th><th>Threshold</th><th>Recovery</th><th>Wait</th><th>Open alerts</th><th>Last evaluation</th><th></th></tr></thead>
@@ -129,7 +52,10 @@ const NEW_RULE: RuleForm = {
               } @empty { <span class="jc-muted">none</span> }
             </td>
             <td>{{ r.lastEvaluatedAt | ago }}</td>
-            <td class="jc-row-actions">@if (r.managedBy === 'api') { <button mat-button type="button" [attr.data-testid]="'rule-edit-' + r.key" (click)="edit(r)">Change</button> }</td>
+            <td class="jc-row-actions">
+              @if (r.managedBy === 'api' && admin()) { <button mat-button type="button" [attr.data-testid]="'rule-edit-' + r.key" (click)="edit(r)">Change</button> }
+              @else { <button mat-button type="button" [attr.data-testid]="'rule-view-' + r.key" (click)="edit(r)">View</button> }
+            </td>
           </tr>
         }
       </tbody>
@@ -138,22 +64,11 @@ const NEW_RULE: RuleForm = {
 export class RulesPage {
   protected readonly ctx = inject(ContextService);
   private readonly api = inject(ApiService);
-  /**
-   * What a rule can be made from: SloBurn is described, but its rules are the platform's own, made for SLOs. A template of a signal pack that is
-   * off is left out, except the one the rule being changed has, which it can still be saved with while disabled.
-   */
-  protected readonly templates = computed(() => {
-    const off = new Set((this.data.value()?.packs ?? []).filter(p => !p.enabled).flatMap(p => p.ruleTemplates));
-    const current = this.editing()?.template;
-    return Object.keys(TEMPLATES).filter(t => t !== 'SloBurn' && (!off.has(t) || t === current));
-  });
-  protected readonly form = signal<RuleForm | null>(null);
-  protected readonly editing = signal<Rule | null>(null);
-  protected readonly saving = signal(false);
-  /** One sentence about the whole save (refused, stale, unreachable, or a path no field here has), and the messages each field shows under itself. */
-  protected readonly summary = signal('');
-  protected readonly fieldMessages = signal<Record<string, string[]>>({});
-  private readonly host = inject(ElementRef<HTMLElement>);
+  private readonly canAdmin = inject(OBSERVABILITY_CAN_ADMIN);
+  protected readonly admin = () => this.canAdmin();
+  /** The form that is open, if any: a new rule or one of the list's. `id` is new for each opening, so the form starts from scratch every time. */
+  protected readonly open = signal<{ id: number; rule: Rule | null } | null>(null);
+  private opened = 0;
   protected readonly data = apiResource({
     stream: () => forkJoin({
       rules: this.api.rules().pipe(map(p => p.items)),
@@ -163,6 +78,15 @@ export class RulesPage {
     }),
   });
   protected readonly error = computed(() => problemText(this.data.error()));
+  /**
+   * What a rule can be made from: SloBurn is described, but its rules are the platform's own, made for SLOs. A template of a signal pack that is
+   * off is left out, except the one the rule being changed has, which it can still be saved with while disabled.
+   */
+  protected readonly templates = computed(() => {
+    const off = new Set((this.data.value()?.packs ?? []).filter(p => !p.enabled).flatMap(p => p.ruleTemplates));
+    const current = this.open()?.rule?.template;
+    return Object.keys(TEMPLATES).filter(t => t !== 'SloBurn' && (!off.has(t) || t === current));
+  });
   protected readonly rows = computed(() => {
     const d = this.data.value();
     if (!d) return [];
@@ -174,84 +98,14 @@ export class RulesPage {
     });
   });
 
-  protected hint(template: string): string { return TEMPLATES[template] ?? ''; }
-
-  /** The name of the switched-off signal pack a template reads, if it does. */
-  protected offPack(template: string): string | null {
-    return this.data.value()?.packs.find(p => !p.enabled && p.ruleTemplates.includes(template))?.name ?? null;
+  constructor() {
+    // A different tenant starts afresh: nothing drafted, previewed or refused for the last one stays on screen.
+    this.api.tenant$.pipe(map(t => t.id), distinctUntilChanged(), skip(1), takeUntilDestroyed()).subscribe(() => { this.close(); this.data.reload(); });
   }
 
-  protected msgs(field: string): string[] { return this.fieldMessages()[field] ?? []; }
-  protected bad(field: string): 'true' | null { return this.msgs(field).length ? 'true' : null; }
-  /** Editing a field takes its own message away and leaves the others. */
-  protected clear(field: string) {
-    if (!this.fieldMessages()[field]) return;
-    const { [field]: _, ...rest } = this.fieldMessages();
-    this.fieldMessages.set(rest);
-  }
-  private reset() { this.summary.set(''); this.fieldMessages.set({}); }
-  /** The fields the open form shows: a message for any other never reaches the person unless it goes to the sentence. */
-  private shown(): Set<string> {
-    const s = new Set(['name', 'template', 'severity', 'threshold', 'recoveryThreshold', 'minimumSamples', 'schedule', 'window', 'forDuration', 'recoveryDuration', 'cooldown', 'enabled']);
-    if (!this.editing()) s.add('key');
-    for (const k of this.form()?.template === 'HostMemory' ? ['host'] : ['service', 'environment']) s.add(k);
-    return s;
-  }
-  private mark(fields: Record<string, string[]>, summary: string) {
-    const shown = this.shown();
-    const placed: Record<string, string[]> = {};
-    const lost: string[] = [];
-    for (const [k, v] of Object.entries(fields)) { if (shown.has(k)) placed[k] = v; else lost.push(...v); }
-    this.fieldMessages.set(placed);
-    this.summary.set([summary, ...lost].filter(Boolean).join(' '));
-    // In the order the form shows them, so a select is found as well as an input.
-    const first = FIELD_ORDER.find(k => placed[k]);
-    if (first) setTimeout(() => {
-      const el = (this.host.nativeElement as HTMLElement).querySelector<HTMLElement>(`[name="${INPUT_NAME[first] ?? first}"]`);
-      // A mat-checkbox carries the name on its host; the focusable control is the input inside it.
-      (el?.matches('mat-checkbox') ? el.querySelector<HTMLElement>('input') : el)?.focus();
-    });
-  }
-
-  protected startNew() { this.editing.set(null); this.reset(); this.form.set({ ...NEW_RULE }); }
-
-  protected edit(rule: Rule) {
-    const d = rule.definition;
-    this.editing.set(rule);
-    this.reset();
-    this.form.set({
-      key: rule.key, name: rule.name, template: rule.template, severity: rule.severity, service: String(d['service'] ?? ''), environment: String(d['environment'] ?? ''), host: String(d['host'] ?? ''),
-      threshold: d['threshold'] as number, recoveryThreshold: (d['recoveryThreshold'] as number | null) ?? null, minimumSamples: d['minimumSamples'] as number, scheduleSeconds: seconds(d['schedule']), windowSeconds: seconds(d['window']),
-      forSeconds: seconds(d['forDuration']), recoverySeconds: seconds(d['recoveryDuration']), cooldownSeconds: seconds(d['cooldown']), enabled: rule.enabled,
-    });
-  }
-
-  /** Every required field at once, so the person fixes them in one go. */
-  private invalid(f: RuleForm): Record<string, string[]> {
-    const out: Record<string, string[]> = {};
-    if (!this.editing() && !f.key?.trim()) out['key'] = ['Key: enter a key.'];
-    if (!f.name?.trim()) out['name'] = ['Name: enter a name.'];
-    if (f.threshold === null || f.threshold === undefined || !Number.isFinite(Number(f.threshold))) out['threshold'] = ['Threshold: enter a number.'];
-    return out;
-  }
-
-  protected save(f: RuleForm) {
-    if (this.saving()) return;
-    const local = this.invalid(f);
-    if (Object.keys(local).length) { this.mark(local, ''); return; }
-    const host = f.template === 'HostMemory';
-    const body = {
-      key: f.key, name: f.name, template: f.template, severity: f.severity, service: host ? '' : f.service.trim(), environment: host ? '' : f.environment.trim().toLowerCase(), host: host ? f.host.trim() : '',
-      threshold: f.threshold, recoveryThreshold: f.recoveryThreshold, minimumSamples: f.minimumSamples, schedule: span(f.scheduleSeconds), window: span(f.windowSeconds), forDuration: span(f.forSeconds),
-      recoveryDuration: span(f.recoverySeconds), cooldown: span(f.cooldownSeconds), enabled: f.enabled,
-    };
-    const editing = this.editing();
-    const request: Observable<Rule> = editing ? this.api.updateRule(editing.key, body, editing.etag) : this.api.createRule(body);
-    this.saving.set(true);
-    this.reset();
-    request.subscribe({
-      next: () => { this.saving.set(false); this.form.set(null); this.data.reload(); },
-      error: e => { this.saving.set(false); const r = ruleFieldErrors(e); this.mark(r.fields, r.rest); },
-    });
-  }
+  protected startNew() { if (this.admin()) this.show(null); }
+  protected edit(rule: Rule) { this.show(rule); }
+  private show(rule: Rule | null) { this.open.set({ id: ++this.opened, rule }); }
+  protected close() { this.open.set(null); }
+  protected saved() { this.close(); this.data.reload(); }
 }

@@ -218,6 +218,17 @@ $_layout-tokens: (bg: bg, surface: surface, border: border, text: text, muted: m
   .jc-form-actions { display: flex; align-items: center; gap: 8px; width: 100%; }
   .jc-field-error { color: var(--jc-bad); font-size: 12px; line-height: 16px; padding: 2px 16px 0; overflow-wrap: anywhere; }
   .jc-row-actions { white-space: nowrap; text-align: right; }
+  // The rule preview: a list of subjects, each with a strip of one cell per evaluated point. It wraps, so it never widens the form.
+  .jc-preview { grid-column: 1 / -1; min-width: 0; border-top: 1px solid var(--jc-border); padding-top: 8px; }
+  .jc-preview.jc-stale { opacity: .6; }
+  .jc-preview ol { list-style: none; margin: 8px 0 0; padding: 0; }
+  .jc-preview-subject { padding: 6px 0; border-top: 1px solid var(--jc-border); min-width: 0; overflow-wrap: anywhere; font-size: 13px; }
+  .jc-strip { display: flex; gap: 1px; height: 14px; margin-top: 4px; max-width: 100%; }
+  .jc-strip > i { flex: 1 1 0; min-width: 1px; background: var(--jc-border); }
+  .jc-strip > i.jc-pv-breach { background: var(--jc-bad); }
+  .jc-strip > i.jc-pv-band { background: var(--jc-warn); }
+  .jc-strip > i.jc-pv-recovered { background: var(--jc-ok); }
+  .jc-strip > i.jc-pv-nodata { background: transparent; box-shadow: inset 0 0 0 1px var(--jc-border); }
   .jc-load-steps { margin-top: 12px; }
   .jc-load-steps summary { cursor: pointer; font-size: 13px; }
 

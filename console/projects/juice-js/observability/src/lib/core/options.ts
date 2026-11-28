@@ -97,3 +97,9 @@ export class LinkPipe implements PipeTransform {
  * sign-in (Console: the access token's roles); the default is true, which hides nothing, and the API still refuses a non-admin with 403.
  */
 export const OBSERVABILITY_CAN_ADMIN = new InjectionToken<() => boolean>('OBSERVABILITY_CAN_ADMIN', { providedIn: 'root', factory: () => () => true });
+
+/**
+ * Whether the signed-in user is an admin or an operator, who may run a rule preview (a viewer may not). The host answers it from its sign-in
+ * as {@link OBSERVABILITY_CAN_ADMIN} is; the default is true, which hides nothing, and the API still refuses a viewer with 403.
+ */
+export const OBSERVABILITY_CAN_OPERATE = new InjectionToken<() => boolean>('OBSERVABILITY_CAN_OPERATE', { providedIn: 'root', factory: () => () => true });
