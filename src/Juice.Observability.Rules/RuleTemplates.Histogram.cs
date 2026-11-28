@@ -19,8 +19,7 @@ namespace Juice.Observability.Rules
         private const string HistogramHost = "if(JuiceHostId != '', lower(JuiceHostId), lower(JuiceHostName))";
 
         // Per series (resource and data-point attributes, restart, bucket layout, temporality) the increase of every bucket and of the sum in the window:
-        //   cumulative: the last point in the window less the last point before it (a series without one counts from 0 only when it started in the window, so a new start is a restart; one that started earlier is measured
-        //               from its first point in the window, since its first point carries its whole lifetime);
+        //   cumulative: the last point in the window less the last point before it (a series without one counts from 0, so a new start is a restart);
         //               a count that fell inside the window (a restart under the same start time) counts from 0 too, with the sum from 0 as well;
         //   delta: the points in the window summed bucket by bucket.
         // A series without a point in the window is left out. A sum of 0 behind observations in a bucket that can't hold 0 is a missing sum:
@@ -36,19 +35,16 @@ namespace Juice.Observability.Rules
                        argMaxIf(arraySum(BucketCounts), TimeUnix, TimeUnix < {From}) AS before_n,
                        maxIf(arraySum(BucketCounts), TimeUnix >= {From}) AS peak_n,
                        AggregationTemporality = 1 AS is_delta,
-                       countIf(TimeUnix < {From}) > 0 AS has_before,
                        last_n < greatest(before_n, peak_n) AS was_reset,
                        if(is_delta,
                           arrayMap(x -> toInt64(x), arrayReduce('sumForEach', groupArrayIf(BucketCounts, TimeUnix >= {From}))),
                           arrayMap((a, b) -> greatest(toInt64(a) - toInt64(b), 0),
                                    argMaxIf(BucketCounts, TimeUnix, TimeUnix >= {From}),
-                                   arrayResize(if(was_reset, emptyArrayUInt64(), if(has_before, argMaxIf(BucketCounts, TimeUnix, TimeUnix < {From}),
-                                       if(StartTimeUnix >= {From}, emptyArrayUInt64(), argMinIf(BucketCounts, TimeUnix, TimeUnix >= {From})))), length(ExplicitBounds) + 1))) AS inc,
+                                   arrayResize(if(was_reset, emptyArrayUInt64(), argMaxIf(BucketCounts, TimeUnix, TimeUnix < {From})), length(ExplicitBounds) + 1))) AS inc,
                        arraySum(inc) AS observed,
                        if(is_delta,
                           sumIf(Sum, TimeUnix >= {From}),
-                          argMaxIf(Sum, TimeUnix, TimeUnix >= {From}) - if(was_reset, 0, if(has_before, argMaxIf(Sum, TimeUnix, TimeUnix < {From}),
-                              if(StartTimeUnix >= {From}, 0, argMinIf(Sum, TimeUnix, TimeUnix >= {From}))))) AS series_sum,
+                          argMaxIf(Sum, TimeUnix, TimeUnix >= {From}) - if(was_reset, 0, argMaxIf(Sum, TimeUnix, TimeUnix < {From}))) AS series_sum,
                        arrayExists((c, i) -> c > 0 AND NOT ((i = 1 OR ExplicitBounds[i - 1] < 0) AND (i > length(ExplicitBounds) OR ExplicitBounds[i] >= 0)),
                                    inc, arrayEnumerate(inc)) AS beyond_zero,
                        -- blind spots: a sum of 0 over only first-bucket observations, and negative values that truly sum to 0, can't be told from a missing sum
