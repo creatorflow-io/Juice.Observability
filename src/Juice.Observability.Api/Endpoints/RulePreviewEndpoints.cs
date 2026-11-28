@@ -38,6 +38,9 @@ namespace Juice.Observability.Api.Endpoints
         public const int RateRetrySeconds = 60;
         public const int BusyRetrySeconds = 5;
 
+        /// <summary>The most subjects a preview returns: the row limit (what one evaluation may see), and never more than <see cref="MaxSubjects"/>.</summary>
+        internal static int SubjectCap(int rowLimit) => Math.Max(1, Math.Min(rowLimit, MaxSubjects));
+
         public static RouteGroupBuilder MapRulePreviewEndpoints(this RouteGroupBuilder tenant)
         {
             tenant.MapPost("/rules/preview", PreviewAsync);
@@ -110,7 +113,13 @@ namespace Juice.Observability.Api.Endpoints
                 // The budget ran out in the provider: what was judged before is the result.
                 cut ??= string.Create(CultureInfo.InvariantCulture, $"stopped after {judged.Count} of {instants.Count} points");
             }
-            var subjects = RulePreview.Replay(definition, judged, MaxSubjects, out var truncated);
+            // Each instant is read under the row limit, but the instants see different subjects: the union is capped too.
+            var cap = SubjectCap(rules.Value.RowLimit);
+            var subjects = RulePreview.Replay(definition, judged, cap, out var truncated);
+            if (truncated)
+            {
+                cut ??= string.Create(CultureInfo.InvariantCulture, $"showing the {cap} subjects that would fire most; others were left out");
+            }
             var unit = entry?.Unit is { Length: > 0 } u ? u : null;
             return Results.Ok(new RulePreviewDto(instants[0], instants[^1], step, instants.Count, judged.Count, cut is null, cut, quiet, unit, definition,
                 [.. subjects.Select(s => new PreviewSubjectDto(s.SubjectKey, s.SubjectType.ToString(), s.Breaches, s.NoData, s.WouldOpen, s.WouldFire, s.FirstFiredAt,
