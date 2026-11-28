@@ -191,7 +191,9 @@ $_layout-tokens: (bg: bg, surface: surface, border: border, text: text, muted: m
   .jc-capacity-notes { margin: 12px 0 0; padding-left: 18px; font-size: 13px; }
   .jc-capacity-measured th { width: 240px; }
   .jc-timeline-change { font-weight: 500; }
-  .jc-form { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-bottom: 8px; @include mat.form-field-density(-1); }
+  // The controls' density is pinned here, beside the field's, so the 10px offset below (measured with these) holds in any host theme.
+  .jc-form { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-bottom: 8px; @include mat.form-field-density(-1);
+    @include mat.checkbox-density(-2); @include mat.radio-density(-2); @include mat.slide-toggle-density(-2); }
   // A form of fields only (`jc-form jc-form-grid`) wraps and fills: a field is one column (sm, md), a wide one is two, and a row of actions or
   // notes takes all of them. The top edges line up whatever a neighbour shows below it, and a label has the width of its column, so none is
   // clipped. A form with buttons or messages among its children stays a flex row.
@@ -200,8 +202,8 @@ $_layout-tokens: (bg: bg, surface: surface, border: border, text: text, muted: m
     > .jc-field { min-width: 0; }
     > mat-form-field.jc-field-wide, > .jc-field.jc-field-wide { grid-column: span 2; }
     // A checkbox, radio group or slide toggle is anchored to the top of its row, not centred in it: its box then stays level with the
-    // neighbouring field's input line whatever an error or hint under that field adds to the row's height. 10px is measured: the 40px
-    // touch target puts the 18px box 20px down, the field's input line (density -1) is 4px lower than that (e2e/forms-layout.mjs).
+    // neighbouring field's input line whatever an error or hint under that field adds to the row's height. 10px is measured, for the
+    // fill appearance with the field at density -1 and the controls at -2 (both pinned on .jc-form): e2e/forms-layout.mjs.
     > mat-checkbox, > mat-slide-toggle, > mat-radio-group { align-self: start; margin-top: 10px; }
     > .jc-field > mat-checkbox, > .jc-field > mat-slide-toggle, > .jc-field > mat-radio-group { display: block; padding-top: 10px; }
     // A label that wraps keeps the box at the first line, not centred beside all of them.
