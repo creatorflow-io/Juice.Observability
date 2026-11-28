@@ -104,6 +104,40 @@ information, query, fragment, whitespace or control character, at most 2,048 cha
 repeats it). The link is the address as written, without its trailing `/`, then `/` and the page (`https://Console.Example.com:443/alerts/<id>`):
 it is not normalised.
 
+### The Console's bell (the embedded inbox)
+
+Off by default: with `Notifications:Inbox:Enabled` unset the host is what it was, nothing is mapped, and no alert names a person. Set it, and
+the people who sign in to the Console with a role get an inbox item for each alert that fires, in the bell of the Console's header. There is no
+preferences page, no push, and no backfill.
+
+| Key | Default | Notes |
+|---|---|---|
+| `Notifications:Inbox:Enabled` | `false` | maps the inbox API and hub under `/notifications` (`/notifications/api/v1/tenants/{id}/me/inbox…`, `/notifications/hubs/inbox`) |
+| `Notifications:Inbox:Roles` | `["operator", "admin"]` when the key is absent | the roles that get an item for each firing alert; any of `viewer`, `operator`, `admin`, in lowercase, each once. A list you set replaces the default (`["viewer"]` is exactly the viewers) |
+| `Notifications:ConsoleUrl` | none | required when the inbox is on: an item links to its alert in the Console |
+| the Console's `config.json` `inbox` | `false` | `true` puts the bell in the header, for a host whose inbox is on |
+
+How it works, and what it does not do:
+
+- **A person is whoever signed in.** When someone calls their inbox (the bell does on load) or connects to the hub, the host records them (their
+  subject and name, from their own token) and the Console roles the token carries. An alert then names the configured roles, and each person
+  recorded with one of them within the last 30 days gets an item. Nobody is asked of the identity provider: there is no service account or secret.
+- **Someone who has never signed in gets nothing,** and no item is added for them later. Slack, email and the routes stay the guarantee; the
+  inbox is for people who are using the Console. A role not seen on a sign-in for 30 days stops counting, so someone whose role was removed drops
+  out without signing in.
+- **Only this deployment's people.** The token's `platform_tenant` claim must be this deployment's tenant key (as the admin pages and
+  `/api/v1/platform/status` require it), the token must be a person's (a client's own token, whose `client_id` is its `azp`, never is one), and
+  it needs a subject and at least one Console role. Only `viewer`, `operator` and `admin` are ever recorded.
+- **Acknowledging** the alert (in the Console, or by the API) updates every item of it, and so does its resolving. An item has no acknowledge
+  or action button of its own here, since nothing in the host answers it; a viewer reads their items and cannot act on the alert.
+- **The hub's token is in its URL.** A browser cannot set a header on a WebSocket, so the Console's session passes its token as `?access_token=`.
+  The host reads it only on `/notifications/hubs/inbox`, and only when the query holds one value; on any other path it is ignored. A request log
+  would write that query, so while the inbox is on the host does not log `Microsoft.AspNetCore.Hosting.Diagnostics` (its "Request starting" and
+  "Request finished" lines) below `Warning`. A reverse proxy or load balancer in front of the host must not log the query string of that path.
+- **Turning it off** is safe at any time: a notice a silence was holding, or one waiting for the pipeline to start, is sent to its routes without
+  the role recipients; items that exist stay in the table, and are no longer served.
+- **Several replicas** each tell their own hub sessions: a session on another replica sees a change on reload or reconnect.
+
 The pipeline's other settings are the `Notifications` section's (`Stages`, `Delivery`, `Retention`, …).
 
 If the pipeline's start fails (its migration or provisioning), `/health/ready` reports it (check `notifications`) and the platform runs on.
@@ -122,7 +156,8 @@ What the platform would have sent is kept and sent once a restart brings the pip
 | Secrets for integrations set on the admin pages | environment variables named `Notifications:Delivery:ApiSecretEnvPrefix` (default `NOTIFICATIONS_SECRET_`) + a name, or files directly in `Notifications:Delivery:ApiSecretDirectory` | the pages refuse any other reference, so an admin can't name other secrets on the host; the file may name any |
 | Email channels | `Notifications:Delivery:SmtpServers:<name>`: `Host`, `Port` (587), `Security` (`StartTls`, `SslOnConnect`, `None`), `Username`, `PasswordRef` | an email integration names the server; without it, email is refused |
 | Slack and Teams | The integration's URL behind a secret reference | they post only to Slack and Teams hosts, plus what the allowlist lists |
-| Links in notifications | `Notifications:ConsoleUrl` | optional; unset means no links; checked at start |
+| Links in notifications | `Notifications:ConsoleUrl` | optional; unset means no links; checked at start; required when the inbox is on |
+| The Console's bell | `Notifications:Inbox:Enabled` (off), `Notifications:Inbox:Roles` (`operator`, `admin`), and `"inbox": true` in the Console's `config.json` | opt-in; people recorded from their own sign-in; see [the Console's bell](#the-consoles-bell-the-embedded-inbox) |
 | Health policy | `Health` section (environment `Health__…`) | grace, thresholds, critical dependencies, service weights |
 | Users and roles | the IdP | Console and API: client `juice-console` (public, PKCE) issuing tokens for `juice-platform` with roles `admin`, `operator`, `viewer` and the `platform_tenant` claim; Grafana (optional): client `grafana` roles `admin`, `editor`, `viewer` |
 | Console sign-in | `wwwroot/config.json` in the API image | `{"apiBase": "", "auth": {"issuer": "<IdP>", "clientId": "juice-console", "scope": "openid profile email"}}`; mount your own file over it. `auth.requireHttps` (default `"remoteOnly"`: plain HTTP only for localhost) is `false` only for a local stack |

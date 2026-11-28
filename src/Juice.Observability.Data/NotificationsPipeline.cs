@@ -29,9 +29,36 @@ namespace Juice.Observability.Data
         /// <summary>The Console's page as a link, <c>{ConsoleUrl}/{page}</c> with the address's trailing slashes dropped; null when no address is set.</summary>
         public string? Link(string page)
             => ConsoleUrl is { Length: > 0 } console ? $"{console.TrimEnd('/')}/{page}" : null;
+
+        /// <summary>The embedded inbox (<c>Notifications:Inbox</c>, M54): off unless <see cref="InboxNotificationsOptions.Enabled"/>.</summary>
+        public InboxNotificationsOptions Inbox { get; } = new();
     }
 
-    /// <summary>Checks <see cref="PlatformNotificationsOptions.ConsoleUrl"/> at start (<c>ValidateOnStart</c>). A message never echoes the value.</summary>
+    /// <summary>
+    /// <c>Notifications:Inbox</c> (M54): the platform's people get inbox items for alerts, in the Console's bell. Off by default, and then the host is
+    /// what it was: nothing is mapped and no request gets a recipient.
+    /// </summary>
+    public sealed class InboxNotificationsOptions
+    {
+        /// <summary>The Console roles that can be named (the platform's own, <c>viewer</c>, <c>operator</c> and <c>admin</c>).</summary>
+        public static readonly IReadOnlyList<string> KnownRoles = ["viewer", "operator", "admin"];
+
+        /// <summary>The roles that get alert items when <see cref="Roles"/> isn't set.</summary>
+        public static readonly IReadOnlyList<string> DefaultRoles = ["operator", "admin"];
+
+        public bool Enabled { get; set; }
+
+        /// <summary>
+        /// The roles that get an item for each alert that fires; null when the key is absent. Not initialised to the default: the configuration
+        /// binder appends to a list that already holds items, so <c>["viewer"]</c> would become <c>[operator, admin, viewer]</c>.
+        /// </summary>
+        public List<string>? Roles { get; set; }
+
+        /// <summary>The roles that get items: the configured ones, or <see cref="DefaultRoles"/> when the key is absent.</summary>
+        public IReadOnlyList<string> EffectiveRoles => Roles ?? DefaultRoles;
+    }
+
+    /// <summary>Checks <see cref="PlatformNotificationsOptions"/> at start (<c>ValidateOnStart</c>): the Console's address and the inbox. A message never echoes a value.</summary>
     public sealed class PlatformNotificationsOptionsValidation : Microsoft.Extensions.Options.IValidateOptions<PlatformNotificationsOptions>
     {
         /// <summary>The longest address it takes.</summary>
@@ -39,10 +66,39 @@ namespace Juice.Observability.Data
 
         private const string Key = "Notifications:ConsoleUrl";
 
+        private const string RolesKey = "Notifications:Inbox:Roles";
+
         public Microsoft.Extensions.Options.ValidateOptionsResult Validate(string? name, PlatformNotificationsOptions options)
-            => Problem(options.ConsoleUrl) is { } problem
-                ? Microsoft.Extensions.Options.ValidateOptionsResult.Fail($"{Key} {problem}")
-                : Microsoft.Extensions.Options.ValidateOptionsResult.Success;
+        {
+            var problems = new List<string>();
+            if (Problem(options.ConsoleUrl) is { } problem)
+            {
+                problems.Add($"{Key} {problem}");
+            }
+            if (options.Inbox.Enabled)
+            {
+                var roles = options.Inbox.EffectiveRoles;
+                if (roles.Count == 0)
+                {
+                    problems.Add($"{RolesKey} names at least one role when the inbox is enabled.");
+                }
+                else if (roles.Any(r => !InboxNotificationsOptions.KnownRoles.Contains(r, StringComparer.Ordinal)))
+                {
+                    problems.Add($"{RolesKey} lists only viewer, operator or admin, in lowercase.");
+                }
+                else if (roles.Distinct(StringComparer.Ordinal).Count() != roles.Count)
+                {
+                    problems.Add($"{RolesKey} lists a role twice.");
+                }
+                if (string.IsNullOrEmpty(options.ConsoleUrl))
+                {
+                    problems.Add($"{Key} is required when the inbox is enabled (an item links to its alert in the Console).");
+                }
+            }
+            return problems.Count == 0
+                ? Microsoft.Extensions.Options.ValidateOptionsResult.Success
+                : Microsoft.Extensions.Options.ValidateOptionsResult.Fail(problems);
+        }
 
         /// <summary>Why the address is refused, without quoting it; null when it is valid or not set.</summary>
         internal static string? Problem(string? value)

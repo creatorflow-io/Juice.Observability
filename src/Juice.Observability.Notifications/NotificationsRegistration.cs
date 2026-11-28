@@ -51,6 +51,13 @@ namespace Juice.Observability.Notifications
                 embedded.ApplicationKey = ApplicationKey;
                 embedded.ApplicationName = ApplicationName;
                 embedded.Types.AddRange(ObservabilityTypes.All());
+                // The inbox, when opted in (M54): the three Console roles are recorded from people's sign-ins, and the alerts name the configured ones.
+                // Off, nothing is recorded and the host is what it was.
+                if (section.GetValue<bool>($"Inbox:{nameof(InboxNotificationsOptions.Enabled)}"))
+                {
+                    embedded.Inbox = new EmbeddedInboxOptions();
+                    embedded.Inbox.Roles.AddRange(InboxNotificationsOptions.KnownRoles);
+                }
             });
             services.AddChatProviders();
             // Its changes to the setup, as the platform's audit records, in the change's transaction (I62).

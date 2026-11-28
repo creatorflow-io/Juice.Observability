@@ -12,6 +12,7 @@
     <PackageReference Include="xunit.v3" />
     <PackageReference Include="xunit.runner.visualstudio" PrivateAssets="all" />
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" />
     <!-- The platform's own metrics, read back in tests (PlatformMetricsTests). -->
     <PackageReference Include="OpenTelemetry.Exporter.InMemory" />
   </ItemGroup>

@@ -11,6 +11,7 @@
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" />
     <!-- The platform's messaging: outbox delivery and the in-process guard against handling a message twice at once. -->
     <PackageReference Include="Juice.Notifications.Admin" />
+    <PackageReference Include="Juice.Notifications.Inbox" />
     <PackageReference Include="Juice.Messaging.Outbox.Delivery" />
     <PackageReference Include="Juice.Messaging.Idempotency.Caching" />
     <!-- The platform's own metrics, exported over OTLP (PlatformTelemetry). -->

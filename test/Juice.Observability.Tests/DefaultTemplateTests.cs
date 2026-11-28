@@ -222,7 +222,8 @@ namespace Juice.Observability.Tests
         public void The_declaration_has_a_template_per_legacy_channel()
         {
             var templates = DefaultTemplates.Declaration();
-            Assert.Equal(["webhook", "slack", "teams", "email"], templates.EnumerateObject().Select(p => p.Name));
+            // And the inbox's, for the people an alert names when the host's inbox is on (M54).
+            Assert.Equal(["webhook", "slack", "teams", "email", "inbox"], templates.EnumerateObject().Select(p => p.Name));
         }
     }
 }
