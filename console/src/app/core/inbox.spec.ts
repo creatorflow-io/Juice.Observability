@@ -39,6 +39,12 @@ describe('Console bell (M54)', () => {
     expect(TestBed.inject(LAYOUT_TOOLBAR_ITEMS)).toEqual([NotificationBellComponent]);
   });
 
+  it('console bell: inbox:true passes acknowledge:true; inbox:false provides nothing', () => {
+    expect(configOf(inboxProviders({ apiBase: '', inbox: true }))!.acknowledge).toBe(true);
+    TestBed.resetTestingModule();
+    expect(inboxProviders({ apiBase: '', inbox: false })).toEqual([]);
+  });
+
   it('bell: inbox off adds no notifications configuration', () => {
     expect(configOf(inboxProviders({ apiBase: 'https://api.example.com', inbox: false }))).toBeUndefined();
   });
