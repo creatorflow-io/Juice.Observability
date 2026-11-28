@@ -81,25 +81,17 @@ namespace Juice.Observability.Rules
             foreach (var (at, observed) in points)
             {
                 IReadOnlyDictionary<string, RuleThreshold> provided = new Dictionary<string, RuleThreshold>();
-                if (installed && keys.Count > 0)
+                // A spent budget asks no one: the instant is kept (it was observed), with no thresholds, which reads as no data.
+                if (installed && keys.Count > 0 && !budget.IsCancellationRequested)
                 {
                     try
                     {
                         provided = await thresholds.ResolveAsync(rule, keys, at, budget);
                     }
-                    catch (OperationCanceledException) when (budget.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-                    {
-                        // The budget ran out inside the provider: the instants so far are the result.
-                        break;
-                    }
-                    catch (Exception) when (!cancellationToken.IsCancellationRequested && budget.IsCancellationRequested)
-                    {
-                        // It failed once the budget was gone (whatever it threw): the instants so far are the result.
-                        break;
-                    }
                     catch (Exception) when (!cancellationToken.IsCancellationRequested)
                     {
-                        // A provider that fails has no numbers for this instant: no data, as a subject it leaves out.
+                        // The budget ran out inside the provider, or it failed: no numbers for this instant, no data, as a subject it leaves out.
+                        provided = new Dictionary<string, RuleThreshold>();
                     }
                 }
                 result.Add((at, observed, provided));
