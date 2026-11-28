@@ -133,6 +133,8 @@ namespace Juice.Observability.Notifications
         /// <summary>
         /// The id of the next kept call: a version 7 id, whose order is the replay's. Two calls kept in the same millisecond (an approval's resolve
         /// and its notice) would otherwise get ids in no order, so each is at least a millisecond after the one before.
+        /// Ordering is guaranteed within one process (and so within one transaction) only; above a thousand kept calls a second the ids run
+        /// ahead of the clock, by the backlog, until the burst ends.
         /// </summary>
         private static Guid NextParkedId()
         {
@@ -170,10 +172,37 @@ namespace Juice.Observability.Notifications
             {
                 await TolerateAsync("resolve", () => client.ResolveAsync(resolve, null, null, cancellationToken), conflictThrows: true);
             }
-            if (WithoutRolesIfInboxOff(JsonSerializer.Deserialize<NotificationToSend>(call.Request!, JsonSerializerOptions.Web)!) is { } request)
+            if (WithoutRolesIfInboxOff(JsonSerializer.Deserialize<NotificationToSend>(call.Request!, JsonSerializerOptions.Web)!) is { } request
+                && await StillWaitingAsync(request, cancellationToken))
             {
                 await SendAsync(request, cancellationToken, conflictThrows: true);
             }
+        }
+
+        /// <summary>
+        /// False for an approval item whose request is not waiting any more: one decided after the call was kept (its resolve ran before the item
+        /// existed, a no-op) would otherwise be sent and stay open for good. The request's row is locked shared while this reads it, so a decision
+        /// racing the send waits for it and its resolve then finds the item. Anything but an approval is as it was.
+        /// </summary>
+        private async Task<bool> StillWaitingAsync(NotificationToSend request, CancellationToken cancellationToken)
+        {
+            if (request.Type != ObservabilityTypes.ActionApproval)
+            {
+                return true;
+            }
+            var key = request.CorrelationKey;
+            if (key is null || !key.StartsWith("approval:", StringComparison.Ordinal) || !Guid.TryParse(key["approval:".Length..], out var id))
+            {
+                return false;
+            }
+            await db.Database.ExecuteSqlAsync($"SELECT 1 FROM action_requests WHERE id = {id} FOR SHARE", cancellationToken);
+            var now = clock.GetUtcNow();
+            var waiting = await db.ActionRequests.AsNoTracking().AnyAsync(r => r.Id == id && r.State == ActionRequestState.Pending && r.ExpiresAt > now, cancellationToken);
+            if (!waiting)
+            {
+                logger.LogInformation("Approval {Key} is dropped: its request is not waiting any more", request.IdempotencyKey);
+            }
+            return waiting;
         }
 
         /// <summary>The hold's reason for a silence: <c>silence:{id}</c>.</summary>
