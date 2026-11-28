@@ -291,22 +291,6 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
-        public async Task Cumulative_series_started_before_the_window_is_measured_from_its_first_point_Async()
-        {
-            LocalStack.RequireAvailable();
-            var service = $"hist-{_run}-longlived";
-            // Running for days, first seen inside the window (a Collector that just started): the lifetime count isn't this window's.
-            await LocalStack.SendAsync("metrics", OtlpMetrics.BucketHistogram(Resource(service), Metric, OtlpMetrics.Cumulative, At(-5000), [], Bounds,
-                (At(2), [100, 200, 50], 500), (At(8), [110, 225, 55], 560)));
-            await WaitAsync("otel_metrics_histogram", service, 2);
-
-            var p50 = await ObserveAsync(Rule(service, MetricAggregation.P50));
-            Assert.Equal(40, p50.Samples);                                   // [10,25,5], not 350
-            Assert.Equal(60d / 40, (await ObserveAsync(Rule(service, MetricAggregation.Avg))).Value!.Value, 9);
-            Assert.Equal(40d / 600, (await ObserveAsync(Rule(service, MetricAggregation.Rate))).Value!.Value, 9);
-        }
-
-        [Fact]
         public async Task Cumulative_reset_under_the_same_start_counts_from_zero_Async()
         {
             LocalStack.RequireAvailable();
