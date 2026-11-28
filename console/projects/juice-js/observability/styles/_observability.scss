@@ -199,11 +199,15 @@ $_layout-tokens: (bg: bg, surface: surface, border: border, text: text, muted: m
     > mat-form-field, > .jc-field > mat-form-field { width: 100%; min-width: 0; }
     > .jc-field { min-width: 0; }
     > mat-form-field.jc-field-wide, > .jc-field.jc-field-wide { grid-column: span 2; }
-    > mat-checkbox { align-self: center; }
-    // A checkbox in a field wrapper sits at the height of the inputs beside it and wraps its own long label.
-    > .jc-field > mat-checkbox { display: block; padding-top: 6px; }
+    // A checkbox, radio group or slide toggle is anchored to the top of its row, not centred in it: its box then stays level with the
+    // neighbouring field's input line whatever an error or hint under that field adds to the row's height. 10px is measured: the 40px
+    // touch target puts the 18px box 20px down, the field's input line (density -1) is 4px lower than that (e2e/forms-layout.mjs).
+    > mat-checkbox, > mat-slide-toggle, > mat-radio-group { align-self: start; margin-top: 10px; }
+    > .jc-field > mat-checkbox, > .jc-field > mat-slide-toggle, > .jc-field > mat-radio-group { display: block; padding-top: 10px; }
     > .jc-form-actions { grid-column: 1 / -1; }
     @media (max-width: 520px) { > mat-form-field.jc-field-wide, > .jc-field.jc-field-wide { grid-column: auto; } } }
+  // The same in a plain (flex) form, where the rest of the row stays centred: a checkbox starts at the top, level with the inputs.
+  .jc-form:not(.jc-form-grid) > mat-checkbox, .jc-form:not(.jc-form-grid) > mat-slide-toggle, .jc-form:not(.jc-form-grid) > mat-radio-group { align-self: flex-start; margin-top: 10px; }
   .jc-form-actions { display: flex; align-items: center; gap: 8px; width: 100%; }
   .jc-field-error { color: var(--jc-bad); font-size: 12px; line-height: 16px; padding: 2px 16px 0; overflow-wrap: anywhere; }
   .jc-row-actions { white-space: nowrap; text-align: right; }
