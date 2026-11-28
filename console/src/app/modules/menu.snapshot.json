@@ -1,0 +1,534 @@
+{
+  "host": [
+    {
+      "id": "overview",
+      "label": "Overview",
+      "icon": "dashboard",
+      "routerLink": "/",
+      "shortcut": "g o",
+      "order": 1
+    },
+    {
+      "id": "services",
+      "label": "Services",
+      "icon": "hub",
+      "routerLink": "/services",
+      "shortcut": "g s",
+      "order": 2
+    },
+    {
+      "id": "traces",
+      "label": "Traces",
+      "icon": "timeline",
+      "routerLink": "/traces",
+      "shortcut": "g t",
+      "order": 3
+    },
+    {
+      "id": "logs",
+      "label": "Logs",
+      "icon": "notes",
+      "routerLink": "/logs",
+      "shortcut": "g l",
+      "order": 4
+    },
+    {
+      "id": "metrics",
+      "label": "Metrics",
+      "icon": "show_chart",
+      "routerLink": "/metrics",
+      "shortcut": "g m",
+      "order": 5
+    },
+    {
+      "id": "alerts",
+      "label": "Alerts",
+      "icon": "notifications",
+      "routerLink": "/alerts",
+      "shortcut": "g a",
+      "order": 6
+    },
+    {
+      "id": "observability-alert-notifications",
+      "label": "Alert notifications",
+      "icon": "campaign",
+      "routerLink": "/alerts/notifications",
+      "replaceChildRouterLink": false,
+      "children": [
+        {
+          "id": "notifications-admin-overview",
+          "label": "Overview",
+          "icon": "dashboard",
+          "routerLink": "/alerts/notifications",
+          "order": 1
+        },
+        {
+          "id": "notifications-admin-deliveries",
+          "label": "Deliveries",
+          "icon": "outbox",
+          "routerLink": "/alerts/notifications/go/deliveries",
+          "order": 2
+        },
+        {
+          "id": "notifications-admin-notifications",
+          "label": "Notifications",
+          "icon": "notifications",
+          "routerLink": "/alerts/notifications/go/notifications",
+          "order": 3
+        },
+        {
+          "id": "notifications-admin-correlations",
+          "label": "Correlations",
+          "icon": "link",
+          "routerLink": "/alerts/notifications/go/correlations",
+          "order": 4
+        },
+        {
+          "id": "notifications-admin-storms",
+          "label": "Storms",
+          "icon": "thunderstorm",
+          "routerLink": "/alerts/notifications/go/storms",
+          "order": 5
+        },
+        {
+          "id": "notifications-admin-integrations",
+          "label": "Integrations",
+          "icon": "cable",
+          "routerLink": "/alerts/notifications/go/integrations"
+        },
+        {
+          "id": "notifications-admin-routes",
+          "label": "Routes",
+          "icon": "alt_route",
+          "routerLink": "/alerts/notifications/go/routes"
+        },
+        {
+          "id": "notifications-admin-mutes",
+          "label": "Mutes",
+          "icon": "notifications_paused",
+          "routerLink": "/alerts/notifications/go/mutes"
+        },
+        {
+          "id": "notifications-admin-escalation-policies",
+          "label": "Escalation policies",
+          "icon": "escalator_warning",
+          "routerLink": "/alerts/notifications/go/escalation-policies"
+        },
+        {
+          "id": "notifications-admin-allowlist",
+          "label": "Destination allowlist",
+          "icon": "shield",
+          "routerLink": "/alerts/notifications/go/allowlist"
+        },
+        {
+          "id": "notifications-admin-types",
+          "label": "Types",
+          "icon": "category",
+          "routerLink": "/alerts/notifications/go/types"
+        },
+        {
+          "id": "notifications-admin-settings",
+          "label": "Settings",
+          "icon": "settings",
+          "routerLink": "/alerts/notifications/go/settings",
+          "order": 8
+        }
+      ],
+      "order": 7
+    },
+    {
+      "id": "incidents",
+      "label": "Incidents",
+      "icon": "emergency",
+      "routerLink": "/incidents",
+      "shortcut": "g i",
+      "order": 8
+    },
+    {
+      "id": "observability-explore",
+      "label": "Explore",
+      "icon": "explore",
+      "routerLink": "/topology",
+      "replaceChildRouterLink": false,
+      "children": [
+        {
+          "id": "topology",
+          "label": "Dependencies",
+          "icon": "account_tree",
+          "routerLink": "/topology"
+        },
+        {
+          "id": "resources",
+          "label": "Resources",
+          "icon": "dns",
+          "routerLink": "/resources"
+        },
+        {
+          "id": "slos",
+          "label": "SLOs",
+          "icon": "track_changes",
+          "routerLink": "/slos"
+        },
+        {
+          "id": "timeline",
+          "label": "Timeline",
+          "icon": "history",
+          "routerLink": "/timeline"
+        },
+        {
+          "id": "load-runs",
+          "label": "Load runs",
+          "icon": "speed",
+          "routerLink": "/load-runs"
+        }
+      ],
+      "order": 9
+    },
+    {
+      "id": "observability-automation",
+      "label": "Automation",
+      "icon": "precision_manufacturing",
+      "routerLink": "/agents",
+      "replaceChildRouterLink": false,
+      "children": [
+        {
+          "id": "agents",
+          "label": "Agents",
+          "icon": "smart_toy",
+          "routerLink": "/agents"
+        },
+        {
+          "id": "approvals",
+          "label": "Approvals",
+          "icon": "approval",
+          "routerLink": "/approvals"
+        }
+      ],
+      "order": 10
+    },
+    {
+      "id": "observability-configure",
+      "label": "Configure",
+      "icon": "tune",
+      "routerLink": "/rules",
+      "replaceChildRouterLink": false,
+      "children": [
+        {
+          "id": "rules",
+          "label": "Rules",
+          "icon": "rule",
+          "routerLink": "/rules"
+        },
+        {
+          "id": "silences",
+          "label": "Silences",
+          "icon": "notifications_paused",
+          "routerLink": "/silences"
+        },
+        {
+          "id": "escalation",
+          "label": "Escalation selection",
+          "icon": "campaign",
+          "routerLink": "/escalation"
+        }
+      ],
+      "order": 11
+    }
+  ],
+  "plain": [
+    {
+      "id": "overview",
+      "label": "Overview",
+      "icon": "dashboard",
+      "routerLink": "/",
+      "shortcut": "g o",
+      "order": 1
+    },
+    {
+      "id": "services",
+      "label": "Services",
+      "icon": "hub",
+      "routerLink": "/services",
+      "shortcut": "g s",
+      "order": 2
+    },
+    {
+      "id": "traces",
+      "label": "Traces",
+      "icon": "timeline",
+      "routerLink": "/traces",
+      "shortcut": "g t",
+      "order": 3
+    },
+    {
+      "id": "logs",
+      "label": "Logs",
+      "icon": "notes",
+      "routerLink": "/logs",
+      "shortcut": "g l",
+      "order": 4
+    },
+    {
+      "id": "metrics",
+      "label": "Metrics",
+      "icon": "show_chart",
+      "routerLink": "/metrics",
+      "shortcut": "g m",
+      "order": 5
+    },
+    {
+      "id": "alerts",
+      "label": "Alerts",
+      "icon": "notifications",
+      "routerLink": "/alerts",
+      "shortcut": "g a",
+      "order": 6
+    },
+    {
+      "id": "incidents",
+      "label": "Incidents",
+      "icon": "emergency",
+      "routerLink": "/incidents",
+      "shortcut": "g i",
+      "order": 7
+    },
+    {
+      "id": "observability-explore",
+      "label": "Explore",
+      "icon": "explore",
+      "routerLink": "/topology",
+      "replaceChildRouterLink": false,
+      "children": [
+        {
+          "id": "topology",
+          "label": "Dependencies",
+          "icon": "account_tree",
+          "routerLink": "/topology"
+        },
+        {
+          "id": "resources",
+          "label": "Resources",
+          "icon": "dns",
+          "routerLink": "/resources"
+        },
+        {
+          "id": "slos",
+          "label": "SLOs",
+          "icon": "track_changes",
+          "routerLink": "/slos"
+        },
+        {
+          "id": "timeline",
+          "label": "Timeline",
+          "icon": "history",
+          "routerLink": "/timeline"
+        },
+        {
+          "id": "load-runs",
+          "label": "Load runs",
+          "icon": "speed",
+          "routerLink": "/load-runs"
+        }
+      ],
+      "order": 8
+    },
+    {
+      "id": "observability-automation",
+      "label": "Automation",
+      "icon": "precision_manufacturing",
+      "routerLink": "/agents",
+      "replaceChildRouterLink": false,
+      "children": [
+        {
+          "id": "agents",
+          "label": "Agents",
+          "icon": "smart_toy",
+          "routerLink": "/agents"
+        },
+        {
+          "id": "approvals",
+          "label": "Approvals",
+          "icon": "approval",
+          "routerLink": "/approvals"
+        }
+      ],
+      "order": 9
+    },
+    {
+      "id": "observability-configure",
+      "label": "Configure",
+      "icon": "tune",
+      "routerLink": "/rules",
+      "replaceChildRouterLink": false,
+      "children": [
+        {
+          "id": "rules",
+          "label": "Rules",
+          "icon": "rule",
+          "routerLink": "/rules"
+        },
+        {
+          "id": "silences",
+          "label": "Silences",
+          "icon": "notifications_paused",
+          "routerLink": "/silences"
+        },
+        {
+          "id": "escalation",
+          "label": "Escalation selection",
+          "icon": "campaign",
+          "routerLink": "/escalation"
+        }
+      ],
+      "order": 10
+    }
+  ],
+  "mounted": [
+    {
+      "id": "overview",
+      "label": "Overview",
+      "icon": "dashboard",
+      "routerLink": "/observability",
+      "shortcut": "g o",
+      "order": 5
+    },
+    {
+      "id": "services",
+      "label": "Services",
+      "icon": "hub",
+      "routerLink": "/observability/services",
+      "shortcut": "g s",
+      "order": 6
+    },
+    {
+      "id": "traces",
+      "label": "Traces",
+      "icon": "timeline",
+      "routerLink": "/observability/traces",
+      "shortcut": "g t",
+      "order": 7
+    },
+    {
+      "id": "logs",
+      "label": "Logs",
+      "icon": "notes",
+      "routerLink": "/observability/logs",
+      "shortcut": "g l",
+      "order": 8
+    },
+    {
+      "id": "metrics",
+      "label": "Metrics",
+      "icon": "show_chart",
+      "routerLink": "/observability/metrics",
+      "shortcut": "g m",
+      "order": 9
+    },
+    {
+      "id": "alerts",
+      "label": "Alerts",
+      "icon": "notifications",
+      "routerLink": "/observability/alerts",
+      "shortcut": "g a",
+      "order": 10
+    },
+    {
+      "id": "incidents",
+      "label": "Incidents",
+      "icon": "emergency",
+      "routerLink": "/observability/incidents",
+      "shortcut": "g i",
+      "order": 11
+    },
+    {
+      "id": "observability-explore",
+      "label": "Explore",
+      "icon": "explore",
+      "routerLink": "/observability/topology",
+      "replaceChildRouterLink": false,
+      "children": [
+        {
+          "id": "topology",
+          "label": "Dependencies",
+          "icon": "account_tree",
+          "routerLink": "/observability/topology"
+        },
+        {
+          "id": "resources",
+          "label": "Resources",
+          "icon": "dns",
+          "routerLink": "/observability/resources"
+        },
+        {
+          "id": "slos",
+          "label": "SLOs",
+          "icon": "track_changes",
+          "routerLink": "/observability/slos"
+        },
+        {
+          "id": "timeline",
+          "label": "Timeline",
+          "icon": "history",
+          "routerLink": "/observability/timeline"
+        },
+        {
+          "id": "load-runs",
+          "label": "Load runs",
+          "icon": "speed",
+          "routerLink": "/observability/load-runs"
+        }
+      ],
+      "order": 12
+    },
+    {
+      "id": "observability-automation",
+      "label": "Automation",
+      "icon": "precision_manufacturing",
+      "routerLink": "/observability/agents",
+      "replaceChildRouterLink": false,
+      "children": [
+        {
+          "id": "agents",
+          "label": "Agents",
+          "icon": "smart_toy",
+          "routerLink": "/observability/agents"
+        },
+        {
+          "id": "approvals",
+          "label": "Approvals",
+          "icon": "approval",
+          "routerLink": "/observability/approvals"
+        }
+      ],
+      "order": 13
+    },
+    {
+      "id": "observability-configure",
+      "label": "Configure",
+      "icon": "tune",
+      "routerLink": "/observability/rules",
+      "replaceChildRouterLink": false,
+      "children": [
+        {
+          "id": "rules",
+          "label": "Rules",
+          "icon": "rule",
+          "routerLink": "/observability/rules"
+        },
+        {
+          "id": "silences",
+          "label": "Silences",
+          "icon": "notifications_paused",
+          "routerLink": "/observability/silences"
+        },
+        {
+          "id": "escalation",
+          "label": "Escalation selection",
+          "icon": "campaign",
+          "routerLink": "/observability/escalation"
+        }
+      ],
+      "order": 14
+    }
+  ]
+}

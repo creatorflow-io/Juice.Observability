@@ -96,11 +96,22 @@ public static class RuleTemplateModuleExtensions
     /// <summary>Key <c>&lt;module&gt;.&lt;name&gt;</c>, unique, not a built-in. The host creates the type once, as a singleton.</summary>
     public static IModuleServicesBuilder AddRuleTemplate<T>(this IModuleServicesBuilder b) where T : class, IRuleTemplate
     {
+        ArgumentNullException.ThrowIfNull(b);
+        CoreBuilders.Require(b);
         Contribute<T>(b, "rule template");
         b.Services.AddSingleton<IRuleTemplate, T>();
-        if (typeof(T).GetConstructor(Type.EmptyTypes) is not null && RuleTemplateKeys.Error(b.Module.Name, Activator.CreateInstance<T>().Info.Key) is { } error)
+        if (typeof(T).GetConstructor(Type.EmptyTypes) is not null)
         {
-            throw new ModuleCompositionException($"module '{b.Module.Name}': rule template {typeof(T).Name}: {error}");
+            var key = Activator.CreateInstance<T>().Info.Key;
+            if (RuleTemplateKeys.Error(b.Module.Name, key) is { } error)
+            {
+                throw new ModuleCompositionException($"module '{b.Module.Name}': rule template {typeof(T).Name}: {error}");
+            }
+            // A template key is not an alert source's, whichever was declared first.
+            if (b.Services.Any(d => d.ServiceType == typeof(IAlertSource) && d.IsKeyedService && Equals(d.ServiceKey, AlertSourceKeys.Key(b.Module.Name, key))))
+            {
+                throw new ModuleCompositionException($"module '{b.Module.Name}': rule template {typeof(T).Name}: '{key}' is already declared as an alert source");
+            }
         }
         return b;
     }
@@ -108,6 +119,8 @@ public static class RuleTemplateModuleExtensions
     /// <summary>Key <c>&lt;module&gt;.&lt;name&gt;</c>, unique. The host creates the type once, as a singleton.</summary>
     public static IModuleServicesBuilder AddThresholdProvider<T>(this IModuleServicesBuilder b) where T : class, IRuleThresholdProvider
     {
+        ArgumentNullException.ThrowIfNull(b);
+        CoreBuilders.Require(b);
         Contribute<T>(b, "threshold provider");
         b.Services.AddSingleton<IRuleThresholdProvider, T>();
         if (typeof(T).GetConstructor(Type.EmptyTypes) is not null && RuleTemplateKeys.Error(b.Module.Name, Activator.CreateInstance<T>().Key) is { } error)

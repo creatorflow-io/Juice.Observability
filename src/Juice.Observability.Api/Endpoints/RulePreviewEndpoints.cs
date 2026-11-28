@@ -38,6 +38,9 @@ namespace Juice.Observability.Api.Endpoints
         public const int RateRetrySeconds = 60;
         public const int BusyRetrySeconds = 5;
 
+        /// <summary>The most subjects a preview returns: the row limit (what one evaluation may see), and never more than <see cref="MaxSubjects"/>.</summary>
+        internal static int SubjectCap(int rowLimit) => Math.Max(1, Math.Min(rowLimit, MaxSubjects));
+
         public static RouteGroupBuilder MapRulePreviewEndpoints(this RouteGroupBuilder tenant)
         {
             tenant.MapPost("/rules/preview", PreviewAsync);
@@ -45,7 +48,7 @@ namespace Juice.Observability.Api.Endpoints
         }
 
         private static async Task<IResult> PreviewAsync(Guid tenantId, JsonElement body, HttpContext http, PlatformDbContext db, TimeProvider clock,
-            IConfiguration configuration, RuleTemplates templates, IOptions<RulesOptions> rules, CancellationToken ct)
+            IConfiguration configuration, RuleTemplates templates, RuleThresholds thresholds, IOptions<RulesOptions> rules, CancellationToken ct)
         {
             var mutation = new Mutation(http, db, tenantId, "rule.preview", "rule");
             if (await mutation.RequireAsync(null, ct, Roles.Admin, Roles.Operator) is { } denied) return denied;
@@ -78,18 +81,19 @@ namespace Juice.Observability.Api.Endpoints
 
             var observed = new List<(DateTimeOffset At, IReadOnlyList<RuleObservation> Observed)>();
             string? cut = null;
+            // One budget for the queries and for the threshold provider's calls.
+            using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            budget.CancelAfter(TimeSpan.FromSeconds(budgetSeconds));
             if (unseen is null)
             {
                 // The metric hasn't been reported in 24 h, so every instant is no data: nothing to ask ClickHouse.
-                using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                budget.CancelAfter(TimeSpan.FromSeconds(budgetSeconds));
                 foreach (var at in instants)
                 {
                     ct.ThrowIfCancellationRequested();
                     try
                     {
                         if (budget.IsCancellationRequested) throw new OperationCanceledException(budget.Token);
-                        observed.Add((at, await templates.ObserveAsync(definition, new TelemetryWindow(tenantKey, at - definition.Window, at, rules.Value.RowLimit), budget.Token)));
+                        observed.Add((at, await templates.ObserveAsync(definition, new TelemetryWindow(tenantKey, at - definition.Window, at, rules.Value.RowLimit), budget.Token, preview: true)));
                     }
                     catch (OperationCanceledException) when (budget.IsCancellationRequested && !ct.IsCancellationRequested)
                     {
@@ -103,9 +107,29 @@ namespace Juice.Observability.Api.Endpoints
                 observed.AddRange(instants.Select(at => (at, (IReadOnlyList<RuleObservation>)[])));
             }
 
-            var subjects = RulePreview.Replay(definition, observed, MaxSubjects, out var truncated);
+            var loss = new RulePreview.ThresholdLoss();
+            var judged = await RulePreview.WithThresholdsAsync(thresholds, definition, observed, budget.Token, ct, loss);
+            var reasons = new List<string>();
+            if (cut is not null) reasons.Add(cut);
+            if (loss.BudgetLost > 0)
+            {
+                // Every observed instant is kept; those the provider was not asked about, or did not answer in time, read as no data.
+                reasons.Add(string.Create(CultureInfo.InvariantCulture, $"the time budget ran out before the threshold provider had answered for {loss.BudgetLost} instants; they read as no data"));
+            }
+            if (loss.Failed > 0)
+            {
+                reasons.Add(string.Create(CultureInfo.InvariantCulture, $"the threshold provider failed for {loss.Failed} instants; they read as no data"));
+            }
+            // Each instant is read under the row limit, but the instants see different subjects: the union is capped too.
+            var cap = SubjectCap(rules.Value.RowLimit);
+            var subjects = RulePreview.Replay(definition, judged, cap, out var truncated);
+            if (truncated)
+            {
+                reasons.Add(string.Create(CultureInfo.InvariantCulture, $"showing the {cap} subjects that would fire most; others were left out"));
+            }
+            cut = reasons.Count == 0 ? null : string.Join("; ", reasons);
             var unit = entry?.Unit is { Length: > 0 } u ? u : null;
-            return Results.Ok(new RulePreviewDto(instants[0], instants[^1], step, instants.Count, observed.Count, cut is null, cut, quiet, unit, definition,
+            return Results.Ok(new RulePreviewDto(instants[0], instants[^1], step, instants.Count, judged.Count, cut is null, cut, quiet, unit, definition,
                 [.. subjects.Select(s => new PreviewSubjectDto(s.SubjectKey, s.SubjectType.ToString(), s.Breaches, s.NoData, s.WouldOpen, s.WouldFire, s.FirstFiredAt,
                     s.Last, s.Min, s.Max, s.LastDetail, [.. s.Points.Select(p => new PreviewPointDto(p.At, p.Value, p.Condition.ToString()))]))], truncated));
         }

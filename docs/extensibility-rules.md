@@ -13,7 +13,7 @@ The types are created once, as singletons, with the host's services.
 ## Keys
 
 - A template's `Info.Key` and a provider's `Key` are `<module>.<name>`: your module name, a dot, then lower case letters, digits and `-` (at
-  most 63 characters). The core's templates use their `RuleTemplate` names (`ErrorRate`, `HostCpu`, ...) and the core's provider is `fixed`, so
+  most 40 characters in all). An alert source's template follows the same rules, and is never a rule template's key. The core's templates use their `RuleTemplate` names (`ErrorRate`, `HostCpu`, ...) and the core's provider is `fixed`, so
   neither can clash with yours.
 - A key outside your prefix, a key held twice, an abstract type, or the same type registered twice throws `ModuleCompositionException`
   and the host does not start.

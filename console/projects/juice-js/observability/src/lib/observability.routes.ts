@@ -1,46 +1,15 @@
-import { inject } from '@angular/core';
 import { Routes } from '@angular/router';
 import { Menus } from '@juice-js/core';
 import { APPROVALS_MENU_ID } from './core/approval-count';
-import { OBSERVABILITY_OPTIONS, normalizeBasePath } from './core/options';
-
-function page(path: string, title: string, load: Routes[number]['loadComponent']): Routes[number] {
-  return { path, title: `${title} · Juice Observability`, loadComponent: load };
-}
+import { normalizeBasePath } from './core/options';
+import { PAGES } from './modules/core-pages';
 
 /**
  * The pages, investigation first (Console requirements §4): services, traces, topology, logs and metrics; alerts and
  * rules after. Detail pages are deep links (§17) and carry the environment and time range in their query parameters.
  * The host mounts them at its `basePath` (see {@link provideJuiceObservability}) and adds its own guards.
  */
-export const OBSERVABILITY_ROUTES: Routes = [
-  page('', 'Overview', () => import('./pages/overview.page').then(m => m.OverviewPage)),
-  page('services', 'Services', () => import('./pages/services.page').then(m => m.ServicesPage)),
-  page('services/:id', 'Service', () => import('./pages/service.page').then(m => m.ServicePage)),
-  page('traces', 'Traces', () => import('./pages/traces.page').then(m => m.TracesPage)),
-  page('traces/:traceId', 'Trace', () => import('./pages/trace.page').then(m => m.TracePage)),
-  page('topology', 'Dependencies', () => import('./pages/topology.page').then(m => m.TopologyPage)),
-  page('logs', 'Logs', () => import('./pages/logs.page').then(m => m.LogsPage)),
-  page('metrics', 'Metrics', () => import('./pages/metrics.page').then(m => m.MetricsPage)),
-  page('resources', 'Resources', () => import('./pages/resources.page').then(m => m.ResourcesPage)),
-  page('resources/:id', 'Resource', () => import('./pages/resource.page').then(m => m.ResourcePage)),
-  page('alerts', 'Alerts', () => import('./pages/alerts.page').then(m => m.AlertsPage)),
-  page('alerts/:id', 'Alert', () => import('./pages/alert.page').then(m => m.AlertPage)),
-  page('rules', 'Rules', () => import('./pages/rules.page').then(m => m.RulesPage)),
-  page('escalation', 'Escalation selection', () => import('./pages/notifications.page').then(m => m.NotificationsPage)),
-  // The old Webhooks page and any deep link under it open Escalation selection, under the host's base path.
-  { path: 'notifications', children: [{ path: '**', redirectTo: () => { const base = normalizeBasePath(inject(OBSERVABILITY_OPTIONS).basePath); return `${base === '/' ? '' : base}/escalation`; } }] },
-  page('silences', 'Silences', () => import('./pages/silences.page').then(m => m.SilencesPage)),
-  page('incidents', 'Incidents', () => import('./pages/incidents.page').then(m => m.IncidentsPage)),
-  page('incidents/:id', 'Incident', () => import('./pages/incident.page').then(m => m.IncidentPage)),
-  page('agents', 'Agents', () => import('./pages/agents.page').then(m => m.AgentsPage)),
-  page('agents/:id', 'Agent', () => import('./pages/agent.page').then(m => m.AgentPage)),
-  page('approvals', 'Approvals', () => import('./pages/approvals.page').then(m => m.ApprovalsPage)),
-  page('slos', 'SLOs', () => import('./pages/slos.page').then(m => m.SlosPage)),
-  page('slos/:key', 'SLO', () => import('./pages/slo.page').then(m => m.SloPage)),
-  page('timeline', 'Timeline', () => import('./pages/timeline.page').then(m => m.TimelinePage)),
-  page('load-runs', 'Load runs', () => import('./pages/load-runs.page').then(m => m.LoadRunsPage)),
-];
+export const OBSERVABILITY_ROUTES: Routes = PAGES.map(p => p.route);
 
 /**
  * The side menu entries (juice-layout), linking under `basePath`. The pages an investigation starts from sit at the top
@@ -95,7 +64,7 @@ export const ALERT_NOTIFICATIONS_MENU_ID = 'observability-alert-notifications';
  * level, as juice-layout shows one. Their own groups are flattened in order; ids get a `notifications-admin-` prefix and lose their go-to
  * keys, which would clash with the platform's own (g o, g i, g s…).
  */
-function alertNotificationsGroup(items: Menus): Menus[number] {
+export function alertNotificationsGroup(items: Menus): Menus[number] {
   const flat = items.flatMap(item => (item.children?.length ? item.children : [item]));
   const children: Menus = flat.map(({ shortcut: _, children: __, ...item }) => ({ ...item, id: `notifications-admin-${item.id}` }));
   return { id: ALERT_NOTIFICATIONS_MENU_ID, label: 'Alert notifications', icon: 'campaign', routerLink: children[0].routerLink,

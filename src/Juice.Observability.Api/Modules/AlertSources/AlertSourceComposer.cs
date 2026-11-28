@@ -1,4 +1,3 @@
-using System.Text.RegularExpressions;
 using Juice.Observability.Data;
 using Juice.Observability.Discovery;
 using Juice.Observability.Extensibility;
@@ -21,9 +20,6 @@ namespace Juice.Observability.Api.Modules.AlertSources
     /// </summary>
     internal static partial class AlertSourceComposer
     {
-        [GeneratedRegex("^[a-z][a-z0-9-]*\\.[A-Za-z][A-Za-z0-9._-]{0,38}$", RegexOptions.CultureInvariant)]
-        private static partial Regex ModuleTemplate();
-
         // The ten templates the registry evaluates: every RuleTemplate but SloBurn.
         private static readonly HashSet<string> Registry = Enum.GetNames<RuleTemplate>().Where(n => n != SloBurnTemplate && n != IntegrationHealthTemplate).ToHashSet(StringComparer.Ordinal);
 
@@ -43,16 +39,39 @@ namespace Juice.Observability.Api.Modules.AlertSources
             {
                 throw new ModuleCompositionException($"Module '{module}' can't declare an alert source for '{template}': it is a template of the rule registry, evaluated by the rule scheduler.");
             }
-            // The core's own burn template belongs to the slos module; any other is the declaring module's, by its prefix.
-            var valid = template == SloBurnTemplate ? module == "slos" : template == IntegrationHealthTemplate ? module == "integrations" : ModuleTemplate().IsMatch(template) && template.StartsWith(module + ".", StringComparison.Ordinal);
-            if (!valid)
+            // The core's own templates belong to their modules (their casing is the built-in's): burn to slos, integration health to integrations; any other is
+            // the declaring module's, by the same key rules as a module's rule template (RuleTemplateKeys).
+            if (template == SloBurnTemplate)
             {
-                throw new ModuleCompositionException($"Module '{module}' can't declare an alert source for '{template}': a module's template is '{module}.<name>'.");
+                if (module != "slos")
+                {
+                    throw new ModuleCompositionException($"Module '{module}' can't declare an alert source for '{template}': it is the slos module's.");
+                }
+            }
+            else if (template == IntegrationHealthTemplate)
+            {
+                if (module != "integrations")
+                {
+                    throw new ModuleCompositionException($"Module '{module}' can't declare an alert source for '{template}': it is the integrations module's.");
+                }
+            }
+            else if (RuleTemplateKeys.Error(module, template) is { } invalid)
+            {
+                throw new ModuleCompositionException($"Module '{module}' can't declare an alert source for '{template}': {invalid}.");
+            }
+            // A module's rule template is a registry template too: the key is the template's, not an alert source's.
+            if (b.Services.Any(d => d.ServiceType == typeof(ModuleRuleContribution) && d.ImplementationInstance is ModuleRuleContribution c
+                && typeof(IRuleTemplate).IsAssignableFrom(c.Type) && c.Type.GetConstructor(Type.EmptyTypes) is not null
+                && ((IRuleTemplate)Activator.CreateInstance(c.Type)!).Info.Key == template))
+            {
+                throw new ModuleCompositionException($"Module '{module}' can't declare an alert source for '{template}': it is a rule template of the registry.");
             }
             if (b.Services.Any(d => d.ServiceType == typeof(IAlertSource) && d.IsKeyedService && d.ServiceKey is string declared && declared.EndsWith(":" + template, StringComparison.Ordinal)))
             {
                 throw new ModuleCompositionException($"Module '{module}' can't declare an alert source for '{template}': it is already declared.");
             }
+            // For the registry, which refuses a rule template with the same key whichever way the template is built.
+            b.Services.AddSingleton(new ModuleAlertSourceDeclaration(module, template));
             // The command an alert source sends outside a transaction: internal, so the mediator's assembly scan doesn't find it.
             b.Services.TryAddTransient<Juice.MediatR.IRequestHandler<ApplyAlertSignals, AlertSourceResult>, ApplyAlertSignalsHandler>();
             b.Services.AddKeyedScoped<IAlertSource>(AlertSourceKeys.Key(module, template), (services, key) => new PlatformAlertSource(template, services.GetRequiredService<PlatformDbContext>(), services,

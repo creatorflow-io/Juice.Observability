@@ -23,7 +23,7 @@ namespace Juice.Observability.Rules
     /// (<see cref="WorkerLease"/>).
     /// </summary>
     public sealed class RuleScheduler(IServiceScopeFactory scopes, RuleEvaluator evaluator, IOptions<RulesOptions> options,
-        IOptions<PlatformOptions> platform, TimeProvider clock, ILogger<RuleScheduler> logger, IRuleTemplateRegistry? registry = null) : BackgroundService
+        IOptions<PlatformOptions> platform, TimeProvider clock, ILogger<RuleScheduler> logger, IRuleTemplateRegistry? registry = null) : LeasedWorkerService("rules", scopes, logger)
     {
         /// <summary>
         /// The stored templates the registry runs a query for. SloBurn isn't on it: those alerts come from the SLO counter's burn rates. A module's
@@ -84,60 +84,57 @@ namespace Juice.Observability.Rules
         private (DateTimeOffset At, Task<Dictionary<Guid, Rule>> Rules)? _current;
         private readonly Lock _currentLock = new();
 
-        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        /// <summary>Whether the last tick held the lease.</summary>
+        private bool _held;
+
+        protected override TimeSpan Interval => options.Value.Tick;
+
+        protected override Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            PlatformCaller.Set("rules", stoppingToken);
-            WorkerPulse.Register("rules", options.Value.Tick, stopping: stoppingToken);
             s_live = this;
-            await using var lease = WorkerLease.For(scopes, "rules", logger);
-            var held = false;
-            var generation = 0;
-            using var timer = new PeriodicTimer(options.Value.Tick);
-            do
-            {
-                try
-                {
-                    var holds = await lease.TryHoldAsync(stoppingToken);
-                    if (!holds && held)
-                    {
-                        // Lost to another replica: rules still waiting for a worker give up, it evaluates them now.
-                        await _holding.CancelAsync();
-                    }
-                    else if (holds && lease.Generation != generation)
-                    {
-                        // Taken (back), even within one call: another replica may have held it meanwhile. What this replica queued before
-                        // gives up, and due times from before are stale: every rule is due now.
-                        generation = lease.Generation;
-                        await _holding.CancelAsync();
-                        var previous = _holding;
-                        _holding = new CancellationTokenSource();
-                        previous.Dispose();
-                        _due.Clear();
-                        _asOf.Clear();
-                    }
-                    held = holds;
-                    if (held)
-                    {
-                        await TickAsync(stoppingToken);
-                        // No pass to time (each rule is its own evaluation): the tick tells the platform's status the scheduler is alive.
-                        WorkerPulse.Tick("rules");
-                    }
-                }
-                catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
-                {
-                    logger.LogError(ex, "Rule scheduling failed; retrying next tick");
-                }
-            }
-            while (await timer.WaitForNextTickAsync(stoppingToken));
-            await Task.WhenAll(_running.Values);
+            return base.ExecuteAsync(stoppingToken);
         }
+
+        protected override async Task<LeasedPassOutcome> RunOnceAsync(LeasedPass pass, CancellationToken cancellationToken)
+        {
+            if (pass.Retaken)
+            {
+                // Taken (back), even within one call: another replica may have held it meanwhile. What this replica queued before
+                // gives up, and due times from before are stale: every rule is due now.
+                await _holding.CancelAsync();
+                var previous = _holding;
+                _holding = new CancellationTokenSource();
+                previous.Dispose();
+                _due.Clear();
+                _asOf.Clear();
+            }
+            _held = true;
+            await TickAsync(cancellationToken);
+            // No pass to time (each rule is its own evaluation): a tick that worked tells the platform's status the scheduler is alive.
+            WorkerPulse.Tick("rules");
+            return LeasedPassOutcome.Idle;
+        }
+
+        protected override bool ReportsPasses => false;
+
+        protected override async Task OnLeaseNotHeldAsync(CancellationToken cancellationToken)
+        {
+            if (_held)
+            {
+                // Lost to another replica: rules still waiting for a worker give up, it evaluates them now.
+                _held = false;
+                await _holding.CancelAsync();
+            }
+        }
+
+        protected override void LogFailure(Exception exception) => logger.LogError(exception, "Rule scheduling failed; retrying next tick");
 
         /// <summary>Starts every due rule; each runs when a worker is free. Exposed for tests.</summary>
         public async Task TickAsync(CancellationToken cancellationToken)
         {
             // Before reading the rules: a rule that waits for a worker is checked against a list read after this, never one from before the tick.
             var tickAt = clock.GetUtcNow();
-            await using var scope = scopes.CreateAsyncScope();
+            await using var scope = Scopes.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
             var tenantId = await db.Tenants.Where(t => t.Key == platform.Value.TenantKey).Select(t => t.Id).SingleAsync(cancellationToken);
             // Only templates on the registry have a query to run; SLO burn rules don't: their alerts come from the SLO counter's burn rates.
@@ -311,7 +308,7 @@ namespace Juice.Observability.Rules
 
             async Task<Dictionary<Guid, Rule>> ReadAsync()
             {
-                await using var scope = scopes.CreateAsyncScope();
+                await using var scope = Scopes.CreateAsyncScope();
                 var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
                 var scheduled = _scheduled;
                 return await db.Rules.AsNoTracking().Where(r => r.Enabled && scheduled.Contains(r.Template)).ToDictionaryAsync(r => r.Id, ct);

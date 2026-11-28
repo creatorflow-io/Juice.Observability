@@ -287,3 +287,25 @@ export interface PlatformCapacity {
   headroom: number | null;
   resources: { name: string; unit: string; now: number | null; atHeld: number | null; atCrossed: number | null; level: PlatformLevel }[];
 }
+
+// ─── Modules (core 2.0 M3, E7) ────────────────────────────────────────────────────────────────────────────────────────
+
+/** A route a module's Console manifest declares (`GET /api/v1/modules`): relative, `:name` segments are parameters. */
+export interface ConsoleRouteDto { path: string; policy: string | null }
+/** `group`: absent for the top level of the menu, else `explore`, `automation` or `configure`. */
+export interface ConsoleMenuEntryDto { key: string; label: string; route: string; icon: string | null; policy: string | null; order: number; group?: string | null }
+export interface ConsoleManifestDto { package: string; routes: ConsoleRouteDto[]; menu: ConsoleMenuEntryDto[] }
+/** What the server says a module is: data only. It never names code to load (W-11): the Console's own build holds the libraries. */
+export interface ServerModule { name: string; displayName: string; version?: string; kind: string; supportedCore?: string; console: ConsoleManifestDto | null }
+export interface ModulesResponse { coreVersion?: string; items: ServerModule[] }
+
+// ─── Evidence sections (core 2.0 M3, E9) ──────────────────────────────────────────────────────────────────────────────
+
+/** `route` is relative to the Console's base path and is a link only when it matches a route of an installed module's manifest. */
+export interface EvidenceLink { route: string; query?: Record<string, string> | null }
+export interface EvidenceItem { label: string; value?: string | null; at?: string | null; link?: EvidenceLink | null; severity?: string | null }
+/** `state` is ok, or failed, timeout or invalid: then the page shows a generic line, whatever else came with it. */
+export interface EvidenceSectionDto {
+  key: string; module: string; state: string; title?: string | null; note?: string | null; truncated: boolean; items: EvidenceItem[];
+}
+export interface EvidenceSectionsDto { items: EvidenceSectionDto[] }

@@ -14,9 +14,11 @@ namespace Juice.Observability.Rules
         private readonly Dictionary<string, IRuleThresholdProvider> _providers = new(StringComparer.Ordinal);
 
         public RuleTemplateRegistry(IEnumerable<IRuleTemplate> builtIns, IEnumerable<IRuleTemplate>? modules = null,
-            IEnumerable<IRuleThresholdProvider>? providers = null, IEnumerable<ModuleRuleContribution>? contributions = null)
+            IEnumerable<IRuleThresholdProvider>? providers = null, IEnumerable<ModuleRuleContribution>? contributions = null,
+            IEnumerable<ModuleAlertSourceDeclaration>? alertSources = null)
         {
             var owners = (contributions ?? []).ToList();
+            var declared = (alertSources ?? []).Select(a => a.Template).ToHashSet(StringComparer.Ordinal);
             var builtInInfos = new List<RuleTemplateInfo>();
             foreach (var template in builtIns)
             {
@@ -50,6 +52,10 @@ namespace Juice.Observability.Rules
                     if (RuleTemplateKeys.Error(owner, info.Key) is { } error)
                     {
                         throw new ModuleCompositionException($"module '{owner}': rule template {template.GetType().Name}: {error}");
+                    }
+                    if (declared.Contains(info.Key))
+                    {
+                        throw new ModuleCompositionException($"module '{owner}': rule template {template.GetType().Name}: '{info.Key}' is declared as an alert source, and a template key is not an alert source's");
                     }
                     if (string.IsNullOrWhiteSpace(info.DisplayName) || info.DisplayName.Length > 64)
                     {

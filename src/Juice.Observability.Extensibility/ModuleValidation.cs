@@ -28,7 +28,8 @@ internal static partial class ModuleValidation
     [GeneratedRegex(@"^[a-z0-9][a-z0-9._-]{0,63}\z", RegexOptions.CultureInvariant)]
     private static partial Regex KeyRule();
 
-    [GeneratedRegex(@"^[a-z0-9][a-z0-9-]{0,63}\z", RegexOptions.CultureInvariant)]
+    // Material icon names use underscores (show_chart)
+    [GeneratedRegex(@"^[a-z0-9][a-z0-9_-]{0,63}\z", RegexOptions.CultureInvariant)]
     private static partial Regex IconRule();
 
     [GeneratedRegex(@"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\z", RegexOptions.CultureInvariant)]
@@ -82,14 +83,24 @@ internal static partial class ModuleValidation
 
     /// <summary>Validates the manifest; a policy must be a core policy or one of <paramref name="modulePolicies"/>.</summary>
     public static string? Manifest(ConsoleManifest? manifest, ModuleInfo module, IReadOnlySet<string> modulePolicies)
+        => Manifest(manifest, module, modulePolicies, isInternal: false);
+
+    /// <summary>The library that holds the pages of the core, slos and agents modules.</summary>
+    public const string CorePackage = "@juice-js/observability";
+
+    /// <summary>
+    /// As the three-argument form. <paramref name="isInternal"/> (core, slos, agents; only the composer's own path sets it) lets the manifest declare
+    /// <see cref="CorePackage"/> and the empty route (the Overview). An external module keeps <c>@juice-js/observability-&lt;name&gt;</c> and relative, non-empty routes.
+    /// </summary>
+    public static string? Manifest(ConsoleManifest? manifest, ModuleInfo module, IReadOnlySet<string> modulePolicies, bool isInternal)
     {
         if (manifest is null)
         {
             return "the Console manifest is null";
         }
-        if (manifest.Package != $"@juice-js/observability-{module.Name}")
+        if (isInternal ? manifest.Package != CorePackage : manifest.Package != $"@juice-js/observability-{module.Name}")
         {
-            return $"the Console package must be @juice-js/observability-{module.Name}";
+            return isInternal ? $"the Console package of an internal module must be {CorePackage}" : $"the Console package must be @juice-js/observability-{module.Name}";
         }
         if (manifest.Routes is null || manifest.Menu is null)
         {
@@ -102,7 +113,7 @@ internal static partial class ModuleValidation
         var paths = new HashSet<string>(StringComparer.Ordinal);
         foreach (var route in manifest.Routes)
         {
-            var problem = route is null ? "a Console route is null" : RelativePath(route.Path, "route path") ?? PolicyRef(route.Policy, modulePolicies);
+            var problem = route is null ? "a Console route is null" : RelativePath(route.Path, "route path", isInternal) ?? PolicyRef(route.Policy, modulePolicies);
             if (problem is not null)
             {
                 return problem;
@@ -121,8 +132,9 @@ internal static partial class ModuleValidation
             }
             var problem = entry.Key is null || !KeyRule().IsMatch(entry.Key) ? "a menu key must match ^[a-z0-9][a-z0-9._-]{0,63}$"
                 : !PlainText(entry.Label, MaxLabel) ? $"the menu label for '{entry.Key}' must be 1 to {MaxLabel} characters of plain text"
-                : RelativePath(entry.Route, "menu route")
-                ?? (entry.Icon is not null && !IconRule().IsMatch(entry.Icon) ? $"the icon for '{entry.Key}' must match ^[a-z0-9][a-z0-9-]{{0,63}}$" : null)
+                : RelativePath(entry.Route, "menu route", isInternal)
+                ?? (entry.Group is not null && !ConsoleMenuGroups.All.Contains(entry.Group) ? $"the group for '{entry.Key}' must be one of: {string.Join(", ", ConsoleMenuGroups.All.Order(StringComparer.Ordinal))}" : null)
+                ?? (entry.Icon is not null && !IconRule().IsMatch(entry.Icon) ? $"the icon for '{entry.Key}' must match ^[a-z0-9][a-z0-9_-]{{0,63}}$" : null)
                 ?? PolicyRef(entry.Policy, modulePolicies);
             if (problem is not null)
             {
@@ -136,10 +148,11 @@ internal static partial class ModuleValidation
         return null;
     }
 
-    private static string? RelativePath(string? path, string what)
-        => path is not null && PathRule().IsMatch(path) && !path.Contains("//", StringComparison.Ordinal) && !path.Contains("..", StringComparison.Ordinal)
+    // The empty path is the Console's Overview: only an internal module declares it
+    private static string? RelativePath(string? path, string what, bool allowEmpty = false)
+        => (allowEmpty && path == "") || (path is not null && PathRule().IsMatch(path) && !path.Contains("//", StringComparison.Ordinal) && !path.Contains("..", StringComparison.Ordinal)
                 // ':' only starts a parameter segment (":id"); anywhere else it would read as a scheme ("javascript:x")
-                && path.Split('/').All(segment => segment.Length > 0 && segment.LastIndexOf(':') <= 0 && segment != ":")
+                && path.Split('/').All(segment => segment.Length > 0 && segment.LastIndexOf(':') <= 0 && segment != ":"))
             ? null
             : $"the {what} must be relative (^[a-z0-9][a-z0-9/_:-]{{0,127}}$, no '//', no '..', no scheme)";
 

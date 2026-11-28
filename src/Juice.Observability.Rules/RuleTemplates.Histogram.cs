@@ -110,7 +110,7 @@ namespace Juice.Observability.Rules
             {
                 var last = rows[^1].SubjectKey;
                 rows = rows.Where(r => r.SubjectKey != last).ToList();
-                RulesTruncated.Add(1, new KeyValuePair<string, object?>("template", nameof(RuleTemplate.MetricThreshold)));
+                CountCut(nameof(RuleTemplate.MetricThreshold));
             }
 
             var seconds = Math.Max((window.To - window.From).TotalSeconds, 1);

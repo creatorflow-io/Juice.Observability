@@ -28,6 +28,26 @@ namespace Juice.Observability.Tests
             => [.. values.Select((v, i) => (End.AddMinutes(15 * (i - values.Length + 1)),
                 (IReadOnlyList<RuleObservation>)(v is { } d && double.IsNaN(d) ? [] : [Host("a", v)])))];
 
+        [Fact]
+        public void Subjects_seen_at_different_instants_are_capped_at_the_row_limit_together()
+        {
+            // Each instant sees 2 subjects (under a row limit of 3), but the instants see different ones: the union is 6.
+            var points = new List<(DateTimeOffset At, IReadOnlyList<RuleObservation> Observed)>();
+            for (var i = 0; i < 3; i++)
+            {
+                points.Add((End.AddMinutes(15 * (i - 2)), [Host($"s{2 * i}", 0.9), Host($"s{2 * i + 1}", 0.9)]));
+            }
+            var cap = Api.Endpoints.RulePreviewEndpoints.SubjectCap(rowLimit: 3);
+
+            var subjects = RulePreview.Replay(Rule(), points, cap, out var truncated);
+
+            Assert.Equal(3, cap);
+            Assert.Equal(3, subjects.Count);
+            Assert.True(truncated);
+            Assert.Equal(50, Api.Endpoints.RulePreviewEndpoints.SubjectCap(rowLimit: 10_000));
+            Assert.Equal(1, Api.Endpoints.RulePreviewEndpoints.SubjectCap(rowLimit: 0));
+        }
+
         [Theory]
         [InlineData(1, 5, 15)]      // schedule and window below the floor: 15 minutes
         [InlineData(20, 5, 20)]     // a longer schedule

@@ -33,6 +33,16 @@ public sealed record AlertSignal(string RuleKey, string DedupKey, AlertSignalKin
 
 public sealed record AlertSourceResult(int Fired, int Resolved, int Observed);
 
+/// <summary>Host plumbing: an alert source a module declared, so the rule template registry can refuse a template that has the same key.</summary>
+public sealed class ModuleAlertSourceDeclaration
+{
+    internal ModuleAlertSourceDeclaration(string module, string template) => (Module, Template) = (module, template);
+
+    public string Module { get; }
+
+    public string Template { get; }
+}
+
 public static class AlertSourceKeys
 {
     /// <summary>The service key of the source a module declared for a template.</summary>
