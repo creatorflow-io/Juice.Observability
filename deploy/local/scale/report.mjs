@@ -71,7 +71,7 @@ const queries = json('queries.json') ?? {};
 const journey = csv('journey.csv');
 const breach = [...read('breach.log').matchAll(/(-?\d+) s after ForDuration/g)].map(x => Number(x[1]));
 const breachMissed = (read('breach.log').match(/did not fire/g) ?? []).length;
-const [whTotal, whAttempted, whP50, whP95, whMax, whDelivered, whUnplanned] = read('webhooks.csv').trim().split(',').map(num);
+const [whTotal, whAttempted, whP50, whP95, whMax, whDelivered, whUnplanned] = read('dispatch.csv').trim().split(',').map(num);
 const transitions = num(read('transitions.csv').trim());
 // Outbox deliveries created in the window and given up for good (run.sh): dropped, so a queue-lag miss; no file is no data.
 const givenUp = existsSync(`${dir}/outbox.csv`) ? num(read('outbox.csv').trim()) : null;
@@ -169,8 +169,8 @@ const targets = [
     `age of the evidence behind each live subject's visible state: p95 ${f(healthP95)} s, max ${f(max(healthEvidence))} s${healthEvidence.some(v => v === null) ? `; ${healthEvidence.filter(v => v === null).length} samples with no live subject` : ''}; at evaluation p95 ${f(pct(col('health_age_p95'), 0.95))} s`],
   ['Rule breach-to-alert p95 ≤ 2 min after ForDuration', breach.length > 0 && within(pct(breach, 0.95), 120) && breachMissed === 0,
     `${breach.length ? `p95 ${pct(breach, 0.95)} s over ${breach.length} runs (${breach.join(', ')} s)` : 'no runs'}${breachMissed ? `; ${breachMissed} did not fire` : ''}`],
-  ['Notification planned p95 ≤ 30 s', whTotal > 0 && within(whP95, 30),
-    whTotal ? `p95 ${f(whP95, 2)} s, p50 ${f(whP50, 2)} s, max ${f(whMax, 2)} s over ${whTotal} (${whAttempted} attempted, ${whDelivered} delivered, ${whUnplanned ?? 0} transitions not yet planned; anything unattempted counts until the window's end; ${transitions} alert transitions)` : 'no deliveries in the window'],
+  ['First dispatch p95 ≤ 30 s', whTotal > 0 && within(whP95, 30),
+    whTotal ? `p95 ${f(whP95, 2)} s, p50 ${f(whP50, 2)} s, max ${f(whMax, 2)} s over ${whTotal} (${whAttempted} attempted, ${whDelivered} delivered, ${whUnplanned ?? 0} transitions not yet planned; the transition to the first delivery attempt; anything unattempted counts until the window's end; ${transitions} alert transitions)` : 'no notifying transitions in the window'],
   ['Queue lag: each worker ≤ 1 min past its configured delay; no growing backlog', lagCovered && givenUp === 0 && lags.every(l => l.ok !== false) && ![...lags, ...counts].some(l => l.growing) && !queueGrowing,
     `${lagCovered ? '' : `lag samples in only ${lag.filter(inWindow).length} of ${slots} slots; `}${givenUp === null ? 'no count of given-up outbox deliveries; ' : givenUp > 0 ? `${givenUp} outbox deliveries given up for good; ` : ''}${lags.filter(l => l.ok === false).map(l => `${l.what} ${f(l.excess)} s past`).join('; ') || 'every worker within 60 s of its configured delay'}; ` +
     `${growthNote ?? ([...lags, ...counts].filter(l => l.growing).map(l => l.what).join('; ') || 'no backlog growing')}; Collector export queue ${f(pct(queue, 0.5), 0)} items median, ${f(max(queue), 0)} max${queueGrowing ? ', **growing**' : ''}`],
@@ -185,7 +185,7 @@ const targets = [
 const ceiling = meta.ceiling || null;
 if (ceiling) {
   const keep = { ingest: ['Throughput', 'Ingestion freshness'], search: ['Throughput', 'Ingestion freshness', 'API reads'],
-    workers: ['Throughput', 'Ingestion freshness', 'Health freshness', 'Rule breach-to-alert', 'Webhook first dispatch', 'Queue lag'] }[ceiling] ?? [];
+    workers: ['Throughput', 'Ingestion freshness', 'Health freshness', 'Rule breach-to-alert', 'First dispatch', 'Queue lag'] }[ceiling] ?? [];
   for (const t of targets) if (t[1] !== null && !keep.some(k => t[0].startsWith(k))) { t[1] = null; t[2] = `not judged (ceiling ${ceiling}): ${t[2]}`; }
   targets.push(['Collector export queue not growing (ceiling line)', queueGrowing === null ? null : !queueGrowing,
     `${f(pct(queue, 0.5), 0)} items median, ${f(max(queue), 0)} max, sum of the exporters${queueGrowing === null ? '; growth not judged (window under two load cycles)' : queueGrowing ? ', growing' : ''}`]);
