@@ -89,7 +89,7 @@ namespace Juice.Observability.Api.Endpoints
                     try
                     {
                         if (budget.IsCancellationRequested) throw new OperationCanceledException(budget.Token);
-                        observed.Add((at, await templates.ObserveAsync(definition, new TelemetryWindow(tenantKey, at - definition.Window, at, rules.Value.RowLimit), budget.Token)));
+                        observed.Add((at, await templates.ObserveAsync(definition, new TelemetryWindow(tenantKey, at - definition.Window, at, rules.Value.RowLimit), budget.Token, preview: true)));
                     }
                     catch (OperationCanceledException) when (budget.IsCancellationRequested && !ct.IsCancellationRequested)
                     {
