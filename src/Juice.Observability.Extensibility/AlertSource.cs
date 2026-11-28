@@ -27,7 +27,15 @@ public sealed record AlertSourceResult(int Fired, int Resolved, int Observed);
 
 public static class AlertSourceModuleExtensions
 {
-    /// <summary>Not a registry template; once per host.</summary>
+    /// <summary>
+    /// Declares an alert source: the module's alerts of <paramref name="template"/>, applied through <see cref="IAlertSource"/> (a keyed scoped service). The
+    /// template is not a registry template and is declared once per host: refused when it is one of the built-ins or already declared. Outside the
+    /// core's own <c>SloBurn</c>, the template is <c>&lt;module&gt;.&lt;name&gt;</c>.
+    /// </summary>
     public static IModuleServicesBuilder AddAlertSource(this IModuleServicesBuilder b, string template)
-        => throw new NotImplementedException();
+    {
+        ArgumentNullException.ThrowIfNull(b);
+        ModuleHostBridge.Invoke("Juice.Observability.Api.Modules.AlertSources.AlertSourceComposer", "Add", [], b, template);
+        return b;
+    }
 }

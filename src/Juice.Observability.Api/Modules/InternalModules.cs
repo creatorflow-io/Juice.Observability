@@ -39,7 +39,12 @@ namespace Juice.Observability.Api.Modules
     {
         public ModuleInfo Info { get; } = InternalModuleInfo.Of("slos", "Service level objectives");
 
-        public void ConfigureServices(IModuleServicesBuilder module) => module.Services.AddPlatformSlos(module.Configuration);
+        public void ConfigureServices(IModuleServicesBuilder module)
+        {
+            module.Services.AddPlatformSlos(module.Configuration);
+            // The burn alerts are the core's first alert source (core 2.0 M2): the SLO counter's evaluation applies its signals through it.
+            module.AddAlertSource(EvaluateSloBurnsHandler.Template);
+        }
 
         public void MapEndpoints(IModuleEndpointsBuilder endpoints) => endpoints.Tenant.MapSloEndpoints();
     }

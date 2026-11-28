@@ -3,8 +3,10 @@ using Juice.Domain;
 using Juice.MediatR;
 using Juice.Observability.Data;
 using Juice.Observability.Discovery;
+using Juice.Observability.Extensibility;
 using Juice.Observability.Rules;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
 namespace Juice.Observability.Slos
@@ -186,7 +188,7 @@ namespace Juice.Observability.Slos
     /// resolves when the short one is under it, and holds otherwise, missing data included. An SLO that was retired, or moved to another service, resolves its
     /// open alerts with that reason. Only changes entities: nothing here saves, begins or commits, or knows who is notified.
     /// </summary>
-    public sealed class EvaluateSloBurnsHandler(PlatformDbContext db, IOptions<SloOptions> options, IOptions<PlatformOptions> platform, TimeProvider clock)
+    public sealed class EvaluateSloBurnsHandler(PlatformDbContext db, IOptions<SloOptions> options, IOptions<PlatformOptions> platform, TimeProvider clock, IServiceProvider services)
         : IRequestHandler<EvaluateSloBurns, SloBurnEvaluation>
     {
         public const string Fired = "burn_rate_over";
@@ -207,8 +209,11 @@ namespace Juice.Observability.Slos
             var now = clock.GetUtcNow();
             // Alerts are dated by the end of the windows they were judged on.
             var at = SloCounter.Floor(now) - SloReader.Settle;
-            var ruleIds = rules.Values.Select(r => r.Id).ToList();
-            var open = await db.Alerts.Where(a => a.TenantId == tenantId && ruleIds.Contains(a.RuleId) && a.State != AlertState.Resolved).ToDictionaryAsync(a => a.DedupKey, ct);
+            // The burn alerts are the platform's alert source for the SloBurn template (core 2.0 M2): the handler decides, the source applies. A host that
+            // registered none (a test's bare container) gets the core's own, over the same context.
+            var source = services.GetKeyedService<IAlertSource>(Template) ?? new PlatformAlertSource(Template, db, services, platform, clock);
+            var open = (await source.OpenAlertsAsync(ct)).ToDictionary(a => a.DedupKey);
+            var signals = new List<AlertSignal>();
             var slos = await db.Slos.AsNoTracking().Where(s => s.TenantId == tenantId && !s.Retired).ToListAsync(ct);
             var ids = slos.Select(s => s.Id).ToList();
             var versions = (await db.SloVersions.AsNoTracking().Where(v => ids.Contains(v.SloId)).OrderBy(v => v.Version).ToListAsync(ct)).ToLookup(v => v.SloId);
@@ -236,18 +241,15 @@ namespace Juice.Observability.Slos
             var named = current.Values.OfType<Current>().Select(c => c.Definition).ToList();
             var serviceNames = named.Select(d => d.SplitService().Name).Distinct().ToList();
             var environmentKeys = named.Select(d => d.Environment).Distinct().ToList();
-            var services = await db.Services.AsNoTracking().Where(s => s.TenantId == tenantId && serviceNames.Contains(s.Name))
+            var serviceRows = await db.Services.AsNoTracking().Where(s => s.TenantId == tenantId && serviceNames.Contains(s.Name))
                 .Select(s => new { s.Id, s.Namespace, s.Name }).ToListAsync(ct);
             var environments = await db.Environments.AsNoTracking().Where(e => e.TenantId == tenantId && environmentKeys.Contains(e.Key))
                 .ToDictionaryAsync(e => e.Key, e => e.Id, ct);
             // When each burn alert last cooled after firing: a new one waits out its cooldown, so a burn hovering at the rate doesn't flap. Only
             // a cooled burn counts: an alert closed for another reason (moved, retired, counting off) says nothing about the burn.
             var dedupKeys = slos.SelectMany(s => SloBurnAlerts.All.Select(b => SloBurnRules.DedupKey(b.RuleKey, s.Key))).ToList();
-            var lastResolved = await db.AlertTransitions.AsNoTracking().Where(t => t.TenantId == tenantId && t.ToState == AlertState.Resolved && t.Reason == Cooled)
-                .Join(db.Alerts.AsNoTracking().Where(a => dedupKeys.Contains(a.DedupKey) && a.FiredAt != null), t => t.AlertId, a => a.Id, (t, a) => new { a.DedupKey, t.At })
-                .GroupBy(x => x.DedupKey).Select(g => new { g.Key, ResolvedAt = g.Max(x => x.At) }).ToDictionaryAsync(x => x.Key, x => (DateTimeOffset?)x.ResolvedAt, ct);
+            var lastResolved = await source.LastResolvedAsync(dedupKeys, Cooled, ct);
 
-            int fired = 0, resolved = 0;
             var watched = new HashSet<string>();
             foreach (var slo in slos)
             {
@@ -261,7 +263,7 @@ namespace Juice.Observability.Slos
                 var status = statuses[slo.Id];
                 var (ns, name) = definition.SplitService();
                 var subjectKey = RuleTemplates.ServiceSubjectKey(ns, name, definition.Environment);
-                var serviceId = services.FirstOrDefault(s => s.Namespace == ns && s.Name == name)?.Id;
+                var serviceId = serviceRows.FirstOrDefault(s => s.Namespace == ns && s.Name == name)?.Id;
                 Guid? environmentId = environments.TryGetValue(definition.Environment, out var e) ? e : null;
                 foreach (var burn in SloBurnAlerts.All)
                 {
@@ -278,65 +280,51 @@ namespace Juice.Observability.Slos
                     // Its service changed with a new version: the alert was about the old one. Resolve it, and judge the new one afresh.
                     if (alert is not null && alert.SubjectKey != subjectKey)
                     {
-                        Resolve(alert, SloMoved, at);
-                        resolved++;
+                        signals.Add(new(rule.Key, dedup, AlertSignalKind.Resolve, at, SloMoved));
                         alert = null;
                     }
+                    var evidence = Evidence(slo, version, definition, burn, longWindow, shortWindow, condition, at);
                     if (alert is null)
                     {
                         if (condition != BurnCondition.Burning)
                         {
                             continue;
                         }
-                        if (lastResolved.GetValueOrDefault(dedup) is { } resolvedAt && at < resolvedAt + SloBurnAlerts.Cooldown(burn))
+                        if (lastResolved.TryGetValue(dedup, out var resolvedAt) && at < resolvedAt + SloBurnAlerts.Cooldown(burn))
                         {
                             continue;
                         }
-                        alert = new Alert
-                        {
-                            TenantId = tenantId, RuleId = rule.Id, DedupKey = dedup, SubjectKey = subjectKey, SubjectType = HealthSubject.Service,
-                            SubjectId = serviceId, EnvironmentId = environmentId, Severity = rule.Severity, State = AlertState.Pending, BreachStartedAt = at,
-                        };
-                        db.Alerts.Add(alert);
-                        Transition(alert, null, AlertState.Pending, at, longWindow.BurnRate, "breach");
-                        // Both windows over the rate is the confirmation a rule's ForDuration gives: it fires at once.
-                        var firing = Transition(alert, AlertState.Pending, AlertState.Firing, at, longWindow.BurnRate, Fired);
-                        alert.State = AlertState.Firing;
-                        alert.FiredAt = at;
-                        AlertChanges.Raise(alert, firing);
-                        fired++;
+                        // Both windows over the rate is the confirmation a rule's ForDuration gives: the source fires it at once.
+                        signals.Add(new(rule.Key, dedup, AlertSignalKind.Fire, at, Fired, new AlertSubject(AlertSubjectKind.Service, subjectKey, serviceId, environmentId),
+                            longWindow.BurnRate, longWindow.Total, NoData: false, Evidence: evidence));
                     }
                     else if (condition == BurnCondition.Cooled)
                     {
                         // Resolved by the short window: its rate is the value the resolve reports, not the long window's memory of the burn.
-                        alert.LastValue = shortWindow.BurnRate;
-                        Resolve(alert, Cooled, at);
-                        resolved++;
+                        signals.Add(new(rule.Key, dedup, AlertSignalKind.Observe, at, Cooled, Value: shortWindow.BurnRate, Samples: longWindow.Total, NoData: false, Evidence: evidence));
+                        signals.Add(new(rule.Key, dedup, AlertSignalKind.Resolve, at, Cooled));
                     }
-                    alert.LastEvaluatedAt = now;
-                    // Held for a window without a rate: keep the last rate known, so a firing alert still shows what fired it.
-                    alert.LastValue = (alert.State == AlertState.Resolved ? shortWindow.BurnRate : longWindow.BurnRate) ?? alert.LastValue;
-                    alert.LastSamples = longWindow.Total;
-                    alert.NoData = condition == BurnCondition.Unknown;
-                    alert.Evidence = Evidence(slo, version, definition, burn, longWindow, shortWindow, condition, at);
+                    else
+                    {
+                        // Held for a window without a rate: a null value keeps the last rate known, so a firing alert still shows what fired it.
+                        signals.Add(new(rule.Key, dedup, AlertSignalKind.Observe, at, condition.ToString(), Value: longWindow.BurnRate, Samples: longWindow.Total,
+                            NoData: condition == BurnCondition.Unknown, Evidence: evidence));
+                    }
                 }
             }
             // Open alerts of SLOs no longer active (retired, or gone from the file): nothing will ever resolve them otherwise.
-            foreach (var alert in open.Values.Where(a => a.State != AlertState.Resolved && !watched.Contains(a.DedupKey)))
+            foreach (var alert in open.Values.Where(a => !watched.Contains(a.DedupKey)))
             {
-                Resolve(alert, SloRetired, at);
-                resolved++;
+                signals.Add(new(alert.RuleKey, alert.DedupKey, AlertSignalKind.Resolve, at, SloRetired));
             }
-            return new(slos.Count, fired, resolved);
+            var result = await source.ApplyAsync(signals, ct);
+            return new(slos.Count, result.Fired, result.Resolved);
         }
 
+        /// <summary>The template of the platform's burn rules: an alert source of the core, not a registry template.</summary>
+        public const string Template = nameof(RuleTemplate.SloBurn);
+
         private sealed record Current(SloVersion Version, SloDefinition Definition, IReadOnlySet<int> SameService);
-
-        // The alert lifecycle's changes: the same history, metric and notification as any alert's.
-        private void Resolve(Alert alert, string reason, DateTimeOffset at) => AlertChanges.Resolve(db, alert, reason, at, RuleTemplate.SloBurn);
-
-        private AlertTransition Transition(Alert alert, AlertState? from, AlertState to, DateTimeOffset at, double? value, string reason)
-            => AlertChanges.Transition(db, alert, from, to, at, value, reason, RuleTemplate.SloBurn);
 
         /// <summary>The evidence (Phase 9 plan): which SLO, under which version, and both windows' numbers, enough to see why it fired or held.</summary>
         internal static Dictionary<string, string> Evidence(Slo slo, SloVersion version, SloDefinition definition, BurnAlert burn, WindowStatus longWindow,
