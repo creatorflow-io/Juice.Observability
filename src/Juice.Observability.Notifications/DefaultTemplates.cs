@@ -57,6 +57,10 @@ namespace Juice.Observability.Notifications
             {{~ func title() ~}}
             {{~ ret plain(title_raw()) ~}}
             {{~ end ~}}
+            {{~ func inbox_title() ~}}
+            {{~ $t = clean("[" + data.alert.severity + "] " + (data.alert.ruleName ?? data.alert.rule) + ": " + data.alert.subject) ~}}
+            {{~ ret $t.size > 250 ? (($t | string.truncate 249 "") + "…") : $t ~}}
+            {{~ end ~}}
             {{~ func value() ~}}
             {{~ ret data.alert.value == null ? "no data" : (data.alert.value | math.format "G6") ~}}
             {{~ end ~}}
@@ -91,6 +95,17 @@ namespace Juice.Observability.Notifications
               {{ links.self }}{{ end }}
             """;
 
+        /// <summary>
+        /// The inbox item (M54): its title is <c>[severity] rule name: subject</c> on one line, at most the 250 characters an item's title holds
+        /// (cut with an ellipsis, not mid-word silently), and its text is the reason and the value. Plain text: the Console shows it as text, never as
+        /// markup. The link is the request's <c>links.self</c>, the Console's address as written.
+        /// </summary>
+        public static readonly string Inbox = Functions + """
+            Title: {{ inbox_title() }}
+            {{ if plain(data.alert.reason) != "" }}Reason: {{ plain(data.alert.reason) }}
+            {{ end }}Value: {{ value() }}
+            """;
+
         /// <summary>The templates by channel, as a <see cref="Juice.Notifications.Types.TypeDeclaration"/> takes them (the <c>en</c> locale).</summary>
         public static IReadOnlyDictionary<string, string> ByChannel { get; } = new Dictionary<string, string>
         {
@@ -98,6 +113,7 @@ namespace Juice.Observability.Notifications
             [ChatChannels.Slack] = Slack,
             [ChatChannels.Teams] = Teams,
             [Channels.Email] = Email,
+            [Channels.Inbox] = Inbox,
         };
 
         /// <summary><see cref="ByChannel"/> as a declaration's <c>templates</c>.</summary>

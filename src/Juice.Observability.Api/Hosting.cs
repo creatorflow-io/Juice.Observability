@@ -48,6 +48,7 @@ namespace Juice.Observability.Api
         {
             var auth = configuration.GetSection(AuthOptions.Section).Get<AuthOptions>() ?? new AuthOptions();
             services.Configure<AuthOptions>(configuration.GetSection(AuthOptions.Section));
+            var inbox = NotificationsInboxExtensions.IsEnabled(configuration);
             services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
                 .AddJwtBearer(options =>
                 {
@@ -60,6 +61,11 @@ namespace Juice.Observability.Api
                     options.TokenValidationParameters.ValidateIssuer = true;
                     options.TokenValidationParameters.ValidateAudience = true;
                     options.TokenValidationParameters.ValidateLifetime = true;
+                    // The inbox's hub (M54): a browser can't set a header on a WebSocket, so its token is read from the query, on the hub's path only.
+                    if (inbox)
+                    {
+                        options.Events = new JwtBearerEvents { OnMessageReceived = NotificationsInboxExtensions.ReadHubToken };
+                    }
                 });
             services.AddAuthorizationBuilder()
                 .SetFallbackPolicy(new Microsoft.AspNetCore.Authorization.AuthorizationPolicyBuilder().RequireAuthenticatedUser().Build())

@@ -136,7 +136,7 @@ namespace Juice.Observability.Notifications
             {
                 await TolerateAsync("resolve", () => client.ResolveAsync(resolve, null, null, cancellationToken), conflictThrows: true);
             }
-            var request = JsonSerializer.Deserialize<NotificationToSend>(call.Request!, JsonSerializerOptions.Web)!;
+            var request = WithoutRolesIfInboxOff(JsonSerializer.Deserialize<NotificationToSend>(call.Request!, JsonSerializerOptions.Web)!);
             await SendAsync(request, cancellationToken, conflictThrows: true);
         }
 
@@ -239,8 +239,23 @@ namespace Juice.Observability.Notifications
         /// <summary>Sends a request kept by a hold, now that no silence covers it; false when the pipeline refused it.</summary>
         internal Task<bool> SendHeldAsync(NotificationHold hold, CancellationToken cancellationToken)
         {
-            var request = JsonSerializer.Deserialize<NotificationToSend>(hold.Request, JsonSerializerOptions.Web)!;
+            var request = WithoutRolesIfInboxOff(JsonSerializer.Deserialize<NotificationToSend>(hold.Request, JsonSerializerOptions.Web)!);
             return SendAsync(request, cancellationToken, conflictThrows: true);
+        }
+
+        /// <summary>
+        /// A request kept while the inbox was on (a silence's hold, a parked send) and sent after it was turned off: the pipeline refuses a
+        /// <c>role</c> recipient with no inbox, which would lose the notice for its routes too. Sent without them, its routes are as before.
+        /// </summary>
+        internal NotificationToSend WithoutRolesIfInboxOff(NotificationToSend request)
+        {
+            if (console.Value.Inbox.Enabled || request.Recipients is not { } recipients || !recipients.Any(r => r.Kind == RecipientKinds.Role))
+            {
+                return request;
+            }
+            logger.LogWarning("The inbox is off: request {Key} is sent without its role recipients", request.IdempotencyKey);
+            var rest = recipients.Where(r => r.Kind != RecipientKinds.Role).ToList();
+            return request with { Recipients = rest.Count == 0 ? null : rest };
         }
 
         internal NotificationToSend Firing(Rule rule, Alert alert, AlertTransition transition, AlertContext context, string? policy)
@@ -250,6 +265,11 @@ namespace Juice.Observability.Notifications
             return new NotificationToSend(ObservabilityTypes.AlertFiring, TransitionKey(transition.Id))
             {
                 CorrelationKey = AlertCorrelation(alert.Id),
+                // The people of the configured Console roles, when the inbox is on (M54): who signed in with one gets an item. Naming recipients
+                // replaces the default (the routes the request matches), so the routes are named too: delivery to them is as it was.
+                Recipients = console.Value.Inbox.Enabled
+                    ? [new NotificationRecipientSpec(RecipientKinds.Route), .. console.Value.Inbox.EffectiveRoles.Select(role => new NotificationRecipientSpec(RecipientKinds.Role, Id: role))]
+                    : null,
                 // When it fired: the escalation's first step is timed from it, so a firing sent late (held under a silence) still gets it on time.
                 OccurredAt = transition.At,
                 Labels = labels,

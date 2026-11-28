@@ -44,8 +44,11 @@ namespace Juice.Observability.Tests
             var loaded = AppDomain.CurrentDomain.GetAssemblies().Select(a => a.GetName().Name ?? "").ToList();
             // Not the service's host (Juice.Notifications.Api); its contracts come with the admin endpoints (Juice.Notifications.Admin, M48).
             Assert.DoesNotContain(loaded, n => n == "Juice.Notifications.Api"
-                || n.StartsWith("Microsoft.AspNetCore.SignalR", StringComparison.Ordinal) || n.StartsWith("RabbitMQ", StringComparison.Ordinal)
+                || n.StartsWith("RabbitMQ", StringComparison.Ordinal)
                 || n.StartsWith("Juice.EventBus.RabbitMQ", StringComparison.Ordinal) || n.StartsWith("Juice.Audit", StringComparison.Ordinal));
+            // No hub with the inbox off (the default). Said of this host's services, not of the process's assemblies: the suite's inbox tests (M54)
+            // load SignalR in the same process, and this host's own start must not need it.
+            Assert.Null(factory.Services.GetService<Microsoft.AspNetCore.SignalR.IHubProtocolResolver>());
         }
 
 

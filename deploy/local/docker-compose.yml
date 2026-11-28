@@ -253,6 +253,10 @@ services:
       Rules__File: /config/rules.json
       # Endpoints, routes and the allowlist of the notification pipeline: a file keyed by this deployment's tenant Id (docs/deployment.md).
       Notifications__Provisioning__Path: /config/notifications-provisioning.json
+      # The Console's bell (M54): the people of this sign-in who hold a Console role get an inbox item for each alert (docs/deployment.md). Items link to the
+      # Console, so its address is set; the Console's config.json below turns the bell on.
+      Notifications__Inbox__Enabled: "true"
+      Notifications__ConsoleUrl: http://${PUBLIC_HOST:-localhost}:5180
       Slos__File: /config/slos.json
       # A new SLO counts its 30 days in a few passes here; production counts 12 hours a pass.
       Slos__MaxMinutesPerPass: "10080"
@@ -353,4 +357,4 @@ configs:
   # Local stack only: Keycloak is plain HTTP, also when reached by a machine address (requireHttps false).
   console-config:
     content: |
-      {"apiBase": "", "auth": {"issuer": "http://${PUBLIC_HOST:-localhost}:8080/realms/juice", "clientId": "juice-console", "scope": "openid profile email", "requireHttps": false}}
+      {"apiBase": "", "inbox": true, "auth": {"issuer": "http://${PUBLIC_HOST:-localhost}:8080/realms/juice", "clientId": "juice-console", "scope": "openid profile email", "requireHttps": false}}

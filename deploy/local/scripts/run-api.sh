@@ -17,6 +17,9 @@ export Database__Migrate=true
 export Rules__File="$(pwd -W 2>/dev/null || pwd)/rules.json"
 export Notifications__Provisioning__Path="$(pwd -W 2>/dev/null || pwd)/notifications-provisioning.json"
 export Integrations__Grafana__BaseUrl=http://localhost:3000
+# The Console's bell (M54): inbox items for the people of this sign-in who hold a Console role; an item links to the Console.
+export Notifications__Inbox__Enabled=${Notifications__Inbox__Enabled:-true}
+export Notifications__ConsoleUrl=${Notifications__ConsoleUrl:-$ASPNETCORE_URLS}
 # The platform's own metrics (docs/platform-metrics.md): the Collector's platform receiver, published on loopback, and the sampler's user.
 here=$(pwd -W 2>/dev/null || pwd)
 export Telemetry__Otlp__Endpoint=https://127.0.0.1:4319

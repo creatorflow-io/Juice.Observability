@@ -60,6 +60,8 @@ namespace Juice.Observability.Api
             // After the platform's messaging and the provisioner: its schema migrates after the platform's (I60).
             services.AddPlatformNotifications(configuration);
             services.AddPlatformNotificationsAdmin();
+            // Opt-in (Notifications:Inbox:Enabled): the people of the platform's own sign-in get inbox items.
+            services.AddPlatformNotificationsInbox(configuration);
             services.AddPlatformDiscovery(configuration);
             services.AddPlatformHealth(configuration);
             services.AddPlatformRules(configuration);
@@ -155,6 +157,7 @@ namespace Juice.Observability.Api
             app.MapPlatformStatus();
             app.MapInventoryEndpoints();
             app.MapPlatformNotificationsAdmin();
+            app.MapPlatformNotificationsInbox();
             // Answers only on the agent listener, and only when agents are enabled (Agents:Enabled).
             app.MapAgentApi();
             return app;
