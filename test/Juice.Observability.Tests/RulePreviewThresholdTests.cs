@@ -99,7 +99,8 @@ namespace Juice.Observability.Tests
 
             var points = await RulePreview.WithThresholdsAsync(ThresholdsOf(new FailsLate()), rule, Points(0.5), budget.Token, Ct);
 
-            Assert.Empty(points);
+            Assert.Equal(3, points.Count);
+            Assert.Equal(3, Assert.Single(RulePreview.Replay(rule, points, 50, out _)).NoData);
         }
 
         private static RuleThresholds ThresholdsOf(IRuleThresholdProvider provider)
@@ -116,8 +117,27 @@ namespace Juice.Observability.Tests
             var points = await RulePreview.WithThresholdsAsync(ThresholdsOf(new Awkward(false)), rule, Points(0.5), budget.Token, Ct);
 
             Assert.True(started.Elapsed < TimeSpan.FromSeconds(10));
-            Assert.Single(points);   // the instant answered before the budget ran out is kept; the rest is cut
-            Assert.Equal(1, Assert.Single(RulePreview.Replay(rule, points, 50, out _)).Breaches);
+            // The instant answered before the budget ran out is judged; the others are kept, with no threshold: no data.
+            Assert.Equal(3, points.Count);
+            var subject = Assert.Single(RulePreview.Replay(rule, points, 50, out _));
+            Assert.Equal(1, subject.Breaches);
+            Assert.Equal(2, subject.NoData);
+        }
+
+        [Fact]
+        public async Task A_budget_already_spent_keeps_the_observed_points_with_no_threshold_Async()
+        {
+            var rule = Draft();
+            using var budget = new CancellationTokenSource();
+            await budget.CancelAsync();
+            var provider = new ThresholdSeamTests.Provider(keys => keys.ToDictionary(k => k, _ => new RuleThreshold(0.4, 0.3)));
+
+            var points = await RulePreview.WithThresholdsAsync(ThresholdSeamTests.Thresholds(provider), rule, Points(0.5), budget.Token, Ct);
+
+            Assert.Equal(3, points.Count);
+            Assert.Equal(0, provider.Calls);   // not asked on a spent budget
+            var subject = Assert.Single(RulePreview.Replay(rule, points, 50, out _));
+            Assert.Equal(3, subject.NoData);
         }
 
         [Fact]

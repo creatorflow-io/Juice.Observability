@@ -108,18 +108,21 @@ namespace Juice.Observability.Api.Endpoints
             }
 
             var judged = await RulePreview.WithThresholdsAsync(thresholds, definition, observed, budget.Token, ct);
-            if (judged.Count < observed.Count)
+            var reasons = new List<string>();
+            if (cut is not null) reasons.Add(cut);
+            if (definition.ThresholdSource is not null && observed.Count > 0 && budget.IsCancellationRequested)
             {
-                // The budget ran out in the provider: what was judged before is the result.
-                cut ??= string.Create(CultureInfo.InvariantCulture, $"stopped after {judged.Count} of {instants.Count} points");
+                // Every observed instant is kept; those the provider was not asked about, or did not answer in time, read as no data.
+                reasons.Add("the time budget ran out before the threshold provider had answered for every instant; the rest read as no data");
             }
             // Each instant is read under the row limit, but the instants see different subjects: the union is capped too.
             var cap = SubjectCap(rules.Value.RowLimit);
             var subjects = RulePreview.Replay(definition, judged, cap, out var truncated);
             if (truncated)
             {
-                cut ??= string.Create(CultureInfo.InvariantCulture, $"showing the {cap} subjects that would fire most; others were left out");
+                reasons.Add(string.Create(CultureInfo.InvariantCulture, $"showing the {cap} subjects that would fire most; others were left out"));
             }
+            cut = reasons.Count == 0 ? null : string.Join("; ", reasons);
             var unit = entry?.Unit is { Length: > 0 } u ? u : null;
             return Results.Ok(new RulePreviewDto(instants[0], instants[^1], step, instants.Count, judged.Count, cut is null, cut, quiet, unit, definition,
                 [.. subjects.Select(s => new PreviewSubjectDto(s.SubjectKey, s.SubjectType.ToString(), s.Breaches, s.NoData, s.WouldOpen, s.WouldFire, s.FirstFiredAt,
