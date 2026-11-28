@@ -205,7 +205,7 @@ GET  /api/v1/tenants/{tenantId}/rules
 GET  /api/v1/tenants/{tenantId}/alerts
 GET  /api/v1/tenants/{tenantId}/alerts/{alertId}
 POST /api/v1/tenants/{tenantId}/alerts/{alertId}/acknowledgement
-GET  /api/v1/tenants/{tenantId}/webhooks/{endpointId}/deliveries
+GET  /api/v1/tenants/{tenantId}/alerts/{alertId}/notifications
 ```
 
 `{tenantId}` in the path is checked against the caller's authorized tenant and never grants access by itself. Responses use problem details, a correlation ID, and cursor pagination. Mutations that can be retried accept an idempotency key. Telemetry queries go through Grafana links or bounded platform-owned query templates; never expose ClickHouse credentials or arbitrary SQL.

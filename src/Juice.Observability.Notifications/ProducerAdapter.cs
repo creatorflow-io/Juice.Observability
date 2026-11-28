@@ -311,7 +311,7 @@ namespace Juice.Observability.Notifications
         private Dictionary<string, string>? Link(string page)
             => console.Value.Link(page) is { } link ? new() { ["self"] = link } : null;
 
-        /// <summary>Today's payload, less its id (each delivery's own in the webhooks; the pipeline gives its own).</summary>
+        /// <summary>Today's payload, less its id (the pipeline gives each delivery its own).</summary>
         internal static JsonElement WithoutId(string payload)
         {
             var json = JsonNode.Parse(payload)!.AsObject();
