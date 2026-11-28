@@ -27,7 +27,7 @@ namespace Juice.Observability.Rules
                        arraySum(inc) AS observed,
                        if(AggregationTemporality = 1,
                           sumIf(Sum, TimeUnix >= {From}),
-                          greatest(argMaxIf(Sum, TimeUnix, TimeUnix >= {From}) - argMaxIf(Sum, TimeUnix, TimeUnix < {From}), 0)) AS total
+                          argMaxIf(Sum, TimeUnix, TimeUnix >= {From}) - argMaxIf(Sum, TimeUnix, TimeUnix < {From})) AS total
                 FROM otel.otel_metrics_histogram
                 WHERE {Tenant} AND TimeUnix >= {From} - INTERVAL 1 HOUR AND TimeUnix < {To} AND MetricName = {"{m:String}"}
                   AND length(BucketCounts) = length(ExplicitBounds) + 1 AND {scope}{filters}
@@ -35,6 +35,7 @@ namespace Juice.Observability.Rules
                 HAVING countIf(TimeUnix >= {From}) > 0
             )
             GROUP BY {outerKeys}, bounds
+            ORDER BY {outerKeys}, bounds
             LIMIT {Limit}
             """;
 
@@ -78,7 +79,14 @@ namespace Juice.Observability.Rules
                     Doubles(r.GetValue(3)), Longs(r.GetValue(4)), Convert.ToInt64(r.GetValue(5)), Convert.ToDouble(r.GetValue(6))),
                 cancellationToken, parameters);
 
-            var seconds = Math.Max((window.To - window.From).TotalSeconds, 1);
+            // The rows come ordered by subject and cut at the limit: the last subject may have lost some of its layouts, so it's left out.
+            if (rows.Count >= window.Limit && rows.Count > 0)
+            {
+                var last = rows[^1].SubjectKey;
+                rows = rows.Where(r => r.SubjectKey != last).ToList();
+            }
+
+            var seconds =Math.Max((window.To - window.From).TotalSeconds, 1);
             return rows.GroupBy(r => r.SubjectKey).Select(g =>
             {
                 var layouts = g.ToList();
@@ -93,7 +101,9 @@ namespace Juice.Observability.Rules
                         value = observed / seconds;
                         break;
                     case MetricAggregation.Avg:
-                        value = observed > 0 ? layouts.Sum(l => l.Total) / observed : null;
+                        // A histogram without a sum is stored with 0: with observations behind it, that is no data, not an average of 0.
+                        var total = layouts.Sum(l => l.Total);
+                        value = observed > 0 && total != 0 ? total / observed : null;
                         break;
                     default:
                         // A subject whose series disagree on the bucket layout is read in the layout holding most observations.

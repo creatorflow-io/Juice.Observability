@@ -196,6 +196,75 @@ namespace Juice.Observability.Tests
         }
 
         [Fact]
+        public async Task Histogram_without_sum_has_no_avg_and_negative_sums_agree_Async()
+        {
+            LocalStack.RequireAvailable();
+            // No sum (stored as 0) behind 30 observations: the percentile is there, the average is not.
+            var nosum = $"hist-{_run}-nosum";
+            await LocalStack.SendAsync("metrics", OtlpMetrics.BucketHistogram(Resource(nosum), Metric, OtlpMetrics.Cumulative, At(-30), [], Bounds,
+                (At(-5), [5, 5, 0], 0), (At(8), [10, 25, 5], 0)));
+            // Negative sums: cumulative -5 to -35, and deltas -10 and -20, are both -30 over 30 observations.
+            var cumulative = $"hist-{_run}-negcum";
+            await LocalStack.SendAsync("metrics", OtlpMetrics.BucketHistogram(Resource(cumulative), Metric, OtlpMetrics.Cumulative, At(-30), [], Bounds,
+                (At(-5), [5, 5, 0], -5), (At(8), [10, 25, 5], -35)));
+            var delta = $"hist-{_run}-negdelta";
+            await LocalStack.SendAsync("metrics", OtlpMetrics.BucketHistogram(Resource(delta), Metric, OtlpMetrics.Delta, At(-30), [], Bounds,
+                (At(1), [5, 10, 0], -10), (At(5), [5, 10, 0], -20)));
+            foreach (var s in new[] { nosum, cumulative, delta }) await WaitAsync("otel_metrics_histogram", s, 2);
+
+            Assert.Null((await ObserveAsync(Rule(nosum, MetricAggregation.Avg))).Value);
+            Assert.NotNull((await ObserveAsync(Rule(nosum, MetricAggregation.P50))).Value);
+            Assert.Equal(-1, (await ObserveAsync(Rule(cumulative, MetricAggregation.Avg))).Value!.Value, 9);
+            Assert.Equal(-1, (await ObserveAsync(Rule(delta, MetricAggregation.Avg))).Value!.Value, 9);
+        }
+
+        [Fact]
+        public async Task Row_limit_never_cuts_a_subject_s_layouts_Async()
+        {
+            LocalStack.RequireAvailable();
+            var service = $"hist-{_run}-limit";
+            (string, string)[] Env(string env) => [("service.name", service), ("deployment.environment.name", env)];
+            await LocalStack.SendAsync("metrics", OtlpMetrics.BucketHistogram(Env("dev"), Metric, OtlpMetrics.Delta, At(-30), [], Bounds, (At(2), [10, 20, 0], 30)));
+            await LocalStack.SendAsync("metrics", OtlpMetrics.BucketHistogram(Env("prod"), Metric, OtlpMetrics.Delta, At(-30), [("pod", "a")], Bounds, (At(2), [10, 20, 0], 30)));
+            await LocalStack.SendAsync("metrics", OtlpMetrics.BucketHistogram(Env("prod"), Metric, OtlpMetrics.Delta, At(-30), [("pod", "b")], [10, 20], (At(2), [1, 0, 0], 1)));
+            await WaitAsync("otel_metrics_histogram", service, 3);
+
+            var rule = Rule(service, MetricAggregation.Rate);
+            Assert.Equal(2, (await Templates.ObserveAsync(rule, Window(), Ct)).Count);
+            // Three rows (dev, prod x2) with a limit of 2: prod is cut mid-subject, so only dev is reported.
+            var cut = await Templates.ObserveAsync(rule, Window() with { Limit = 2 }, Ct);
+            Assert.EndsWith("@dev", Assert.Single(cut).SubjectKey);
+        }
+
+        [Fact]
+        public async Task Subject_host_groups_by_host_Async()
+        {
+            LocalStack.RequireAvailable();
+            var service = $"hist-{_run}-onhost";
+            var (one, two) = ($"hist-{_run}-h1", $"hist-{_run}-h2");
+            await LocalStack.SendAsync("metrics", OtlpMetrics.BucketHistogram([("service.name", service), ("host.name", one)], Metric, OtlpMetrics.Delta, At(-30), [], Bounds,
+                (At(2), [10, 20, 0], 30)));
+            await LocalStack.SendAsync("metrics", OtlpMetrics.BucketHistogram([("service.name", service), ("host.name", two)], Metric, OtlpMetrics.Delta, At(-30), [], Bounds,
+                (At(2), [5, 0, 0], 3)));
+            await WaitAsync("otel_metrics_histogram", service, 2);
+
+            var rule = Rule(service, MetricAggregation.Rate);
+            rule.Metric!.Subject = MetricSubject.Host;
+            rule.Service = "";
+            rule.Host = one;
+            var observed = Assert.Single(await Templates.ObserveAsync(rule, Window(), Ct));
+            Assert.Equal($"host:{one}", observed.SubjectKey);
+            Assert.Equal(HealthSubject.Host, observed.SubjectType);
+            Assert.Equal(30d / 600, observed.Value!.Value, 9);
+
+            rule.Metric.Aggregation = MetricAggregation.P50;
+            rule.Host = two;
+            var p50 = Assert.Single(await Templates.ObserveAsync(rule, Window(), Ct));
+            Assert.Equal($"host:{two}", p50.SubjectKey);
+            Assert.Equal(5, p50.Samples);
+        }
+
+        [Fact]
         public async Task Exponential_histogram_never_read_Async()
         {
             LocalStack.RequireAvailable();

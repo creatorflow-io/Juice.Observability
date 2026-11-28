@@ -72,9 +72,8 @@ namespace Juice.Observability.Tests
         [Fact]
         public void Single_bucket()
         {
-            var overflowOnly = HistogramPercentile.Compute([], [5], 0.5)!.Value;
-            Assert.Equal(0, overflowOnly.Value);
-            Assert.True(double.IsPositiveInfinity(overflowOnly.Upper));
+            // No bounds (a histogram that kept only count and sum): there is no percentile to give, never 0.
+            Assert.Null(HistogramPercentile.Compute([], [5], 0.5));
 
             // One bound, everything at or below it: interpolated from 0.
             var p = HistogramPercentile.Compute([10], [4, 0], 0.5)!.Value;

@@ -11,12 +11,12 @@ namespace Juice.Observability.Rules
     public static class HistogramPercentile
     {
         /// <summary>
-        /// The q-quantile (0 to 1) of <paramref name="counts"/> (one more than bounds). Null when there are no observations or the shapes don't fit.
+        /// The q-quantile (0 to 1) of <paramref name="counts"/> (one more than bounds). Null when there are no observations, no bounds (nothing to place a percentile in) or the shapes don't fit.
         /// The first bucket's lower bound is 0 when bounds[0] is positive; a quantile in the overflow bucket gives Value = Lower = the last bound, Upper = +Inf.
         /// </summary>
         public static Percentile? Compute(IReadOnlyList<double> bounds, IReadOnlyList<long> counts, double q)
         {
-            if (counts.Count != bounds.Count + 1 || double.IsNaN(q)) return null;
+            if (bounds.Count == 0 || counts.Count != bounds.Count + 1 || double.IsNaN(q)) return null;
             q = Math.Clamp(q, 0d, 1d);
             double total = 0;
             for (var i = 0; i < counts.Count; i++) total += Math.Max(counts[i], 0);
@@ -32,7 +32,7 @@ namespace Juice.Observability.Rules
 
                 if (i == bounds.Count)
                 {
-                    var last = bounds.Count == 0 ? 0d : bounds[^1];
+                    var last = bounds[^1];
                     return new Percentile(last, last, double.PositiveInfinity);
                 }
                 var upper = bounds[i];
