@@ -11,11 +11,16 @@ internal static partial class ModuleValidation
     private static partial Regex NameRule();
 
     // SemVer 2.0.0, the regular expression the specification gives
-    [GeneratedRegex(@"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?\z", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?\z", RegexOptions.CultureInvariant)]
     private static partial Regex SemVerRule();
 
-    [GeneratedRegex(@"^@juice-js/observability(-[a-z0-9-]+)?\z", RegexOptions.CultureInvariant)]
-    private static partial Regex PackageRule();
+    /// <summary>Names an external module can't take: the core's own, the internal modules' and the core's tenant-root segments (a floor; the host pins the full list to the real routes).</summary>
+    private static readonly HashSet<string> Reserved = new(StringComparer.Ordinal)
+    {
+        "core", "platform", "slos", "agents", "modules", "tenants", "notifications", "inbox", "capacity", "correlation", "escalation",
+        "action-requests", "alerts", "applications", "changes", "environments", "escalation-policies", "health", "incidents",
+        "load-runs", "resources", "rules", "search", "silences", "telemetry", "timeline", "topology",
+    };
 
     [GeneratedRegex(@"^[a-z0-9][a-z0-9/_:-]{0,127}\z", RegexOptions.CultureInvariant)]
     private static partial Regex PathRule();
@@ -29,10 +34,14 @@ internal static partial class ModuleValidation
     [GeneratedRegex(@"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\z", RegexOptions.CultureInvariant)]
     private static partial Regex PolicySuffixRule();
 
-    public static string? Name(string? name)
-        => name is not null && name.Length <= 32 && NameRule().IsMatch(name)
-            ? null
-            : "the name must match ^[a-z][a-z0-9-]{0,30}[a-z0-9]$ (2 to 32 characters, lower case ASCII)";
+    /// <param name="name">The module name.</param>
+    /// <param name="allowReserved">True only on the internal path (core, slos, agents).</param>
+    public static string? Name(string? name, bool allowReserved = false)
+        => name is null || name.Length > 32 || !NameRule().IsMatch(name)
+            ? "the name must match ^[a-z][a-z0-9-]{0,30}[a-z0-9]$ (2 to 32 characters, lower case ASCII)"
+            : !allowReserved && Reserved.Contains(name)
+                ? $"the name '{name}' is reserved by the core"
+                : null;
 
     public static string? DisplayName(string? displayName)
         => PlainText(displayName, 64) ? null : "the display name must be 1 to 64 characters of plain text";
@@ -48,13 +57,17 @@ internal static partial class ModuleValidation
             : "the supported core range must be a NuGet interval such as [2.0.0,3.0.0)";
 
     /// <summary>Name, display name, version and range together.</summary>
-    public static string? Info(ModuleInfo info)
-        => info is null ? "the module has no info" : Name(info.Name) ?? DisplayName(info.DisplayName) ?? Version(info.Version) ?? SupportedCore(info.SupportedCore);
+    public static string? Info(ModuleInfo info, bool allowReserved = false)
+        => info is null ? "the module has no info" : Name(info.Name, allowReserved) ?? DisplayName(info.DisplayName) ?? Version(info.Version) ?? SupportedCore(info.SupportedCore);
 
     /// <summary>A policy name carries the module prefix; roles are a non-empty subset of the core roles.</summary>
     public static string? Policy(ModuleInfo module, string? name, string[]? roles)
     {
         var prefix = module.Name + ".";
+        if (name is not null && (name == CorePolicies.Read || name == CorePolicies.Operate || name.StartsWith("platform.", StringComparison.Ordinal)))
+        {
+            return $"the policy name '{name}' belongs to the core";
+        }
         if (name is null || !name.StartsWith(prefix, StringComparison.Ordinal) || !PolicySuffixRule().IsMatch(name[prefix.Length..]))
         {
             return $"the policy name must be '{prefix}<x>'";
@@ -68,15 +81,15 @@ internal static partial class ModuleValidation
     }
 
     /// <summary>Validates the manifest; a policy must be a core policy or one of <paramref name="modulePolicies"/>.</summary>
-    public static string? Manifest(ConsoleManifest? manifest, IReadOnlySet<string> modulePolicies)
+    public static string? Manifest(ConsoleManifest? manifest, ModuleInfo module, IReadOnlySet<string> modulePolicies)
     {
         if (manifest is null)
         {
             return "the Console manifest is null";
         }
-        if (manifest.Package is null || !PackageRule().IsMatch(manifest.Package))
+        if (manifest.Package != $"@juice-js/observability-{module.Name}")
         {
-            return "the Console package must be @juice-js/observability or @juice-js/observability-<name>";
+            return $"the Console package must be @juice-js/observability-{module.Name}";
         }
         if (manifest.Routes is null || manifest.Menu is null)
         {
@@ -126,7 +139,7 @@ internal static partial class ModuleValidation
     private static string? RelativePath(string? path, string what)
         => path is not null && PathRule().IsMatch(path) && !path.Contains("//", StringComparison.Ordinal) && !path.Contains("..", StringComparison.Ordinal)
                 // ':' only starts a parameter segment (":id"); anywhere else it would read as a scheme ("javascript:x")
-                && path.Split('/').All(segment => segment.LastIndexOf(':') <= 0)
+                && path.Split('/').All(segment => segment.Length > 0 && segment.LastIndexOf(':') <= 0 && segment != ":")
             ? null
             : $"the {what} must be relative (^[a-z0-9][a-z0-9/_:-]{{0,127}}$, no '//', no '..', no scheme)";
 
@@ -138,5 +151,5 @@ internal static partial class ModuleValidation
     // 1..max characters, no control characters, no markup characters
     private static bool PlainText(string? text, int max)
         => !string.IsNullOrWhiteSpace(text) && text.Length <= max
-            && !text.Any(c => char.IsControl(c) || c is '<' or '>' or '&');
+            && !text.Any(c => char.IsControl(c) || char.GetUnicodeCategory(c) == System.Globalization.UnicodeCategory.Format || c is '<' or '>' or '&');
 }
