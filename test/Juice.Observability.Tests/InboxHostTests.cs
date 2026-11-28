@@ -284,8 +284,14 @@ namespace Juice.Observability.Tests
             Assert.Equal(HttpStatusCode.Unauthorized, forged.StatusCode);
         }
 
-        [Fact]
-        public async Task HubToken_NotInLogs()
+        [Theory]
+        [InlineData(null)]
+        // A wildcard category (global or the provider's) for the request log, however long its prefix.
+        [InlineData("Logging:LogLevel:Microsoft.AspNetCore.Hosting.Diagnostics*")]
+        [InlineData("Logging:Capture:LogLevel:Microsoft.AspNetCore.Hosting.Diagnostics*")]
+        [InlineData("Logging:Capture:LogLevel:Microsoft.AspNetCore.Hosting*")]
+        [InlineData("Logging:Capture:LogLevel:Microsoft.AspNetCore.Hosting.Diag*")]
+        public async Task HubToken_NotInLogs(string? wildcardRule)
         {
             LocalStack.RequireAvailable();
             await using var database = await LocalStack.CreateDatabaseAsync();
@@ -297,6 +303,7 @@ namespace Juice.Observability.Tests
                 ["Logging:LogLevel:Default"] = "Information", ["Logging:LogLevel:Microsoft.AspNetCore"] = "Information",
                 ["Logging:Capture:LogLevel:Default"] = "Information", ["Logging:Capture:LogLevel:Microsoft.AspNetCore"] = "Information",
             };
+            if (wildcardRule is not null) logging[wildcardRule] = "Trace";
             await using var factory = new ApiFactory(database, settings: On(logging), services: services => services.AddSingleton<ILoggerProvider>(capture));
             using var client = factory.CreateClient();
             var token = await LocalStack.TokenAsync("erin");

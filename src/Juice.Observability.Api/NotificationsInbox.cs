@@ -84,6 +84,18 @@ namespace Juice.Observability.Api
             services.PostConfigure<LoggerFilterOptions>(options =>
             {
                 var providers = options.Rules.Select(r => r.ProviderName).Where(p => p is not null).Distinct().ToList();
+                // A wildcard rule (<c>Microsoft.AspNetCore.Hosting*</c>) that covers the category can outrank an exact one, whatever order they are in: its
+                // own filter keeps this category at Warning, and it is the same rule for everything else.
+                for (var i = 0; i < options.Rules.Count; i++)
+                {
+                    var rule = options.Rules[i];
+                    if (rule.CategoryName is { } name && name.EndsWith('*') && RequestLogCategory.StartsWith(name[..^1], StringComparison.Ordinal))
+                    {
+                        var inner = rule.Filter;
+                        options.Rules[i] = new LoggerFilterRule(rule.ProviderName, rule.CategoryName, rule.LogLevel,
+                            (provider, category, level) => category == RequestLogCategory ? level >= LogLevel.Warning : inner?.Invoke(provider, category, level) ?? true);
+                    }
+                }
                 options.Rules.Add(new LoggerFilterRule(null, RequestLogCategory, LogLevel.Warning, null));
                 foreach (var provider in providers)
                 {

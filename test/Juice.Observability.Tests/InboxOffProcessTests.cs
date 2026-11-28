@@ -41,7 +41,20 @@ namespace Juice.Observability.Tests
             {
                 info.Environment[key] = value;
             }
-            using var process = Process.Start(info)!;
+            using var process = new Process { StartInfo = info };
+            // Drained as it comes (a chatty host would block on a full pipe), keeping the last lines for a failure's message.
+            var tail = new System.Collections.Concurrent.ConcurrentQueue<string>();
+            void Keep(object sender, DataReceivedEventArgs e)
+            {
+                if (e.Data is null) return;
+                tail.Enqueue(e.Data);
+                while (tail.Count > 40 && tail.TryDequeue(out _)) { }
+            }
+            process.OutputDataReceived += Keep;
+            process.ErrorDataReceived += Keep;
+            process.Start();
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
             try
             {
                 using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
@@ -57,7 +70,7 @@ namespace Juice.Observability.Tests
                     }
                     if (!ready) await Task.Delay(200, TestContext.Current.CancellationToken);
                 }
-                Assert.True(ready, "the host didn't start: " + (process.HasExited ? await process.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken) : "timed out"));
+                Assert.True(ready, $"the host didn't start ({(process.HasExited ? "exited" : "timed out")}); its last output:\n{string.Join('\n', tail)}");
                 // The inbox isn't mapped, and the process has loaded none of it.
                 var loaded = process.Modules.Cast<ProcessModule>().Select(m => m.ModuleName).ToList();
                 Assert.Contains(loaded, n => n.StartsWith("Juice.Observability.Api", StringComparison.OrdinalIgnoreCase));
