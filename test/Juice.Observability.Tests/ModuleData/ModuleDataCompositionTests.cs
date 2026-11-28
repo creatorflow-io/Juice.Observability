@@ -108,6 +108,19 @@ namespace Juice.Observability.Tests.ModuleData
         }
 
         [Fact]
+        public void An_alert_source_key_a_module_rule_template_has_is_refused_in_either_order()
+        {
+            Assert.Contains("rule template", Refused<TemplateThenSourceModule>().Message);
+            Assert.Contains("alert source", Refused<SourceThenTemplateModule>().Message);
+        }
+
+        [Fact]
+        public void An_alert_source_key_follows_the_rule_template_key_rules()
+        {
+            Assert.Contains("lower case", Refused<UpperCaseSourceModule>().Message);
+        }
+
+        [Fact]
         public void AddAlertSource_builtin_or_twice_refused()
         {
             Assert.Contains("registry", Refused<BuiltinSourceModule>().Message);

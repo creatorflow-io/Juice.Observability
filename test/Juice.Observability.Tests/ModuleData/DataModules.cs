@@ -222,6 +222,38 @@ namespace Juice.Observability.Tests.ModuleData
         public void ConfigureServices(IModuleServicesBuilder module) => module.AddAlertSource("somebody-else.burn");
     }
 
+    public sealed class ClashTemplate : IRuleTemplate
+    {
+        public RuleTemplateInfo Info => new("source-clash.split", "Clash", TemplateSubjectKind.Service);
+
+        public Task<IReadOnlyList<TemplateObservation>> ObserveAsync(RuleSpec rule, ITemplateTelemetry telemetry, TemplateWindow window, CancellationToken ct)
+            => Task.FromResult<IReadOnlyList<TemplateObservation>>([]);
+    }
+
+    /// <summary>An alert source for a key the module's own rule template has.</summary>
+    public sealed class TemplateThenSourceModule : IObservabilityModule
+    {
+        public ModuleInfo Info { get; } = new("source-clash", "Clash", "1.0.0", "[2.0.0,3.0.0)");
+
+        public void ConfigureServices(IModuleServicesBuilder module) => module.AddRuleTemplate<ClashTemplate>().AddAlertSource("source-clash.split");
+    }
+
+    /// <summary>The same, in the other order.</summary>
+    public sealed class SourceThenTemplateModule : IObservabilityModule
+    {
+        public ModuleInfo Info { get; } = new("source-clash", "Clash", "1.0.0", "[2.0.0,3.0.0)");
+
+        public void ConfigureServices(IModuleServicesBuilder module) => module.AddAlertSource("source-clash.split").AddRuleTemplate<ClashTemplate>();
+    }
+
+    /// <summary>Module keys are lower case, as a rule template's are.</summary>
+    public sealed class UpperCaseSourceModule : IObservabilityModule
+    {
+        public ModuleInfo Info { get; } = new("source-upper", "Upper", "1.0.0", "[2.0.0,3.0.0)");
+
+        public void ConfigureServices(IModuleServicesBuilder module) => module.AddAlertSource("source-upper.Burn");
+    }
+
     // ── Adoption ──────────────────────────────────────────────────────────
 
     public sealed class AdoptedRow
