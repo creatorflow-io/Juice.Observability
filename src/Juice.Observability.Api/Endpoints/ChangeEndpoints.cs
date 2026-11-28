@@ -77,7 +77,7 @@ namespace Juice.Observability.Api.Endpoints
         /// Records a change a pipeline reports (operator or admin). Text is masked and attributes allowlisted before anything is stored, and the
         /// audit record holds no request text. Reporting the same <c>externalKey</c> again returns the first event.
         /// </summary>
-        private static async Task<IResult> ReportAsync(Guid tenantId, ReportChangeRequest? request, HttpContext http, PlatformDbContext db, TimeProvider clock, CancellationToken ct)
+        private static async Task<IResult> ReportAsync(Guid tenantId, ReportChangeRequest? request, HttpContext http, PlatformDbContext db, TimeProvider clock, IPlatformEventPublisher events, CancellationToken ct)
         {
             var actor = http.User.Actor();
             void Audit(AuditOutcome outcome, Guid? id, string? reason = null) => db.AuditRecords.Add(new AuditRecord
@@ -156,13 +156,21 @@ namespace Juice.Observability.Api.Endpoints
             };
             db.ChangeEvents.Add(change);
             Audit(AuditOutcome.Succeeded, change.Id, dropped > 0 ? $"{dropped} attributes dropped" : null);
+            // With a module listening, the event commits with the change: one transaction. Otherwise it is one save, as it was.
+            await using var transaction = events.HasSubscribers<ChangeRecordedEvent>() ? await db.Database.BeginTransactionAsync(ct) : null;
             try
             {
                 await db.SaveChangesAsync(ct);
+                if (transaction is not null)
+                {
+                    await events.PublishAsync(new ChangeRecordedEvent(change.Id, change.Kind.ToString(), change.ServiceId) { EventId = Guid.CreateVersion7(), TenantId = tenantId, At = now }, ct);
+                    await transaction.CommitAsync(ct);
+                }
             }
             catch (DbUpdateException) when (externalKey is not null)
             {
-                // Two reports of one change at once: the other one stored it.
+                // Two reports of one change at once: the other one stored it (and, with a transaction, no event was written for this one).
+                if (transaction is not null) await transaction.RollbackAsync(ct);
                 db.ChangeTracker.Clear();
                 var existing = await db.ChangeEvents.AsNoTracking().SingleOrDefaultAsync(c => c.TenantId == tenantId && c.Source == source && c.ExternalKey == externalKey, ct);
                 if (existing is null) throw;

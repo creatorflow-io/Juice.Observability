@@ -67,11 +67,12 @@ namespace Juice.Observability.Discovery
             var settings = options.Value;
             await using var scope = scopes.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            var events = scope.ServiceProvider.GetService<IPlatformEventPublisher>();
             var tenant = await db.Tenants.AsNoTracking().SingleAsync(t => t.Key == platform.Value.TenantKey, cancellationToken);
             var end = clock.GetUtcNow() - settings.Lag;
             var separate = settings.MetricsInterval > TimeSpan.Zero;
 
-            var (windows, watermark, totals) = await AdvanceAsync(db, tenant, CheckpointSource,
+            var (windows, watermark, totals) = await AdvanceAsync(db, events, tenant, CheckpointSource,
                 separate ? TelemetrySignals.SpansAndLogs : TelemetrySignals.All, end, cancellationToken);
             // The metric tables on their own checkpoint, read once at least MetricsInterval has passed since it, or at once while it
             // doesn't exist yet (with InitialLookback shorter than MetricsInterval it would otherwise never be due).
@@ -79,7 +80,7 @@ namespace Juice.Observability.Discovery
             if (separate && await StoredWatermarkAsync(db, tenant.Id, MetricsCheckpointSource, cancellationToken) is var stored
                 && (stored is null || end - stored.Value >= settings.MetricsInterval))
             {
-                var metrics = await AdvanceAsync(db, tenant, MetricsCheckpointSource, TelemetrySignals.Metrics, end, cancellationToken);
+                var metrics = await AdvanceAsync(db, events, tenant, MetricsCheckpointSource, TelemetrySignals.Metrics, end, cancellationToken);
                 metricsWindows = metrics.Windows;
                 totals = Add(totals, metrics.Totals);
             }
@@ -104,7 +105,7 @@ namespace Juice.Observability.Discovery
 
         // Reads the signals' tables from the checkpoint up to end, window by window, applying each window and moving the
         // checkpoint in one transaction. Service links and resource uses come from spans, so a metrics-only read has none.
-        private async Task<(int Windows, DateTimeOffset Watermark, ReconcileResult Totals)> AdvanceAsync(PlatformDbContext db, PlatformTenant tenant,
+        private async Task<(int Windows, DateTimeOffset Watermark, ReconcileResult Totals)> AdvanceAsync(PlatformDbContext db, IPlatformEventPublisher? events, PlatformTenant tenant,
             string checkpointSource, TelemetrySignals signals, DateTimeOffset end, CancellationToken cancellationToken)
         {
             var settings = options.Value;
@@ -118,7 +119,7 @@ namespace Juice.Observability.Discovery
 
                 var normalizer = new Normalizer(settings.Aliases);
                 await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
-                var result = await new Reconciler(db, normalizer, settings, clock).ApplyAsync(tenant.Id, resources, links, uses, cancellationToken, readThrough: to);
+                var result = await new Reconciler(db, normalizer, settings, clock, events).ApplyAsync(tenant.Id, resources, links, uses, cancellationToken, readThrough: to);
                 var checkpoint = await db.Checkpoints.SingleOrDefaultAsync(c => c.TenantId == tenant.Id && c.Source == checkpointSource, cancellationToken);
                 if (checkpoint is null)
                 {

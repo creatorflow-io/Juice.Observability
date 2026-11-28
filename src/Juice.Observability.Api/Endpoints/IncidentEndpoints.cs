@@ -162,7 +162,7 @@ namespace Juice.Observability.Api.Endpoints
             db.IncidentEvents.Add(new IncidentEvent { TenantId = incident.TenantId, IncidentId = incident.Id, At = now, Actor = actor, Type = IncidentEventTypes.AlertAdded, AlertId = alertId, Text = text });
         }
 
-        private static async Task<IResult> CreateAsync(Guid tenantId, CreateIncidentRequest? request, HttpContext http, PlatformDbContext db, TimeProvider clock, CancellationToken ct)
+        private static async Task<IResult> CreateAsync(Guid tenantId, CreateIncidentRequest? request, HttpContext http, PlatformDbContext db, TimeProvider clock, IPlatformEventPublisher events, CancellationToken ct)
         {
             var mutation = new Mutation(http, db, tenantId, "incident.create", "incident");
             if (await mutation.RequireAsync(null, ct, Roles.Operator, Roles.Admin) is { } denied) return denied;
@@ -191,11 +191,12 @@ namespace Juice.Observability.Api.Endpoints
             mutation.Audit(AuditOutcome.Succeeded, incident.Id.ToString(), new() { ["alerts"] = ids.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) });
             var result = mutation.Remember(StatusCodes.Status201Created, ToSummary(incident), now);
             await db.SaveChangesAsync(ct);
+            await EmitAsync(events, tenantId, incident.Id, "created", incident.State, now, ct);
             await transaction.CommitAsync(ct);
             return result;
         }
 
-        private static async Task<IResult> TransitionAsync(Guid tenantId, Guid incidentId, IncidentTransitionRequest? request, HttpContext http, PlatformDbContext db, TimeProvider clock, CancellationToken ct)
+        private static async Task<IResult> TransitionAsync(Guid tenantId, Guid incidentId, IncidentTransitionRequest? request, HttpContext http, PlatformDbContext db, TimeProvider clock, IPlatformEventPublisher events, CancellationToken ct)
         {
             var mutation = new Mutation(http, db, tenantId, "incident.transition", "incident");
             if (await mutation.RequireAsync(incidentId.ToString(), ct, Roles.Operator, Roles.Admin) is { } denied) return denied;
@@ -259,16 +260,19 @@ namespace Juice.Observability.Api.Endpoints
             mutation.Audit(AuditOutcome.Succeeded, incidentId.ToString(), new() { ["from"] = from.ToString(), ["to"] = to.ToString() });
             var result = mutation.Remember(StatusCodes.Status200OK, ToSummary(incident), now);
             await db.SaveChangesAsync(ct);
+            await EmitAsync(events, tenantId, incidentId, "state", to, now, ct);
             await transaction.CommitAsync(ct);
             return result;
         }
 
-        private static async Task<IResult> NoteAsync(Guid tenantId, Guid incidentId, IncidentNoteRequest? request, HttpContext http, PlatformDbContext db, TimeProvider clock, CancellationToken ct)
+        private static async Task<IResult> NoteAsync(Guid tenantId, Guid incidentId, IncidentNoteRequest? request, HttpContext http, PlatformDbContext db, TimeProvider clock, IPlatformEventPublisher events, CancellationToken ct)
         {
             var mutation = new Mutation(http, db, tenantId, "incident.note", "incident");
             if (await mutation.RequireAsync(incidentId.ToString(), ct, Roles.Operator, Roles.Admin) is { } denied) return denied;
             if (request is null) return Mutation.Invalid(["A body is required."]);
             if (await mutation.ReplayAsync($"POST incidents/{incidentId}/notes", request, ct) is { } replay) return replay;
+            // With a module listening, the event commits with the note: one transaction. Otherwise it is one save, as it was.
+            await using var transaction = events.HasSubscribers<IncidentChangedEvent>() ? await db.Database.BeginTransactionAsync(ct) : null;
             var incident = await db.Incidents.SingleOrDefaultAsync(i => i.TenantId == tenantId && i.Id == incidentId, ct);
             if (incident is null) return NotFound();
             var text = ChangeSanitizer.Text(request.Text, MaxText);
@@ -281,10 +285,12 @@ namespace Juice.Observability.Api.Endpoints
             mutation.Audit(AuditOutcome.Succeeded, incidentId.ToString());
             var result = mutation.Remember(StatusCodes.Status201Created, new IncidentEventDto(entry.At, entry.Actor, entry.Type, null, null, entry.Text, null), now);
             await db.SaveChangesAsync(ct);
+            await EmitAsync(events, tenantId, incidentId, "comment", incident.State, now, ct);
+            if (transaction is not null) await transaction.CommitAsync(ct);
             return result;
         }
 
-        private static async Task<IResult> AddAlertAsync(Guid tenantId, Guid incidentId, IncidentAlertRequest? request, HttpContext http, PlatformDbContext db, TimeProvider clock, CancellationToken ct)
+        private static async Task<IResult> AddAlertAsync(Guid tenantId, Guid incidentId, IncidentAlertRequest? request, HttpContext http, PlatformDbContext db, TimeProvider clock, IPlatformEventPublisher events, CancellationToken ct)
         {
             var mutation = new Mutation(http, db, tenantId, "incident.alert.add", "incident");
             if (await mutation.RequireAsync(incidentId.ToString(), ct, Roles.Operator, Roles.Admin) is { } denied) return denied;
@@ -301,11 +307,12 @@ namespace Juice.Observability.Api.Endpoints
             Join(db, incident, alertId, mutation.Actor, clock.GetUtcNow());
             mutation.Audit(AuditOutcome.Succeeded, incidentId.ToString(), new() { ["alert"] = alertId.ToString() });
             await db.SaveChangesAsync(ct);
+            await EmitAsync(events, tenantId, incidentId, "alerts", incident.State, clock.GetUtcNow(), ct);
             await transaction.CommitAsync(ct);
             return Results.Ok(await DetailAsync(db, incident, ct));
         }
 
-        private static async Task<IResult> RemoveAlertAsync(Guid tenantId, Guid incidentId, Guid alertId, HttpContext http, PlatformDbContext db, TimeProvider clock, CancellationToken ct)
+        private static async Task<IResult> RemoveAlertAsync(Guid tenantId, Guid incidentId, Guid alertId, HttpContext http, PlatformDbContext db, TimeProvider clock, IPlatformEventPublisher events, CancellationToken ct)
         {
             var mutation = new Mutation(http, db, tenantId, "incident.alert.remove", "incident");
             if (await mutation.RequireAsync(incidentId.ToString(), ct, Roles.Operator, Roles.Admin) is { } denied) return denied;
@@ -321,8 +328,18 @@ namespace Juice.Observability.Api.Endpoints
             db.IncidentEvents.Add(new IncidentEvent { TenantId = tenantId, IncidentId = incidentId, At = now, Actor = mutation.Actor, Type = IncidentEventTypes.AlertRemoved, AlertId = alertId });
             mutation.Audit(AuditOutcome.Succeeded, incidentId.ToString(), new() { ["alert"] = alertId.ToString() });
             await db.SaveChangesAsync(ct);
+            await EmitAsync(events, tenantId, incidentId, "alerts", incident.State, now, ct);
             await transaction.CommitAsync(ct);
             return Results.NoContent();
+        }
+
+        /// <summary>The incident's change as an event for the modules that handle it, in the open transaction; nothing without one.</summary>
+        private static async Task EmitAsync(IPlatformEventPublisher events, Guid tenantId, Guid incidentId, string change, IncidentState state, DateTimeOffset at, CancellationToken ct)
+        {
+            if (events.HasSubscribers<IncidentChangedEvent>())
+            {
+                await events.PublishAsync(new IncidentChangedEvent(incidentId, change, state.ToString()) { EventId = Guid.CreateVersion7(), TenantId = tenantId, At = at }, ct);
+            }
         }
     }
 }

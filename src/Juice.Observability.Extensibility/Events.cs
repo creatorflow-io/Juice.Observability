@@ -51,7 +51,9 @@ public interface IPlatformEventPublisher
     /// Inside a command, the envelopes join its transaction (and are dispatched locally right after it commits). Elsewhere, the caller has a
     /// transaction open on the platform's context, and they commit with it, and are delivered from the outbox.
     /// </summary>
-    Task PublishAsync(ObservabilityEvent e, CancellationToken ct);
+    Task PublishAsync(IReadOnlyCollection<ObservabilityEvent> events, CancellationToken ct);
+
+    Task PublishAsync(ObservabilityEvent e, CancellationToken ct) => PublishAsync([e], ct);
 }
 
 public static class EventModuleExtensions

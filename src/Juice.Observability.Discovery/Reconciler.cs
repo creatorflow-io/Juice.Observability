@@ -1,4 +1,5 @@
 using Juice.Observability.Data;
+using Juice.Observability.Extensibility;
 using Microsoft.EntityFrameworkCore;
 
 namespace Juice.Observability.Discovery
@@ -13,8 +14,13 @@ namespace Juice.Observability.Discovery
     /// resources; instances go inactive and are pruned after the retention (D3), and services silent for
     /// <see cref="DiscoveryOptions.ServiceRetireAfter"/> are retired, and restored when they report again. The caller owns the transaction.
     /// </summary>
-    public sealed class Reconciler(PlatformDbContext db, Normalizer normalizer, DiscoveryOptions options, TimeProvider clock)
+    public sealed class Reconciler(PlatformDbContext db, Normalizer normalizer, DiscoveryOptions options, TimeProvider clock, IPlatformEventPublisher? events = null)
     {
+        // What changed, for the modules that handle it (with none, nothing is collected and nothing is read for it); published at the end of the
+        // window, in the caller's transaction, so the events commit with the window and its checkpoint, or not at all.
+        private readonly List<(string Kind, Guid Id, string Change)> _changes = [];
+        private bool _notify, _notifyChange;
+        private readonly List<(Guid ChangeId, Guid ServiceId)> _versionChanges = [];
         private readonly Dictionary<string, DeploymentEnvironment> _environments = new(StringComparer.Ordinal);
         private readonly Dictionary<string, Application> _applications = new(StringComparer.Ordinal);
         private readonly Dictionary<(string, string), Service> _services = new();
@@ -35,6 +41,10 @@ namespace Juice.Observability.Discovery
             IReadOnlyList<ServiceLinkObservation> links, IReadOnlyList<ResourceUseObservation> uses, CancellationToken cancellationToken,
             DateTimeOffset? readThrough = null)
         {
+            _notify = events?.HasSubscribers<ResourceChangedEvent>() == true;
+            _changes.Clear();
+            _versionChanges.Clear();
+            _notifyChange = events?.HasSubscribers<ChangeRecordedEvent>() == true;
             await LoadAsync(tenantId, resources, links, uses, cancellationToken);
             var versions = new List<(Service Service, DeploymentEnvironment Environment, string Version, string? Known, DateTimeOffset At)>();
 
@@ -106,25 +116,40 @@ namespace Juice.Observability.Discovery
 
             var now = clock.GetUtcNow();
             var inactiveBefore = now - options.InstanceInactiveAfter;
-            var deactivated = await db.Instances
-                .Where(i => i.TenantId == tenantId && i.State == InstanceState.Active && i.LastSeen < inactiveBefore)
-                .ExecuteUpdateAsync(s => s.SetProperty(i => i.State, InstanceState.Inactive), cancellationToken);
+            var deactivating = db.Instances.Where(i => i.TenantId == tenantId && i.State == InstanceState.Active && i.LastSeen < inactiveBefore);
+            if (_notify) Note("instance", "deactivated", await deactivating.Select(i => i.Id).ToListAsync(cancellationToken));
+            var deactivated = await deactivating.ExecuteUpdateAsync(s => s.SetProperty(i => i.State, InstanceState.Inactive), cancellationToken);
             var pruneBefore = now - options.InstanceRetention;
-            var pruned = await db.Instances
-                .Where(i => i.TenantId == tenantId && i.State == InstanceState.Inactive && i.LastSeen < pruneBefore)
-                .ExecuteDeleteAsync(cancellationToken);
+            var pruning = db.Instances.Where(i => i.TenantId == tenantId && i.State == InstanceState.Inactive && i.LastSeen < pruneBefore);
+            if (_notify) Note("instance", "pruned", await pruning.Select(i => i.Id).ToListAsync(cancellationToken));
+            var pruned = await pruning.ExecuteDeleteAsync(cancellationToken);
 
             var retired = 0;
             if (options.ServiceRetireAfter > TimeSpan.Zero)
             {
                 var through = readThrough ?? now;
                 var retireBefore = (through < now ? through : now) - options.ServiceRetireAfter;
-                retired = await db.Services
-                    .Where(s => s.TenantId == tenantId && s.RetiredAt == null && s.LastSeen < retireBefore)
-                    .ExecuteUpdateAsync(s => s.SetProperty(x => x.RetiredAt, now), cancellationToken);
+                var retiring = db.Services.Where(s => s.TenantId == tenantId && s.RetiredAt == null && s.LastSeen < retireBefore);
+                if (_notify) Note("service", "retired", await retiring.Select(s => s.Id).ToListAsync(cancellationToken));
+                retired = await retiring.ExecuteUpdateAsync(s => s.SetProperty(x => x.RetiredAt, now), cancellationToken);
+            }
+            if (_changes.Count + _versionChanges.Count > 0)
+            {
+                await events!.PublishAsync([
+                    .. _changes.Select(c => (ObservabilityEvent)new ResourceChangedEvent(c.Kind, c.Id, c.Change) { EventId = Guid.CreateVersion7(), TenantId = tenantId, At = now }),
+                    .. _versionChanges.Select(c => (ObservabilityEvent)new ChangeRecordedEvent(c.ChangeId, ChangeKind.Version.ToString(), c.ServiceId) { EventId = Guid.CreateVersion7(), TenantId = tenantId, At = now }),
+                ], cancellationToken);
             }
 
             return new ReconcileResult(_newServices, _newInstances, _newResources, _newDependencies, deactivated, pruned, retired, _restored);
+        }
+
+        private void Note(string kind, string change, IEnumerable<Guid> ids)
+        {
+            if (_notify)
+            {
+                _changes.AddRange(ids.Select(id => (kind, id, change)));
+            }
         }
 
         /// <summary>
@@ -148,14 +173,16 @@ namespace Juice.Observability.Discovery
                     continue;
                 }
                 var name = service.Namespace.Length > 0 ? $"{service.Namespace}/{service.Name}" : service.Name;
-                db.ChangeEvents.Add(new ChangeEvent
+                var recorded = new ChangeEvent
                 {
                     TenantId = tenantId, Kind = ChangeKind.Version, Source = ChangeEvent.TelemetrySource,
                     Summary = Bounded($"{name} moved from {previous} to {version} in {environment.Key}", 500),
                     ServiceId = service.Id, Environment = environment.Key, FromVersion = Bounded(previous, 128), ToVersion = Bounded(version, 128),
                     OccurredAt = at, RecordedAt = clock.GetUtcNow(),
                     ExternalKey = $"version:{service.Id:N}:{environment.Id:N}:{at.UtcTicks}",
-                });
+                };
+                db.ChangeEvents.Add(recorded);
+                if (_notifyChange) _versionChanges.Add((recorded.Id, service.Id));
             }
         }
 
@@ -231,6 +258,7 @@ namespace Juice.Observability.Discovery
                 db.Services.Add(service);
                 _services[key] = service;
                 _newServices++;
+                Note("service", "created", [service.Id]);
             }
             // Telemetry newer than any it had brings a retired service back; the overlap's re-read of what it had already seen doesn't.
             // Compared at PostgreSQL's precision (microseconds): telemetry times are finer, so a re-read row is otherwise a few ticks "newer".
@@ -238,6 +266,7 @@ namespace Juice.Observability.Discovery
             {
                 service.RetiredAt = null;
                 _restored++;
+                Note("service", "restored", [service.Id]);
             }
             Seen(service, first, last, (s, f) => s.FirstSeen = f, (s, l) => s.LastSeen = l, s => s.FirstSeen, s => s.LastSeen);
             if (service.ApplicationId is { } applicationId
@@ -284,6 +313,7 @@ namespace Juice.Observability.Discovery
                 db.Instances.Add(instance);
                 _instances[(service.Id, environment.Id, key.Key)] = instance;
                 _newInstances++;
+                Note("instance", "created", [instance.Id]);
             }
             Seen(instance, first, last, (i, f) => i.FirstSeen = f, (i, l) => i.LastSeen = l, i => i.FirstSeen, i => i.LastSeen);
             if (instance.LastSeen >= clock.GetUtcNow() - options.InstanceInactiveAfter)
@@ -305,6 +335,7 @@ namespace Juice.Observability.Discovery
                 db.Resources.Add(resource);
                 _resources[(key.Type, key.Key)] = resource;
                 _newResources++;
+                Note("resource", "created", [resource.Id]);
             }
             else if (last > resource.LastSeen)
             {
@@ -332,6 +363,7 @@ namespace Juice.Observability.Discovery
                 _dependencies[key] = dependency;
                 _created.Add(key);
                 _newDependencies++;
+                Note("dependency", "created", [dependency.Id]);
             }
             else if (confidence == DependencyConfidence.Observed)
             {
