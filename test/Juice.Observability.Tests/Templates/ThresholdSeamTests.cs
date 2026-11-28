@@ -53,7 +53,7 @@ namespace Juice.Observability.Tests.Templates
             });
 
         [Fact]
-        public void A_stored_1_4_definition_reads_and_hashes_as_stored()
+        public void Existing_rule_hash_unchanged_without_threshold_source()
         {
             // As the 1.4 release wrote them to the rules table, before ThresholdSource existed.
             string[] stored =
@@ -148,7 +148,7 @@ namespace Juice.Observability.Tests.Templates
         }
 
         [Fact]
-        public async Task A_missing_non_finite_or_inverted_threshold_is_no_threshold_Async()
+        public async Task Provider_nan_or_inverted_is_nodata_Async()
         {
             var provider = new Provider(_ => new Dictionary<string, RuleThreshold>
             {
@@ -202,7 +202,7 @@ namespace Juice.Observability.Tests.Templates
         }
 
         [Fact]
-        public void The_threshold_source_is_validated_with_the_rule()
+        public void Validate_refuses_unknown_provider_and_template_with_registry()
         {
             var known = new RuleTemplateRegistry(BuiltInTemplates.Create(null), null, [new Provider(_ => new Dictionary<string, RuleThreshold>())],
                 [new ModuleRuleContribution("demo", typeof(Provider))]);

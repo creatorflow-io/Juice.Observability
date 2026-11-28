@@ -46,7 +46,7 @@ namespace Juice.Observability.Tests.Templates
         }
 
         [Fact]
-        public void The_registry_holds_every_built_in_template_and_no_slo_burn()
+        public void Registry_lists_ten_builtins_with_enum_names()
         {
             var registry = new RuleTemplates(ClickHouse()).Registry;
 
@@ -106,7 +106,7 @@ namespace Juice.Observability.Tests.Templates
         }
 
         [Fact]
-        public void A_module_template_outside_its_prefix_or_a_built_in_name_or_twice_refuses_the_host()
+        public void Module_template_key_needs_prefix_unique_not_builtin()
         {
             RuleTemplateRegistry Build(string key, string module = "demo", IRuleTemplate[]? more = null)
             {
@@ -193,7 +193,7 @@ namespace Juice.Observability.Tests.Templates
         }
 
         [Fact]
-        public async Task A_template_reaches_telemetry_only_with_the_tenant_window_and_limit_placeholders_Async()
+        public async Task TemplateTelemetry_refuses_sql_without_tenant_window_limit_Async()
         {
             var telemetry = new TemplateTelemetry(ClickHouse(), new TelemetryWindow("tenant", DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow, 10));
             var none = new Dictionary<string, object>();
