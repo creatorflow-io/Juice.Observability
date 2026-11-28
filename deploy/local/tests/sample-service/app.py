@@ -9,6 +9,7 @@ its own, one of each type the platform can alert on. It generates its own orders
     sample.order.duration    histogram, seconds         time to process one order
 """
 import os
+import queue
 import random
 import threading
 import time
@@ -20,12 +21,11 @@ app = Flask(__name__)
 meter = metrics.get_meter("sample.orders")
 tracer = trace.get_tracer("sample.orders")
 
-_queue_depth = 0
-_lock = threading.Lock()
+orders_waiting: "queue.Queue[None]" = queue.Queue()
 
 
 def _observe_queue_depth(options):
-    yield metrics.Observation(_queue_depth)
+    yield metrics.Observation(orders_waiting.qsize())
 
 
 meter.create_observable_gauge("sample.queue.depth", callbacks=[_observe_queue_depth], unit="{order}", description="Orders waiting")
@@ -38,13 +38,9 @@ duration = meter.create_histogram(
 
 
 def process_order():
-    """One order through the queue: waits, is processed, finishes (rarely failing)."""
-    global _queue_depth
-    with _lock:
-        _queue_depth += 1
-    with tracer.start_as_current_span("process-order"):
-        with _lock:
-            _queue_depth -= 1
+    """One order: processed in 20 to 400 ms, failing now and then."""
+    # A Consumer span: an order taken off the queue is the work this service does, so it counts as the service's traffic.
+    with tracer.start_as_current_span("process-order", kind=trace.SpanKind.CONSUMER):
         inflight.add(1)
         started = time.monotonic()
         try:
@@ -57,23 +53,29 @@ def process_order():
     return result
 
 
+def worker():
+    while True:
+        orders_waiting.get()
+        process_order()
+
+
 def generate():
     """A steady trickle of orders, with a burst now and then so the queue depth moves."""
     while True:
-        burst = random.randint(8, 25) if random.random() < 0.1 else 1
-        for _ in range(burst):
-            threading.Thread(target=process_order, daemon=True).start()
+        for _ in range(random.randint(8, 25) if random.random() < 0.1 else 1):
+            orders_waiting.put(None)
         time.sleep(random.uniform(0.5, 2.0))
 
 
 @app.get("/orders")
 def orders():
-    return jsonify({"queued": _queue_depth})
+    return jsonify({"queued": orders_waiting.qsize()})
 
 
 @app.post("/orders")
 def create_order():
-    return jsonify({"result": process_order()}), 201
+    orders_waiting.put(None)
+    return jsonify({"queued": orders_waiting.qsize()}), 202
 
 
 @app.get("/healthz")
@@ -82,5 +84,6 @@ def healthz():
 
 
 if __name__ == "__main__":
-    threading.Thread(target=generate, daemon=True).start()
+    for target in [generate] + [worker] * 3:
+        threading.Thread(target=target, daemon=True).start()
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))

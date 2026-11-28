@@ -82,6 +82,12 @@ processors:
     detectors: [env, system]
     system:
       hostname_sources: [os]
+  # Says where the data came from, so a host's two sources (this Collector and the platform Collector's own scrape, if the host has both) can be told apart.
+  resource/source:
+    attributes:
+      - key: juice.collector
+        value: host-collector
+        action: upsert
   batch:
     timeout: 10s
 
@@ -108,5 +114,5 @@ service:
   pipelines:
     metrics:
       receivers: [host_metrics]
-      processors: [memory_limiter, resource_detection, batch]
+      processors: [memory_limiter, resource_detection, resource/source, batch]
       exporters: [otlp_grpc]

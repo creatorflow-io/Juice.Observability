@@ -64,6 +64,39 @@
         "Threshold": 0.95,
         "RecoveryThreshold": 0.9,
         "ForDuration": "00:05:00"
+      },
+      {
+        "Key": "host-cpu",
+        "Name": "Host CPU above 90 %",
+        "Template": "HostCpu",
+        "Severity": "Warning",
+        "Threshold": 0.9,
+        "RecoveryThreshold": 0.8,
+        "ForDuration": "00:05:00"
+      },
+      {
+        "Key": "host-disk",
+        "Name": "Host disk above 90 %",
+        "Template": "HostDisk",
+        "Severity": "Warning",
+        "Threshold": 0.9,
+        "RecoveryThreshold": 0.85,
+        "ForDuration": "00:10:00"
+      },
+      {
+        "Key": "sample-queue-depth",
+        "Name": "Sample service queue above 100 orders",
+        "Template": "MetricThreshold",
+        "Severity": "Warning",
+        "Service": "sample-orders",
+        "Threshold": 100,
+        "RecoveryThreshold": 50,
+        "ForDuration": "00:05:00",
+        "Metric": {
+          "Name": "sample.queue.depth",
+          "Kind": "Gauge",
+          "Aggregation": "Max"
+        }
       }
     ]
   }
