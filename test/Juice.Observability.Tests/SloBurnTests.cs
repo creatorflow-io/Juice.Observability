@@ -1,3 +1,4 @@
+using Juice.Observability.Tests.Legacy;
 using System.Net;
 using System.Text.Json;
 using Juice.MediatR;
@@ -90,14 +91,14 @@ namespace Juice.Observability.Tests
                 var slo = json.RootElement.GetProperty("alert").GetProperty("slo");
                 Assert.Equal(("orders-latency", "Orders latency"), (slo.GetProperty("key").GetString(), slo.GetProperty("name").GetString()));
             }
-            var view = Webhooks.NotificationView.Parse(payload);
+            var view = Legacy.NotificationView.Parse(payload);
             Assert.Equal("orders-latency", view.Alerts[0].Slo);
-            Assert.Contains("SLO orders-latency", Webhooks.ChannelFormatter.SlackBody(view, null), StringComparison.Ordinal);
-            Assert.Contains("SLO orders-latency", Webhooks.ChannelFormatter.TeamsBody(view, null), StringComparison.Ordinal);
-            Assert.Contains("SLO: orders-latency", Webhooks.ChannelFormatter.Email(view, null).Body, StringComparison.Ordinal);
+            Assert.Contains("SLO orders-latency", Legacy.ChannelFormatter.SlackBody(view, null), StringComparison.Ordinal);
+            Assert.Contains("SLO orders-latency", Legacy.ChannelFormatter.TeamsBody(view, null), StringComparison.Ordinal);
+            Assert.Contains("SLO: orders-latency", Legacy.ChannelFormatter.Email(view, null).Body, StringComparison.Ordinal);
             // A rule's alert has none.
             var plain = new Alert { DedupKey = "error-rate|x", SubjectKey = "service:shop/orders@production", Severity = AlertSeverity.Warning, State = AlertState.Firing };
-            var ruleView = Webhooks.NotificationView.Parse(Rules.Notifications.NotificationPlan.Payload(Guid.NewGuid(), Rules.Notifications.NotificationPlan.Firing, "tenant", rule, plain, transition, null));
+            var ruleView = Legacy.NotificationView.Parse(Rules.Notifications.NotificationPlan.Payload(Guid.NewGuid(), Rules.Notifications.NotificationPlan.Firing, "tenant", rule, plain, transition, null));
             Assert.Null(ruleView.Alerts[0].Slo);
         }
 

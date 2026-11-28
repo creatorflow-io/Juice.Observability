@@ -5,7 +5,9 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Juice.Observability.Data;
 
-namespace Juice.Observability.Webhooks
+// The 1.x webhooks' formatter, frozen as the reference the new pipeline's default templates are compared with, byte for byte: a body or
+// a link that changes here changes what receivers saw for years. It is no longer part of the product (removed in 2.0); change it never.
+namespace Juice.Observability.Tests.Legacy
 {
     /// <summary>One alert in a notification. <c>Slo</c> is an SLO burn alert's SLO key, null for a rule's alert.</summary>
     public sealed record NotificationItem(Guid AlertId, string Rule, string RuleName, string Severity, string State, string Subject, double? Value, string? Reason,
@@ -36,7 +38,7 @@ namespace Juice.Observability.Webhooks
             a.TryGetProperty("slo", out var slo) && slo.ValueKind == JsonValueKind.Object ? slo.GetProperty("key").GetString() : null);
 
         /// <summary>The rule, and the SLO when it's a burn alert: <c>slo-fast-burn, SLO orders-availability</c>.</summary>
-        internal static string RuleAndSlo(NotificationItem alert) => alert.Slo is { } slo ? $"{alert.Rule}, SLO {slo}" : alert.Rule;
+        public static string RuleAndSlo(NotificationItem alert) => alert.Slo is { } slo ? $"{alert.Rule}, SLO {slo}" : alert.Rule;
 
         /// <summary>Several deliveries' payloads as one, for a signed webhook's body as for a chat message.</summary>
         public static string Group(Guid id, string @event, DateTimeOffset at, IEnumerable<string> payloads)

@@ -9,10 +9,8 @@ using Juice.Observability.Rules.Notifications;
 using Juice.Observability.Discovery;
 using Juice.Observability.Health;
 using Juice.Observability.Notifications;
-using Juice.Observability.Notifications.Migration;
 using Juice.Observability.Rules;
 using Juice.Observability.Slos;
-using Juice.Observability.Webhooks;
 
 namespace Juice.Observability.Api
 {
@@ -25,12 +23,12 @@ namespace Juice.Observability.Api
     public static class PlatformExtensions
     {
         /// <summary>
-        /// Adds the rules, webhooks and SLO files named by <c>Rules:File</c>, <c>Webhooks:File</c> and <c>Slos:File</c>: version-controlled
+        /// Adds the rules and SLO files named by <c>Rules:File</c> and <c>Slos:File</c>: version-controlled
         /// deployment configuration, loaded once at startup (requirements §6.1).
         /// </summary>
         public static IConfigurationManager AddJuiceObservabilityFiles(this IConfigurationManager configuration)
         {
-            foreach (var key in new[] { "Rules:File", "Webhooks:File", "Slos:File" })
+            foreach (var key in new[] { "Rules:File", "Slos:File" })
             {
                 if (configuration[key] is { Length: > 0 } file)
                 {
@@ -41,7 +39,7 @@ namespace Juice.Observability.Api
         }
 
         /// <summary>
-        /// The platform database, tenant provisioning, the discovery, health, rule and webhook workers (each switched by
+        /// The platform database, tenant provisioning, the discovery, health and rule workers (each switched by
         /// its own <c>Enabled</c> setting), OIDC authentication, problem details, the <c>ready</c> health check, and the platform's own metrics
         /// (<see cref="PlatformTelemetry.AddPlatformTelemetry"/>).
         /// </summary>
@@ -66,8 +64,6 @@ namespace Juice.Observability.Api
             services.AddPlatformHealth(configuration);
             services.AddPlatformRules(configuration);
             services.AddPlatformSlos(configuration);
-            services.AddPlatformWebhooks(configuration);
-            services.AddPlatformNotificationsMigration(configuration);
             services.AddPlatformAgents(configuration);
             services.Configure<IntegrationOptions>(configuration.GetSection(IntegrationOptions.Section));
             services.AddPlatformAuthentication(configuration);

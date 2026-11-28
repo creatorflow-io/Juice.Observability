@@ -10,37 +10,19 @@ using Microsoft.Extensions.Options;
 namespace Juice.Observability.Agents
 {
     /// <summary>
-    /// Tells the endpoints in <c>Actions:NotifyEndpoints</c> what happened to a request: that it waits for approval, and how it ended. The deliveries
-    /// are written in the same transaction as the change they tell of, and the webhook dispatcher sends them like any other: signed, retried,
-    /// through the same destination checks.
+    /// Tells the notification pipeline what happened to an action request: that it waits for approval, and how it ended. Told in the same
+    /// transaction as the change it tells of, so a request is never notified without the change, or the change without it. Who hears of it is
+    /// the pipeline's routes (declared in its provisioning file or on its admin pages), for the <c>observability.action.request.*</c> types.
     /// </summary>
     public static class ActionRequestNotices
     {
-        /// <summary>
-        /// Adds one delivery per configured endpoint that exists and is enabled; the caller saves them with the request. With the notification
-        /// pipeline (<c>Notifications:Pipeline</c> <c>shadow</c> or <c>new</c>) it is also told, in the same transaction; in <c>new</c>, only it is.
-        /// </summary>
-        public static async Task<int> AddAsync(PlatformDbContext db, IServiceProvider services, ActionApprovalOptions options, string tenantKey, ActionRequest request,
-            string hostname, string type, DateTimeOffset now, CancellationToken ct)
+        /// <summary>Tells the pipeline, when it is registered (a host without one is told nothing).</summary>
+        public static async Task AddAsync(IServiceProvider services, ActionRequest request, string hostname, string type, DateTimeOffset now, CancellationToken ct)
         {
-            var pipeline = services.GetService<IOptions<PlatformNotificationsOptions>>()?.Value ?? new PlatformNotificationsOptions();
-            if (pipeline.ProducesRequests && services.GetService<IActionRequestNotifications>() is { } notifications)
+            if (services.GetService<IActionRequestNotifications>() is { } notifications)
             {
                 await notifications.NotifyAsync(request, hostname, type, now, ct);
             }
-            if (!pipeline.LegacySends || options.NotifyEndpoints.Count == 0) return 0;
-            var endpoints = await db.WebhookEndpoints.AsNoTracking()
-                .Where(e => e.TenantId == request.TenantId && e.Enabled && options.NotifyEndpoints.Contains(e.Key)).Select(e => e.Id).ToListAsync(ct);
-            foreach (var endpoint in endpoints)
-            {
-                var id = Guid.CreateVersion7();
-                db.WebhookDeliveries.Add(new WebhookDelivery
-                {
-                    Id = id, TenantId = request.TenantId, EndpointId = endpoint, ActionRequestId = request.Id, Event = type,
-                    Payload = Payload(id, type, tenantKey, request, hostname, now), CreatedAt = now, NextAttemptAt = now,
-                });
-            }
-            return endpoints.Count;
         }
 
         /// <summary>The body: the request as the approver needs it, with no secrets (parameters are what an admin sees on the Approvals page).</summary>
@@ -81,7 +63,7 @@ namespace Juice.Observability.Agents
     /// lapse. Then follows issued remediations to <c>Verified</c> or <c>NotVerified</c> by the target's health (<see cref="ActionEvidence.Verify"/>),
     /// audited as <c>action.request.verify</c> and notified. One replica at a time; a decision racing it waits on the same row lock.
     /// </summary>
-    public sealed class ActionRequestSweeper(IServiceScopeFactory scopes, IOptions<ActionApprovalOptions> options, IOptions<PlatformOptions> platform,
+    public sealed class ActionRequestSweeper(IServiceScopeFactory scopes, IOptions<ActionApprovalOptions> options,
         TimeProvider clock, ILogger<ActionRequestSweeper> logger) : BackgroundService
     {
         /// <summary>Who the audit records name for what the platform did itself.</summary>
@@ -146,7 +128,7 @@ namespace Juice.Observability.Agents
                     TenantId = request.TenantId, Actor = Actor, Operation = "action.request.verify", TargetType = "action_request", TargetId = request.Id.ToString(),
                     Outcome = AuditOutcome.Succeeded, Metadata = new() { ["action"] = request.Action, ["verification"] = outcome.State.ToString(), ["note"] = request.VerificationNote },
                 });
-                await ActionRequestNotices.AddAsync(db, scope.ServiceProvider, options.Value, platform.Value.TenantKey, request, hostnames.GetValueOrDefault(request.AgentId, ""),
+                await ActionRequestNotices.AddAsync(scope.ServiceProvider, request, hostnames.GetValueOrDefault(request.AgentId, ""),
                     outcome.State == ActionVerification.Verified ? ActionRequestEvents.Verified : ActionRequestEvents.NotVerified, now, ct);
             }
             await db.SaveChangesAsync(ct);
@@ -183,7 +165,7 @@ namespace Juice.Observability.Agents
                     TenantId = request.TenantId, Actor = Actor, Operation = "action.request.expire", TargetType = "action_request", TargetId = request.Id.ToString(),
                     Outcome = AuditOutcome.Succeeded, Metadata = new() { ["action"] = request.Action, ["requestedBy"] = request.RequestedBy },
                 });
-                await ActionRequestNotices.AddAsync(db, scope.ServiceProvider, options.Value, platform.Value.TenantKey, request, hostnames.GetValueOrDefault(request.AgentId, ""),
+                await ActionRequestNotices.AddAsync(scope.ServiceProvider, request, hostnames.GetValueOrDefault(request.AgentId, ""),
                     ActionRequestEvents.Expired, now, ct);
             }
             await db.SaveChangesAsync(ct);

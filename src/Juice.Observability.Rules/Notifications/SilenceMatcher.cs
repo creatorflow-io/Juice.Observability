@@ -114,21 +114,5 @@ namespace Juice.Observability.Rules.Notifications
             if (now < nextAt) return (EscalationAction.Wait, null);
             return silenced ? (EscalationAction.Hold, "silenced") : (EscalationAction.Notify, null);
         }
-
-        /// <summary>
-        /// When step <paramref name="next"/> is due, after the one before it went out at <paramref name="sentAt"/>: its time after firing, and never sooner
-        /// after that step than the policy spaces them. Running late (a silence held the steps, or no replica ran them) then delays the rest instead of
-        /// sending them all at once, so whoever comes later still gets the time the policy gives the people before them.
-        /// </summary>
-        public static DateTimeOffset NextAt(IReadOnlyList<EscalationStep> steps, int next, DateTimeOffset firedAt, DateTimeOffset sentAt)
-        {
-            var onSchedule = firedAt + TimeSpan.FromMinutes(steps[next].AfterMinutes);
-            if (next == 0)
-            {
-                return onSchedule;
-            }
-            var spaced = sentAt + TimeSpan.FromMinutes(Math.Max(0, steps[next].AfterMinutes - steps[next - 1].AfterMinutes));
-            return spaced > onSchedule ? spaced : onSchedule;
-        }
     }
 }

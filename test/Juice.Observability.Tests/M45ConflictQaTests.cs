@@ -138,7 +138,7 @@ namespace Juice.Observability.Tests
                 // Every pass that could heal it, run by hand: the hold pass and the release pass.
                 var scopes = factory.Services.GetRequiredService<IServiceScopeFactory>();
                 await new SilenceHoldPass(scopes, Options.Create(new PlatformNotificationsOptions()), NullLogger<SilenceHoldPass>.Instance).RunOnceAsync(Ct);
-                await new NotificationsReleasePass(scopes, Options.Create(new Webhooks.WebhookOptions()), TimeProvider.System, NullLogger<NotificationsReleasePass>.Instance)
+                await new NotificationsReleasePass(scopes, Options.Create(new PlatformNotificationsOptions()), TimeProvider.System, NullLogger<NotificationsReleasePass>.Instance)
                     .ReleaseOnceAsync(Ct);
                 Assert.Equal("Acknowledged", await ProducerAdapterTests.CorrelationStateAsync(database, $"alert:{alert}"));
             }

@@ -1,6 +1,5 @@
 using Juice.Observability.Data;
 using Juice.Observability.Rules.Notifications;
-using Juice.Observability.Webhooks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -11,19 +10,16 @@ namespace Juice.Observability.Notifications
 {
     /// <summary>
     /// Silences as holds in the pipeline (p5-d3): while a silence covers an open alert whose firing was sent, the alert's correlation is held, so an
-    /// escalation step falling due waits, as legacy holds it; once no active silence covers it, it is released and what fell due runs if the alert
+    /// escalation step falling due waits; once no active silence covers it, it is released and what fell due runs if the alert
     /// is still open. <see cref="AlertHold"/> is the platform's record of each hold, and so of what to release (a hold outlives resolve and reopen,
     /// Q6). Overlapping silences: the hold moves to the one still covering, and is released only when none does.
     /// <para>Called in the platform's transaction that changes a silence (<c>SilenceEndpoints</c>), and by <see cref="SilenceHoldPass"/> for silences
     /// that start or end by time (within <see cref="PlatformNotificationsOptions.HoldPassInterval"/>, Q5). Each change is the client's call and its
     /// row together.</para>
     /// </summary>
-    public sealed class SilenceHolds(PlatformDbContext db, ProducerAdapter adapter, IOptions<PlatformNotificationsOptions> pipeline,
+    public sealed class SilenceHolds(PlatformDbContext db, ProducerAdapter adapter,
         IOptions<Juice.Observability.Discovery.PlatformOptions> platform, TimeProvider clock, ILogger<SilenceHolds> logger)
     {
-        /// <summary>Whether the platform holds through the pipeline (<c>shadow</c> and <c>new</c>).</summary>
-        public bool Enabled => pipeline.Value.ProducesRequests;
-
         /// <summary>
         /// Holds and releases so that the pipeline's holds match the silences active now, for one tenant or all; inside an open platform transaction
         /// (the client refuses otherwise). Returns how many holds it changed.
@@ -31,7 +27,7 @@ namespace Juice.Observability.Notifications
         public async Task<int> ReconcileAsync(Guid? tenantId, CancellationToken cancellationToken)
         {
             // The pipeline didn't start: nothing is held or released, and nothing of the platform's record changes until it does.
-            if (!Enabled || adapter.IsUnavailable)
+            if (adapter.IsUnavailable)
             {
                 return 0;
             }
@@ -66,7 +62,7 @@ namespace Juice.Observability.Notifications
             // Serialized per tenant until this transaction ends: what is read below is what the holds are decided from.
             await LockTenantAsync(db, tenantId, cancellationToken);
             var now = clock.GetUtcNow();
-            var active = (await NotificationWorker.ActiveAsync(db, now, cancellationToken)).Where(s => s.TenantId == tenantId).ToList();
+            var active = (await NotificationPlan.ActiveAsync(db, now, cancellationToken)).Where(s => s.TenantId == tenantId).ToList();
             var rows = await db.AlertHolds.AsNoTracking().Where(h => h.TenantId == tenantId).ToListAsync(cancellationToken);
             var held = rows.Select(h => h.AlertId).ToList();
             var alerts = await db.Alerts.AsNoTracking()
@@ -157,7 +153,8 @@ namespace Juice.Observability.Notifications
             WorkerPulse.Register(Worker, options.Value.HoldPassInterval, stopping: stoppingToken);
             await using var lease = WorkerLease.For(scopes, Worker, logger);
             using var timer = new PeriodicTimer(options.Value.HoldPassInterval);
-            do
+            // The first pass is one interval after the start, not at it: the start has just migrated and provisioned.
+            while (await timer.WaitForNextTickAsync(stoppingToken))
             {
                 try
                 {
@@ -173,7 +170,6 @@ namespace Juice.Observability.Notifications
                     logger.LogError(ex, "Silence hold pass failed; retrying next interval");
                 }
             }
-            while (await timer.WaitForNextTickAsync(stoppingToken));
         }
 
         public async Task<int> RunOnceAsync(CancellationToken cancellationToken)

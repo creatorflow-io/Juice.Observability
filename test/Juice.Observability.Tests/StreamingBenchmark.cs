@@ -9,12 +9,10 @@ using System.Text.Json.Nodes;
 using Juice.Observability.Data;
 using Juice.Observability.Rules.Notifications;
 using Juice.Observability.Slos;
-using Juice.Observability.Webhooks;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using NpgsqlTypes;
 using ApiFactory = Juice.Observability.Tests.ApiTests.ApiFactory;
-using Receiver = Juice.Observability.Tests.WebhookTests.Receiver;
 
 namespace Juice.Observability.Tests
 {
@@ -39,7 +37,6 @@ namespace Juice.Observability.Tests
         private static readonly TimeSpan BreakEvery = TimeSpan.FromSeconds(75);
         /// <summary>How long a break may take to be seen before it counts as not seen.</summary>
         private static readonly TimeSpan GiveUp = TimeSpan.FromMinutes(8);
-        private const string SecretVariable = "JUICE_WEBHOOK_BENCH";
 
         private static string Service(int i) => $"svc-{i:00}";
         private static string ErrorRule(int i) => $"bench-errors-{i:00}";
@@ -52,12 +49,9 @@ namespace Juice.Observability.Tests
         {
             Assert.SkipUnless(System.Environment.GetEnvironmentVariable("JUICE_BENCHMARK") == "1", "a 50-minute benchmark: deploy/local/tests/streaming-benchmark.sh runs it");
             LocalStack.RequireAvailable();
-            System.Environment.SetEnvironmentVariable(SecretVariable, "bench-secret");
             var report = new Report();
             using var metrics = Metrics(report);
             await using var database = await LocalStack.CreateDatabaseAsync();
-            await using var receiver = await Receiver.StartAsync();
-            await EndpointAsync(database, receiver);
 
             var traffic = new Traffic();
             var t0 = DateTimeOffset.UtcNow;
@@ -140,7 +134,7 @@ namespace Juice.Observability.Tests
             var s = new Dictionary<string, string>
             {
                 ["Discovery:Enabled"] = "true", ["Health:Enabled"] = "true", ["Rules:Enabled"] = "true", ["Slos:Enabled"] = "true",
-                ["Webhooks:Enabled"] = "true", ["Webhooks:AllowHttpToAllowlisted"] = "true",
+                
                 // As the local stack: a new SLO's 30 days count in five passes, not sixty.
                 ["Slos:MaxMinutesPerPass"] = "10080",
             };
@@ -175,18 +169,6 @@ namespace Juice.Observability.Tests
             return s;
         }
 
-        private static async Task EndpointAsync(ScratchDatabase database, Receiver receiver)
-        {
-            await using var db = database.Context();
-            var tenant = (await db.Tenants.SingleAsync(Ct)).Id;
-            db.WebhookEndpoints.Add(new WebhookEndpoint
-            {
-                TenantId = tenant, Key = "bench", Url = receiver.Url, SecretRef = $"env:{SecretVariable}", Events = [NotificationPlan.Firing],
-                DefinitionHash = "h", LoadedAt = DateTimeOffset.UtcNow, ManagedBy = ManagedBy.Api,
-            });
-            db.WebhookAllowlist.Add(new WebhookAllowlistEntry { TenantId = tenant, Destination = $"{receiver.Address}/32", Ports = [receiver.Port], LoadedAt = DateTimeOffset.UtcNow, ManagedBy = ManagedBy.Api });
-            await db.SaveChangesAsync(Ct);
-        }
 
         // ─── Traffic: 50 services, 4 requests a second each; a broken one fails every request ───
 
@@ -389,8 +371,10 @@ namespace Juice.Observability.Tests
         private static async Task<Stats> DispatchAsync(ScratchDatabase database)
         {
             await using var db = database.Context();
-            var deliveries = await db.WebhookDeliveries.AsNoTracking().Where(d => d.FirstAttemptAt != null).Select(d => new { d.CreatedAt, d.FirstAttemptAt }).ToListAsync(Ct);
-            return Stats.Of(deliveries.Select(d => (d.FirstAttemptAt!.Value - d.CreatedAt).TotalSeconds));
+            // From the transition to its notification planned as a request to the pipeline (the outbox, the mediator, the adapter).
+            var planned = await db.AlertTransitions.AsNoTracking().Where(t => t.ToState == AlertState.Firing && t.NotificationsPlannedAt != null)
+                .Select(t => new { t.At, PlannedAt = t.NotificationsPlannedAt }).ToListAsync(Ct);
+            return Stats.Of(planned.Select(d => (d.PlannedAt!.Value - d.At).TotalSeconds));
         }
 
         /// <summary>A token of its own: the shared one is taken once per test run and lives 5 minutes, less than this benchmark.</summary>
@@ -509,7 +493,7 @@ namespace Juice.Observability.Tests
                     ("Rule breach-to-alert after ForDuration", rules, "s", "p95 ≤ 120 s", rules.Count > 0 && rules.P95 <= 120),
                     // DR-3 (approved 11 November): the 2-minute settle kept, the target set to 4 minutes.
                     ("SLO fast-burn detection after the rate is crossed", burns, "s", "p95 ≤ 240 s", burns.Count > 0 && burns.P95 <= 240),
-                    ("First webhook dispatch", Dispatch, "s", "p95 ≤ 30 s", Dispatch is { Count: > 0, P95: <= 30 }),
+                    ("First notification planned", Dispatch, "s", "p95 ≤ 30 s", Dispatch is { Count: > 0, P95: <= 30 }),
                     ("Rule evaluation lag", EvaluationRules, "s", "max ≤ 60 s", EvaluationRules is { Count: > 0, Max: <= 60 }),
                     ("SLO burn evaluation lag", EvaluationSlos, "s", "max ≤ 60 s", EvaluationSlos is { Count: > 0, Max: <= 60 }),
                     ("GET slos, 50 SLOs, under the reference load", Reads50, "ms", "p95 ≤ 500 ms", Reads50 is { Count: > 0, P95: <= 500, Errors: 0 }),

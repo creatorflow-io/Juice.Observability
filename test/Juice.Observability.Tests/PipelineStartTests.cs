@@ -1,3 +1,4 @@
+using Juice.Observability.Tests.Legacy;
 using System.Net;
 using Juice.Observability.Data;
 using Juice.Observability.Notifications;
@@ -50,7 +51,7 @@ namespace Juice.Observability.Tests
             LocalStack.RequireAvailable();
             await using var database = await LocalStack.CreateDatabaseAsync();
             await SqlAsync(database, "CREATE SCHEMA notifications; CREATE TABLE notifications.applications (unrelated int);");
-            var settings = new Dictionary<string, string> { ["Notifications:Pipeline"] = "new" };
+            var settings = new Dictionary<string, string>();
             Guid alert, transition;
             await using (var factory = new ApiTests.ApiFactory(database, settings: settings))
             {
@@ -78,7 +79,7 @@ namespace Juice.Observability.Tests
                 _ = factory.Server;
                 Assert.Null(Start(factory).Failure);
                 var pass = new NotificationsReleasePass(factory.Services.GetRequiredService<IServiceScopeFactory>(),
-                    Microsoft.Extensions.Options.Options.Create(new Webhooks.WebhookOptions()), TimeProvider.System,
+                    Microsoft.Extensions.Options.Options.Create(new PlatformNotificationsOptions()), TimeProvider.System,
                     Microsoft.Extensions.Logging.Abstractions.NullLogger<NotificationsReleasePass>.Instance);
                 await pass.ReleaseOnceAsync(Ct);
                 var request = Assert.Single(await ProducerAdapterTests.RequestsAsync(database));
@@ -91,7 +92,7 @@ namespace Juice.Observability.Tests
         {
             LocalStack.RequireAvailable();
             await using var database = await LocalStack.CreateDatabaseAsync();
-            var healthy = new Dictionary<string, string> { ["Notifications:Pipeline"] = "new" };
+            var healthy = new Dictionary<string, string>();
             Guid alert;
             // Up: the firing is sent, and its correlation (and escalation) is open.
             await using (var factory = new ApiTests.ApiFactory(database, settings: healthy))
@@ -130,7 +131,7 @@ namespace Juice.Observability.Tests
                 {
                     var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
                     await using var transaction = await db.Database.BeginTransactionAsync(Ct);
-                    await Agents.ActionRequestNotices.AddAsync(db, scope.ServiceProvider, new Agents.ActionApprovalOptions(), LocalStack.TenantKey, request, "web-1",
+                    await Agents.ActionRequestNotices.AddAsync(scope.ServiceProvider, request, "web-1",
                         ActionRequestEvents.Rejected, DateTimeOffset.UtcNow, Ct);
                     await db.SaveChangesAsync(Ct);
                     await transaction.CommitAsync(Ct);
@@ -152,7 +153,7 @@ namespace Juice.Observability.Tests
                 _ = factory.Server;
                 Assert.Null(Start(factory).Failure);
                 var pass = new NotificationsReleasePass(factory.Services.GetRequiredService<IServiceScopeFactory>(),
-                    Microsoft.Extensions.Options.Options.Create(new Webhooks.WebhookOptions()), TimeProvider.System,
+                    Microsoft.Extensions.Options.Options.Create(new PlatformNotificationsOptions()), TimeProvider.System,
                     Microsoft.Extensions.Logging.Abstractions.NullLogger<NotificationsReleasePass>.Instance);
                 // The host's own pass (new) may have replayed them already; either way, once.
                 await pass.ReleaseOnceAsync(Ct);
@@ -170,14 +171,15 @@ namespace Juice.Observability.Tests
         {
             LocalStack.RequireAvailable();
             await using var database = await LocalStack.CreateDatabaseAsync();
-            await using var factory = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string> { ["Notifications:Database:Migrate"] = "false", ["Notifications:Pipeline"] = "legacy" });
+            await using var factory = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string> { ["Notifications:Database:Migrate"] = "false" });
             using var client = factory.CreateClient();
 
             Assert.Equal(HttpStatusCode.ServiceUnavailable, (await client.GetAsync("/health/ready", Ct)).StatusCode);
             // The provisioning file came first and failed on the missing schema; the application's provisioning, after it, didn't run.
             Assert.StartsWith("ConfigurationProvisioner", Start(factory).Failure);
-            // legacy: nothing else of the pipeline runs, so nothing else is skipped.
-            Assert.Equal(["EmbeddedApplicationProvisioner"], Start(factory).Skipped);
+            // Nor did the rest of the pipeline: its stages would poll tables that aren't there.
+            Assert.Contains("EmbeddedApplicationProvisioner", Start(factory).Skipped);
+            Assert.Contains(Start(factory).Skipped, s => s.StartsWith("StageWorker", StringComparison.Ordinal));
         }
 
         [Fact]

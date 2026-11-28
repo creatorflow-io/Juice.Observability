@@ -12,7 +12,7 @@ namespace Juice.Observability.Notifications
     /// <para>
     /// What they read: <c>data</c> is the legacy payload without its <c>id</c> (the producer adapter's request, M45); <c>delivery.id</c>,
     /// <c>escalation.step</c> and <c>escalation.policy</c> come from the render model (M46-0); <c>links.self</c> is the alert's page in the
-    /// Console when the adapter knows it (legacy <c>Webhooks:ConsoleUrl</c>).
+    /// Console when the adapter knows it (<c>Notifications:ConsoleUrl</c>).
     /// </para>
     /// </summary>
     public static class DefaultTemplates

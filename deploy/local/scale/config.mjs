@@ -1,11 +1,11 @@
-// Writes the scale stack's rules.json, slos.json and webhooks.json (docs/phase-10-plan.md P4: 50 rules and 50 SLOs, as the Phase 9
+// Writes the scale stack's rules.json, slos.json and notifications-provisioning.json (docs/phase-10-plan.md P4: 50 rules and 50 SLOs, as the Phase 9
 // benchmark, here over the 10 services generate.mjs sends). Run it after changing the shop or the mix; the files are committed.
 //   node scale/config.mjs
 //   node scale/config.mjs --factor <k> --out <dir>   the workers ceiling (docs/phase-11-plan.md R19): k copies of the 50 rules and of
 //                                                    the 50 SLOs (at most 200 SLOs, SloOptions.MaxSlos) in <dir>, not committed
 //   ... --copy-from <n>   numbers the copies from n (default 2): keys the database hasn't seen, so their SLOs are new and count their
 //                         30 days together (the burst of burn alerts that crashed the platform, docs/scale-tests.md)
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -49,12 +49,19 @@ for (const s of SERVICES) {
   ROUTES[s].forEach((route, i) => slos.push({ Key: `${s}-route-${i + 1}`, Name: `${s} ${route}`, Sli: 'Availability', Service: service(s), Environment: environment, Target: 99.9, Operations: [route] }));
 }
 
-// One signed webhook to the sink in compose.scale.yml, on the pinned scale network, so dispatch delay is measured end to end.
-const webhooks = {
-  Webhooks: {
-    AllowHttpToAllowlisted: true,
-    Endpoints: [{ Key: 'scale-sink', Kind: 'Webhook', Url: 'http://webhook-sink:8080/hook', SecretRef: 'env:JUICE_WEBHOOK_SCALE' }],
-    Allowlist: [{ Destination: '172.29.240.0/24', Ports: [8080] }],
+// One signed webhook to the sink in compose.scale.yml, on the pinned scale network, so the notification is measured end to end: an integration
+// with the sink as its target, a route for the alerts, and the sink's network in the allowlist. The file is keyed by the deployment's tenant Id
+// (JUICE_PLATFORM_TENANT_ID in the environment or .env, else the local stacks' tenant), the only one the pipeline accepts.
+const envFile = join(here, '..', '.env');
+const tenantId = process.env.JUICE_PLATFORM_TENANT_ID
+  ?? (existsSync(envFile) ? readFileSync(envFile, 'utf8').match(/^JUICE_PLATFORM_TENANT_ID=(S+)/m)?.[1] : undefined) ?? '0193f0aa-0000-7000-8000-0000000000a1';
+const provisioning = {
+  tenants: {
+    [tenantId]: {
+      integrations: { 'scale-sink': { channel: 'webhook', kind: 'webhook', secretRef: 'env:JUICE_WEBHOOK_SCALE', targets: { sink: { address: 'http://webhook-sink:8080/hook' } } } },
+      routes: { alerts: { match: { type: 'observability.alert.*' }, targets: ['sink'] } },
+      allowlist: [{ destination: '172.29.240.0/24', ports: [8080] }],
+    },
   },
 };
 
@@ -79,5 +86,5 @@ if (factor) {
 }
 writeFileSync(`${here}rules.json`, JSON.stringify({ '//': note, Rules: { Definitions: rules } }, null, 2) + '\n');
 writeFileSync(`${here}slos.json`, JSON.stringify({ '//': note, Slos: { Definitions: slos } }, null, 2) + '\n');
-writeFileSync(`${here}webhooks.json`, JSON.stringify({ '//': note, ...webhooks }, null, 2) + '\n');
-console.log(`wrote ${rules.length} rules, ${slos.length} SLOs, ${webhooks.Webhooks.Endpoints.length} webhook`);
+writeFileSync(`${here}notifications-provisioning.json`, JSON.stringify(provisioning, null, 2) + '\n');
+console.log(`wrote ${rules.length} rules, ${slos.length} SLOs, 1 webhook integration`);

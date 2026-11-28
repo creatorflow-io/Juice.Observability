@@ -204,45 +204,6 @@ namespace Juice.Observability.Tests
             Assert.Equal(reason, (await db.AlertTransitions.AsNoTracking().OrderByDescending(t => t.At).FirstAsync(t => t.AlertId == alert.Id, Ct)).Reason);
         }
 
-        [Fact]
-        public async Task Closing_an_alert_reaches_its_channels_through_the_outbox_in_the_running_host_Async()
-        {
-            LocalStack.RequireAvailable();
-            await using var database = await LocalStack.CreateDatabaseAsync();
-            var (tenant, _, alert) = await FiringAsync(database);
-            // The host as deployed: its own outbox delivery and in-process dispatch run, nothing from the test hands anything over. Whichever
-            // pipeline sends (I74): the endpoint is made through the API, so the alias maps it (M46b), and its deliveries are read back the same way.
-            await using var factory = new ApiFactory(database, settings: new Dictionary<string, string> { ["Notifications:Delivery:SmtpServers:observability:Host"] = "smtp.example.com" });
-            using var client = factory.CreateClient();
-            var (_, _, admin, _) = await Caller.AllAsync(client, database);
-            var endpoint = (await Caller.JsonAsync(await admin.PostAsync($"/api/v1/tenants/{tenant}/webhooks",
-                new { key = "ops", url = "https://hooks.example/ops", secretRef = "env:JUICE_WEBHOOK_OPS", events = new[] { "alert.resolved" } }))).GetProperty("id").GetGuid();
-
-            await Caller.JsonAsync(await admin.PutAsync($"/api/v1/tenants/{tenant}/rules/orders-errors",
-                new { name = "Orders errors", template = "ErrorRate", service = "shop/orders", threshold = 0.05, enabled = false, severity = "Critical" }));
-
-            Guid resolved;
-            await using (var db = database.Context())
-            {
-                // The command committed the alert's resolve, its audit and one outbox message together.
-                resolved = (await db.AlertTransitions.AsNoTracking().SingleAsync(t => t.AlertId == alert.Id && t.ToState == AlertState.Resolved, Ct)).Id;
-                Assert.Single(await db.OutboxEvents().ToListAsync(Ct));
-                Assert.Single(await db.AuditRecords.AsNoTracking().Where(a => a.Operation == "rule.update").ToListAsync(Ct));
-            }
-            JsonElement? delivery = null;
-            for (var i = 0; i < 100 && delivery is null; i++)
-            {
-                await Task.Delay(100, Ct);
-                var page = await Caller.JsonAsync(await admin.GetAsync($"/api/v1/tenants/{tenant}/webhooks/{endpoint}/deliveries"));
-                delivery = page.GetProperty("items").EnumerateArray().Select(d => (JsonElement?)d).FirstOrDefault(d => d!.Value.GetProperty("alertId").GetGuid() == alert.Id);
-            }
-            Assert.True(delivery is not null, "the resolve never reached the channel");
-            Assert.Equal("alert.resolved", delivery.Value.GetProperty("event").GetString());
-            await using (var db = database.Context())
-            {
-                Assert.NotNull((await db.AlertTransitions.AsNoTracking().SingleAsync(t => t.Id == resolved, Ct)).NotificationsPlannedAt);
-            }
-        }
 
         [Theory]
         [InlineData(true)]
@@ -278,102 +239,7 @@ namespace Juice.Observability.Tests
         }
 
 
-        /// <summary>
-        /// An endpoint's stored URL and whether it is enabled, wherever the pipeline keeps it (I74): legacy's row (legacy, shadow), or in new only
-        /// the notifications rows the alias wrote, as it reads them back.
-        /// </summary>
-        private static async Task<(string Url, bool Enabled)> StoredAsync(ApiFactory factory, ScratchDatabase database, Guid id)
-        {
-            await using (var db = database.Context())
-            {
-                if (await db.WebhookEndpoints.AsNoTracking().SingleOrDefaultAsync(e => e.Id == id, Ct) is { } legacy)
-                {
-                    return (legacy.Url, legacy.Enabled);
-                }
-            }
-            await using var scope = factory.Services.CreateAsyncScope();
-            var found = await scope.ServiceProvider.GetRequiredService<Juice.Observability.Notifications.Migration.WebhookAlias>().FindAsync(id, null, Ct);
-            return (found!.Definition.Url, found.Definition.Enabled);
-        }
-        [Fact]
-        public async Task A_channel_never_shows_its_address_and_can_only_name_secrets_set_aside_Async()
-        {
-            LocalStack.RequireAvailable();
-            await using var database = await LocalStack.CreateDatabaseAsync();
-            await using var factory = new ApiFactory(database);
-            using var client = factory.CreateClient();
-            var (viewer, @operator, admin, tenant) = await Caller.AllAsync(client, database);
-            var webhooks = $"/api/v1/tenants/{tenant}/webhooks";
-            const string Token = "s3cr3t-path-token";
-            var body = new { key = "ops", url = $"https://hooks.example.com/juice/{Token}", secretRef = "env:JUICE_WEBHOOK_OPS", minimumSeverity = "warning", environments = new[] { "production" } };
 
-            Assert.Equal(HttpStatusCode.Forbidden, (await @operator.PostAsync(webhooks, body)).StatusCode);
-            await AssertAuditAsync(database, "webhook.create", AuditOutcome.Denied);
-
-            var refused = await admin.PostAsync(webhooks, new { key = "ops", url = "https://hooks.example.com/juice", secretRef = "env:POSTGRES_PASSWORD" });
-            Assert.Equal(HttpStatusCode.BadRequest, refused.StatusCode);
-            Assert.Contains("JUICE_WEBHOOK_", await refused.Content.ReadAsStringAsync(Ct));
-            Assert.Equal(HttpStatusCode.BadRequest, (await admin.PostAsync(webhooks, new { key = "ops", url = "https://hooks.example.com/juice", secretRef = "file:/etc/passwd" })).StatusCode);
-            Assert.Equal(HttpStatusCode.BadRequest, (await admin.PostAsync(webhooks, new { key = "ops", url = "http://hooks.example.com/juice", secretRef = "env:JUICE_WEBHOOK_OPS" })).StatusCode);
-            Assert.Equal(HttpStatusCode.BadRequest, (await admin.PostAsync(webhooks, new { key = "chat", kind = "slack", url = "https://hooks.slack.com/x", secretRef = "env:JUICE_WEBHOOK_S" })).StatusCode);
-            Assert.Equal(HttpStatusCode.BadRequest, (await admin.PostAsync(webhooks, new { key = "mail", kind = "email", recipients = new[] { "a@example.com" } })).StatusCode);   // no SMTP here
-
-            var created = await Caller.JsonAsync(await admin.PostAsync(webhooks, body));
-            Assert.Equal("https://hooks.example.com", created.GetProperty("destination").GetString());
-            var id = created.GetProperty("id").GetGuid();
-
-            var seenByViewer = await viewer.GetAsync(webhooks);
-            var text = await seenByViewer.Content.ReadAsStringAsync(Ct);
-            Assert.DoesNotContain(Token, text);
-            Assert.DoesNotContain("JUICE_WEBHOOK_OPS", text);
-            var seenByAdmin = await Caller.JsonAsync(await admin.GetAsync(webhooks));
-            Assert.Equal("env:JUICE_WEBHOOK_OPS", seenByAdmin.GetProperty("items")[0].GetProperty("secretRef").GetString());
-            Assert.DoesNotContain(Token, seenByAdmin.ToString());
-
-            // Left out, the URL stays: reads never return it, so an edit can't resend it.
-            await Caller.JsonAsync(await admin.PutAsync($"{webhooks}/{id}", new { secretRef = "env:JUICE_WEBHOOK_OPS", enabled = false }));
-            await using var db = database.Context();
-            Assert.Equal(($"https://hooks.example.com/juice/{Token}", false), await StoredAsync(factory, database, id));
-            Assert.Equal(HttpStatusCode.BadRequest, (await admin.PutAsync($"{webhooks}/{id}", new { kind = "slack", secretRef = "env:JUICE_WEBHOOK_OPS" })).StatusCode);
-
-            var audited = string.Join(" ", (await db.AuditRecords.AsNoTracking().Where(a => a.TargetType == "webhook").ToListAsync(Ct)).SelectMany(a => a.Metadata.Values));
-            var changes = string.Join(" ", await db.ChangeEvents.AsNoTracking().Select(c => c.Summary).ToListAsync(Ct));
-            Assert.DoesNotContain(Token, audited);
-            Assert.DoesNotContain(Token, changes);
-            Assert.DoesNotContain("hooks.example.com", changes);
-        }
-
-        [Fact]
-        public async Task The_allowlist_changes_only_through_an_admin_and_never_opens_what_is_always_blocked_Async()
-        {
-            LocalStack.RequireAvailable();
-            await using var database = await LocalStack.CreateDatabaseAsync();
-            await using var factory = new ApiFactory(database, settings: new Dictionary<string, string> { ["Webhooks:Allowlist:0:Destination"] = "10.1.0.0/16" });
-            using var client = factory.CreateClient();
-            var (_, @operator, admin, tenant) = await Caller.AllAsync(client, database);
-            var allowlist = $"/api/v1/tenants/{tenant}/webhooks/allowlist";
-
-            Assert.Equal(HttpStatusCode.Forbidden, (await @operator.PutAsync(allowlist, new { destination = "10.2.0.0/16" })).StatusCode);
-            await AssertAuditAsync(database, "webhook.allowlist.put", AuditOutcome.Denied);
-            foreach (var blocked in new[] { "127.0.0.0/8", "169.254.169.254/32", "not a host!", "" })
-            {
-                Assert.Equal(HttpStatusCode.BadRequest, (await admin.PutAsync(allowlist, new { destination = blocked })).StatusCode);
-            }
-            Assert.Equal(HttpStatusCode.BadRequest, (await admin.PutAsync(allowlist, new { destination = "10.2.0.0/16", ports = new[] { 70000 } })).StatusCode);
-
-            var entry = await Caller.JsonAsync(await admin.PutAsync(allowlist, new { destination = "10.2.0.0/16", ports = new[] { 8443, 8443 } }));
-            Assert.Equal([8443], entry.GetProperty("ports").EnumerateArray().Select(p => p.GetInt32()));
-            await Caller.JsonAsync(await admin.PutAsync(allowlist, new { destination = "10.2.0.0/16", ports = new[] { 9443 } }));
-            var list = await Caller.JsonAsync(await @operator.GetAsync(allowlist));
-            Assert.Equal(2, list.GetProperty("items").GetArrayLength());
-
-            Assert.Equal(HttpStatusCode.Conflict, (await admin.PutAsync(allowlist, new { destination = "10.1.0.0/16", ports = new[] { 443 } })).StatusCode);
-            Assert.Equal(HttpStatusCode.Conflict, (await admin.SendAsync(HttpMethod.Delete, $"{allowlist}?destination=10.1.0.0%2F16")).StatusCode);
-            Assert.Equal(HttpStatusCode.Forbidden, (await @operator.SendAsync(HttpMethod.Delete, $"{allowlist}?destination=10.2.0.0%2F16")).StatusCode);
-            Assert.Equal(HttpStatusCode.NoContent, (await admin.SendAsync(HttpMethod.Delete, $"{allowlist}?destination=10.2.0.0%2F16")).StatusCode);
-            Assert.Equal(HttpStatusCode.NotFound, (await admin.SendAsync(HttpMethod.Delete, $"{allowlist}?destination=10.2.0.0%2F16")).StatusCode);
-            await AssertAuditAsync(database, "webhook.allowlist.remove", AuditOutcome.Succeeded);
-        }
 
         [Fact]
         public async Task Silences_need_a_reason_a_scope_and_an_end_Async()
@@ -427,41 +293,6 @@ namespace Juice.Observability.Tests
             await using var db = database.Context();
             Assert.Equal(1, await db.AuditRecords.CountAsync(a => a.Operation == "silence.cancel" && a.Outcome == AuditOutcome.Succeeded, Ct));
             Assert.Equal(1, await db.Silences.CountAsync(Ct));
-        }
-
-        [Fact]
-        public async Task An_escalation_policy_is_an_admins_and_names_real_endpoints_Async()
-        {
-            LocalStack.RequireAvailable();
-            await using var database = await LocalStack.CreateDatabaseAsync();
-            await using var factory = new ApiFactory(database);
-            using var client = factory.CreateClient();
-            var (_, @operator, admin, tenant) = await Caller.AllAsync(client, database);
-            var policies = $"/api/v1/tenants/{tenant}/escalation-policies";
-            await Caller.JsonAsync(await admin.PostAsync($"/api/v1/tenants/{tenant}/webhooks", new { key = "pager", url = "https://hooks.example.com/p", secretRef = "env:JUICE_WEBHOOK_P" }));
-            var good = new { key = "critical", name = "Critical", steps = new[] { new { afterMinutes = 5, endpointKeys = new[] { "pager" } }, new { afterMinutes = 15, endpointKeys = new[] { "pager" } } } };
-
-            Assert.Equal(HttpStatusCode.Forbidden, (await @operator.PostAsync(policies, good)).StatusCode);
-            await AssertAuditAsync(database, "escalation.create", AuditOutcome.Denied);
-            foreach (var (bad, reason) in new (object, string)[]
-            {
-                (new { key = "c", name = "x", steps = new[] { new { afterMinutes = 5, endpointKeys = new[] { "pager" } } } }, "key is lowercase"),
-                (new { key = "critical", name = "x", steps = Array.Empty<object>() }, "1 to 10 steps"),
-                (new { key = "critical", name = "x", steps = new[] { new { afterMinutes = 5, endpointKeys = new[] { "nobody" } } } }, "No endpoint 'nobody'"),
-                (new { key = "critical", name = "x", steps = new[] { new { afterMinutes = 5, endpointKeys = Array.Empty<string>() } } }, "1 to 10 endpoints"),
-                (new { key = "critical", name = "x", steps = new[] { new { afterMinutes = 15, endpointKeys = new[] { "pager" } }, new { afterMinutes = 5, endpointKeys = new[] { "pager" } } } }, "later than the one before"),
-            })
-            {
-                var refused = await admin.PostAsync(policies, bad);
-                Assert.Equal(HttpStatusCode.BadRequest, refused.StatusCode);
-                Assert.Contains(reason, await refused.Content.ReadAsStringAsync(Ct));
-            }
-            var created = await Caller.JsonAsync(await admin.PostAsync(policies, good));
-            Assert.True(created.GetProperty("stopOnAcknowledge").GetBoolean());
-            Assert.Equal(HttpStatusCode.Conflict, (await admin.PostAsync(policies, good)).StatusCode);
-            var updated = await Caller.JsonAsync(await admin.PutAsync($"{policies}/critical", new { name = "Critical", stopOnAcknowledge = false, enabled = false, steps = good.steps }));
-            Assert.Equal((false, false), (updated.GetProperty("stopOnAcknowledge").GetBoolean(), updated.GetProperty("enabled").GetBoolean()));
-            Assert.Equal(HttpStatusCode.NotFound, (await admin.PutAsync($"{policies}/nope", new { name = "x", steps = good.steps })).StatusCode);
         }
     }
 }

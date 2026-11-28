@@ -116,19 +116,15 @@ done
 echo "drained in $(( 360 - (drain_end - $(date +%s)) )) s (queue ${queue:-?}, rows $rows)" > "$out/drain.log"
 collector "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$out/collector.csv"
 
-# Webhook dispatch: first attempt after the transition, for deliveries planned in the window up to 30 s before its end (requirements §9:
-# p95 ≤ 30 s). One never attempted counts as waiting until the window's end, and so does a transition whose notifications aren't
-# planned yet (it has no delivery to time; only a transition to Firing, or from it, notifies), so neither can drop out of the percentile.
+# Notification planning: from a transition to its notifications planned as a request to the pipeline (the outbox, the mediator, the adapter), for
+# the transitions that notify (to or from Firing) up to 30 s before the window's end (requirements §9: p95 ≤ 30 s). One not planned yet counts as
+# waiting until the window's end, so it can't drop out of the percentile. The pipeline's own sends are read on its admin pages.
 pg "WITH waits AS (
-      SELECT extract(epoch FROM coalesce(first_attempt_at, '$stop') - created_at) AS s, first_attempt_at IS NOT NULL AS attempted, status = 'Delivered' AS delivered
-        FROM webhook_deliveries WHERE created_at >= '$start' AND created_at < timestamptz '$stop' - interval '30 seconds'
-      UNION ALL
-      SELECT extract(epoch FROM timestamptz '$stop' - at), false, false
-        FROM alert_transitions WHERE notifications_planned_at IS NULL AND (to_state = 'Firing' OR from_state = 'Firing') AND at >= '$start' AND at < timestamptz '$stop' - interval '30 seconds')
-    SELECT count(*), count(*) FILTER (WHERE attempted),
+      SELECT extract(epoch FROM coalesce(notifications_planned_at, timestamptz '$stop') - at) AS s, notifications_planned_at IS NOT NULL AS planned
+        FROM alert_transitions WHERE (to_state = 'Firing' OR from_state = 'Firing') AND at >= '$start' AND at < timestamptz '$stop' - interval '30 seconds')
+    SELECT count(*), count(*) FILTER (WHERE planned),
       round(percentile_cont(0.5) WITHIN GROUP (ORDER BY s)::numeric, 2), round(percentile_cont(0.95) WITHIN GROUP (ORDER BY s)::numeric, 2),
-      round(max(s)::numeric, 2), count(*) FILTER (WHERE delivered),
-      (SELECT count(*) FROM alert_transitions WHERE notifications_planned_at IS NULL AND (to_state = 'Firing' OR from_state = 'Firing') AND at >= '$start' AND at < timestamptz '$stop' - interval '30 seconds')
+      round(max(s)::numeric, 2), count(*) FILTER (WHERE planned), count(*) FILTER (WHERE NOT planned)
     FROM waits" > "$out/webhooks.csv"
 pg "SELECT count(*) FROM alert_transitions WHERE at >= '$start' AND at < '$stop'" > "$out/transitions.csv"
 # Outbox deliveries created in the window and given up for good (Failed with no next attempt: MaxRetryAttempts used): dropped.

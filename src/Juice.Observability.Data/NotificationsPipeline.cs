@@ -5,35 +5,77 @@ namespace Juice.Observability.Data
 {
     // The platform on the Juice.Notifications pipeline, embedded (phase 5, M45): what the rest of the platform needs to know of it.
 
-    /// <summary>Which pipeline sends the platform's notifications (<c>Notifications:Pipeline</c>, phase-5-plan I67).</summary>
-    public enum NotificationsPipeline
-    {
-        /// <summary>The platform's own webhooks, as before. The embedded pipeline is registered and migrated, and runs nothing.</summary>
-        Legacy,
-        /// <summary>Legacy sends; the embedded pipeline plans the same notifications in dry run (with the M44-2 alpha).</summary>
-        Shadow,
-        /// <summary>The embedded pipeline only: legacy planning, dispatch and its release and escalate passes are off.</summary>
-        New,
-    }
-
     /// <summary>
-    /// Configuration section <c>Notifications</c>: <see cref="Pipeline"/>, and the pipeline's own settings (<c>Stages</c>, <c>Delivery</c>,
-    /// <c>Retention</c>, …), which the embedded pipeline reads from the same section.
+    /// Configuration section <c>Notifications</c>: the platform's own settings for the embedded pipeline (<see cref="ConsoleUrl"/>,
+    /// <see cref="HoldPassInterval"/>, <see cref="ReleasePassInterval"/>); the pipeline reads its own (<c>Stages</c>, <c>Delivery</c>, <c>Retention</c>,
+    /// <c>Provisioning</c>, …) from the same section. The pipeline is the only one since 2.0: <c>Notifications:Pipeline</c> is obsolete.
     /// </summary>
     public sealed class PlatformNotificationsOptions
     {
         public const string Section = "Notifications";
 
-        public NotificationsPipeline Pipeline { get; set; } = NotificationsPipeline.Legacy;
-
         /// <summary>How often silences that start or end by time become holds and releases in the pipeline (Q5: 15 s by default).</summary>
         public TimeSpan HoldPassInterval { get; set; } = TimeSpan.FromSeconds(15);
 
-        /// <summary>Whether the legacy webhooks plan and send (<c>legacy</c> and <c>shadow</c>).</summary>
-        public bool LegacySends => Pipeline != NotificationsPipeline.New;
+        /// <summary>How often what a silence held is decided once no silence covers it.</summary>
+        public TimeSpan ReleasePassInterval { get; set; } = TimeSpan.FromSeconds(2);
 
-        /// <summary>Whether the platform's changes become notification requests (<c>shadow</c> and <c>new</c>).</summary>
-        public bool ProducesRequests => Pipeline != NotificationsPipeline.Legacy;
+        /// <summary>
+        /// The Console's address (<c>Notifications:ConsoleUrl</c>): an absolute http or https URL, checked at start
+        /// (<see cref="PlatformNotificationsOptionsValidation"/>). The link in a notification is this text, then <c>/</c> and the page: never normalised.
+        /// </summary>
+        public string? ConsoleUrl { get; set; }
+
+        /// <summary>The Console's page as a link, <c>{ConsoleUrl}/{page}</c> with the address's trailing slashes dropped; null when no address is set.</summary>
+        public string? Link(string page)
+            => ConsoleUrl is { Length: > 0 } console ? $"{console.TrimEnd('/')}/{page}" : null;
+    }
+
+    /// <summary>Checks <see cref="PlatformNotificationsOptions.ConsoleUrl"/> at start (<c>ValidateOnStart</c>). A message never echoes the value.</summary>
+    public sealed class PlatformNotificationsOptionsValidation : Microsoft.Extensions.Options.IValidateOptions<PlatformNotificationsOptions>
+    {
+        /// <summary>The longest address it takes.</summary>
+        public const int MaxConsoleUrlLength = 2048;
+
+        private const string Key = "Notifications:ConsoleUrl";
+
+        public Microsoft.Extensions.Options.ValidateOptionsResult Validate(string? name, PlatformNotificationsOptions options)
+            => Problem(options.ConsoleUrl) is { } problem
+                ? Microsoft.Extensions.Options.ValidateOptionsResult.Fail($"{Key} {problem}")
+                : Microsoft.Extensions.Options.ValidateOptionsResult.Success;
+
+        /// <summary>Why the address is refused, without quoting it; null when it is valid or not set.</summary>
+        internal static string? Problem(string? value)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                return null;
+            }
+            if (value.Length > MaxConsoleUrlLength)
+            {
+                return $"must be at most {MaxConsoleUrlLength} characters.";
+            }
+            if (value.Any(c => char.IsWhiteSpace(c) || char.IsControl(c)))
+            {
+                return "must not contain whitespace or control characters.";
+            }
+            if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https")
+                || !value.StartsWith(uri.Scheme + "://", StringComparison.OrdinalIgnoreCase))
+            {
+                return "must be an absolute http or https URL (such as https://host.example.com).";
+            }
+            var authority = value[(uri.Scheme.Length + 3)..];
+            var end = authority.IndexOfAny(['/', '?', '#']);
+            if (uri.UserInfo.Length > 0 || (end < 0 ? authority : authority[..end]).Contains('@'))
+            {
+                return "must not contain user information.";
+            }
+            if (value.Contains('?') || value.Contains('#'))
+            {
+                return "must not contain a query or a fragment.";
+            }
+            return null;
+        }
     }
 
     /// <summary>
@@ -47,7 +89,7 @@ namespace Juice.Observability.Data
     public sealed record AlertAcknowledged(Guid PlatformTenantId, Guid AlertId, string By) : MessageBase, ISequenceNotification;
 
     /// <summary>
-    /// What happened to an action request, told to the notification pipeline (<c>shadow</c> and <c>new</c>), in the transaction that made it
+    /// What happened to an action request, told to the notification pipeline in the transaction that made it
     /// happen. Registered by the pipeline's adapter; absent, nothing is told.
     /// </summary>
     public interface IActionRequestNotifications
@@ -74,11 +116,11 @@ namespace Juice.Observability.Data
         public DateTimeOffset CreatedAt { get; init; }
         public DateTimeOffset? DecidedAt { get; set; }
         /// <summary>
-        /// Why it was kept (<see cref="NotificationHoldReasons"/>; architecture §6.4 A): a silence (legacy held it too: real in any mode), or the
-        /// pipeline not started (legacy sent it if that was in shadow). A silence wins when both apply. Kept as it was, whichever silence holds it later.
+        /// Why it was kept (<see cref="NotificationHoldReasons"/>): a silence, or the pipeline not started. A silence wins when both apply. Kept as it was,
+        /// whichever silence holds it later.
         /// </summary>
         public required string Reason { get; init; }
-        /// <summary>The pipeline mode when it was kept (<c>legacy</c>, <c>shadow</c>, <c>new</c>); null for a hold kept before the mode was.</summary>
+        /// <summary>The pipeline mode when it was kept (rows kept by 1.x say <c>shadow</c> or <c>legacy</c>; since 2.0 always <c>new</c>); null for a hold kept before the mode was.</summary>
         public string? Pipeline { get; init; }
         /// <summary>
         /// A held resolve whose correlation was resolved when it was planned (the pipeline was up): the release pass doesn't resolve it again,
@@ -96,7 +138,7 @@ namespace Juice.Observability.Data
     {
         /// <summary>A silence covered the alert: sent for real once released, in any mode.</summary>
         public const string Silence = "silence";
-        /// <summary>The pipeline didn't start: kept in <c>shadow</c>, legacy sent it, so it is sent dry; otherwise for real.</summary>
+        /// <summary>The pipeline didn't start: kept until it does, then decided as any other hold.</summary>
         public const string PipelineUnavailable = "pipeline_unavailable";
     }
 
@@ -104,7 +146,7 @@ namespace Juice.Observability.Data
     {
         public const string Sent = "sent";
         public const string Dropped = "dropped";
-        /// <summary>A held resolve dropped because the alert fired again since (it would have been sent otherwise): the shadow comparer's <c>stale_resolve_dropped</c>.</summary>
+        /// <summary>A held resolve dropped because the alert fired again since (it would have been sent otherwise).</summary>
         public const string DroppedStale = "dropped_stale";
         /// <summary>Its send kept failing (<see cref="MaxAttempts"/> tries): given up, so it no longer blocks the others.</summary>
         public const string Failed = "failed";
@@ -140,8 +182,8 @@ namespace Juice.Observability.Data
         /// <summary>The request to send (a <c>NotificationToSend</c>, as JSON).</summary>
         public string? Request { get; init; }
         /// <summary>
-        /// The pipeline mode when it was parked (<c>legacy</c>, <c>shadow</c>, <c>new</c>; architecture §6.4): a send parked in shadow, which legacy
-        /// sent, is replayed dry. Null for a call parked before the mode was kept, replayed as it was.
+        /// The pipeline mode when it was parked: always <c>new</c> since 2.0 (the migration settled what 1.x kept in another mode). Null for a call
+        /// parked before the mode was kept, replayed as it was.
         /// </summary>
         public string? Pipeline { get; init; }
         public DateTimeOffset CreatedAt { get; init; }

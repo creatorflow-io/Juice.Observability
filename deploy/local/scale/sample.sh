@@ -15,8 +15,7 @@
 #                    outbox_pending, outbox_oldest   outbox rows still to be delivered (not yet tried, in progress, or failed with a retry
 #                                    due) and the oldest one's age; one given up for good is counted by run.sh, not here
 #                    outbox_failed   of those, the ones that failed and wait for a retry
-#                    webhook_pending, webhook_oldest pending webhook deliveries and the oldest one's age
-#                    webhook_retrying                deliveries waiting out a retry backoff (by design up to 10 minutes)
+#                    planning_pending, planning_oldest  firing and resolving transitions whose notifications are not yet planned as requests, and the oldest one's age
 #   collector.csv  the main Collector's own counters (accepted, refused, export failures per signal; queue size)
 #   storage.csv    every 5 minutes: ClickHouse bytes and rows per otel table, PostgreSQL database size
 #   scale/sample.sh <seconds> <out>
@@ -26,7 +25,7 @@ source scale/lib.sh
 SECONDS_TOTAL=$1 OUT=$2
 mkdir -p "$OUT"
 echo "time,container,cpu_pct,mem_bytes" > "$OUT/resources.csv"
-echo "time,discovery,discovery_excess,health_stale,health_evidence_p95,health_age_p95,alert_stale,slo_lag,slo_excess,outbox_pending,outbox_oldest,webhook_pending,webhook_oldest,webhook_retrying,outbox_failed" > "$OUT/lag.csv"
+echo "time,discovery,discovery_excess,health_stale,health_evidence_p95,health_age_p95,alert_stale,slo_lag,slo_excess,outbox_pending,outbox_oldest,planning_pending,planning_oldest,outbox_failed" > "$OUT/lag.csv"
 echo "time,metric,value" > "$OUT/collector.csv"
 echo "time,table,bytes,rows" > "$OUT/storage.csv"
 
@@ -53,9 +52,8 @@ LAG_SQL="SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\
      - ((SELECT min(coalesce(counted_through, created_at)) FROM slos WHERE NOT retired) + interval '70 seconds')) AS x) s),
   (SELECT count(*) FROM outbox_deliveries WHERE $OUTBOX_DUE),
   round(extract(epoch FROM now() - (SELECT min(creation_time) FROM outbox_deliveries WHERE $OUTBOX_DUE))::numeric, 1),
-  (SELECT count(*) FROM webhook_deliveries WHERE status = 'Pending'),
-  round(extract(epoch FROM now() - (SELECT min(created_at) FROM webhook_deliveries WHERE status = 'Pending'))::numeric, 1),
-  (SELECT count(*) FROM webhook_deliveries WHERE status = 'Retrying'),
+  (SELECT count(*) FROM alert_transitions WHERE notifications_planned_at IS NULL AND (to_state = 'Firing' OR from_state = 'Firing') AND at > now() - interval '1 hour'),
+  round(extract(epoch FROM now() - (SELECT min(at) FROM alert_transitions WHERE notifications_planned_at IS NULL AND (to_state = 'Firing' OR from_state = 'Firing') AND at > now() - interval '1 hour'))::numeric, 1),
   (SELECT count(*) FROM outbox_deliveries WHERE state = 3 AND next_attempt_on IS NOT NULL)"
 storage() {
   local t=$1

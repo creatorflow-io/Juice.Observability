@@ -1,9 +1,9 @@
+using Juice.Observability.Tests.Legacy;
 using System.Text.Json;
 using Juice.Observability.Api.Endpoints;
 using Juice.Observability.Health.Delivery;
 using Juice.Observability.Data;
 using Juice.Observability.Rules.Notifications;
-using Juice.Observability.Webhooks;
 
 namespace Juice.Observability.Tests
 {
@@ -105,40 +105,6 @@ namespace Juice.Observability.Tests
         public void What_a_silence_held_is_sent_only_if_it_still_matters(string @event, AlertState state, bool told, bool acknowledged, bool stopsOnAcknowledge, HeldOutcome expected)
             => Assert.Equal(expected, HeldNotification.Decide(@event, state, told, acknowledged, stopsOnAcknowledge));
 
-        public static TheoryData<int, int, int, int> Spacing => new()
-        {
-            // Steps at 5, 15 and 30 minutes after firing. Sent on time: the schedule stands.
-            { 1, 5, 15, 15 },
-            { 2, 15, 30, 30 },
-            // Sent late, after an hour's silence or a host down: the next step waits its gap from then, not all at once.
-            { 1, 60, 15, 70 },
-            { 2, 70, 30, 85 },
-            // A little late: still the later of the two.
-            { 1, 12, 15, 22 },
-        };
-
-        [Theory]
-        [MemberData(nameof(Spacing))]
-        public void Steps_keep_their_spacing_when_one_goes_out_late(int next, int sentMinutes, int scheduled, int dueMinutes)
-        {
-            List<EscalationStep> steps = [new() { AfterMinutes = 5 }, new() { AfterMinutes = 15 }, new() { AfterMinutes = 30 }];
-            Assert.Equal(scheduled, steps[next].AfterMinutes);
-            Assert.Equal(Start.AddMinutes(dueMinutes), EscalationDecision.NextAt(steps, next, Start, Start.AddMinutes(sentMinutes)));
-        }
-
-        [Fact]
-        public void The_first_step_is_due_by_its_time_after_firing()
-        {
-            List<EscalationStep> steps = [new() { AfterMinutes = 5 }];
-            Assert.Equal(Start.AddMinutes(5), EscalationDecision.NextAt(steps, 0, Start, Start.AddMinutes(60)));
-        }
-
-        [Theory]
-        [InlineData("{\"type\":\"alert.escalated\",\"escalation\":{\"policy\":\"pager\",\"step\":1}}", "pager")]
-        [InlineData("{\"type\":\"alert.firing\",\"escalation\":null}", null)]
-        [InlineData("not json", null)]
-        public void A_held_step_names_its_policy(string payload, string? expected)
-            => Assert.Equal(expected, NotificationWorker.PolicyKey(payload));
 
         [Theory]
         [InlineData(AlertState.Resolved, false, true, true, false, true, EscalationAction.Stop, "resolved")]
@@ -184,27 +150,12 @@ namespace Juice.Observability.Tests
         {
             var directory = OperatingSystem.IsWindows() ? "D:\\run\\juice" : "/run/juice";
             var path = OperatingSystem.IsWindows() ? reference.Replace("file:/run/juice", "file:D:\\run\\juice").Replace("/", "\\").Replace("file:\\etc", "file:D:\\etc") : reference;
-            Assert.Equal(allowed, SecretReference.IsAllowedFromApi(path, new WebhookOptions().ApiSecretEnvPrefix, directory));
+            Assert.Equal(allowed, SecretReference.IsAllowedFromApi(path, "JUICE_WEBHOOK_", directory));
         }
 
         [Fact]
         public void Without_a_folder_the_api_cant_name_files_at_all()
-            => Assert.False(SecretReference.IsAllowedFromApi("file:/run/juice/ops", new WebhookOptions().ApiSecretEnvPrefix, new WebhookOptions().ApiSecretDirectory));
-
-        [Theory]
-        [InlineData(ChannelKind.Slack, "https://hooks.slack.com/services/T/B/x", true)]
-        [InlineData(ChannelKind.Slack, "http://hooks.slack.com/services/T/B/x", false)]
-        [InlineData(ChannelKind.Slack, "https://hooks.slack.com.evil.example/x", false)]
-        [InlineData(ChannelKind.Slack, "https://acme.webhook.office.com/x", false)]
-        [InlineData(ChannelKind.Teams, "https://acme.webhook.office.com/x", true)]
-        [InlineData(ChannelKind.Teams, "https://prod-1.westus.logic.azure.com/x", true)]
-        [InlineData(ChannelKind.Teams, "https://webhook.office.com.evil.example/x", false)]
-        [InlineData(ChannelKind.Teams, "https://evilwebhook.office.com/x", false)]
-        [InlineData(ChannelKind.Slack, "https://bot:pw@hooks.slack.com/x", false)]
-        [InlineData(ChannelKind.Slack, "not a url", false)]
-        [InlineData(ChannelKind.Slack, "https://chat.internal.example/hook", true)]
-        public void A_chat_channel_posts_only_to_its_own_service(ChannelKind kind, string url, bool allowed)
-            => Assert.Equal(allowed, ChatDestination.IsAllowed(kind, url, ["chat.internal.example"]));
+            => Assert.False(SecretReference.IsAllowedFromApi("file:/run/juice/ops", "JUICE_WEBHOOK_", null));
 
         private static string Payload(string subject = "service:shop/orders@production", string type = NotificationPlan.Firing, string ruleName = "Orders errors", double? value = 0.25) => JsonSerializer.Serialize(new
         {

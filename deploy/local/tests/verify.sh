@@ -204,7 +204,7 @@ if docker compose ps --status running --services 2>/dev/null | grep -qx platform
     juice.observability.worker.pass.age juice.observability.worker.since_last_pass juice.observability.worker.lease
     juice.observability.rules.busy juice.observability.rules.waiting juice.observability.rules.slots
     juice.observability.discovery.watermark_lag juice.observability.outbox.backlog juice.observability.outbox.oldest_age
-    juice.observability.webhooks.backlog juice.observability.webhooks.oldest_age juice.observability.postgres.up
+    juice.observability.postgres.up
     juice.observability.postgres.sample.duration juice.observability.postgres.size juice.observability.clickhouse.up
     juice.observability.clickhouse.cpu juice.observability.clickhouse.memory juice.observability.clickhouse.running_queries
     juice.observability.clickhouse.server.queries juice.observability.clickhouse.disk.free juice.observability.clickhouse.disk.total
@@ -231,7 +231,7 @@ if docker compose ps --status running --services 2>/dev/null | grep -qx platform
   check "/health/platform answers the status alone, ok" "$(curl -s -m 30 http://localhost:5180/health/platform)" '{"status":"ok"}'
   check "/api/v1/platform/status needs a sign-in" "$(curl -s -m 30 -o /dev/null -w '%{http_code}' http://localhost:5180/api/v1/platform/status)" "401"
   check "every worker is enabled on a live replica" \
-    "$(docker compose exec -T postgres psql -U juice -d juice_observability -tAc "SELECT string_agg(w, ' ' ORDER BY w) FROM unnest(ARRAY['action-requests','discovery','health','notifications','rules','sampler','slos','webhooks']) w WHERE NOT EXISTS (SELECT 1 FROM worker_heartbeats h WHERE h.worker = w AND h.enabled AND h.seen_at > now() - interval '30 seconds')" </dev/null)" ""
+    "$(docker compose exec -T postgres psql -U juice -d juice_observability -tAc "SELECT string_agg(w, ' ' ORDER BY w) FROM unnest(ARRAY['action-requests','discovery','health','notifications','rules','sampler','slos']) w WHERE NOT EXISTS (SELECT 1 FROM worker_heartbeats h WHERE h.worker = w AND h.enabled AND h.seen_at > now() - interval '30 seconds')" </dev/null)" ""
 fi
 check "grafana_reader sees none of the platform's telemetry" "$(gr "SELECT count() FROM otel.otel_metrics_gauge WHERE $platform AND $recent")" "0"
 

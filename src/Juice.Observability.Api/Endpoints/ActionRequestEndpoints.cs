@@ -62,13 +62,11 @@ namespace Juice.Observability.Api.Endpoints
         /// <summary>What the signed command carries: the request, and who approved it.</summary>
         internal static string Reference(ActionRequest request) => $"action-request:{request.Id};approved-by:{request.DecidedBy ?? "policy"}";
 
-        /// <summary>Tells the configured endpoints what happened to the request, in the transaction that made it happen.</summary>
+        /// <summary>Tells the notification pipeline what happened to the request, in the transaction that made it happen.</summary>
         private static async Task NotifyAsync(PlatformDbContext db, IServiceProvider services, ActionRequest request, string type, DateTimeOffset now, CancellationToken ct)
         {
-            var options = services.GetRequiredService<IOptions<ActionApprovalOptions>>().Value;
-            if (options.NotifyEndpoints.Count == 0 && services.GetService<IOptions<PlatformNotificationsOptions>>()?.Value.ProducesRequests != true) return;
             var hostname = await db.Agents.AsNoTracking().Where(a => a.Id == request.AgentId).Select(a => a.Hostname).SingleOrDefaultAsync(ct) ?? "";
-            await ActionRequestNotices.AddAsync(db, services, options, services.GetRequiredService<IOptions<PlatformOptions>>().Value.TenantKey, request, hostname, type, now, ct);
+            await ActionRequestNotices.AddAsync(services, request, hostname, type, now, ct);
         }
 
         private static IResult NotFound() => Mutation.Problem(StatusCodes.Status404NotFound, "Request not found", "No such action request.");
@@ -192,7 +190,7 @@ namespace Juice.Observability.Api.Endpoints
             }
             else
             {
-                await ActionRequestNotices.AddAsync(db, services, approval.Value, platform.Value.TenantKey, request, agent.Hostname, ActionRequestEvents.Created, now, ct);
+                await ActionRequestNotices.AddAsync(services, request, agent.Hostname, ActionRequestEvents.Created, now, ct);
             }
             mutation.Audit(AuditOutcome.Succeeded, request.Id.ToString(), new()
             {
@@ -323,7 +321,7 @@ namespace Juice.Observability.Api.Endpoints
             request.Verification = request.TargetId is null ? ActionVerification.None : ActionVerification.Verifying;
             db.AgentCommands.Add(command);
             mutation.Audit(AuditOutcome.Succeeded, request.Id.ToString(), new() { ["action"] = request.Action, ["requestedBy"] = request.RequestedBy, ["command"] = command.Id.ToString() });
-            await ActionRequestNotices.AddAsync(db, services, approval.Value, platform.Value.TenantKey, request, agent.Hostname, ActionRequestEvents.Approved, now, ct);
+            await ActionRequestNotices.AddAsync(services, request, agent.Hostname, ActionRequestEvents.Approved, now, ct);
             await db.SaveChangesAsync(ct);
             await transaction.CommitAsync(ct);
             services.GetService<AgentWakeups>()?.Wake(request.AgentId);

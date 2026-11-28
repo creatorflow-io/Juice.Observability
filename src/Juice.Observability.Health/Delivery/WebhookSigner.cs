@@ -58,8 +58,8 @@ namespace Juice.Observability.Health.Delivery
         /// file on the host and have it used as a signing key or a URL. Only variables with the configured prefix, or files directly in the configured folder.
         /// </summary>
         /// <param name="reference">The reference: <c>env:NAME</c> or <c>file:/path</c>.</param>
-        /// <param name="envPrefix">The prefix a variable must have (<c>Webhooks:ApiSecretEnvPrefix</c>).</param>
-        /// <param name="directory">The folder a file must be directly in (<c>Webhooks:ApiSecretDirectory</c>); unset refuses files.</param>
+        /// <param name="envPrefix">The prefix a variable must have (<c>Notifications:Delivery:ApiSecretEnvPrefix</c>).</param>
+        /// <param name="directory">The folder a file must be directly in (<c>Notifications:Delivery:ApiSecretDirectory</c>); unset refuses files.</param>
         public static bool IsAllowedFromApi(string reference, string? envPrefix, string? directory)
         {
             if (!IsValid(reference)) return false;

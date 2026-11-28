@@ -39,7 +39,7 @@ namespace Juice.Observability.Tests
             double pointsPerSecond = 10000, double dropped = 0, double queue = 5000, double insertP95 = 0.05,
             IReadOnlyList<TableGrowth>? growth = null, double diskFree = 900e9, double diskTotal = 1000e9)
             => new(Now - TimeSpan.FromSeconds(5),
-                new PostgresSample(true, 0.01, 1e6, 70, 0, 0, null, 0, 0, null, Rules: 50, Slos: 50, Services: 10),
+                new PostgresSample(true, 0.01, 1e6, 70, 0, 0, null, Rules: 50, Slos: 50, Services: 10),
                 new ClickHouseSample(true, cores, 2e9, new Dictionary<string, long> { ["platform_reader"] = 2 },
                     [new FinishedQueries("otel_writer", "Insert", 100, 0, insertP95)], [("default", diskFree, diskTotal)], [("otel_traces", 40e9, 1e9)],
                     available, inFlight, [new CallerQueries("juice:api:/telemetry/logs", 20, 0.8), new CallerQueries("juice:slos", 30, 3)],

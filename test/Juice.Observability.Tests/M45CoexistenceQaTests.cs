@@ -20,7 +20,7 @@ namespace Juice.Observability.Tests
 {
     /// <summary>
     /// QA (M45-0, phase-5 waves §5.2): the embedded pipeline beside the platform with the platform's own events and commands, the reverse
-    /// direction (a pipeline command), legacy sending nothing, and the migrations over a release/1.0 database.
+    /// direction (a pipeline command), and the migrations over a release/1.0 database.
     /// </summary>
     public class M45CoexistenceQaTests
     {
@@ -115,36 +115,6 @@ namespace Juice.Observability.Tests
             Assert.Equal(0, begun.Of<PlatformDbContext>());
         }
 
-        // ─── Legacy: nothing planned or sent by the pipeline ────────
-
-        [Fact]
-        public async Task In_legacy_a_committed_request_is_never_planned_or_sent_Async()
-        {
-            LocalStack.RequireAvailable();
-            await using var database = await LocalStack.CreateDatabaseAsync();
-            await using var factory = Factory(database);
-            _ = factory.Server;
-            var tenant = await TenantAsync(database);
-
-            var marker = Guid.NewGuid();
-            Assert.True(await SendAsync(factory, new EmbeddedCompositionTests.SendInCommand(tenant, marker, Fail: false)));
-            Assert.Equal(1, await CountAsync(database, $"SELECT count(*) FROM notifications.requests WHERE idempotency_key = 'test:{marker}'"));
-            // Longer than every stage's poll and the post-commit nudge: in legacy no stage runs.
-            await Task.Delay(TimeSpan.FromSeconds(6), Ct);
-
-            // Intake writes the request and its notification, waiting for the planner (Planning): nothing after that happens in legacy.
-            Assert.Equal(1, await CountAsync(database, $"SELECT count(*) FROM notifications.notifications n JOIN notifications.requests r ON r.id = n.request_id WHERE r.idempotency_key = 'test:{marker}' AND n.state = 'Planning'"));
-            Assert.Equal(0, await CountAsync(database, "SELECT count(*) FROM notifications.notifications WHERE state <> 'Planning'"));
-            foreach (var table in new[] { "notification_recipients", "deliveries", "delivery_attempts", "delivery_items", "escalations",
-                "inbox_items" })
-            {
-                if (await CountAsync(database, $"SELECT count(*) FROM information_schema.tables WHERE table_schema = 'notifications' AND table_name = '{table}'") == 1)
-                {
-                    Assert.True(await CountAsync(database, $"SELECT count(*) FROM notifications.{table}") == 0, $"notifications.{table} has rows in legacy");
-                }
-            }
-        }
-
         // ─── Migrations ────────
 
         [Fact]
@@ -152,7 +122,7 @@ namespace Juice.Observability.Tests
         {
             LocalStack.RequireAvailable();
             await using var database = await EmptyDatabaseAsync();
-            await using var factory = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string> { ["Notifications:Pipeline"] = "legacy" });
+            await using var factory = new ApiTests.ApiFactory(database);
             _ = factory.Server;
             await AssertBothSchemasAsync(database);
         }
@@ -182,7 +152,7 @@ namespace Juice.Observability.Tests
             }
             Assert.Equal(0, await CountAsync(database, "SELECT count(*) FROM information_schema.schemata WHERE schema_name = 'notifications'"));
 
-            await using (var factory = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string> { ["Notifications:Pipeline"] = "legacy" }))
+            await using (var factory = new ApiTests.ApiFactory(database))
             {
                 _ = factory.Server;
             }
@@ -194,7 +164,7 @@ namespace Juice.Observability.Tests
             }
 
             // A second start is a no-op for both.
-            await using (var again = new ApiTests.ApiFactory(database, settings: new Dictionary<string, string> { ["Notifications:Pipeline"] = "legacy" }))
+            await using (var again = new ApiTests.ApiFactory(database))
             {
                 _ = again.Server;
             }
@@ -289,7 +259,7 @@ namespace Juice.Observability.Tests
 
             public ValueTask<TResponse> Handle(TRequest request, RequestHandlerDelegate<TRequest, TResponse> next, CancellationToken cancellationToken)
             {
-                if (request is Webhooks.PlanNotifications plan)
+                if (request is Notifications.PlanNotifications plan)
                 {
                     PlansCounted.Seen.AddOrUpdate(plan.TransitionId, 1, (_, n) => n + 1);
                 }
@@ -303,8 +273,8 @@ namespace Juice.Observability.Tests
         }
 
         private static WebApplicationFactory<Program> Factory(ScratchDatabase database)
-            // Legacy: what these check is how the pipeline keeps out of the platform when it runs nothing (the switch's other modes run its stages).
-            => new ApiTests.ApiFactory(database, settings: new Dictionary<string, string> { ["Notifications:Pipeline"] = "legacy" }).WithWebHostBuilder(builder => builder.ConfigureServices(services =>
+            // What these check is how the pipeline keeps out of the platform's commands and transactions.
+            => new ApiTests.ApiFactory(database, settings: ProducerAdapterTests.Quiet()).WithWebHostBuilder(builder => builder.ConfigureServices(services =>
             {
                 services.AddTransient<IRequestHandler<FireAlert, bool>, FireAlertHandler>();
                 services.AddTransient<IRequestHandler<EmbeddedCompositionTests.SendInCommand, bool>, EmbeddedCompositionTests.SendInCommandHandler>();

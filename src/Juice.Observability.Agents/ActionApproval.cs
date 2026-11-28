@@ -33,12 +33,6 @@ namespace Juice.Observability.Agents
         /// <summary>How long a request waits for approval before it expires.</summary>
         public TimeSpan ApprovalLifetime { get; set; } = TimeSpan.FromMinutes(30);
 
-        /// <summary>
-        /// Webhook endpoints (by key) told when a request waits for approval, and when it's approved, rejected, cancelled or expires. Whatever events
-        /// they take for alerts. An endpoint missing or disabled is skipped.
-        /// </summary>
-        public List<string> NotifyEndpoints { get; set; } = [];
-
         /// <summary>How often pending requests past their expiry are closed, and issued ones checked for recovery.</summary>
         public TimeSpan SweepInterval { get; set; } = TimeSpan.FromSeconds(30);
 
@@ -69,7 +63,6 @@ namespace Juice.Observability.Agents
                 if (!ApprovalPolicies.All.Contains(policy)) yield return $"Actions:Overrides:{action}: policy is one of {string.Join(", ", ApprovalPolicies.All)}";
             }
             if (ApprovalLifetime < TimeSpan.FromSeconds(1) || ApprovalLifetime > TimeSpan.FromDays(1)) yield return "Actions:ApprovalLifetime is 1 second to 1 day";
-            foreach (var key in NotifyEndpoints.Where(k => !EndpointKey().IsMatch(k))) yield return $"Actions:NotifyEndpoints: '{key}' isn't a webhook endpoint key";
             if (SweepInterval < TimeSpan.FromMilliseconds(100) || SweepInterval > TimeSpan.FromMinutes(10)) yield return "Actions:SweepInterval is 100 ms to 10 minutes";
             if (StaleEvidence < TimeSpan.FromSeconds(10) || StaleEvidence > TimeSpan.FromHours(6)) yield return "Actions:StaleEvidence is 10 seconds to 6 hours";
             if (VerificationWindow < TimeSpan.FromSeconds(1) || VerificationWindow > TimeSpan.FromHours(24)) yield return "Actions:VerificationWindow is 1 second to 24 hours";
@@ -81,8 +74,5 @@ namespace Juice.Observability.Agents
             => Overrides.TryGetValue(action, out var overridden) ? overridden
                 : Approval.TryGetValue(risk, out var configured) ? configured
                 : Defaults.GetValueOrDefault(risk, ApprovalPolicies.SecondPerson);
-
-        [GeneratedRegex("^[a-z0-9][a-z0-9-]{1,62}$")]
-        private static partial Regex EndpointKey();
     }
 }

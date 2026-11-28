@@ -1,7 +1,6 @@
 using System.Diagnostics.Metrics;
 using Juice.Observability.Data;
 using Juice.Observability.Rules.Notifications;
-using Juice.Observability.Webhooks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -16,7 +15,7 @@ namespace Juice.Observability.Notifications
     /// (a lease), and the holds it decides are locked, so two passes never send one twice; the request's key would make a second one the same.
     /// <para>"Told" is per alert here (Q4): a resolved notice is sent if the alert's firing was sent, or held and then sent.</para>
     /// </summary>
-    public sealed class NotificationsReleasePass(IServiceScopeFactory scopes, IOptions<WebhookOptions> options, TimeProvider clock,
+    public sealed class NotificationsReleasePass(IServiceScopeFactory scopes, IOptions<PlatformNotificationsOptions> options, TimeProvider clock,
         ILogger<NotificationsReleasePass> logger) : BackgroundService
     {
         public const string Worker = "notifications-release";
@@ -28,10 +27,11 @@ namespace Juice.Observability.Notifications
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             PlatformCaller.Set(Worker, stoppingToken);
-            WorkerPulse.Register(Worker, options.Value.Interval, stopping: stoppingToken);
+            WorkerPulse.Register(Worker, options.Value.ReleasePassInterval, stopping: stoppingToken);
             await using var lease = WorkerLease.For(scopes, Worker, logger);
-            using var timer = new PeriodicTimer(options.Value.Interval);
-            do
+            using var timer = new PeriodicTimer(options.Value.ReleasePassInterval);
+            // The first pass is one interval after the start, not at it: the start has just migrated and provisioned.
+            while (await timer.WaitForNextTickAsync(stoppingToken))
             {
                 try
                 {
@@ -49,7 +49,6 @@ namespace Juice.Observability.Notifications
                     logger.LogError(ex, "Notification release pass failed; retrying next interval");
                 }
             }
-            while (await timer.WaitForNextTickAsync(stoppingToken));
         }
 
         /// <summary>Replays the calls kept while the pipeline was down, then decides up to one batch of holds whose silence is over; returns how many it looked at.</summary>
@@ -80,7 +79,7 @@ namespace Juice.Observability.Notifications
                 }
                 call.ReplayedAt = now;
             }
-            var active = await NotificationWorker.ActiveAsync(db, now, cancellationToken);
+            var active = await NotificationPlan.ActiveAsync(db, now, cancellationToken);
             var activeIds = active.Select(s => s.Id).ToArray();
             var holds = await db.NotificationHolds
                 .FromSql($"SELECT * FROM notification_holds WHERE decided_at IS NULL AND NOT (silence_id = ANY({activeIds})) ORDER BY id LIMIT {Batch} FOR UPDATE SKIP LOCKED")
@@ -107,7 +106,7 @@ namespace Juice.Observability.Notifications
                 var alert = alerts[hold.AlertId];
                 var alertContext = new AlertContext(rules[alert.RuleId], alert.SubjectKey, alert.Severity);
                 // Another silence covers it now (read again, just before it would be sent): it stays held, under that one.
-                var covering = SilenceMatcher.Find((await NotificationWorker.ActiveAsync(db, clock.GetUtcNow(), cancellationToken)).Where(s => s.TenantId == hold.TenantId),
+                var covering = SilenceMatcher.Find((await NotificationPlan.ActiveAsync(db, clock.GetUtcNow(), cancellationToken)).Where(s => s.TenantId == hold.TenantId),
                     alertContext, clock.GetUtcNow());
                 if (covering is not null)
                 {
@@ -117,8 +116,8 @@ namespace Juice.Observability.Notifications
                 var firing = firings.FirstOrDefault(f => f.AlertId == hold.AlertId);
                 var told = firing is null || firing.Outcome == NotificationHoldOutcomes.Sent;
                 // A held resolve of an alert that has fired again since is stale: its notice would tell the receiver the recurrence is over, and
-                // its resolve would close the recurrence's escalation (review #13). Legacy sends the notice; this drops it on purpose (M46c), which
-                // the shadow comparer names as stale_resolve_dropped. Read once, so a retry decides the same.
+                // its resolve would close the recurrence's escalation (review #13). The pipeline drops it on purpose (M46c).
+                // Read once, so a retry decides the same.
                 var stale = hold.Event == NotificationPlan.Resolved && await FiredSinceAsync(db, hold, alert, cancellationToken);
                 var wouldSend = HeldNotification.Decide(hold.Event, alert.State, told, alert.AcknowledgedAt is not null) == HeldOutcome.Send;
                 var decided = !stale && wouldSend;

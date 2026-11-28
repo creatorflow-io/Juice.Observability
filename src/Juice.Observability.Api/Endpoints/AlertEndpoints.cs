@@ -239,7 +239,7 @@ namespace Juice.Observability.Api.Endpoints
                 alert.AcknowledgedAt = clock.GetUtcNow();
                 alert.AcknowledgedBy = request.Actor;
                 alert.AcknowledgeComment = request.Comment;
-                // The notification pipeline's correlation is acknowledged in this transaction too (shadow and new).
+                // The notification pipeline's correlation is acknowledged in this transaction too.
                 alert.DomainEvents.Add(new AlertAcknowledged(request.PlatformTenantId, alert.Id, request.Actor));
                 Audit(AuditOutcome.Succeeded);
             }

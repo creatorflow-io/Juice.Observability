@@ -1,0 +1,36 @@
+{
+  "tenants": {
+    "0193f0aa-0000-7000-8000-0000000000a1": {
+      "integrations": {
+        "scale-sink": {
+          "channel": "webhook",
+          "kind": "webhook",
+          "secretRef": "env:JUICE_WEBHOOK_SCALE",
+          "targets": {
+            "sink": {
+              "address": "http://webhook-sink:8080/hook"
+            }
+          }
+        }
+      },
+      "routes": {
+        "alerts": {
+          "match": {
+            "type": "observability.alert.*"
+          },
+          "targets": [
+            "sink"
+          ]
+        }
+      },
+      "allowlist": [
+        {
+          "destination": "172.29.240.0/24",
+          "ports": [
+            8080
+          ]
+        }
+      ]
+    }
+  }
+}

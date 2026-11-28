@@ -41,7 +41,7 @@ namespace Juice.Observability.Notifications
         /// Puts the platform's migration of the schema (when <paramref name="migrate"/>) where the pipeline's migrator was, and records rather than
         /// throws a failure of it or of the provisioning after it. Call after the pipeline is registered.
         /// </summary>
-        internal static IReadOnlyCollection<ServiceDescriptor> Guard(IServiceCollection services, bool migrate)
+        internal static IReadOnlyCollection<ServiceDescriptor> Guard(IServiceCollection services, bool migrate, string? provisioningPath, Guid tenantId)
         {
             services.AddSingleton<PipelineStart>();
             var guarded = new List<ServiceDescriptor>();
@@ -49,8 +49,13 @@ namespace Juice.Observability.Notifications
                 sp.GetRequiredService<ILogger<PipelineStart>>())));
             foreach (var name in Provisioning)
             {
-                guarded.Add(Replace(services, name, (sp, type) => ActivatorUtilities.CreateInstance(sp, type) as IHostedService
-                    ?? throw new InvalidOperationException($"{name} isn't a hosted service")));
+                guarded.Add(Replace(services, name, (sp, type) =>
+                {
+                    var step = ActivatorUtilities.CreateInstance(sp, type) as IHostedService
+                        ?? throw new InvalidOperationException($"{name} isn't a hosted service");
+                    // The file may name the platform's tenant only: checked before the provisioner reads it, so nothing is written for another.
+                    return name == Provisioning[0] ? new OwnTenantOnly(step, provisioningPath, tenantId) : step;
+                }));
             }
             services.AddHealthChecks().AddCheck<PipelineStartCheck>("notifications", tags: ["ready"]);
             return guarded;
@@ -58,13 +63,11 @@ namespace Juice.Observability.Notifications
 
         /// <summary>
         /// The pipeline's other hosted services (its stages, its outbox's delivery, its failure events, the platform's release pass): every one
-        /// registered since <paramref name="before"/>, except the start's own steps, the health check publisher and the dry run's guard (which must
-        /// still refuse <c>shadow</c>). After a failed start they don't start: they would poll tables that aren't there. In <c>legacy</c>
-        /// (<paramref name="runs"/> false) none of them is a hosted service at all: legacy costs the pipeline's schema and nothing else. Call after
-        /// <see cref="Guard"/> and after the last of them is registered.
+        /// registered since <paramref name="before"/>, except the start's own steps, the health check publisher and the pipeline's own guard against
+        /// a dry run. After a failed start they don't start: they would poll tables that aren't there. Call after <see cref="Guard"/> and after the
+        /// last of them is registered.
         /// </summary>
-        internal static void GateTheRest(IServiceCollection services, IReadOnlyCollection<ServiceDescriptor> before, IReadOnlyCollection<ServiceDescriptor> guarded,
-            bool runs)
+        internal static void GateTheRest(IServiceCollection services, IReadOnlyCollection<ServiceDescriptor> before, IReadOnlyCollection<ServiceDescriptor> guarded)
         {
             for (var i = services.Count - 1; i >= 0; i--)
             {
@@ -72,12 +75,6 @@ namespace Juice.Observability.Notifications
                 if (descriptor.ServiceType != typeof(IHostedService) || before.Contains(descriptor) || guarded.Contains(descriptor)
                     || descriptor.ImplementationType?.Name is "HealthCheckPublisherHostedService" or "DryRunGuard")
                 {
-                    continue;
-                }
-                // legacy: nothing of the pipeline runs beyond its start (its schema and provisioning), so nothing polls; the services stay registered.
-                if (!runs)
-                {
-                    services.RemoveAt(i);
                     continue;
                 }
                 services[i] = ServiceDescriptor.Singleton<IHostedService>(sp => new UnlessStartFailed(Create(sp, descriptor),
@@ -142,6 +139,48 @@ namespace Juice.Observability.Notifications
                 => migrate ? NotificationsDatabase.MigrateAsync(scopes, logger, cancellationToken) : Task.CompletedTask;
 
             public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        }
+
+        /// <summary>
+        /// Refuses a provisioning file that names a tenant other than the platform's, before the provisioner reads it: the platform embeds one tenant,
+        /// and nothing is written for another. The failure is the pipeline's start failing (readiness <c>notifications</c>), not the host's.
+        /// </summary>
+        private sealed class OwnTenantOnly(IHostedService inner, string? path, Guid tenantId) : IHostedService
+        {
+            public Task StartAsync(CancellationToken cancellationToken)
+            {
+                if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
+                {
+                    var foreign = ForeignTenants(path, tenantId);
+                    if (foreign > 0)
+                    {
+                        throw new InvalidOperationException($"The provisioning file names {foreign} tenant(s) other than the platform's ({tenantId:D}): the platform embeds one tenant, so nothing was provisioned.");
+                    }
+                }
+                return inner.StartAsync(cancellationToken);
+            }
+
+            public Task StopAsync(CancellationToken cancellationToken) => inner.StopAsync(cancellationToken);
+
+            /// <summary>How many keys of the file's <c>tenants</c> aren't the platform's tenant; a file that can't be read as that is left to the provisioner to refuse.</summary>
+            private static int ForeignTenants(string path, Guid tenantId)
+            {
+                try
+                {
+                    using var document = System.Text.Json.JsonDocument.Parse(File.ReadAllBytes(path),
+                        new System.Text.Json.JsonDocumentOptions { CommentHandling = System.Text.Json.JsonCommentHandling.Skip, AllowTrailingCommas = true });
+                    if (document.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object || !document.RootElement.TryGetProperty("tenants", out var tenants)
+                        || tenants.ValueKind != System.Text.Json.JsonValueKind.Object)
+                    {
+                        return 0;
+                    }
+                    return tenants.EnumerateObject().Count(t => !Guid.TryParse(t.Name, out var id) || id != tenantId);
+                }
+                catch (Exception ex) when (ex is IOException or System.Text.Json.JsonException or UnauthorizedAccessException)
+                {
+                    return 0;
+                }
+            }
         }
 
         private sealed class GuardedStart(IHostedService inner, string step, PipelineStart state, ILogger logger) : IHostedService
